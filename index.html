@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>EAR Routing</title>
+<meta name="description" content="Essen auf Rädern – intelligente Routenplanung für Zusteller" />
+
+<!-- PWA -->
+<link rel="manifest" href="/manifest.json" />
+<link rel="apple-touch-icon" href="/logo.png" />
+<link rel="icon" href="/icon-192.png" type="image/png" />
+<meta name="theme-color" content="#0b1120" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="EAR Routing" />
+
+<!-- All assets below are self-hosted (see /static) — the app has zero
+     external network dependencies, full stop. The map is real OpenStreetMap
+     data (streets/water/parks) rendered from this server's own /tiles
+     route, not a live tile server; geocoding resolves against an embedded
+     local address register, not a geocoding API. -->
+<link rel="stylesheet" href="/maplibre-gl.css" />
+<script src="/maplibre-gl.js"></script>
+<link rel="stylesheet" href="/style.css" />
+
+<style>
+  html, body { background: #0b1120; overscroll-behavior-y: none; }
+  body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; padding-bottom: env(safe-area-inset-bottom); }
+  /* NOTE: safe-area padding is applied via inline style="padding-top: calc(env(...) + Nrem)"
+     at each call site, not a shared class. The Tailwind CDN script injects its utility
+     stylesheet *after* this one, so a `.safe-top { padding-top: env(...) }` class sharing
+     the `padding-top` property with a Tailwind class like `.pt-6` on the same element loses
+     the cascade and silently gets overridden — inline styles always win regardless of
+     injection order, which is what actually keeps content out of the iOS notch. */
+  ::-webkit-scrollbar { display: none; }
+  * { -webkit-tap-highlight-color: transparent; }
+
+  .sheet-backdrop { animation: fadeIn .18s ease-out; }
+  .sheet-panel { animation: slideUp .22s cubic-bezier(.32,.72,0,1); }
+  @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+  @keyframes slideUp { from { transform: translateY(100%) } to { transform: translateY(0) } }
+
+  .toast-enter { animation: toastIn .25s ease-out; }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(-12px) } to { opacity: 1; transform: translateY(0) } }
+
+  .spinner { border: 3px solid rgba(255,255,255,.15); border-top-color: #fff; border-radius: 50%; width: 22px; height: 22px; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg) } }
+
+  .stop-enter { animation: stopIn .25s ease-out both; }
+  @keyframes stopIn { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: translateY(0) } }
+
+  #route-map, #pin-map { background: #0b1120; }
+  .maplibregl-map { font-family: 'Inter', system-ui, sans-serif; z-index: 0; isolation: isolate; }
+  .maplibregl-ctrl-attrib { background: rgba(11,17,32,.75) !important; color: #64748b !important; font-size: 9px !important; }
+  .maplibregl-ctrl-attrib a { color: #94a3b8 !important; }
+  .maplibregl-ctrl-group { background: #111827 !important; border: 1px solid #1e293b; }
+  .maplibregl-ctrl-group button { background: transparent !important; }
+  .maplibregl-ctrl-icon { filter: invert(1) brightness(1.6); }
+  .maplibregl-popup-content { background: #111827; color: #e2e8f0; border: 1px solid #1e293b; font-size: 12px; padding: 10px 12px; }
+  .maplibregl-popup-tip { border-top-color: #111827 !important; border-bottom-color: #111827 !important; }
+  .maplibregl-popup-close-button { color: #94a3b8; }
+  .marker-badge { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; font-size: 12px; font-weight: 700; color: #fff; border: 2px solid #0b1120; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+  .marker-fixed { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; font-size: 14px; background: #334155; border: 2px solid #0b1120; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+</style>
+</head>
+<body class="bg-base-950 text-slate-100 min-h-screen">
+
+<div id="app" class="max-w-md mx-auto min-h-screen relative pb-28"></div>
+
+<div id="overlay" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 hidden flex-col items-center justify-center gap-3">
+  <div class="spinner"></div>
+  <p id="overlay-text" class="text-sm text-slate-200 font-medium">Route wird optimiert …</p>
+</div>
+
+<div id="toast-container" class="fixed top-0 left-0 right-0 z-50 flex flex-col items-center gap-2 px-4 pointer-events-none" style="padding-top: calc(env(safe-area-inset-top) + 1rem);"></div>
+
+<div id="modal-root"></div>
+
+<script>
+// ---------------------------------------------------------------------
+// State & API helpers
+// ---------------------------------------------------------------------
+const state = { view: 'home', routes: [], currentRoute: null, loading: false };
+
+const VIENNA_DISTRICTS = [
+  { bezirk: 1, plz: '1010', name: 'Innere Stadt', center: [48.2082, 16.3738] },
+  { bezirk: 2, plz: '1020', name: 'Leopoldstadt', center: [48.2170, 16.3919] },
+  { bezirk: 3, plz: '1030', name: 'Landstraße', center: [48.1990, 16.3939] },
+  { bezirk: 4, plz: '1040', name: 'Wieden', center: [48.1928, 16.3695] },
+  { bezirk: 5, plz: '1050', name: 'Margareten', center: [48.1897, 16.3567] },
+  { bezirk: 6, plz: '1060', name: 'Mariahilf', center: [48.1975, 16.3520] },
+  { bezirk: 7, plz: '1070', name: 'Neubau', center: [48.2037, 16.3480] },
+  { bezirk: 8, plz: '1080', name: 'Josefstadt', center: [48.2114, 16.3477] },
+  { bezirk: 9, plz: '1090', name: 'Alsergrund', center: [48.2255, 16.3560] },
+  { bezirk: 10, plz: '1100', name: 'Favoriten', center: [48.1660, 16.3780] },
+  { bezirk: 11, plz: '1110', name: 'Simmering', center: [48.1660, 16.4390] },
+  { bezirk: 12, plz: '1120', name: 'Meidling', center: [48.1780, 16.3350] },
+  { bezirk: 13, plz: '1130', name: 'Hietzing', center: [48.1830, 16.2870] },
+  { bezirk: 14, plz: '1140', name: 'Penzing', center: [48.2000, 16.2800] },
+  { bezirk: 15, plz: '1150', name: 'Rudolfsheim-Fünfhaus', center: [48.1950, 16.3350] },
+  { bezirk: 16, plz: '1160', name: 'Ottakring', center: [48.2140, 16.3120] },
+  { bezirk: 17, plz: '1170', name: 'Hernals', center: [48.2330, 16.3080] },
+  { bezirk: 18, plz: '1180', name: 'Währing', center: [48.2350, 16.3350] },
+  { bezirk: 19, plz: '1190', name: 'Döbling', center: [48.2470, 16.3450] },
+  { bezirk: 20, plz: '1200', name: 'Brigittenau', center: [48.2340, 16.3730] },
+  { bezirk: 21, plz: '1210', name: 'Floridsdorf', center: [48.2540, 16.4000] },
+  { bezirk: 22, plz: '1220', name: 'Donaustadt', center: [48.2280, 16.4700] },
+  { bezirk: 23, plz: '1230', name: 'Liesing', center: [48.1330, 16.2980] },
+];
+const DISTRICT_BY_PLZ = Object.fromEntries(VIENNA_DISTRICTS.map(d => [d.plz, d]));
+let lastUsedPlz = null;
+
+// Plain glyphs ("+", "←", "⋮") render with a font-metric-dependent vertical
+// offset that varies by platform/font-load timing — visibly off-center on
+// iOS in particular. SVGs with a symmetric viewBox center perfectly inside
+// a flex box every time, and `currentColor` keeps them tied to the
+// surrounding text color so no extra styling is needed at each call site.
+const ICONS = {
+  plus: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+  back: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>',
+  more: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><circle cx="12" cy="5" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="12" cy="19" r="1.9"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
+};
+
+async function api(path, options = {}) {
+  const res = await fetch('/api' + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  if (!res.ok) {
+    let msg = 'Ein Fehler ist aufgetreten.';
+    let code = null;
+    try {
+      const data = await res.json();
+      if (data.detail && typeof data.detail === 'object') {
+        msg = data.detail.message || msg;
+        code = data.detail.code || null;
+      } else if (data.detail) {
+        msg = data.detail;
+      }
+    } catch (_) {}
+    const err = new Error(msg);
+    err.code = code;
+    throw err;
+  }
+  return res.json();
+}
+
+function showOverlay(text) {
+  document.getElementById('overlay-text').textContent = text || 'Route wird optimiert …';
+  const el = document.getElementById('overlay');
+  el.classList.remove('hidden');
+  el.classList.add('flex');
+}
+function hideOverlay() {
+  const el = document.getElementById('overlay');
+  el.classList.add('hidden');
+  el.classList.remove('flex');
+}
+
+function toast(message, type = 'info', durationMs = 3800) {
+  const colors = {
+    info: 'bg-slate-800 border-slate-700 text-slate-100',
+    error: 'bg-red-950 border-red-800 text-red-200',
+    success: 'bg-emerald-950 border-emerald-800 text-emerald-200',
+  };
+  const el = document.createElement('div');
+  el.className = `toast-enter pointer-events-auto max-w-sm w-full border ${colors[type]} rounded-xl px-4 py-3 text-sm font-medium shadow-lg`;
+  el.textContent = message;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, durationMs);
+}
+
+// ---------------------------------------------------------------------
+// Maps link (platform-aware) — deep-links with the plain address, not
+// coordinates. Coordinates are only used for the rough on-screen route
+// map further up; the actual navigation should use the
+// address so the phone's own Maps app can do its own (usually better)
+// geocoding/routing to the door.
+// ---------------------------------------------------------------------
+function mapsUrl(address) {
+  const ua = navigator.userAgent || '';
+  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/.test(ua);
+  const encAddr = encodeURIComponent(address || '');
+  if (isAndroid) return `geo:0,0?q=${encAddr}`;
+  if (isIOS) return `https://maps.apple.com/?daddr=${encAddr}&dirflg=d`;
+  return `https://www.google.com/maps/dir/?api=1&destination=${encAddr}&travelmode=driving`;
+}
+
+// ---------------------------------------------------------------------
+// Data loading
+// ---------------------------------------------------------------------
+async function loadRoutes() {
+  try {
+    state.routes = await api('/routes');
+    render();
+  } catch (err) {
+    toast(err.message || 'Routen konnten nicht geladen werden.', 'error');
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="px-6 pt-24 text-center text-slate-400">
+        <p class="text-4xl mb-3">⚠️</p>
+        <p class="text-sm mb-4">Verbindung zum Server fehlgeschlagen.</p>
+        <button onclick="loadRoutes()" class="px-5 py-3 rounded-xl bg-brand-600 active:bg-brand-700 font-semibold text-white text-sm">Erneut versuchen</button>
+      </div>
+    `;
+  }
+}
+
+async function openRoute(id) {
+  showOverlay('Route wird geladen …');
+  try {
+    state.currentRoute = await api(`/routes/${id}`);
+    state.view = 'route';
+    render();
+  } catch (err) {
+    toast(err.message || 'Route konnte nicht geladen werden.', 'error');
+    goHome();
+  } finally {
+    hideOverlay();
+  }
+}
+
+async function refreshCurrentRoute(promise, loadingText) {
+  showOverlay(loadingText);
+  try {
+    const updated = await promise;
+    state.currentRoute = updated;
+    render();
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    hideOverlay();
+  }
+}
+
+// ---------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------
+async function createRoute() {
+  const name = prompt('Name für die neue Route (z.B. Kundenname, Bezirk, Tour):', '');
+  if (name === null) return; // user cancelled — don't create anything
+  showOverlay('Route wird angelegt …');
+  try {
+    const body = name.trim() ? { name: name.trim() } : {};
+    const route = await api('/routes', { method: 'POST', body: JSON.stringify(body) });
+    state.routes.unshift({ id: route.id, name: route.name, status: route.status, created_at: route.created_at, completed_at: null, customer_count: 0, delivered_count: 0 });
+    state.currentRoute = route;
+    state.view = 'route';
+    render();
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    hideOverlay();
+  }
+}
+
+function goHome() {
+  state.view = 'home';
+  state.currentRoute = null;
+  loadRoutes();
+}
+
+async function submitStop(form, stopId) {
+  const kunde = form.kunde.value.trim();
+  const strasse = form.strasse.value.trim();
+  const plz = form.plz.value.trim();
+  const paket = form.paket.value.trim();
+  const notiz = form.notiz.value.trim();
+  if (!kunde || !strasse || !plz) { toast('Bitte Kunde, Straße und Bezirk ausfüllen.', 'error'); return; }
+
+  lastUsedPlz = plz;
+  const data = { kunde, strasse, plz, paket, notiz, stopId };
+  closeModal();
+  await sendStop(data);
+}
+
+async function sendStop(data, coords) {
+  const routeId = state.currentRoute.id;
+  const payload = { kunde: data.kunde, strasse: data.strasse, plz: data.plz, paket: data.paket, notiz: data.notiz };
+  if (coords) { payload.lat = coords.lat; payload.lon = coords.lon; }
+  const body = JSON.stringify(payload);
+
+  showOverlay(data.stopId ? 'Adresse wird aktualisiert …' : 'Stopp wird hinzugefügt …');
+  try {
+    state.currentRoute = data.stopId
+      ? await api(`/stops/${data.stopId}`, { method: 'PATCH', body })
+      : await api(`/routes/${routeId}/stops`, { method: 'POST', body });
+    render();
+    if (coords) toast('Standort manuell gesetzt ✓', 'success');
+  } catch (err) {
+    if (!coords && (err.code === 'address_not_found' || err.code === 'geocode_unavailable')) {
+      hideOverlay();
+      openPinDropModal(data);
+      return;
+    }
+    toast(err.message, 'error');
+  } finally {
+    hideOverlay();
+  }
+}
+
+async function toggleDelivered(stopId, delivered) {
+  try {
+    const updated = await api(`/stops/${stopId}`, { method: 'PATCH', body: JSON.stringify({ delivered }) });
+    state.currentRoute = updated;
+    render();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+async function deleteStop(stopId) {
+  if (!confirm('Diesen Stopp wirklich löschen?')) return;
+  await refreshCurrentRoute(api(`/stops/${stopId}`, { method: 'DELETE' }), 'Stopp wird gelöscht …');
+}
+
+async function renameRoute() {
+  const name = prompt('Neuer Name für die Route:', state.currentRoute.name);
+  if (!name || !name.trim()) return;
+  try {
+    state.currentRoute = await api(`/routes/${state.currentRoute.id}`, { method: 'PATCH', body: JSON.stringify({ name: name.trim() }) });
+    render();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function resetDelivered() {
+  if (!confirm('Alle Zustellungen dieser Route zurücksetzen? Die Adressen und die Reihenfolge bleiben erhalten.')) return;
+  showOverlay('Zustellungen werden zurückgesetzt …');
+  try {
+    state.currentRoute = await api(`/routes/${state.currentRoute.id}/reset-delivered`, { method: 'POST' });
+    render();
+    toast('Zustellungen zurückgesetzt ✓', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    hideOverlay();
+  }
+}
+
+async function deleteRoute() {
+  if (!confirm(`Route "${state.currentRoute.name}" wirklich löschen? Das kann nicht rückgängig gemacht werden.`)) return;
+  try {
+    await api(`/routes/${state.currentRoute.id}`, { method: 'DELETE' });
+    goHome();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function manualOptimize() {
+  await refreshCurrentRoute(api(`/routes/${state.currentRoute.id}/optimize`, { method: 'POST' }), 'Route wird neu optimiert …');
+}
+
+// ---------------------------------------------------------------------
+// Modal (bottom sheet) for add/edit stop
+// ---------------------------------------------------------------------
+function openStopModal(stop) {
+  const isEdit = !!stop?.id;
+  const defaultPlz = stop?.plz || (isEdit ? '' : lastUsedPlz) || '';
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="fixed inset-0 z-50 flex items-end justify-center">
+      <div id="backdrop" class="sheet-backdrop absolute inset-0 bg-black/60" onclick="closeModal()"></div>
+      <div class="sheet-panel relative w-full max-w-md bg-base-900 rounded-t-3xl border-t border-slate-700 px-5 pt-4 pb-8 max-h-[92vh] overflow-y-auto" style="padding-bottom: calc(env(safe-area-inset-bottom) + 1.5rem)">
+        <div class="w-10 h-1.5 bg-slate-700 rounded-full mx-auto mb-4"></div>
+        <h2 class="text-lg font-bold mb-4">${isEdit ? 'Stopp bearbeiten' : 'Neuer Stopp'}</h2>
+        <form id="stop-form" class="space-y-3">
+          <div>
+            <label class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Kunde</label>
+            <input name="kunde" required value="${escapeAttr(stop?.kunde || '')}" placeholder="z.B. Fam. Gruber"
+              class="mt-1 w-full bg-base-800 border border-slate-700 rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-600" />
+          </div>
+          <div>
+            <label class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Straße &amp; Hausnummer</label>
+            <input name="strasse" required value="${escapeAttr(stop?.strasse || '')}" placeholder="z.B. Favoritenstraße 45 (Adresse einfügen geht auch)"
+              class="mt-1 w-full bg-base-800 border border-slate-700 rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-600" />
+          </div>
+          <div>
+            <label class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Bezirk</label>
+            <select name="plz" required
+              class="mt-1 w-full bg-base-800 border border-slate-700 rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-600">
+              <option value="" disabled ${!defaultPlz ? 'selected' : ''}>Bezirk wählen …</option>
+              ${VIENNA_DISTRICTS.map(d => `<option value="${d.plz}" ${defaultPlz === d.plz ? 'selected' : ''}>${d.bezirk}. Bezirk – ${d.name} (${d.plz})</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Paket</label>
+            <input name="paket" value="${escapeAttr(stop?.paket || '')}" placeholder="z.B. 2 Pakete, 1x Kühlware"
+              class="mt-1 w-full bg-base-800 border border-slate-700 rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-600" />
+          </div>
+          <div>
+            <label class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Notiz</label>
+            <textarea name="notiz" rows="2" placeholder="z.B. persönlich übergeben, Lift im Hof, Code 1234"
+              class="mt-1 w-full bg-base-800 border border-slate-700 rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-600 resize-none">${escapeHtml(stop?.notiz || '')}</textarea>
+          </div>
+          <div class="flex gap-3 pt-2">
+            ${isEdit ? `<button type="button" onclick="deleteStop(${stop.id}); closeModal();" class="px-4 py-3 rounded-xl bg-red-950 border border-red-800 text-red-300 font-semibold">Löschen</button>` : ''}
+            <button type="submit" class="flex-1 py-3 rounded-xl bg-brand-600 active:bg-brand-700 font-semibold text-white">${isEdit ? 'Speichern' : 'Hinzufügen & Optimieren'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+  const form = document.getElementById('stop-form');
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    submitStop(e.target, stop?.id);
+  });
+
+  // Paste a full address ("Clementinengasse 11, 1150 Wien") straight from a
+  // chat/SMS into the Straße field: pull the district PLZ out of it and
+  // select it automatically instead of making the driver do it by hand.
+  const strasseInput = form.strasse;
+  const plzSelect = form.plz;
+  strasseInput.addEventListener('input', (e) => {
+    if (e.inputType !== 'insertFromPaste') return;
+    autoFillDistrictFromText(strasseInput, plzSelect);
+  });
+  strasseInput.addEventListener('blur', () => autoFillDistrictFromText(strasseInput, plzSelect));
+
+  if (!isEdit) {
+    setTimeout(() => form.kunde.focus(), 60);
+  }
+}
+
+function autoFillDistrictFromText(strasseInput, plzSelect) {
+  const match = strasseInput.value.match(/\b1\d{3}\b/);
+  if (!match || !DISTRICT_BY_PLZ[match[0]]) return;
+  plzSelect.value = match[0];
+  let cleaned = strasseInput.value.replace(match[0], '');
+  cleaned = cleaned.replace(/,?\s*(wien|austria|österreich)\.?/gi, '');
+  cleaned = cleaned.replace(/,\s*,/g, ',').replace(/,\s*$/, '').replace(/\s{2,}/g, ' ').trim();
+  strasseInput.value = cleaned;
+}
+
+function closeModal() {
+  document.getElementById('modal-root').innerHTML = '';
+  if (pinDropMap) { pinDropMap.remove(); pinDropMap = null; pinDropMarker = null; }
+}
+
+// ---------------------------------------------------------------------
+// "Kundenstopps als JSON" editor — a plain array of the 5 customer-facing
+// fields (kunde, strasse, plz, paket, notiz), editable and save-able.
+// If there are no customer stops yet, a clearly-labelled example object
+// is shown so the field structure is visible even on an empty route.
+// ---------------------------------------------------------------------
+const EXAMPLE_CUSTOMER_STOP = {
+  kunde: 'BEISPIEL – Fam. Mustermann',
+  strasse: 'Beispielgasse 12',
+  plz: '1190',
+  paket: '1x Mittagsmenü',
+  notiz: 'Bitte klingeln, 2. Stock',
+};
+
+// Only the fields a driver actually cares about — no ids, kind, lat/lon,
+// delivered-flag or optimizer output. That's the whole point of this view.
+function stopToCustomerJson(s) {
+  return { kunde: s.kunde, strasse: s.strasse, plz: s.plz, paket: s.paket || '', notiz: s.notiz || '' };
+}
+
+function openJsonModal() {
+  const menu = document.getElementById('route-menu');
+  if (menu) menu.classList.add('hidden');
+
+  const r = state.currentRoute;
+  const customers = r.stops.filter((s) => s.kind === 'customer').map(stopToCustomerJson);
+  const editorInitial = JSON.stringify(customers.length ? customers : [EXAMPLE_CUSTOMER_STOP], null, 2);
+
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="fixed inset-0 z-50 flex items-end justify-center">
+      <div class="sheet-backdrop absolute inset-0 bg-black/60" onclick="closeModal()"></div>
+      <div class="sheet-panel relative w-full max-w-md bg-base-900 rounded-t-3xl border-t border-slate-700 px-5 pt-4 pb-8 max-h-[92vh] overflow-y-auto flex flex-col" style="padding-bottom: calc(env(safe-area-inset-bottom) + 1.5rem)">
+        <div class="w-10 h-1.5 bg-slate-700 rounded-full mx-auto mb-4"></div>
+        <h2 class="text-lg font-bold mb-1">📄 Kundenstopps als JSON</h2>
+        <p class="text-xs text-slate-500 mb-2">Nur Kunde, Straße &amp; Hausnummer, Bezirk, Paket, Notiz. Start/Lager/Ziel sind fix und stehen hier nicht drin. Einen Stopp entfernst du, indem du sein Objekt aus der Liste löschst; einen neuen fügst du als zusätzliches Objekt hinzu.</p>
+        ${!customers.length ? `<p class="text-xs text-amber-400/90 mb-2">Noch keine Kundenstopps – unten steht ein Beispiel-Objekt. Bearbeite es zu einem echten Stopp oder lösche es, bevor du speicherst.</p>` : ''}
+        <div class="flex gap-2 mb-2">
+          <button type="button" onclick="pasteIntoJsonEditor()" class="flex-1 py-2 rounded-lg bg-base-800 border border-slate-700 text-slate-300 text-xs font-semibold active:bg-slate-700">📋 Einfügen</button>
+          <button type="button" onclick="clearJsonEditor()" class="flex-1 py-2 rounded-lg bg-base-800 border border-slate-700 text-slate-300 text-xs font-semibold active:bg-slate-700">🗑️ Leeren</button>
+        </div>
+        <textarea id="json-editor" spellcheck="false" autocapitalize="off" autocomplete="off"
+          class="flex-1 min-h-[40vh] text-[11px] leading-relaxed font-mono bg-base-950 border border-slate-800 rounded-xl p-3 overflow-auto whitespace-pre focus:outline-none focus:ring-2 focus:ring-brand-600"
+        >${escapeHtml(editorInitial)}</textarea>
+        <div class="flex gap-3 mt-4">
+          <button type="button" onclick="closeModal()" class="px-4 py-3 rounded-xl bg-base-800 border border-slate-700 text-slate-300 font-semibold">Abbrechen</button>
+          <button type="button" onclick="copyJsonToClipboard()" class="px-4 py-3 rounded-xl bg-base-800 border border-slate-700 text-slate-300 font-semibold">Kopieren</button>
+          <button type="button" onclick="saveJsonEdits()" class="flex-1 py-3 rounded-xl bg-brand-600 active:bg-brand-700 font-semibold text-white">Speichern</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function copyJsonToClipboard() {
+  const editor = document.getElementById('json-editor');
+  if (!editor) return;
+  try {
+    await navigator.clipboard.writeText(editor.value);
+    toast('JSON kopiert ✓', 'success');
+  } catch (_) {
+    toast('Kopieren nicht möglich – bitte im Feld manuell markieren.', 'error');
+  }
+}
+
+async function pasteIntoJsonEditor() {
+  const editor = document.getElementById('json-editor');
+  if (!editor) return;
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text) { toast('Zwischenablage ist leer.', 'error'); return; }
+    editor.value = text;
+    editor.focus();
+    toast('Eingefügt ✓', 'success');
+  } catch (_) {
+    toast('Einfügen aus Zwischenablage nicht möglich – bitte manuell ins Feld einfügen (lange drücken → Einfügen).', 'error');
+  }
+}
+
+function clearJsonEditor() {
+  const editor = document.getElementById('json-editor');
+  if (!editor) return;
+  editor.value = '[]';
+  editor.focus();
+}
+
+async function saveJsonEdits() {
+  const editor = document.getElementById('json-editor');
+  let parsed;
+  try {
+    parsed = JSON.parse(editor.value);
+  } catch (err) {
+    toast('Ungültiges JSON: ' + err.message, 'error');
+    return;
+  }
+  if (!Array.isArray(parsed)) {
+    toast('Erwarte eine Liste von Kundenstopps ([...]).', 'error');
+    return;
+  }
+  showOverlay('Adressen werden abgeglichen … Bei vielen neuen Adressen kann das 1–2 Minuten dauern (Geocoding ist auf ~1/Sek. limitiert) — bitte nicht schließen.');
+  try {
+    const data = await api(`/routes/${state.currentRoute.id}/json`, {
+      method: 'PUT',
+      body: JSON.stringify(parsed),
+    });
+    state.currentRoute = data;
+    closeModal();
+    render();
+    if (data.geocode_failures && data.geocode_failures.length) {
+      const names = data.geocode_failures.map((f) => `${f.kunde} (${f.strasse}, ${f.plz})`).join('; ');
+      const skipNote = data.deletions_skipped ? ' Entfernte Adressen wurden diesmal nicht gelöscht, bis alle Adressen aufgelöst sind.' : '';
+      toast(`${data.geocode_failures.length} Adresse(n) nicht gefunden, übersprungen: ${names}.${skipNote} Restliche Route wurde gespeichert — fehlende Adressen einzeln mit Kartenpin hinzufügen.`, 'error', 12000);
+    } else {
+      toast('Route aktualisiert ✓ – ggf. neu optimieren', 'success');
+    }
+  } catch (err) {
+    toast(err.message || 'Speichern fehlgeschlagen.', 'error');
+  } finally {
+    hideOverlay();
+  }
+}
+
+// ---------------------------------------------------------------------
+// Manual pin-drop — the guaranteed fallback when automatic geocoding
+// can't resolve an address (typo, brand-new building, service outage).
+// The driver taps the map once and the stop is added with that exact
+// location, so "address not found" never has to be a dead end.
+// ---------------------------------------------------------------------
+let pinDropMap = null;
+let pinDropMarker = null;
+
+function openPinDropModal(data) {
+  const district = DISTRICT_BY_PLZ[data.plz];
+  const center = district ? district.center : [48.2082, 16.3738];
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="fixed inset-0 z-50 flex items-end justify-center">
+      <div class="sheet-backdrop absolute inset-0 bg-black/60"></div>
+      <div class="sheet-panel relative w-full max-w-md bg-base-900 rounded-t-3xl border-t border-slate-700 px-5 pt-4 pb-8" style="padding-bottom: calc(env(safe-area-inset-bottom) + 1.5rem)">
+        <div class="w-10 h-1.5 bg-slate-700 rounded-full mx-auto mb-4"></div>
+        <h2 class="text-lg font-bold mb-1">📍 Adresse nicht automatisch gefunden</h2>
+        <p class="text-sm text-slate-400 mb-3">"${escapeHtml(data.strasse)}, ${escapeHtml(data.plz)} Wien" – tippe auf die Karte, um den Standort selbst zu markieren. Der Stopp wird trotzdem hinzugefügt.</p>
+        <div id="pin-map" class="w-full h-72 rounded-2xl border border-slate-700 mb-4 overflow-hidden"></div>
+        <div class="flex gap-3">
+          <button type="button" id="pin-back" class="px-4 py-3 rounded-xl bg-base-800 border border-slate-700 text-slate-300 font-semibold">Zurück</button>
+          <button type="button" id="pin-confirm" class="flex-1 py-3 rounded-xl bg-brand-600 active:bg-brand-700 font-semibold text-white">Standort bestätigen</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  setTimeout(() => {
+    const container = document.getElementById('pin-map');
+    if (!container || typeof maplibregl === 'undefined') return;
+    const centerLngLat = [center[1], center[0]];
+    const map = newMap(container, { center: centerLngLat, zoom: 15 });
+    pinDropMap = map;
+    const marker = new maplibregl.Marker({ color: '#ED1639', draggable: true }).setLngLat(centerLngLat).addTo(map);
+    pinDropMarker = marker;
+    map.on('click', (e) => marker.setLngLat(e.lngLat));
+    setTimeout(() => { if (pinDropMap === map) map.resize(); }, 60);
+  }, 50);
+
+  document.getElementById('pin-confirm').addEventListener('click', () => {
+    if (!pinDropMarker) return;
+    const { lat, lng } = pinDropMarker.getLngLat();
+    closeModal();
+    sendStop(data, { lat, lon: lng });
+  });
+  document.getElementById('pin-back').addEventListener('click', () => {
+    closeModal();
+    openStopModal(data.stopId ? { ...data, id: data.stopId } : { ...data });
+  });
+}
+
+function escapeAttr(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+// For JSON blobs embedded inside a single-quoted onclick="..." attribute:
+// needs the same &/</> handling as escapeAttr, plus the single quote that
+// delimits the attribute itself (kunde/strasse names can contain any of
+// these, e.g. "Fam. O'Brien & Söhne").
+function escapeJsonForAttr(json) {
+  return json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;');
+}
+function escapeHtml(str) {
+  return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ---------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------
+function render() {
+  const app = document.getElementById('app');
+  app.innerHTML = state.view === 'home' ? renderHome() : renderRoute();
+  if (state.view === 'route') {
+    initRouteMap();
+  } else if (routeMap) {
+    routeMap.remove();
+    routeMap = null;
+  }
+}
+
+function fmtDate(iso) {
+  try {
+    return new Date(iso).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  } catch (_) { return ''; }
+}
+
+function renderHome() {
+  const active = state.routes.filter(r => r.status === 'active');
+  const done = state.routes.filter(r => r.status === 'completed');
+
+  const routeCard = (r) => `
+    <button onclick="openRoute(${r.id})" class="w-full text-left bg-base-900 border border-slate-800 rounded-2xl p-4 flex items-center gap-3 active:scale-[0.98] transition">
+      <div class="w-11 h-11 shrink-0 rounded-xl ${r.status === 'active' ? 'bg-brand-600/20 text-brand-400' : 'bg-slate-700/30 text-slate-400'} flex items-center justify-center text-xl">
+        ${r.status === 'active' ? '🚚' : '✅'}
+      </div>
+      <div class="flex-1 min-w-0">
+        <p class="font-semibold text-slate-100 truncate flex items-center gap-1.5">
+          ${escapeHtml(r.name)}
+          ${r.needs_optimize ? '<span class="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Route nicht aktuell"></span>' : ''}
+        </p>
+        <p class="text-xs text-slate-400 mt-0.5">${fmtDate(r.created_at)} · ${r.delivered_count}/${r.customer_count} zugestellt</p>
+      </div>
+      <span class="text-slate-600 text-lg flex">${ICONS.chevron}</span>
+    </button>
+  `;
+
+  return `
+    <div class="px-5 pb-4 bg-gradient-to-b from-brand-950/40 to-transparent" style="padding-top: calc(env(safe-area-inset-top) + 1.5rem);">
+      <div class="flex items-center gap-2.5">
+        <img src="/logo.png" alt="EAR Routing" class="w-9 h-9 rounded-full" />
+        <h1 class="text-2xl font-extrabold tracking-tight">EAR Routing</h1>
+      </div>
+      <p class="text-slate-400 text-sm mt-1">Essen auf Rädern – deine Touren, intelligent geplant.</p>
+    </div>
+
+    <div class="px-5">
+      <button onclick="createRoute()" class="w-full py-4 rounded-2xl bg-brand-600 active:bg-brand-700 font-bold text-white text-base shadow-fab flex items-center justify-center gap-2 mb-6">
+        <span class="text-lg flex">${ICONS.plus}</span> Neue Route
+      </button>
+
+      ${active.length ? `
+        <h2 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Aktiv</h2>
+        <div class="space-y-2.5 mb-6">${active.map(routeCard).join('')}</div>
+      ` : ''}
+
+      ${done.length ? `
+        <h2 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Verlauf</h2>
+        <div class="space-y-2.5">${done.map(routeCard).join('')}</div>
+      ` : ''}
+
+      ${!state.routes.length ? `
+        <div class="text-center py-16 text-slate-500">
+          <p class="text-4xl mb-3">📦</p>
+          <p class="text-sm">Noch keine Route angelegt.<br/>Starte mit "Neue Route".</p>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function stopKindMeta(stop) {
+  if (stop.kind === 'start') return { icon: '🏠', title: 'Start', subtitle: `${stop.strasse}, ${stop.plz} Wien` };
+  if (stop.kind === 'via') return { icon: '📦', title: 'Lager', subtitle: `${stop.strasse}, ${stop.plz} Wien` };
+  if (stop.kind === 'end') return { icon: '🏁', title: 'Ziel', subtitle: `${stop.strasse}, ${stop.plz} Wien` };
+  return null;
+}
+
+// ---------------------------------------------------------------------
+// Map — OpenFreeMap (tiles.openfreemap.org), a free/open vector-tile CDN
+// built on OpenStreetMap data by the creator of OpenMapTiles: no API key,
+// no usage cap, no billing account, self-hostable if that's ever needed.
+// It ships a complete, professionally-designed style — real street name
+// labels, house numbers, POIs, building footprints — via MapLibre GL JS,
+// which a hand-rolled tile pipeline was never going to match. Routing and
+// geocoding (see the `graph`/`addresses` Rust modules) stay fully local;
+// this is the one piece that now needs an internet connection, same as
+// every other delivery-routing app on the market.
+// ---------------------------------------------------------------------
+const MAP_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
+const VIENNA_CENTER = [16.3738, 48.2082]; // [lon, lat]
+
+function elFromHtml(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html.trim();
+  return t.content.firstElementChild;
+}
+
+function newMap(container, opts) {
+  const map = new maplibregl.Map({
+    container,
+    style: MAP_STYLE_URL,
+    center: opts.center || VIENNA_CENTER,
+    zoom: opts.zoom || 12,
+    dragRotate: false,
+    touchPitch: false,
+    pitchWithRotate: false,
+    ...opts.extra,
+  });
+  map.touchZoomRotate.disableRotation();
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
+  // "Where am I" relative to the route/pin — standard on every delivery
+  // app (Google/Apple/Waze Maps all show it) and previously missing here
+  // entirely. Runs fully client-side against the browser's Geolocation
+  // API; no network dependency of its own beyond the map itself.
+  map.addControl(
+    new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true, showUserHeading: true }),
+    'bottom-right'
+  );
+  return map;
+}
+
+// ---------------------------------------------------------------------
+// Route map
+// ---------------------------------------------------------------------
+let routeMap = null;
+
+function initRouteMap() {
+  const container = document.getElementById('route-map');
+  if (!container || typeof maplibregl === 'undefined') return;
+  const r = state.currentRoute;
+
+  if (routeMap) { routeMap.remove(); routeMap = null; }
+
+  const map = newMap(container, { extra: { scrollZoom: false } });
+  routeMap = map;
+
+  map.on('load', () => {
+    if (routeMap !== map) return; // superseded by a newer render already
+
+    map.addSource('route-line', {
+      type: 'geojson',
+      data: {
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'LineString', coordinates: (r.geometry || []).map(([lat, lon]) => [lon, lat]) },
+      },
+    });
+    map.addLayer({
+      id: 'route-line',
+      type: 'line',
+      source: 'route-line',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#ED1639', 'line-width': 4, 'line-opacity': 0.85 },
+    });
+
+    const bounds = new maplibregl.LngLatBounds();
+    if (r.geometry && r.geometry.length > 1) {
+      for (const [lat, lon] of r.geometry) bounds.extend([lon, lat]);
+    }
+
+    const firstOpenIdx = r.stops.findIndex(s => s.kind === 'customer' && !s.delivered);
+    let customerNum = 0;
+
+    r.stops.forEach((s, i) => {
+      const meta = stopKindMeta(s);
+      let el;
+      if (meta) {
+        el = elFromHtml(`<div class="marker-fixed">${meta.icon}</div>`);
+      } else {
+        customerNum++;
+        const isNext = i === firstOpenIdx;
+        const bg = s.delivered ? '#059669' : isNext ? '#ED1639' : '#475569';
+        // Approximate locations get a dashed amber ring instead of the solid
+        // dark border — a visual "this pin is a best guess" flag on the map
+        // itself, not just in the list.
+        const border = s.location_precision ? '2px dashed #fbbf24' : '2px solid #0b1120';
+        el = elFromHtml(`<div class="marker-badge" style="background:${bg};border:${border}">${s.delivered ? '✓' : customerNum}</div>`);
+      }
+      const precisionNote = s.location_precision === 'street' ? '<br><i>≈ nächstgelegene bekannte Hausnummer</i>'
+        : s.location_precision === 'district' ? '<br><i>≈ nur Bezirksmitte, Adresse unbekannt</i>' : '';
+      const popup = new maplibregl.Popup({ offset: 16, closeButton: false }).setHTML(
+        `<b>${escapeHtml(meta ? meta.title : s.kunde)}</b><br>${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien${precisionNote}`
+      );
+      new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([s.lon, s.lat]).setPopup(popup).addTo(map);
+      bounds.extend([s.lon, s.lat]);
+    });
+
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, { padding: 36, maxZoom: 16, duration: 0 });
+    } else {
+      map.jumpTo({ center: VIENNA_CENTER, zoom: 12 });
+    }
+    setTimeout(() => { if (routeMap === map) map.resize(); }, 60);
+  });
+}
+
+function renderRoute() {
+  const r = state.currentRoute;
+  const stops = r.stops;
+  const customers = stops.filter(s => s.kind === 'customer');
+  const firstOpenIdx = stops.findIndex(s => s.kind === 'customer' && !s.delivered);
+  const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
+
+  let customerNum = 0;
+
+  const stopCard = (s, i) => {
+    const isNext = i === firstOpenIdx;
+    const meta = stopKindMeta(s);
+    const address = `${s.strasse}, ${s.plz} Wien`;
+    const url = mapsUrl(address);
+    const legCaption = s.next_leg_km != null
+      ? `<p class="text-[11px] text-slate-500 mt-2 flex items-center gap-1">→ ${s.next_leg_km.toFixed(1)} km · ${Math.round(s.next_leg_min)} min bis zum nächsten Stopp</p>`
+      : '';
+    const precisionBadge = s.location_precision === 'street'
+      ? `<span class="text-[10px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full" title="Genaue Hausnummer nicht gefunden — nächstgelegene bekannte Adresse auf der Straße verwendet.">≈ Straße</span>`
+      : s.location_precision === 'district'
+      ? `<span class="text-[10px] font-bold uppercase tracking-wide text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full" title="Straße nicht gefunden — nur Bezirksmitte verwendet. Position bitte prüfen.">≈ Bezirk</span>`
+      : '';
+
+    if (meta) {
+      return `
+        <div class="stop-enter bg-base-900/60 border border-slate-800 rounded-2xl p-4 flex items-start gap-3" style="animation-delay:${i * 30}ms">
+          <div class="w-10 h-10 shrink-0 rounded-full bg-slate-700/40 flex items-center justify-center text-lg">${meta.icon}</div>
+          <div class="flex-1 min-w-0">
+            <p class="font-semibold text-slate-200">${meta.title}</p>
+            <p class="text-sm text-slate-400">${escapeHtml(meta.subtitle)}</p>
+            ${legCaption}
+            <a href="${url}" class="inline-flex items-center gap-1.5 mt-3 text-sm font-semibold text-brand-400 active:text-brand-300">
+              🗺️ In Maps öffnen
+            </a>
+          </div>
+        </div>
+      `;
+    }
+
+    customerNum++;
+    const delivered = s.delivered;
+    return `
+      <div class="stop-enter rounded-2xl p-4 border ${delivered ? 'bg-base-900/30 border-slate-800/60' : isNext ? 'bg-brand-950/30 border-brand-700' : 'bg-base-900 border-slate-800'}" style="animation-delay:${i * 30}ms">
+        <div class="flex items-start gap-3">
+          <div class="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-sm font-bold ${delivered ? 'bg-emerald-600/20 text-emerald-400' : isNext ? 'bg-brand-600 text-white' : 'bg-slate-700/50 text-slate-300'}">
+            ${delivered ? '✓' : customerNum}
+          </div>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              ${isNext && !delivered ? `<span class="text-[10px] font-bold uppercase tracking-wide text-brand-400 bg-brand-600/10 px-2 py-0.5 rounded-full">Nächster Stopp</span>` : ''}
+              ${precisionBadge}
+            </div>
+            <p class="font-semibold ${delivered ? 'text-slate-500 line-through' : 'text-slate-100'}">${escapeHtml(s.kunde)}</p>
+            <p class="text-sm ${delivered ? 'text-slate-600' : 'text-slate-400'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien</p>
+            ${s.paket ? `<p class="text-xs ${delivered ? 'text-slate-600' : 'text-amber-400/90'} mt-1">📦 ${escapeHtml(s.paket)}</p>` : ''}
+            ${s.notiz ? `<p class="text-xs ${delivered ? 'text-slate-600' : 'text-sky-400/90'} mt-1">📝 ${escapeHtml(s.notiz)}</p>` : ''}
+            ${legCaption}
+            <div class="flex items-center gap-2 mt-3">
+              <a href="${url}" class="inline-flex items-center gap-1.5 text-sm font-semibold text-brand-400 active:text-brand-300 px-3 py-2 -ml-3">
+                🗺️ Maps
+              </a>
+              <button onclick='openStopModal(${escapeJsonForAttr(JSON.stringify(s))})' class="text-sm font-semibold text-slate-400 active:text-slate-200 px-3 py-2">
+                ✏️ Bearbeiten
+              </button>
+              <button onclick="toggleDelivered(${s.id}, ${!delivered})" class="ml-auto text-sm font-bold px-4 py-2 rounded-xl ${delivered ? 'bg-slate-800 text-slate-400' : 'bg-emerald-600 text-white active:bg-emerald-700'}">
+                ${delivered ? 'Rückgängig' : 'Zugestellt'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  };
+
+  return `
+    <div class="sticky top-0 z-20 bg-base-950/90 backdrop-blur border-b border-slate-800" style="padding-top: calc(env(safe-area-inset-top) + 0.75rem);">
+      <div class="px-4 pb-3 flex items-center gap-2">
+        <button onclick="goHome()" class="w-9 h-9 rounded-full flex items-center justify-center text-lg active:bg-slate-800">${ICONS.back}</button>
+        <div class="flex-1 min-w-0">
+          <p class="font-bold truncate leading-tight">${escapeHtml(r.name)}</p>
+          <p class="text-[11px] text-slate-500">${r.status === 'active' ? 'Aktiv' : 'Abgeschlossen'} · ${fmtDate(r.created_at)}</p>
+        </div>
+        <div class="relative">
+          <button onclick="document.getElementById('route-menu').classList.toggle('hidden')" class="w-9 h-9 rounded-full flex items-center justify-center text-lg active:bg-slate-800">${ICONS.more}</button>
+          <div id="route-menu" class="hidden absolute right-0 mt-1 w-48 bg-base-800 border border-slate-700 rounded-xl shadow-xl overflow-hidden z-30">
+            <button onclick="renameRoute()" class="w-full text-left px-4 py-3 text-sm hover:bg-slate-700/50">✏️ Umbenennen</button>
+            <button onclick="manualOptimize()" class="w-full text-left px-4 py-3 text-sm hover:bg-slate-700/50">🧭 Neu optimieren</button>
+            <button onclick="openJsonModal()" class="w-full text-left px-4 py-3 text-sm hover:bg-slate-700/50">📄 Als JSON anzeigen</button>
+            <button onclick="resetDelivered()" class="w-full text-left px-4 py-3 text-sm hover:bg-slate-700/50">🔄 Zustellungen zurücksetzen</button>
+            <button onclick="deleteRoute()" class="w-full text-left px-4 py-3 text-sm text-red-400 hover:bg-red-950/50">🗑️ Löschen</button>
+          </div>
+        </div>
+      </div>
+      ${r.needs_optimize ? `
+        <button onclick="manualOptimize()" class="w-full flex items-center justify-between gap-2 bg-amber-500/10 border-t border-amber-600/40 text-amber-300 text-xs font-semibold px-4 py-2.5 active:bg-amber-500/20">
+          <span class="flex items-center gap-1.5">⚠️ Route nicht aktuell</span>
+          <span class="underline">Jetzt optimieren</span>
+        </button>
+      ` : ''}
+    </div>
+
+    <div class="px-4 pt-4">
+      <div class="bg-base-900 border border-slate-800 rounded-2xl p-4 mb-4">
+        <div class="flex justify-between items-baseline mb-2">
+          <p class="text-sm font-semibold text-slate-300">${r.delivered_count} / ${r.customer_count} zugestellt</p>
+          <p class="text-xs text-slate-500">≈ ${r.total_km} km · ${r.total_min} min gesamt</p>
+        </div>
+        <div class="h-2 bg-slate-800 rounded-full overflow-hidden">
+          <div class="h-full bg-emerald-500 transition-all duration-500" style="width: ${progress}%"></div>
+        </div>
+      </div>
+
+      <div id="route-map" class="w-full h-56 rounded-2xl border border-slate-800 mb-4 overflow-hidden"></div>
+
+      <div class="space-y-2.5">
+        ${stops.map(stopCard).join('')}
+      </div>
+    </div>
+
+    <button onclick="openStopModal()" class="fixed z-30 w-14 h-14 rounded-full bg-brand-600 active:bg-brand-700 shadow-fab flex items-center justify-center text-2xl text-white" style="bottom: calc(env(safe-area-inset-bottom) + 1.5rem); right: max(1.5rem, calc(50% - 14rem + 1.5rem));">
+      ${ICONS.plus}
+    </button>
+  `;
+}
+
+// ---------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------
+window.addEventListener('online', () => toast('Wieder online', 'success'));
+window.addEventListener('offline', () => toast('Keine Internetverbindung – Änderungen können nicht gespeichert werden.', 'error'));
+
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('route-menu');
+  if (menu && !menu.classList.contains('hidden') && !e.target.closest('#route-menu') && !e.target.closest('button[onclick*="route-menu"]')) {
+    menu.classList.add('hidden');
+  }
+});
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
+loadRoutes();
+</script>
+</body>
+</html>
