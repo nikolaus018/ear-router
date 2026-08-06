@@ -86,14 +86,18 @@ mod text {
     // Viennese addresses are routinely written as "{street} {housenumber
     // or range}/{Stiege}/{Tür or Stock}[...]" — e.g. "Gentzgasse
     // 129/1/2/23" or "Dr.-Heinrich-Maier-Straße 28-34/Haus 2/12". Neither
-    // OSM nor Nominatim indexes that per-apartment detail at all, so
-    // sending it through verbatim just fails to match — this strips
-    // everything after the housenumber (and collapses a housenumber range
-    // to its first number, since OSM address points are individual
-    // buildings, not ranges) down to the "{street} {number}" form
-    // Nominatim actually indexes.
+    // geocoder indexes that per-apartment detail at all, so sending it
+    // through verbatim just fails to match — this strips everything after
+    // the housenumber down to the "{street} {number}" form they do index.
+    // The housenumber/range itself ("28-34") is kept whole, not collapsed
+    // to its first number: Vienna's own address register (unlike a plain
+    // OSM assumption) indexes a combined range as its *own* address
+    // distinct from the standalone numbers inside it (e.g. "Gutzkowplatz
+    // 2-5" is a real, separate entry from "Gutzkowplatz 2" or "...5") — so
+    // dropping the range could silently match the wrong building instead
+    // of just failing to match at all.
     static HOUSENUMBER_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"^(?P<street>.+?)\s+(?P<num>\d+[a-zA-Z]?)(?:-\d+[a-zA-Z]?)?(?:[/\s(].*)?$").unwrap()
+        Regex::new(r"^(?P<street>.+?)\s+(?P<num>\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?)(?:[/\s(].*)?$").unwrap()
     });
 
     pub fn normalize_strasse_text(strasse: &str) -> String {
@@ -109,6 +113,17 @@ mod text {
         match HOUSENUMBER_RE.captures(strasse) {
             Some(caps) => format!("{} {}", &caps["street"], &caps["num"]),
             None => strasse.to_string(),
+        }
+    }
+
+    /// Just the street-name portion, no housenumber — used to cross-check
+    /// that a geocoder result actually landed on the street we asked for
+    /// rather than a fuzzy string-similarity match onto a *different*
+    /// street entirely (see `wien_ogd_search_one`).
+    pub fn street_name_only(strasse: &str) -> String {
+        match HOUSENUMBER_RE.captures(strasse) {
+            Some(caps) => caps["street"].trim().to_string(),
+            None => strasse.trim().to_string(),
         }
     }
 }
@@ -134,6 +149,10 @@ const INDEX_HTML: &str = include_str!("../index.html");
 const STYLE_CSS: &str = include_str!("../static/style.css");
 const MAPLIBRE_CSS: &str = include_str!("../static/maplibre-gl.css");
 const MAPLIBRE_JS: &str = include_str!("../static/maplibre-gl.js");
+// The one logo asset, embedded like everything else above — served as-is
+// for the header image, favicon, apple-touch-icon, and both PWA manifest
+// icon sizes, rather than juggling separately generated/sized files.
+const LOGO_PNG: &[u8] = include_bytes!("../logo.png");
 
 const SW_JS: &str = r#"
 const CACHE = 'ear-routing-v3';
@@ -206,7 +225,6 @@ impl From<rusqlite::Error> for AppError {
 
 struct AppState {
     db_path: PathBuf,
-    base_dir: PathBuf,
     http: reqwest::Client,
     // Timestamp of the last outbound Nominatim request, gating
     // `nominatim_throttle` so concurrent geocode calls still serialize to
@@ -346,6 +364,143 @@ fn parse_precision(s: &str) -> Precision {
     }
 }
 
+// ---------------------------------------------------------------------
+// Vienna's own official address register (data.wien.gv.at "Adressservice
+// Wien" / OGD Address Web Service) — tried *before* Nominatim. It's the
+// city's own ground-truth building register, not community-mapped OSM
+// data, so it covers real, currently-occupied addresses that OSM/Nominatim
+// sometimes simply hasn't caught up on yet (a genuine building with no
+// volunteer having mapped its housenumber point). Vienna-only, which is
+// exactly this app's scope, so it's a strictly better primary source here;
+// Nominatim stays as the fallback for anything it doesn't recognize (a
+// service outage, or on the rare chance a query isn't in its register).
+// Docs: https://digitales.wien.gv.at/adressservice-doku
+// ---------------------------------------------------------------------
+const WIEN_OGD_URL: &str = "https://data.wien.gv.at/daten/OGDAddressService.svc/GetAddressInfo";
+
+#[derive(Deserialize)]
+struct OgdFeatureCollection {
+    #[serde(default)]
+    features: Vec<OgdFeature>,
+}
+
+#[derive(Deserialize)]
+struct OgdFeature {
+    geometry: OgdGeometry,
+    properties: OgdProperties,
+}
+
+#[derive(Deserialize)]
+struct OgdGeometry {
+    coordinates: [f64; 2], // [lon, lat]
+}
+
+#[derive(Deserialize)]
+struct OgdProperties {
+    #[serde(rename = "StreetName")]
+    street_name: Option<String>,
+    #[serde(rename = "PostalCode")]
+    postal_code: Option<String>,
+    #[serde(rename = "Kategorie")]
+    kategorie: Option<String>,
+    #[serde(rename = "Adresse")]
+    adresse: Option<String>,
+    #[serde(rename = "Ranking")]
+    ranking: Option<f64>,
+}
+
+/// One Vienna OGD address lookup. Returns `None` — never an error — for
+/// anything short of a confident, verified hit: an unreachable/erroring
+/// service, an empty body (the service's actual response to zero matches;
+/// see below), a body that doesn't parse, or a top hit that doesn't
+/// survive the postcode/street-name cross-check. That "always fall
+/// through cleanly" contract is what lets `geocode_address` treat this as
+/// a first attempt rather than a hard dependency — a Wien-OGD outage the
+/// night before a route is due degrades to the existing Nominatim
+/// pipeline, not a failure.
+async fn wien_ogd_search_one(state: &AppState, query: &str, plz: &str) -> Option<(f64, f64, String, Precision)> {
+    let resp = state
+        .http
+        .get(WIEN_OGD_URL)
+        .query(&[("Address", query), ("crs", "EPSG:4326")])
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    // A query with zero matches comes back as an HTTP 200 with a
+    // completely empty body (not `{"features":[]}`) — has to be checked
+    // before handing an empty string to the JSON parser.
+    let body = resp.text().await.ok()?;
+    if body.trim().is_empty() {
+        return None;
+    }
+    let parsed: OgdFeatureCollection = serde_json::from_str(&body).ok()?;
+
+    // Lower `Ranking` is a better match, but its scale isn't uniform
+    // across match types (an exact hit is ~0, "same street/wrong
+    // housenumber" jumps to the hundreds, and a fuzzy match onto a
+    // *different* street entirely can still come back deceptively low) —
+    // so `Ranking` alone never decides a match, it only picks the best
+    // candidate among features that already passed the checks below.
+    let best = parsed.features.into_iter().min_by(|a, b| {
+        let ra = a.properties.ranking.unwrap_or(f64::MAX);
+        let rb = b.properties.ranking.unwrap_or(f64::MAX);
+        ra.partial_cmp(&rb).unwrap_or(std::cmp::Ordering::Equal)
+    })?;
+    let props = best.properties;
+
+    // Postcode must match exactly, and the returned street name must be
+    // the street we actually asked for (case/whitespace aside) — without
+    // this, a street name with no real match at all (typo, or genuinely
+    // unmapped) can still come back with a low-looking `Ranking` for the
+    // closest *different* street by string similarity, which would
+    // otherwise get accepted as a confident but wrong location.
+    if props.postal_code.as_deref() != Some(plz) {
+        return None;
+    }
+    let their_street = props.street_name.as_deref().unwrap_or("").trim().to_lowercase();
+    let our_street = text::street_name_only(query).to_lowercase();
+    if their_street != our_street {
+        return None;
+    }
+
+    let ranking = props.ranking.unwrap_or(f64::MAX);
+    let precision = if props.kategorie.as_deref() == Some("Straßenname") {
+        Precision::Street
+    } else if ranking < 1.0 {
+        // Genuine housenumber (and usually Stiege/Tür) match.
+        Precision::Exact
+    } else {
+        // Real street, but the exact housenumber wasn't registered —
+        // matched to the nearest one instead.
+        Precision::Street
+    };
+    let [lon, lat] = best.geometry.coordinates;
+    let display_name = props.adresse.map(|a| format!("{a}, {plz} Wien")).unwrap_or_else(|| format!("{query}, {plz} Wien"));
+    Some((lat, lon, display_name, precision))
+}
+
+/// Tries the simplified "{street} {housenumber}" form first (see
+/// `simplify_housenumber`), falling back to the fuller normalized string
+/// only if that finds nothing — same two-tier shape as the Nominatim path
+/// below, for the same reason: the simplification is usually right and
+/// saves a round-trip, but shouldn't be the only thing tried.
+async fn wien_ogd_geocode(state: &AppState, strasse: &str, plz: &str) -> Option<(f64, f64, String, Precision)> {
+    let normalized = normalize_strasse_text(strasse);
+    let simplified = simplify_housenumber(&normalized);
+    if let Some(hit) = wien_ogd_search_one(state, &simplified, plz).await {
+        return Some(hit);
+    }
+    if simplified != normalized {
+        if let Some(hit) = wien_ogd_search_one(state, &normalized, plz).await {
+            return Some(hit);
+        }
+    }
+    None
+}
+
 const NOMINATIM_URL: &str = "https://nominatim.openstreetmap.org/search";
 // Nominatim's usage policy: max ~1 request/second from a single client,
 // enforced ourselves rather than trusting every call site to remember.
@@ -447,6 +602,12 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
         if let Some(hit) = cache_lookup(&conn, &key)? {
             return Ok(hit);
         }
+    }
+
+    if let Some(hit) = wien_ogd_geocode(state, strasse, plz).await {
+        let conn = open_db(&state.db_path)?;
+        cache_store(&conn, &key, hit.0, hit.1, &hit.2, hit.3)?;
+        return Ok(hit);
     }
 
     let normalized = normalize_strasse_text(strasse);
@@ -577,7 +738,16 @@ async fn osrm_route_leg(client: &reqwest::Client, a: (f64, f64), b: (f64, f64)) 
         "{OSRM_BASE}/route/v1/driving/{}?overview=full&geometries=geojson",
         osrm_coord_string(&[a, b])
     );
-    let resp: OsrmRouteResp = client.get(&url).send().await.map_err(osrm_unreachable)?.json().await.map_err(osrm_unreachable)?;
+    let resp: OsrmRouteResp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(osrm_unreachable)?
+        .error_for_status()
+        .map_err(osrm_unreachable)?
+        .json()
+        .await
+        .map_err(osrm_unreachable)?;
     if resp.code != "Ok" {
         return Err(AppError::Internal(format!("OSRM route: {}", resp.code)));
     }
@@ -596,7 +766,16 @@ async fn osrm_trip(client: &reqwest::Client, coords: &[(f64, f64)]) -> Result<(V
         "{OSRM_BASE}/trip/v1/driving/{}?source=first&destination=last&roundtrip=false&overview=full&geometries=geojson",
         osrm_coord_string(coords)
     );
-    let resp: OsrmTripResp = client.get(&url).send().await.map_err(osrm_unreachable)?.json().await.map_err(osrm_unreachable)?;
+    let resp: OsrmTripResp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(osrm_unreachable)?
+        .error_for_status()
+        .map_err(osrm_unreachable)?
+        .json()
+        .await
+        .map_err(osrm_unreachable)?;
     if resp.code != "Ok" {
         return Err(AppError::Internal(format!("OSRM trip: {}", resp.code)));
     }
@@ -1103,21 +1282,32 @@ async fn add_stop(
         (lat, lon, (precision != Precision::Exact).then(|| precision.as_str()))
     };
 
+    {
+        let conn = open_db(&state.db_path)?;
+        let max_order: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(order_index), 0) FROM stops WHERE route_id = ?1",
+            params![route_id],
+            |r| r.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, location_precision, created_at) \
+             VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order + 1, precision, now_iso()],
+        )?;
+        // Set *before* attempting the reoptimize below, not just on
+        // failure: if OSRM is briefly unreachable, the stop is still
+        // saved (retrying the request would just add it twice) but the
+        // route correctly stays flagged stale — the amber "Route nicht
+        // aktuell" banner and its one-tap retry are the fallback, not a
+        // silent-looking route that secretly hasn't accounted for the new
+        // stop yet.
+        conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+    }
+    // OSRM solves this in one fast network round-trip now — no reason to
+    // make the driver remember a separate "optimize" tap after every
+    // single stop like the old local solver required.
+    reoptimize_route(&state, route_id).await?;
     let conn = open_db(&state.db_path)?;
-    let max_order: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(order_index), 0) FROM stops WHERE route_id = ?1",
-        params![route_id],
-        |r| r.get(0),
-    )?;
-    conn.execute(
-        "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, location_precision, created_at) \
-         VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order + 1, precision, now_iso()],
-    )?;
-    // Deliberately not reoptimizing here (would mean a solver pass on every
-    // single add) — the new stop lands at the end and the route is flagged
-    // stale; the driver reoptimizes once after adding stops for the day.
-    conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
     Ok(Json(get_route_detail(&conn, route_id)?))
 }
 
@@ -1175,54 +1365,71 @@ async fn update_stop(
         });
     }
 
-    let conn = open_db(&state.db_path)?;
-    if let Some(k) = &kunde {
-        conn.execute("UPDATE stops SET kunde = ?1 WHERE id = ?2", params![k, stop_id])?;
-    }
-    if let Some(paket) = &payload.paket {
-        conn.execute("UPDATE stops SET paket = ?1 WHERE id = ?2", params![paket.trim(), stop_id])?;
-    }
-    if let Some(notiz) = &payload.notiz {
-        conn.execute("UPDATE stops SET notiz = ?1 WHERE id = ?2", params![notiz.trim(), stop_id])?;
-    }
-    if address_changed {
-        conn.execute(
-            "UPDATE stops SET strasse = ?1, plz = ?2 WHERE id = ?3",
-            params![new_strasse, new_plz, stop_id],
-        )?;
-    }
-    if let Some(delivered) = payload.delivered {
-        conn.execute(
-            "UPDATE stops SET delivered = ?1 WHERE id = ?2",
-            params![delivered as i64, stop_id],
-        )?;
-    }
-    if let Some((lat, lon, precision)) = new_coords {
-        conn.execute(
-            "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3 WHERE id = ?4",
-            params![lat, lon, precision, stop_id],
-        )?;
-    }
-    if address_changed {
-        conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+    {
+        let conn = open_db(&state.db_path)?;
+        if let Some(k) = &kunde {
+            conn.execute("UPDATE stops SET kunde = ?1 WHERE id = ?2", params![k, stop_id])?;
+        }
+        if let Some(paket) = &payload.paket {
+            conn.execute("UPDATE stops SET paket = ?1 WHERE id = ?2", params![paket.trim(), stop_id])?;
+        }
+        if let Some(notiz) = &payload.notiz {
+            conn.execute("UPDATE stops SET notiz = ?1 WHERE id = ?2", params![notiz.trim(), stop_id])?;
+        }
+        if address_changed {
+            conn.execute(
+                "UPDATE stops SET strasse = ?1, plz = ?2 WHERE id = ?3",
+                params![new_strasse, new_plz, stop_id],
+            )?;
+        }
+        if let Some(delivered) = payload.delivered {
+            conn.execute(
+                "UPDATE stops SET delivered = ?1 WHERE id = ?2",
+                params![delivered as i64, stop_id],
+            )?;
+        }
+        if let Some((lat, lon, precision)) = new_coords {
+            conn.execute(
+                "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3 WHERE id = ?4",
+                params![lat, lon, precision, stop_id],
+            )?;
+        }
+        if address_changed {
+            conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        }
     }
 
+    // Only a real address change moves the stop's position in the route —
+    // marking delivered, editing the note/package text etc. never touch
+    // order/geometry, so there's nothing to re-solve for those.
+    if address_changed {
+        reoptimize_route(&state, route_id).await?;
+    }
+    let conn = open_db(&state.db_path)?;
     Ok(Json(get_route_detail(&conn, route_id)?))
 }
 
 async fn delete_stop(State(state): State<Arc<AppState>>, AxPath(stop_id): AxPath<i64>) -> Result<Json<RouteDetail>, AppError> {
+    let route_id = {
+        let conn = open_db(&state.db_path)?;
+        let (route_id, kind): (i64, String) = conn
+            .query_row("SELECT route_id, kind FROM stops WHERE id = ?1", params![stop_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?
+            .ok_or_else(|| AppError::NotFound("Stopp nicht gefunden".into()))?;
+        if kind != "customer" {
+            return Err(AppError::Forbidden("Fixe Stopps können nicht gelöscht werden".into()));
+        }
+        conn.execute("DELETE FROM stops WHERE id = ?1", params![stop_id])?;
+        // The stop before the deleted one had a next_leg_km/min pointing
+        // at it and the map line traced through its position — both go
+        // stale the instant it's gone, not just "eventually out of date".
+        conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        route_id
+    };
+    reoptimize_route(&state, route_id).await?;
     let conn = open_db(&state.db_path)?;
-    let (route_id, kind): (i64, String) = conn
-        .query_row("SELECT route_id, kind FROM stops WHERE id = ?1", params![stop_id], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
-        .optional()?
-        .ok_or_else(|| AppError::NotFound("Stopp nicht gefunden".into()))?;
-    if kind != "customer" {
-        return Err(AppError::Forbidden("Fixe Stopps können nicht gelöscht werden".into()));
-    }
-    conn.execute("DELETE FROM stops WHERE id = ?1", params![stop_id])?;
-    conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
     Ok(Json(get_route_detail(&conn, route_id)?))
 }
 
@@ -1377,48 +1584,55 @@ async fn update_route_from_json(
         existing_customers.iter().map(|s| s.id).filter(|id| !matched_ids.contains(id)).collect()
     };
 
-    let conn = open_db(&state.db_path)?;
-    let exists: bool = conn.query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(())).optional()?.is_some();
-    if !exists {
-        return Err(AppError::NotFound("Route nicht gefunden".into()));
-    }
+    let changed = {
+        let conn = open_db(&state.db_path)?;
+        let exists: bool = conn.query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(())).optional()?.is_some();
+        if !exists {
+            return Err(AppError::NotFound("Route nicht gefunden".into()));
+        }
 
-    for (kunde, paket, notiz, stop_id) in &to_update {
-        conn.execute(
-            "UPDATE stops SET kunde = ?1, paket = ?2, notiz = ?3 WHERE id = ?4",
-            params![kunde, paket, notiz, stop_id],
-        )?;
-    }
-
-    let mut changed = false;
-    if !to_insert.is_empty() {
-        let mut max_order: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(order_index), 0) FROM stops WHERE route_id = ?1",
-            params![route_id],
-            |r| r.get(0),
-        )?;
-        for (kunde, strasse, plz, paket, notiz, lat, lon, precision) in &to_insert {
-            max_order += 1;
+        for (kunde, paket, notiz, stop_id) in &to_update {
             conn.execute(
-                "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, delivered, location_precision, created_at) \
-                 VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11)",
-                params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order, precision, now_iso()],
+                "UPDATE stops SET kunde = ?1, paket = ?2, notiz = ?3 WHERE id = ?4",
+                params![kunde, paket, notiz, stop_id],
             )?;
         }
-        changed = true;
-    }
 
-    if !to_delete.is_empty() {
-        for id in &to_delete {
-            conn.execute("DELETE FROM stops WHERE id = ?1", params![id])?;
+        let mut changed = false;
+        if !to_insert.is_empty() {
+            let mut max_order: i64 = conn.query_row(
+                "SELECT COALESCE(MAX(order_index), 0) FROM stops WHERE route_id = ?1",
+                params![route_id],
+                |r| r.get(0),
+            )?;
+            for (kunde, strasse, plz, paket, notiz, lat, lon, precision) in &to_insert {
+                max_order += 1;
+                conn.execute(
+                    "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, delivered, location_precision, created_at) \
+                     VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11)",
+                    params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order, precision, now_iso()],
+                )?;
+            }
+            changed = true;
         }
-        changed = true;
-    }
+
+        if !to_delete.is_empty() {
+            for id in &to_delete {
+                conn.execute("DELETE FROM stops WHERE id = ?1", params![id])?;
+            }
+            changed = true;
+        }
+
+        if changed {
+            conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        }
+        changed
+    };
 
     if changed {
-        conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        reoptimize_route(&state, route_id).await?;
     }
-
+    let conn = open_db(&state.db_path)?;
     Ok(Json(BulkJsonResult {
         route: get_route_detail(&conn, route_id)?,
         geocode_failures: failures,
@@ -1455,7 +1669,7 @@ async fn manifest() -> impl IntoResponse {
     let body = json!({
         "name": "EAR Routing",
         "short_name": "EAR Routing",
-        "description": "Essen auf Rädern – intelligente Routenplanung für Zusteller",
+        "description": "Essen auf Rädern – Routenplanung für Zusteller",
         "start_url": "/",
         "scope": "/",
         "display": "standalone",
@@ -1463,8 +1677,8 @@ async fn manifest() -> impl IntoResponse {
         "theme_color": "#0f172a",
         "orientation": "portrait",
         "icons": [
-            { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-            { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+            { "src": "/logo.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+            { "src": "/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
         ]
     });
     ([(header::CONTENT_TYPE, "application/manifest+json")], body.to_string())
@@ -1474,61 +1688,8 @@ async fn service_worker() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/javascript; charset=utf-8")], SW_JS)
 }
 
-/// Generates a simple branded placeholder icon (brand-red ring on a
-/// transparent background) purely in code — no font/image asset
-/// dependency. Used whenever logo.png/icon-*.png aren't present on disk,
-/// so the PWA icon/manifest routes can never 500 for a missing file.
-fn generate_icon_png(size: u32) -> Vec<u8> {
-    use image::{ExtendedColorType, ImageEncoder, Rgba, RgbaImage};
-
-    let brand = Rgba([237u8, 22, 57, 255]); // brand-600 #ED1639
-    let white = Rgba([255u8, 255, 255, 255]);
-    let mut img = RgbaImage::new(size, size);
-    let cx = size as f32 / 2.0;
-    let cy = cx;
-    let r_outer = size as f32 * 0.46;
-    let r_inner = size as f32 * 0.20;
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            let d = (dx * dx + dy * dy).sqrt();
-            let px = if d <= r_inner {
-                white
-            } else if d <= r_outer {
-                brand
-            } else {
-                Rgba([0, 0, 0, 0])
-            };
-            img.put_pixel(x, y, px);
-        }
-    }
-    let mut bytes: Vec<u8> = Vec::new();
-    let encoder = image::codecs::png::PngEncoder::new(&mut bytes);
-    encoder
-        .write_image(img.as_raw(), size, size, ExtendedColorType::Rgba8)
-        .expect("encoding a freshly-built RGBA buffer as PNG cannot fail");
-    bytes
-}
-
-async fn icon_response(state: &AppState, filename: &str, size: u32) -> impl IntoResponse {
-    let path = state.base_dir.join(filename);
-    let bytes = std::fs::read(&path).unwrap_or_else(|_| {
-        let bytes = generate_icon_png(size);
-        let _ = std::fs::write(&path, &bytes); // best-effort: cache to disk for next time
-        bytes
-    });
-    ([(header::CONTENT_TYPE, "image/png")], bytes)
-}
-
-async fn logo(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    icon_response(&state, "logo.png", 512).await
-}
-async fn icon_192(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    icon_response(&state, "icon-192.png", 192).await
-}
-async fn icon_512(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    icon_response(&state, "icon-512.png", 512).await
+async fn logo() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "image/png")], LOGO_PNG)
 }
 
 // ---------------------------------------------------------------------
@@ -1547,8 +1708,7 @@ fn base_dir() -> PathBuf {
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let base = base_dir();
-    let db_path = base.join("rerouter.db");
+    let db_path = base_dir().join("rerouter.db");
     init_db(&db_path).expect("failed to initialize database");
 
     let http = reqwest::Client::builder()
@@ -1559,7 +1719,6 @@ async fn main() {
 
     let state = Arc::new(AppState {
         db_path,
-        base_dir: base,
         http,
         nominatim_last: AsyncMutex::new(None),
     });
@@ -1575,8 +1734,6 @@ async fn main() {
         .route("/manifest.json", get(manifest))
         .route("/sw.js", get(service_worker))
         .route("/logo.png", get(logo))
-        .route("/icon-192.png", get(icon_192))
-        .route("/icon-512.png", get(icon_512))
         .route("/style.css", get(style_css))
         .route("/maplibre-gl.css", get(maplibre_css))
         .route("/maplibre-gl.js", get(maplibre_js))

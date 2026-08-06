@@ -4,23 +4,24 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
 <title>EAR Routing</title>
-<meta name="description" content="Essen auf Rädern – intelligente Routenplanung für Zusteller" />
+<meta name="description" content="Essen auf Rädern – Routenplanung für Zusteller" />
 
 <!-- PWA -->
 <link rel="manifest" href="/manifest.json" />
 <link rel="apple-touch-icon" href="/logo.png" />
-<link rel="icon" href="/icon-192.png" type="image/png" />
+<link rel="icon" href="/logo.png" type="image/png" />
 <meta name="theme-color" content="#0b1120" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="EAR Routing" />
 
-<!-- All assets below are self-hosted (see /static) — the app has zero
-     external network dependencies, full stop. The map is real OpenStreetMap
-     data (streets/water/parks) rendered from this server's own /tiles
-     route, not a live tile server; geocoding resolves against an embedded
-     local address register, not a geocoding API. -->
+<!-- The CSS/JS below are self-hosted (see /static) — no CDN dependency for
+     the UI shell itself. The app is NOT fully offline-capable though: adding
+     or editing a stop calls Nominatim (geocoding) and OSRM (routing) live,
+     and the map tiles come from OpenFreeMap — see the comment at the top of
+     src/main.rs. Only already-loaded routes/tiles keep working without a
+     network connection (via the service worker cache below). -->
 <link rel="stylesheet" href="/maplibre-gl.css" />
 <script src="/maplibre-gl.js"></script>
 <link rel="stylesheet" href="/style.css" />
@@ -183,10 +184,14 @@ function toast(message, type = 'info', durationMs = 3800) {
 function mapsUrl(address) {
   const ua = navigator.userAgent || '';
   const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const isAndroid = /Android/.test(ua);
   const encAddr = encodeURIComponent(address || '');
-  if (isAndroid) return `geo:0,0?q=${encAddr}`;
   if (isIOS) return `https://maps.apple.com/?daddr=${encAddr}&dirflg=d`;
+  // Same link for Android and desktop: opens straight into turn-by-turn
+  // driving directions in one tap if the Google Maps app is installed
+  // (Android resolves the google.com/maps host to the app automatically),
+  // falls back to the browser otherwise. A bare "geo:" URI instead would
+  // only drop a search pin — the driver would have to tap "Directions"
+  // separately on every single stop, which adds up over a whole route.
   return `https://www.google.com/maps/dir/?api=1&destination=${encAddr}&travelmode=driving`;
 }
 
@@ -339,6 +344,17 @@ async function resetDelivered() {
   } finally {
     hideOverlay();
   }
+}
+
+async function toggleRouteStatus() {
+  const newStatus = state.currentRoute.status === 'completed' ? 'active' : 'completed';
+  const label = newStatus === 'completed' ? 'als abgeschlossen markieren' : 'wieder als aktiv markieren';
+  if (!confirm(`Route "${state.currentRoute.name}" ${label}?`)) return;
+  try {
+    state.currentRoute = await api(`/routes/${state.currentRoute.id}`, { method: 'PATCH', body: JSON.stringify({ status: newStatus }) });
+    render();
+    toast(newStatus === 'completed' ? 'Route abgeschlossen ✓' : 'Route wieder aktiv ✓', 'success');
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 async function deleteRoute() {
@@ -553,7 +569,7 @@ async function saveJsonEdits() {
       const skipNote = data.deletions_skipped ? ' Entfernte Adressen wurden diesmal nicht gelöscht, bis alle Adressen aufgelöst sind.' : '';
       toast(`${data.geocode_failures.length} Adresse(n) nicht gefunden, übersprungen: ${names}.${skipNote} Restliche Route wurde gespeichert — fehlende Adressen einzeln mit Kartenpin hinzufügen.`, 'error', 12000);
     } else {
-      toast('Route aktualisiert ✓ – ggf. neu optimieren', 'success');
+      toast('Route aktualisiert & optimiert ✓', 'success');
     }
   } catch (err) {
     toast(err.message || 'Speichern fehlgeschlagen.', 'error');
@@ -675,7 +691,7 @@ function renderHome() {
         <img src="/logo.png" alt="EAR Routing" class="w-9 h-9 rounded-full" />
         <h1 class="text-2xl font-extrabold tracking-tight">EAR Routing</h1>
       </div>
-      <p class="text-slate-400 text-sm mt-1">Essen auf Rädern – deine Touren, intelligent geplant.</p>
+      <p class="text-slate-400 text-sm mt-1">Routenplanung für Essen auf Rädern</p>
     </div>
 
     <div class="px-5">
@@ -918,6 +934,7 @@ function renderRoute() {
             <button onclick="manualOptimize()" class="w-full text-left px-4 py-3 text-sm hover:bg-slate-700/50">🧭 Neu optimieren</button>
             <button onclick="openJsonModal()" class="w-full text-left px-4 py-3 text-sm hover:bg-slate-700/50">📄 Als JSON anzeigen</button>
             <button onclick="resetDelivered()" class="w-full text-left px-4 py-3 text-sm hover:bg-slate-700/50">🔄 Zustellungen zurücksetzen</button>
+            <button onclick="toggleRouteStatus()" class="w-full text-left px-4 py-3 text-sm hover:bg-slate-700/50">${r.status === 'completed' ? '↩️ Wieder aktivieren' : '✅ Route abschließen'}</button>
             <button onclick="deleteRoute()" class="w-full text-left px-4 py-3 text-sm text-red-400 hover:bg-red-950/50">🗑️ Löschen</button>
           </div>
         </div>
