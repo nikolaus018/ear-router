@@ -3,8 +3,9 @@
 //! Serves a single self-contained `index.html` at `/` (Tailwind CDN +
 //! MapLibre GL JS/OpenFreeMap UI, ASBÖ-branded, PWA-ready — no separate JS/
 //! CSS build) and a matching `/sw.js` service worker for offline app-shell
-//! caching, both embedded into the binary at compile time via
-//! `include_str!` — see `INDEX_HTML`/`SW_JS` below. The JSON API is
+//! caching, both read straight off disk on every request (see
+//! `INDEX_HTML_PATH`/`SW_JS_PATH` below) rather than compiled into the
+//! binary, so editing either file takes effect immediately. The JSON API is
 //! otherwise the main interface. Axum backend, SQLite storage. Geocoding
 //! and routing both run against real, actively-maintained open services
 //! instead of a hand-rolled local dataset/algorithm that can only ever be a
@@ -1865,17 +1866,21 @@ async fn update_route_from_json(
 }
 
 // ---------------------------------------------------------------------
-// Root — a minimal placeholder page (see module doc comment) embedded into
-// the binary at compile time, same as the rest of this app's assets used
-// to be, so the server stays a single self-contained executable with no
-// runtime dependency on files sitting next to it.
+// Root — index.html and sw.js are read from disk on every request (from
+// the project directory this was built from — see CARGO_MANIFEST_DIR
+// below), not embedded into the binary. Editing either file takes effect
+// on the very next request: no rebuild, no restart.
 // ---------------------------------------------------------------------
 
-const INDEX_HTML: &str = include_str!("../index.html");
-const SW_JS: &str = include_str!("../sw.js");
+const INDEX_HTML_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/index.html");
+const SW_JS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/sw.js");
+const ICON_PNG_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/icon.png");
 
 async fn index() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], INDEX_HTML)
+    let html = tokio::fs::read_to_string(INDEX_HTML_PATH)
+        .await
+        .expect("failed to read index.html");
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html)
 }
 
 /// `Cache-Control: no-cache` (not "no-store") so the browser always
@@ -1883,10 +1888,16 @@ async fn index() -> impl IntoResponse {
 /// worker is to update itself promptly on the next visit, and a long-lived
 /// cached /sw.js would defeat that for however long the header allows.
 async fn sw_js() -> impl IntoResponse {
+    let js = tokio::fs::read_to_string(SW_JS_PATH).await.expect("failed to read sw.js");
     (
         [(header::CONTENT_TYPE, "application/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
-        SW_JS,
+        js,
     )
+}
+
+async fn icon_png() -> impl IntoResponse {
+    let bytes = tokio::fs::read(ICON_PNG_PATH).await.expect("failed to read icon.png");
+    ([(header::CONTENT_TYPE, "image/png")], bytes)
 }
 
 // ---------------------------------------------------------------------
@@ -1958,6 +1969,7 @@ async fn main() {
         .merge(api_router)
         .route("/", get(index))
         .route("/sw.js", get(sw_js))
+        .route("/icon.png", get(icon_png))
         .with_state(state)
         // A hung/misbehaving upstream (Nominatim, OSRM, or a stalled TCP
         // connection) shouldn't be able to tie up a handler forever — set
