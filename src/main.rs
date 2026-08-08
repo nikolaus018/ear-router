@@ -1,14 +1,19 @@
 //! EAR Routing (Essen auf Rädern Routing) — delivery route planner.
 //!
-//! Single-file Axum backend, SQLite storage. Geocoding and routing both
-//! run against real, actively-maintained open services instead of a
-//! hand-rolled local dataset/algorithm that can only ever be a stale,
-//! incomplete snapshot:
+//! Serves a single self-contained `index.html` at `/` (Tailwind CDN +
+//! MapLibre GL JS/OpenFreeMap UI, ASBÖ-branded, PWA-ready — no separate JS/
+//! CSS build) and a matching `/sw.js` service worker for offline app-shell
+//! caching, both embedded into the binary at compile time via
+//! `include_str!` — see `INDEX_HTML`/`SW_JS` below. The JSON API is
+//! otherwise the main interface. Axum backend, SQLite storage. Geocoding
+//! and routing both run against real, actively-maintained open services
+//! instead of a hand-rolled local dataset/algorithm that can only ever be a
+//! stale, incomplete snapshot:
 //!   - Geocoding calls Nominatim (nominatim.openstreetmap.org), the
 //!     official OpenStreetMap geocoder — the live, global address
 //!     database, not a one-time Vienna export. An address it genuinely
-//!     can't find falls through to the frontend's manual pin-drop-on-map
-//!     flow (a human tapping a map, not an API call).
+//!     can't find falls through to manual pin-drop handling (`lat`/`lon`
+//!     supplied directly in the request) rather than an API call.
 //!   - Route distances/durations and stop-order optimization both come
 //!     from OSRM (router.project-osrm.org) — the standard open-source
 //!     routing engine (contraction hierarchies), used in production by a
@@ -16,25 +21,21 @@
 //!     actual multi-stop ordering problem; there's no reason to hand-roll
 //!     a weaker 2-opt/or-opt solver when a well-tested one is a request
 //!     away. See `osrm_route_leg`/`osrm_trip` below.
-//!   - The map itself is OpenFreeMap (tiles.openfreemap.org) — a free,
-//!     key-less, open vector-tile CDN built on OpenStreetMap data — loaded
-//!     client-side by MapLibre GL JS (see index.html).
-//!   - The UI itself (Tailwind CSS, MapLibre GL JS, this HTML) is embedded
-//!     in the binary, not loaded from a CDN.
 //! Both Nominatim and OSRM's public servers are free to use but shared —
 //! Nominatim's usage policy caps at ~1 request/second, enforced here via
 //! `nominatim_throttle` (see `AppState::nominatim_last`) rather than
 //! trusting callers not to hammer it.
 
-use std::collections::HashSet;
-use std::net::SocketAddr;
+use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
-    extract::{Path as AxPath, State},
-    http::{header, StatusCode},
+    extract::{ConnectInfo, DefaultBodyLimit, Path as AxPath, Request, State},
+    http::{header, HeaderValue, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, patch, post, put},
     Json, Router,
@@ -44,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use text::{normalize_strasse_text, simplify_housenumber};
 use tokio::sync::Mutex as AsyncMutex;
-use tower_http::trace::TraceLayer;
+use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
 /// How precisely a geocoded point is known to be located, coarsest last.
 /// Derived from how much of Nominatim's structured address breakdown came
@@ -141,46 +142,92 @@ const VIA_LAT: f64 = 48.1499425;
 const VIA_LON: f64 = 16.3587494;
 
 // ---------------------------------------------------------------------
-// Embedded assets — the binary is fully self-contained: no runtime
-// dependency on files living next to the executable for its own UI.
+// Input validation — every one of these guards a value that ends up
+// either stored forever, sent to a shared third-party service (Nominatim
+// enforces a usage policy per *client*, not per request — a client that
+// sends it garbage risks the whole app's shared IP getting blocked), or
+// serialized back into route geometry (see `reoptimize_route`), so
+// letting bad data slip through here is worse than rejecting it early
+// with a clear 400.
 // ---------------------------------------------------------------------
 
-const INDEX_HTML: &str = include_str!("../index.html");
-const STYLE_CSS: &str = include_str!("../static/style.css");
-const MAPLIBRE_CSS: &str = include_str!("../static/maplibre-gl.css");
-const MAPLIBRE_JS: &str = include_str!("../static/maplibre-gl.js");
-// The one logo asset, embedded like everything else above — served as-is
-// for the header image, favicon, apple-touch-icon, and both PWA manifest
-// icon sizes, rather than juggling separately generated/sized files.
-const LOGO_PNG: &[u8] = include_bytes!("../logo.png");
+/// The 23 real Vienna postal codes — exactly what the frontend's own
+/// `<select>` of districts offers (see `VIENNA_DISTRICTS` in index.html),
+/// so validating against this exact set can never reject a legitimate
+/// request from the app's own UI, only ones crafted by hand/script.
+const VIENNA_PLZ: &[&str] = &[
+    "1010", "1020", "1030", "1040", "1050", "1060", "1070", "1080", "1090", "1100", "1110",
+    "1120", "1130", "1140", "1150", "1160", "1170", "1180", "1190", "1200", "1210", "1220",
+    "1230",
+];
 
-const SW_JS: &str = r#"
-const CACHE = 'ear-routing-v3';
-self.addEventListener('install', (e) => {
-  self.skipWaiting();
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/'])));
-});
-self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
-  );
-  self.clients.claim();
-});
-self.addEventListener('fetch', (e) => {
-  if (e.request.method !== 'GET') return;
-  const url = new URL(e.request.url);
-  if (url.pathname.startsWith('/api/')) return;
-  e.respondWith(
-    fetch(e.request)
-      .then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(e.request, copy));
-        return res;
-      })
-      .catch(() => caches.match(e.request).then((r) => r || caches.match('/')))
-  );
-});
-"#;
+fn is_valid_vienna_plz(plz: &str) -> bool {
+    VIENNA_PLZ.contains(&plz)
+}
+
+fn check_plz(plz: &str) -> Result<(), AppError> {
+    if !is_valid_vienna_plz(plz) {
+        return Err(AppError::BadRequest(format!("Ungültiger Bezirk (PLZ): {plz}")));
+    }
+    Ok(())
+}
+
+/// Rejects a field that's over `max` chars — cheap insurance against a
+/// malicious/broken client storing megabyte-sized strings forever in
+/// every route JSON response from then on.
+fn check_len(value: &str, field: &str, max: usize) -> Result<(), AppError> {
+    if value.chars().count() > max {
+        return Err(AppError::BadRequest(format!("{field} ist zu lang (max. {max} Zeichen).")));
+    }
+    Ok(())
+}
+
+/// Rejects a field containing raw control characters (embedded NUL, escape
+/// sequences, etc.) — never legitimate in a name/address/package label, and
+/// they can corrupt how downstream tooling (the sqlite3 CLI, a terminal-based
+/// log viewer, a future CSV export) reads the stored text back. `notiz` is
+/// the one free-text field a driver might genuinely paste multi-line text
+/// into, so it alone allows newlines/tabs through.
+fn check_no_control_chars(value: &str, field: &str, allow_newlines: bool) -> Result<(), AppError> {
+    let has_bad_char = value
+        .chars()
+        .any(|c| c.is_control() && !(allow_newlines && matches!(c, '\n' | '\r' | '\t')));
+    if has_bad_char {
+        return Err(AppError::BadRequest(format!("{field} enthält ungültige Steuerzeichen.")));
+    }
+    Ok(())
+}
+
+const MAX_KUNDE_LEN: usize = 120;
+const MAX_STRASSE_LEN: usize = 200;
+const MAX_PAKET_LEN: usize = 200;
+const MAX_NOTIZ_LEN: usize = 1000;
+const MAX_ROUTE_NAME_LEN: usize = 200;
+/// Upper bound on stops accepted in one bulk "Route als JSON" paste.
+/// Uncached entries each cost a throttled ~1.1s Nominatim round-trip
+/// (see `NOMINATIM_MIN_INTERVAL`), so an unbounded list turns one HTTP
+/// request into an effectively unbounded amount of work tying up a
+/// handler and hammering a shared public service.
+const MAX_BULK_STOPS: usize = 300;
+
+/// A generous bounding box around Vienna and its immediate surroundings
+/// (well outside the city limits in every direction) — just enough to
+/// reject obviously-wrong input (NaN/Infinity smuggled in as an
+/// out-of-range JSON number literal, `0,0`, a swapped lat/lon, a
+/// fat-fingered extra digit) before it's ever stored or handed to OSRM.
+const LAT_MIN: f64 = 47.7;
+const LAT_MAX: f64 = 48.6;
+const LON_MIN: f64 = 15.8;
+const LON_MAX: f64 = 16.8;
+
+fn check_latlon(lat: f64, lon: f64) -> Result<(), AppError> {
+    if !lat.is_finite() || !lon.is_finite() || !(LAT_MIN..=LAT_MAX).contains(&lat) || !(LON_MIN..=LON_MAX).contains(&lon) {
+        return Err(AppError::BadRequest(
+            "Ungültige Koordinaten (außerhalb des erwarteten Bereichs).".into(),
+        ));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------
 // Error handling — mirrors the FastAPI error shape the frontend expects:
@@ -215,7 +262,11 @@ impl IntoResponse for AppError {
 
 impl From<rusqlite::Error> for AppError {
     fn from(e: rusqlite::Error) -> Self {
-        AppError::Internal(e.to_string())
+        // The raw rusqlite error (constraint names, SQL fragments) is
+        // useful for debugging but not for a client — log it server-side
+        // and hand back a message that doesn't describe internal schema.
+        tracing::error!(error = %e, "database error");
+        AppError::Internal("Datenbankfehler.".into())
     }
 }
 
@@ -230,7 +281,74 @@ struct AppState {
     // `nominatim_throttle` so concurrent geocode calls still serialize to
     // Nominatim's ~1 req/s public usage policy instead of bursting past it.
     nominatim_last: AsyncMutex<Option<Instant>>,
+    // Per-client-IP request counters backing `rate_limit_mw` — see there
+    // for why this exists at all (there's no authentication in this app).
+    rate_limit: AsyncMutex<HashMap<IpAddr, (Instant, u32)>>,
 }
+
+// ---------------------------------------------------------------------
+// Rate limiting — this app has no authentication whatsoever (see the
+// module doc comment: it's a small self-hosted single-tenant tool), so
+// every `/api/*` route is reachable by anyone who can reach the port.
+// Without a cap, a script (or just a buggy retry loop) hitting `/api`
+// hard can: exhaust this process's SQLite/CPU budget, and worse, burn
+// through Nominatim's/OSRM's shared public-usage allowance fast enough
+// to get this server's IP rate-limited or banned by them — which would
+// break geocoding/routing for the actual driver, not just the abuser.
+// A simple fixed-window per-IP counter is cheap insurance against both.
+// ---------------------------------------------------------------------
+
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+// Generous for one driver actively working a route (interactive add/
+// edit/delete/optimize calls), well below what a scripted flood would
+// send.
+const RATE_LIMIT_MAX_REQUESTS: u32 = 120;
+
+async fn rate_limit_mw(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let ip = addr.ip();
+    let now = Instant::now();
+    let over_limit = {
+        let mut map = state.rate_limit.lock().await;
+        // Opportunistic cleanup so this map can't grow without bound if
+        // many distinct IPs ever hit the server.
+        map.retain(|_, (start, _)| now.duration_since(*start) < RATE_LIMIT_WINDOW * 4);
+        let entry = map.entry(ip).or_insert((now, 0));
+        if now.duration_since(entry.0) >= RATE_LIMIT_WINDOW {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+        entry.1 > RATE_LIMIT_MAX_REQUESTS
+    };
+    if over_limit {
+        tracing::warn!(%ip, "rate limit exceeded");
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, "60")],
+            Json(json!({ "detail": "Zu viele Anfragen. Bitte kurz warten und erneut versuchen." })),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
+/// A handful of defensive response headers that cost nothing to always
+/// send and don't touch the frontend's own markup/behavior at all — just
+/// tells browsers not to sniff content types, not to frame this app, and
+/// not to leak the URL (which can contain a street address) via Referer.
+async fn security_headers_mw(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("same-origin"));
+    res
+}
+
 
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -545,7 +663,14 @@ async fn nominatim_throttle(state: &AppState) {
 async fn nominatim_raw_search(state: &AppState, query: &str) -> Result<Option<NominatimHit>, AppError> {
     nominatim_throttle(state).await;
 
-    let geocode_unreachable = |e: reqwest::Error| AppError::Internal(format!("Geocoding-Dienst nicht erreichbar: {e}"));
+    // The underlying reqwest error text (connection internals, timeouts,
+    // occasionally a local path) is logged for debugging but never handed
+    // to the client — it describes our infrastructure, not anything the
+    // caller can act on.
+    let geocode_unreachable = |e: reqwest::Error| {
+        tracing::error!(error = %e, "nominatim unreachable");
+        AppError::Internal("Geocoding-Dienst nicht erreichbar.".into())
+    };
     let resp = state
         .http
         .get(NOMINATIM_URL)
@@ -565,10 +690,10 @@ async fn nominatim_raw_search(state: &AppState, query: &str) -> Result<Option<No
         .map_err(geocode_unreachable)?
         .error_for_status()
         .map_err(geocode_unreachable)?;
-    let hits: Vec<NominatimHit> = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Internal(format!("Geocoding-Dienst: ungültige Antwort ({e})")))?;
+    let hits: Vec<NominatimHit> = resp.json().await.map_err(|e| {
+        tracing::error!(error = %e, "nominatim response parse failed");
+        AppError::Internal("Geocoding-Dienst: ungültige Antwort.".into())
+    })?;
     Ok(hits.into_iter().next())
 }
 
@@ -717,7 +842,8 @@ struct OsrmWaypoint {
 }
 
 fn osrm_unreachable(e: impl std::fmt::Display) -> AppError {
-    AppError::Internal(format!("Routing-Dienst nicht erreichbar: {e}"))
+    tracing::error!(error = %e, "osrm unreachable or invalid response");
+    AppError::Internal("Routing-Dienst nicht erreichbar.".into())
 }
 
 /// "{lon},{lat};{lon},{lat};..." — OSRM's coordinate order is (lon, lat),
@@ -1056,7 +1182,14 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         geometry.pop(); // drop the warehouse point duplicated between the two legs
     }
     geometry.extend(trip_geom);
-    let geometry_json = serde_json::to_string(&geometry).unwrap();
+    // `[f64; 2]` pairs can't fail to serialize once finite, but OSRM is an
+    // external service — treat a malformed/non-finite value in its
+    // response as a normal (logged) error rather than a process-killing
+    // unwrap.
+    let geometry_json = serde_json::to_string(&geometry).map_err(|e| {
+        tracing::error!(error = %e, "route geometry serialization failed");
+        AppError::Internal("Routen-Geometrie konnte nicht gespeichert werden.".into())
+    })?;
     conn.execute(
         "UPDATE routes SET geometry = ?1, needs_optimize = 0 WHERE id = ?2",
         params![geometry_json, route_id],
@@ -1143,38 +1276,43 @@ async fn create_route(
         .filter(|n| !n.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| format!("Route {}", chrono::Local::now().format("%d.%m.%Y")));
-
-    let route_id = {
-        let conn = open_db(&state.db_path)?;
-        conn.execute(
-            "INSERT INTO routes (name, status, created_at) VALUES (?1, 'active', ?2)",
-            params![name, now_iso()],
-        )?;
-        conn.last_insert_rowid()
-    };
+    check_len(&name, "Name", MAX_ROUTE_NAME_LEN)?;
+    check_no_control_chars(&name, "Name", false)?;
 
     // Fixed points, looked up once ahead of time — no geocoding needed at all.
     let (start_lat, start_lon) = (START_LAT, START_LON);
     let (via_lat, via_lon) = (VIA_LAT, VIA_LON);
 
-    {
-        let conn = open_db(&state.db_path)?;
-        conn.execute(
+    // The route row and its 3 fixed stops are one transaction — without
+    // this, a crash between the route insert and the stop inserts leaves
+    // an orphan route with no stops behind instead of either both existing
+    // or neither.
+    let route_id = {
+        let mut conn = open_db(&state.db_path)?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO routes (name, status, created_at) VALUES (?1, 'active', ?2)",
+            params![name, now_iso()],
+        )?;
+        let route_id = tx.last_insert_rowid();
+        tx.execute(
             "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
              VALUES (?1, 'start', 'Start', 'Petritschgasse 24', '1210', ?2, ?3, 0, ?4)",
             params![route_id, start_lat, start_lon, now_iso()],
         )?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
              VALUES (?1, 'via', 'Lager', 'Oberlaa Straße 298', '1230', ?2, ?3, 1, ?4)",
             params![route_id, via_lat, via_lon, now_iso()],
         )?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
              VALUES (?1, 'end', 'Ziel', 'Petritschgasse 24', '1210', ?2, ?3, 2, ?4)",
             params![route_id, start_lat, start_lon, now_iso()],
         )?;
-    }
+        tx.commit()?;
+        route_id
+    };
     reoptimize_route(&state, route_id).await?;
     let conn = open_db(&state.db_path)?;
     Ok(Json(get_route_detail(&conn, route_id)?))
@@ -1201,6 +1339,8 @@ async fn update_route(
         if new_name.is_empty() {
             return Err(AppError::BadRequest("Name darf nicht leer sein.".into()));
         }
+        check_len(new_name, "Name", MAX_ROUTE_NAME_LEN)?;
+        check_no_control_chars(new_name, "Name", false)?;
         conn.execute("UPDATE routes SET name = ?1 WHERE id = ?2", params![new_name, route_id])?;
     }
     if let Some(status) = payload.status.as_deref() {
@@ -1222,7 +1362,10 @@ async fn delete_route(State(state): State<Arc<AppState>>, AxPath(route_id): AxPa
     if !exists {
         return Err(AppError::NotFound("Route nicht gefunden".into()));
     }
-    conn.execute("DELETE FROM stops WHERE route_id = ?1", params![route_id])?;
+    // `stops.route_id` has `ON DELETE CASCADE` (and `open_db` turns
+    // `PRAGMA foreign_keys` on for every connection), so deleting the route
+    // alone already removes its stops atomically — no separate DELETE
+    // needed, and no window where the route is gone but its stops linger.
     conn.execute("DELETE FROM routes WHERE id = ?1", params![route_id])?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -1274,8 +1417,22 @@ async fn add_stop(
     if kunde.is_empty() || strasse.is_empty() || plz.is_empty() {
         return Err(AppError::BadRequest("Kunde, Straße und Bezirk dürfen nicht leer sein.".into()));
     }
+    check_len(&kunde, "Kunde", MAX_KUNDE_LEN)?;
+    check_no_control_chars(&kunde, "Kunde", false)?;
+    check_len(&strasse, "Straße", MAX_STRASSE_LEN)?;
+    check_no_control_chars(&strasse, "Straße", false)?;
+    if let Some(p) = &paket {
+        check_len(p, "Paket", MAX_PAKET_LEN)?;
+        check_no_control_chars(p, "Paket", false)?;
+    }
+    if let Some(n) = &notiz {
+        check_len(n, "Notiz", MAX_NOTIZ_LEN)?;
+        check_no_control_chars(n, "Notiz", true)?;
+    }
+    check_plz(&plz)?;
 
     let (lat, lon, precision) = if let (Some(lat), Some(lon)) = (payload.lat, payload.lon) {
+        check_latlon(lat, lon)?;
         (lat, lon, None) // a human placed this pin — that's exact by definition
     } else {
         let (lat, lon, _, precision) = geocode_address(&state, &strasse, &plz).await?;
@@ -1283,13 +1440,17 @@ async fn add_stop(
     };
 
     {
-        let conn = open_db(&state.db_path)?;
+        let mut conn = open_db(&state.db_path)?;
         let max_order: i64 = conn.query_row(
             "SELECT COALESCE(MAX(order_index), 0) FROM stops WHERE route_id = ?1",
             params![route_id],
             |r| r.get(0),
         )?;
-        conn.execute(
+        // Both writes commit together — a crash between them would
+        // otherwise either lose the stop entirely or save it without ever
+        // flagging the route stale.
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, location_precision, created_at) \
              VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order + 1, precision, now_iso()],
@@ -1301,7 +1462,8 @@ async fn add_stop(
         // aktuell" banner and its one-tap retry are the fallback, not a
         // silent-looking route that secretly hasn't accounted for the new
         // stop yet.
-        conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        tx.commit()?;
     }
     // OSRM solves this in one fast network round-trip now — no reason to
     // make the driver remember a separate "optimize" tap after every
@@ -1338,6 +1500,8 @@ async fn update_stop(
         if strasse.trim().is_empty() {
             return Err(AppError::BadRequest("Straße darf nicht leer sein.".into()));
         }
+        check_len(strasse.trim(), "Straße", MAX_STRASSE_LEN)?;
+        check_no_control_chars(strasse.trim(), "Straße", false)?;
     }
     if let Some(plz) = payload.plz.as_deref() {
         if plz.trim().is_empty() {
@@ -1346,9 +1510,21 @@ async fn update_stop(
     }
     let kunde = match payload.kunde.as_deref() {
         Some(k) if k.trim().is_empty() => return Err(AppError::BadRequest("Kunde darf nicht leer sein.".into())),
-        Some(k) => Some(k.trim().to_string()),
+        Some(k) => {
+            check_len(k.trim(), "Kunde", MAX_KUNDE_LEN)?;
+            check_no_control_chars(k.trim(), "Kunde", false)?;
+            Some(k.trim().to_string())
+        }
         None => None,
     };
+    if let Some(paket) = payload.paket.as_deref() {
+        check_len(paket.trim(), "Paket", MAX_PAKET_LEN)?;
+        check_no_control_chars(paket.trim(), "Paket", false)?;
+    }
+    if let Some(notiz) = payload.notiz.as_deref() {
+        check_len(notiz.trim(), "Notiz", MAX_NOTIZ_LEN)?;
+        check_no_control_chars(notiz.trim(), "Notiz", true)?;
+    }
 
     let new_strasse = payload.strasse.as_deref().map(str::trim).unwrap_or(&cur_strasse).to_string();
     let new_plz = payload.plz.as_deref().map(str::trim).unwrap_or(&cur_plz).to_string();
@@ -1357,7 +1533,9 @@ async fn update_stop(
 
     let mut new_coords: Option<(f64, f64, Option<&'static str>)> = None;
     if address_changed {
+        check_plz(&new_plz)?;
         new_coords = Some(if let (Some(lat), Some(lon)) = (payload.lat, payload.lon) {
+            check_latlon(lat, lon)?;
             (lat, lon, None)
         } else {
             let (lat, lon, _, precision) = geocode_address(&state, &new_strasse, &new_plz).await?;
@@ -1366,37 +1544,44 @@ async fn update_stop(
     }
 
     {
-        let conn = open_db(&state.db_path)?;
+        let mut conn = open_db(&state.db_path)?;
+        // Up to 6 separate field updates land here depending on what the
+        // caller sent — a transaction keeps them atomic, so a crash
+        // mid-request can't apply some fields (say, the new address) while
+        // dropping others (say, the `needs_optimize` flag that address
+        // change should have set).
+        let tx = conn.transaction()?;
         if let Some(k) = &kunde {
-            conn.execute("UPDATE stops SET kunde = ?1 WHERE id = ?2", params![k, stop_id])?;
+            tx.execute("UPDATE stops SET kunde = ?1 WHERE id = ?2", params![k, stop_id])?;
         }
         if let Some(paket) = &payload.paket {
-            conn.execute("UPDATE stops SET paket = ?1 WHERE id = ?2", params![paket.trim(), stop_id])?;
+            tx.execute("UPDATE stops SET paket = ?1 WHERE id = ?2", params![paket.trim(), stop_id])?;
         }
         if let Some(notiz) = &payload.notiz {
-            conn.execute("UPDATE stops SET notiz = ?1 WHERE id = ?2", params![notiz.trim(), stop_id])?;
+            tx.execute("UPDATE stops SET notiz = ?1 WHERE id = ?2", params![notiz.trim(), stop_id])?;
         }
         if address_changed {
-            conn.execute(
+            tx.execute(
                 "UPDATE stops SET strasse = ?1, plz = ?2 WHERE id = ?3",
                 params![new_strasse, new_plz, stop_id],
             )?;
         }
         if let Some(delivered) = payload.delivered {
-            conn.execute(
+            tx.execute(
                 "UPDATE stops SET delivered = ?1 WHERE id = ?2",
                 params![delivered as i64, stop_id],
             )?;
         }
         if let Some((lat, lon, precision)) = new_coords {
-            conn.execute(
+            tx.execute(
                 "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3 WHERE id = ?4",
                 params![lat, lon, precision, stop_id],
             )?;
         }
         if address_changed {
-            conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+            tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
         }
+        tx.commit()?;
     }
 
     // Only a real address change moves the stop's position in the route —
@@ -1411,7 +1596,7 @@ async fn update_stop(
 
 async fn delete_stop(State(state): State<Arc<AppState>>, AxPath(stop_id): AxPath<i64>) -> Result<Json<RouteDetail>, AppError> {
     let route_id = {
-        let conn = open_db(&state.db_path)?;
+        let mut conn = open_db(&state.db_path)?;
         let (route_id, kind): (i64, String) = conn
             .query_row("SELECT route_id, kind FROM stops WHERE id = ?1", params![stop_id], |r| {
                 Ok((r.get(0)?, r.get(1)?))
@@ -1421,11 +1606,15 @@ async fn delete_stop(State(state): State<Arc<AppState>>, AxPath(stop_id): AxPath
         if kind != "customer" {
             return Err(AppError::Forbidden("Fixe Stopps können nicht gelöscht werden".into()));
         }
-        conn.execute("DELETE FROM stops WHERE id = ?1", params![stop_id])?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM stops WHERE id = ?1", params![stop_id])?;
         // The stop before the deleted one had a next_leg_km/min pointing
         // at it and the map line traced through its position — both go
         // stale the instant it's gone, not just "eventually out of date".
-        conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        // Committed together so a crash can't delete the stop while
+        // leaving the route looking falsely up to date.
+        tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        tx.commit()?;
         route_id
     };
     reoptimize_route(&state, route_id).await?;
@@ -1488,6 +1677,12 @@ async fn update_route_from_json(
         },
         _ => return Err(AppError::BadRequest("Ungültiges JSON: erwarte eine Liste von Kundenstopps.".into())),
     };
+    if stops_in.len() > MAX_BULK_STOPS {
+        return Err(AppError::BadRequest(format!(
+            "Zu viele Stopps auf einmal ({}, max. {MAX_BULK_STOPS}). Bitte in kleineren Gruppen importieren.",
+            stops_in.len()
+        )));
+    }
 
     fn addr_key(strasse: &str, plz: &str) -> (String, String) {
         (strasse.trim().to_lowercase(), plz.trim().to_string())
@@ -1535,6 +1730,18 @@ async fn update_route_from_json(
         }
         let paket = obj.get("paket").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
         let notiz = obj.get("notiz").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        check_len(&kunde, "Kunde", MAX_KUNDE_LEN)?;
+        check_no_control_chars(&kunde, "Kunde", false)?;
+        check_len(&strasse, "Straße", MAX_STRASSE_LEN)?;
+        check_no_control_chars(&strasse, "Straße", false)?;
+        if let Some(p) = &paket {
+            check_len(p, "Paket", MAX_PAKET_LEN)?;
+            check_no_control_chars(p, "Paket", false)?;
+        }
+        if let Some(n) = &notiz {
+            check_len(n, "Notiz", MAX_NOTIZ_LEN)?;
+            check_no_control_chars(n, "Notiz", true)?;
+        }
         normalized.push((kunde, strasse, plz, paket, notiz));
     }
 
@@ -1557,6 +1764,12 @@ async fn update_route_from_json(
         if let Some(id) = existing_id {
             to_update.push((kunde, paket, notiz, id));
             matched_ids.insert(id);
+        } else if !is_valid_vienna_plz(&plz) {
+            // Skip the external geocode round-trip entirely for a PLZ that
+            // can't possibly be a Vienna address — same outcome as it
+            // failing geocoding, just without spending a Nominatim/OSGD
+            // call (and its share of the shared rate limit) on it.
+            failures.push(GeocodeFailure { kunde, strasse, plz });
         } else {
             match geocode_address(&state, &strasse, &plz).await {
                 Ok((lat, lon, _, precision)) => {
@@ -1585,14 +1798,23 @@ async fn update_route_from_json(
     };
 
     let changed = {
-        let conn = open_db(&state.db_path)?;
+        let mut conn = open_db(&state.db_path)?;
         let exists: bool = conn.query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(())).optional()?.is_some();
         if !exists {
             return Err(AppError::NotFound("Route nicht gefunden".into()));
         }
 
+        // A bulk import can be dozens of updates/inserts/deletes in one
+        // request — without a transaction, a crash or panic partway
+        // through leaves the route in whatever half-applied state the loop
+        // happened to reach, which is exactly the kind of silent data
+        // corruption this endpoint's failure-collection (`failures`,
+        // `deletions_skipped`) is designed to avoid causing in the first
+        // place.
+        let tx = conn.transaction()?;
+
         for (kunde, paket, notiz, stop_id) in &to_update {
-            conn.execute(
+            tx.execute(
                 "UPDATE stops SET kunde = ?1, paket = ?2, notiz = ?3 WHERE id = ?4",
                 params![kunde, paket, notiz, stop_id],
             )?;
@@ -1600,14 +1822,14 @@ async fn update_route_from_json(
 
         let mut changed = false;
         if !to_insert.is_empty() {
-            let mut max_order: i64 = conn.query_row(
+            let mut max_order: i64 = tx.query_row(
                 "SELECT COALESCE(MAX(order_index), 0) FROM stops WHERE route_id = ?1",
                 params![route_id],
                 |r| r.get(0),
             )?;
             for (kunde, strasse, plz, paket, notiz, lat, lon, precision) in &to_insert {
                 max_order += 1;
-                conn.execute(
+                tx.execute(
                     "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, delivered, location_precision, created_at) \
                      VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11)",
                     params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order, precision, now_iso()],
@@ -1618,14 +1840,15 @@ async fn update_route_from_json(
 
         if !to_delete.is_empty() {
             for id in &to_delete {
-                conn.execute("DELETE FROM stops WHERE id = ?1", params![id])?;
+                tx.execute("DELETE FROM stops WHERE id = ?1", params![id])?;
             }
             changed = true;
         }
 
         if changed {
-            conn.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+            tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
         }
+        tx.commit()?;
         changed
     };
 
@@ -1642,59 +1865,44 @@ async fn update_route_from_json(
 }
 
 // ---------------------------------------------------------------------
-// Frontend / PWA assets
+// Root — a minimal placeholder page (see module doc comment) embedded into
+// the binary at compile time, same as the rest of this app's assets used
+// to be, so the server stays a single self-contained executable with no
+// runtime dependency on files sitting next to it.
 // ---------------------------------------------------------------------
 
-fn html_response(body: &'static str) -> Response {
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response()
-}
+const INDEX_HTML: &str = include_str!("../index.html");
+const SW_JS: &str = include_str!("../sw.js");
 
 async fn index() -> impl IntoResponse {
-    html_response(INDEX_HTML)
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], INDEX_HTML)
 }
 
-async fn style_css() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], STYLE_CSS)
-}
-
-async fn maplibre_css() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], MAPLIBRE_CSS)
-}
-
-async fn maplibre_js() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "application/javascript; charset=utf-8")], MAPLIBRE_JS)
-}
-
-async fn manifest() -> impl IntoResponse {
-    let body = json!({
-        "name": "EAR Routing",
-        "short_name": "EAR Routing",
-        "description": "Essen auf Rädern – Routenplanung für Zusteller",
-        "start_url": "/",
-        "scope": "/",
-        "display": "standalone",
-        "background_color": "#0f172a",
-        "theme_color": "#0f172a",
-        "orientation": "portrait",
-        "icons": [
-            { "src": "/logo.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-            { "src": "/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
-        ]
-    });
-    ([(header::CONTENT_TYPE, "application/manifest+json")], body.to_string())
-}
-
-async fn service_worker() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "application/javascript; charset=utf-8")], SW_JS)
-}
-
-async fn logo() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "image/png")], LOGO_PNG)
+/// `Cache-Control: no-cache` (not "no-store") so the browser always
+/// revalidates before using its cached copy — the whole point of a service
+/// worker is to update itself promptly on the next visit, and a long-lived
+/// cached /sw.js would defeat that for however long the header allows.
+async fn sw_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
+        SW_JS,
+    )
 }
 
 // ---------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------
+
+/// Waits for Ctrl+C so `main` can pass it to `with_graceful_shutdown` —
+/// without that, killing the process (a redeploy, a driver's own Ctrl+C)
+/// drops every in-flight connection immediately, including one mid-way
+/// through a multi-step handler like `update_route_from_json`. Graceful
+/// shutdown lets axum stop accepting new connections but finish the ones
+/// already in progress first.
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+    tracing::info!("shutdown signal received, draining in-flight requests");
+}
 
 fn base_dir() -> PathBuf {
     std::env::current_exe()
@@ -1721,9 +1929,21 @@ async fn main() {
         db_path,
         http,
         nominatim_last: AsyncMutex::new(None),
+        rate_limit: AsyncMutex::new(HashMap::new()),
     });
 
-    let app = Router::new()
+    // Every JSON body this app accepts is a handful of short text fields
+    // for a handful of stops — 256 KiB is already generous headroom over
+    // `MAX_BULK_STOPS` worth of the largest single field, and rejecting
+    // anything past that stops a giant/garbage body from ever being
+    // buffered into memory at all.
+    const MAX_BODY_BYTES: usize = 256 * 1024;
+
+    // Rate-limited, size-capped: only the JSON API a script could actually
+    // abuse. Kept as its own router (rather than one global limiter) so a
+    // normal page load — several static-asset GETs at once — never counts
+    // against the same budget as the API calls a driver's phone makes.
+    let api_router = Router::new()
         .route("/api/routes", get(list_routes).post(create_route))
         .route("/api/routes/:id", get(get_route).patch(update_route).delete(delete_route))
         .route("/api/routes/:id/optimize", post(optimize_route))
@@ -1731,18 +1951,35 @@ async fn main() {
         .route("/api/routes/:id/reset-delivered", post(reset_delivered))
         .route("/api/routes/:id/stops", post(add_stop))
         .route("/api/stops/:id", patch(update_stop).delete(delete_stop))
-        .route("/manifest.json", get(manifest))
-        .route("/sw.js", get(service_worker))
-        .route("/logo.png", get(logo))
-        .route("/style.css", get(style_css))
-        .route("/maplibre-gl.css", get(maplibre_css))
-        .route("/maplibre-gl.js", get(maplibre_js))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit_mw));
+
+    let app = Router::new()
+        .merge(api_router)
         .route("/", get(index))
+        .route("/sw.js", get(sw_js))
         .with_state(state)
+        // A hung/misbehaving upstream (Nominatim, OSRM, or a stalled TCP
+        // connection) shouldn't be able to tie up a handler forever — set
+        // well above the largest legitimate request (a full `MAX_BULK_STOPS`
+        // import, each uncached entry paying the ~1.1s Nominatim throttle).
+        // `tower_http`'s own `TimeoutLayer` (unlike `tower::timeout`)
+        // resolves a timeout directly into a 408 response rather than an
+        // `Err`, so it attaches straight to the `Router` with no separate
+        // error-handling layer needed.
+        .layer(TimeoutLayer::new(Duration::from_secs(600)))
+        // Turns a panic inside any handler into a 500 response instead of
+        // silently dropping the connection — the request that triggered it
+        // fails cleanly, the server keeps serving everyone else.
+        .layer(CatchPanicLayer::new())
+        .layer(middleware::from_fn(security_headers_mw))
         .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
     tracing::info!("EAR Routing listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("failed to bind port 8000");
-    axum::serve(listener, app).await.expect("server error");
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("server error");
 }
