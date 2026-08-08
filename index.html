@@ -38,12 +38,24 @@
       { src: APP_LOGO, sizes: "512x512", type: "image/png", purpose: "maskable" },
     ],
   };
-  document.write(
-    '<link rel="icon" type="image/png" href="' + APP_LOGO + '">' +
-    '<link rel="apple-touch-icon" href="' + APP_LOGO + '">' +
-    '<link rel="manifest" href="data:application/manifest+json,' + encodeURIComponent(JSON.stringify(MANIFEST)) + '">' +
-    '<meta name="apple-mobile-web-app-status-bar-style" content="default">'
-  );
+  // Appended to <head> directly rather than via document.write(): same
+  // result, but document.write is blocked outright in a few contexts a PWA
+  // can legitimately end up in (a parser-inserted async script, some
+  // in-app browsers) and would silently take the icons and the manifest —
+  // i.e. "add to home screen" itself — down with it.
+  const head = document.head;
+  const addTag = (tag, attrs) => {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    head.appendChild(el);
+  };
+  addTag('link', { rel: 'icon', type: 'image/png', href: APP_LOGO });
+  addTag('link', { rel: 'apple-touch-icon', href: APP_LOGO });
+  addTag('link', {
+    rel: 'manifest',
+    href: 'data:application/manifest+json,' + encodeURIComponent(JSON.stringify(MANIFEST)),
+  });
+  addTag('meta', { name: 'apple-mobile-web-app-status-bar-style', content: 'default' });
 </script>
 
 <script src="https://cdn.tailwindcss.com"></script>
@@ -87,7 +99,14 @@
      `height: 100dvh` — see the #app element below. html/body just need a
      matching background as a fallback so any edge-case gap reads as the
      app's own color instead of stray black. */
-  html, body { height: 100%; overflow: hidden; overscroll-behavior-y: none; background: #F2F2F7; }
+  /* No text selection anywhere by default — a delivery app isn't a
+     document, and the native iOS/Android selection handles + callout
+     menu popping up on every long-press read as "web page", not "app".
+     Form fields are excluded (see below) so typing/editing still works. */
+  html, body {
+    height: 100%; overflow: hidden; overscroll-behavior-y: none; background: #F2F2F7;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', Inter, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -100,11 +119,6 @@
      injection order, which is what actually keeps content out of the iOS notch/Dynamic Island. */
   ::-webkit-scrollbar { display: none; }
   * { -webkit-tap-highlight-color: transparent; }
-  /* No text selection anywhere by default — a delivery app isn't a
-     document, and the native iOS/Android selection handles + callout
-     menu popping up on every long-press read as "web page", not "app".
-     Form fields are excluded so typing/editing still works normally. */
-  html, body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   input, textarea, [contenteditable="true"] {
     -webkit-user-select: text; user-select: text; -webkit-touch-callout: default;
   }
@@ -161,7 +175,10 @@
 <body class="text-black overflow-hidden">
 
 <div id="splash" class="fixed inset-0 z-[100] bg-[#F2F2F7] flex flex-col items-center justify-center gap-4">
-  <img src="" data-logo-src class="w-16 h-16 rounded-2xl shadow-lg" alt="" />
+  <!-- No `src=""`: an empty src is a relative URL resolving to the page
+       itself, so browsers re-request "/" and try to decode the HTML as an
+       image. The real src is set from APP_LOGO as soon as the script runs. -->
+  <img data-logo-src class="w-16 h-16 rounded-2xl shadow-lg" alt="" />
   <div class="spinner"></div>
 </div>
 
@@ -245,22 +262,26 @@ let lastUsedPlz = null;
 // consumer-chat aesthetic rather than a professional utility. SVGs with a
 // symmetric viewBox center perfectly inside a flex box every time, and
 // `currentColor` keeps them tied to the surrounding text/tint color.
+// `aria-hidden` on every one of them: they're decoration next to a visible
+// label, or the icon *is* the button and the button carries its own
+// aria-label — either way a screen reader announcing "graphic" here would
+// only ever be noise.
 function icon(paths, opts = '') {
-  return `<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" ${opts}>${paths}</svg>`;
+  return `<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" ${opts}>${paths}</svg>`;
 }
 const ICONS = {
   plus: icon('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>', 'stroke-width="2"'),
   back: icon('<polyline points="15 18 9 12 15 6"/>', 'stroke-width="2.25"'),
   chevron: icon('<polyline points="9 18 15 12 9 6"/>', 'stroke-width="2.25"'),
   x: icon('<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>', 'stroke-width="2.25"'),
-  kebab: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><circle cx="12" cy="5" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="12" cy="19" r="1.9"/></svg>',
+  kebab: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="12" cy="5" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="12" cy="19" r="1.9"/></svg>',
   tabRoutes: icon('<circle cx="4" cy="6" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="6" x2="20" y2="6"/><circle cx="4" cy="12" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="12" x2="20" y2="12"/><circle cx="4" cy="18" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="18" x2="20" y2="18"/>'),
   tabMap: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
-  tabMore: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>',
+  tabMore: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>',
   mapPin: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
   checkCircle: icon('<circle cx="12" cy="12" r="9"/><path d="M8 12.4l2.5 2.5L16 9.4"/>'),
   circle: icon('<circle cx="12" cy="12" r="9"/>'),
-  checkCircleFill: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><circle cx="12" cy="12" r="9.5"/><path d="M8.3 12.4l2.4 2.4 5-5" stroke="white" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  checkCircleFill: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9.5"/><path d="M8.3 12.4l2.4 2.4 5-5" stroke="white" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   box: icon('<path d="M3.5 8 12 4l8.5 4-8.5 4-8.5-4Z"/><path d="M3.5 8v8l8.5 4 8.5-4V8"/><path d="M12 12v8"/>'),
   house: icon('<path d="M4 11.5 12 4l8 7.5"/><path d="M6 10v9h12v-9"/><path d="M10 19v-5h4v5"/>'),
   flag: icon('<path d="M6 3v18"/><path d="M6 4.5h11l-3 3.75 3 3.75H6"/>'),
@@ -278,7 +299,11 @@ const ICONS = {
 
 async function api(path, options = {}) {
   const res = await fetch('/api' + path, {
-    headers: { 'Content-Type': 'application/json' },
+    // Only declare a JSON body when there actually is one — a
+    // Content-Type on a bodyless GET/DELETE is meaningless and is exactly
+    // the kind of header that turns a same-origin request into a
+    // preflighted one behind some proxies.
+    headers: options.body ? { 'Content-Type': 'application/json' } : {},
     ...options,
   });
   if (!res.ok) {
@@ -350,7 +375,7 @@ function toast(message, type = 'info', durationMs = 3800) {
     success: 'bg-emerald-50/95 text-emerald-700',
   };
   const el = document.createElement('div');
-  el.className = `toast-enter pointer-events-auto max-w-sm w-full backdrop-blur-xl border border-black/5 ${colors[type]} rounded-2xl px-4 py-3 text-sm font-medium shadow-xl`;
+  el.className = `toast-enter pointer-events-auto max-w-sm w-full backdrop-blur-xl border border-black/5 ${colors[type] || colors.info} rounded-2xl px-4 py-3 text-sm font-medium shadow-xl`;
   el.textContent = message;
   document.getElementById('toast-container').appendChild(el);
   if (navigator.vibrate && type === 'error') navigator.vibrate(30);
@@ -413,7 +438,12 @@ function promptSheet({ title, message, placeholder = '', initial = '', confirmLa
     `;
     const input = root.querySelector('[data-input]');
     setTimeout(() => { input.focus(); input.select(); }, 80);
-    const submit = () => { const v = input.value; closeAlert(); resolve(v === '' ? null : v); };
+    // Resolves `null` only for a real cancel, and the (possibly empty)
+    // string for a confirm — collapsing "" into null would make submitting
+    // a blank field indistinguishable from backing out, which is why
+    // accepting the suggested default route name by just tapping
+    // "Speichern" used to silently do nothing.
+    const submit = () => { const v = input.value; closeAlert(); resolve(v); };
     root.querySelectorAll('[data-cancel]').forEach(el => el.addEventListener('click', () => { closeAlert(); resolve(null); }));
     root.querySelector('[data-confirm]').addEventListener('click', submit);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
@@ -584,6 +614,8 @@ async function createRoute() {
   if (name === null) return;
   showProgress();
   try {
+    // Left blank on purpose = "use the default name" — the server fills in
+    // "Route <heutiges Datum>" for an omitted name.
     const body = name.trim() ? { name: name.trim() } : {};
     const route = await api('/routes', { method: 'POST', body: JSON.stringify(body) });
     state.currentRoute = route;
@@ -619,6 +651,10 @@ async function sendStop(data, coords) {
   // doesn't get that route's screen silently overwritten (or, on failure,
   // a pin-drop sheet popped open for a route they're no longer looking at)
   // once this finally resolves.
+  // The pin-drop sheet can outlive the route it was opened for (the driver
+  // is free to close it and navigate away, then come back and confirm the
+  // pin), so this genuinely can run with no route in focus.
+  if (!state.currentRoute) { toast('Keine Route ausgewählt.', 'error'); return; }
   const routeId = state.currentRoute.id;
   const payload = { kunde: data.kunde, strasse: data.strasse, plz: data.plz, paket: data.paket, notiz: data.notiz };
   if (coords) { payload.lat = coords.lat; payload.lon = coords.lon; }
@@ -685,6 +721,12 @@ async function toggleDelivered(stopId, delivered) {
   }
 }
 
+// NOTE for call sites: the confirm dialog and the bottom sheets share one
+// `#modal-root`, so anything that calls this from inside an open sheet has
+// to `closeSheet()` *first*. Calling it after (`deleteStop(id);
+// closeSheet();`) wipes the confirm dialog this function is still awaiting
+// out of the DOM the moment it appears — the promise then never settles
+// and the stop is never deleted.
 async function deleteStop(stopId) {
   const ok = await confirmSheet({ title: 'Stopp löschen?', message: 'Dieser Kundenstopp wird endgültig entfernt.', confirmLabel: 'Löschen', danger: true });
   if (!ok) return;
@@ -700,7 +742,8 @@ async function deleteStop(stopId) {
 async function renameRoute() {
   const routeId = state.currentRoute.id;
   const name = await promptSheet({ title: 'Route umbenennen', initial: state.currentRoute.name });
-  if (!name || !name.trim()) return;
+  if (name === null) return;
+  if (!name.trim()) { toast('Name darf nicht leer sein.', 'error'); return; }
   try {
     const updated = await api(`/routes/${routeId}`, { method: 'PATCH', body: JSON.stringify({ name: name.trim() }) });
     if (state.currentRoute?.id !== routeId) return;
@@ -924,7 +967,7 @@ function renderManualForm(stop) {
         <textarea name="notiz" rows="2" placeholder="z.B. persönlich übergeben, Lift im Hof, Code 1234" class="${FIELD} resize-none">${escapeHtml(stop?.notiz || '')}</textarea>
       </div>
       <div class="flex gap-3 pt-2">
-        ${isEdit ? `<button type="button" onclick="deleteStop(${stop.id}); closeSheet();" class="press-98 px-4 py-3 rounded-xl bg-red-50 text-red-600 font-semibold">Löschen</button>` : ''}
+        ${isEdit ? `<button type="button" onclick="closeSheet(); deleteStop(${stop.id});" class="press-98 px-4 py-3 rounded-xl bg-red-50 text-red-600 font-semibold">Löschen</button>` : ''}
         <button type="submit" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">${isEdit ? 'Speichern' : 'Hinzufügen & Optimieren'}</button>
       </div>
     </form>
@@ -1034,6 +1077,7 @@ function setJsonSheetBusy(busy) {
 
 async function saveJsonEdits() {
   const editor = document.getElementById('json-editor');
+  if (!editor || !state.currentRoute) return;
   let parsed;
   try {
     parsed = JSON.parse(editor.value);
@@ -1045,13 +1089,18 @@ async function saveJsonEdits() {
     toast('Erwarte eine Liste von Kundenstopps ([...]).', 'error');
     return;
   }
+  const routeId = state.currentRoute.id;
   setJsonSheetBusy(true);
   showProgress('Adressen werden abgeglichen — bitte nicht schließen …');
   try {
-    const data = await api(`/routes/${state.currentRoute.id}/json`, {
+    const data = await api(`/routes/${routeId}/json`, {
       method: 'PUT',
       body: JSON.stringify(parsed),
     });
+    // This request can legitimately run for a minute against the
+    // geocoders' rate limit — long enough for the driver to have moved to
+    // another route, whose screen must not be replaced by this one's result.
+    if (state.currentRoute?.id !== routeId) { closeSheet(); return; }
     state.currentRoute = data;
     syncRouteSummary();
     closeSheet();
@@ -1118,8 +1167,16 @@ function openPinDropSheet(data) {
   });
 }
 
+// Customer names, addresses and notes are free text that ends up inside
+// template strings assigned to innerHTML — these are what keep an
+// apostrophe or an angle bracket in a real name from being parsed as
+// markup. `escapeAttr` covers both quote styles (not just the double
+// quotes these templates happen to use today) so it stays correct if an
+// attribute is ever written with single quotes.
 function escapeAttr(str) {
-  return String(str ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return String(str ?? '')
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 function escapeHtml(str) {
   return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -1149,9 +1206,12 @@ function mountLargeTitle() {
 }
 
 function fmtDate(iso) {
-  try {
-    return new Date(iso).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: 'numeric' });
-  } catch (_) { return ''; }
+  // `new Date(garbage)` doesn't throw, it yields an Invalid Date whose
+  // toLocaleDateString is the literal string "Invalid Date" — checking the
+  // timestamp is what actually keeps that out of a route row.
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
 // ---------------------------------------------------------------------
@@ -1252,7 +1312,7 @@ function renderRoutesTab() {
         <div class="flex items-center justify-between px-4 pb-2.5">
           <span class="w-8"></span>
           <p data-compact-title class="compact-title text-[17px] font-semibold" style="opacity:0">Routen</p>
-          <button onclick="createRoute()" class="press-fade w-8 h-8 flex items-center justify-center text-brand-600 text-lg">${ICONS.plus}</button>
+          <button onclick="createRoute()" aria-label="Neue Route anlegen" title="Neue Route anlegen" class="press-fade w-8 h-8 flex items-center justify-center text-brand-600 text-lg">${ICONS.plus}</button>
         </div>
       </div>
 
@@ -1270,6 +1330,10 @@ function renderRoutesTab() {
   `;
 }
 
+// True while the Karte tab's "nothing in focus yet, open the first active
+// route" fetch is in flight — see renderMapTab.
+let mapAutoSelectPending = false;
+
 // ---------------------------------------------------------------------
 // Karte tab — the map as a first-class, edge-to-edge destination. A
 // horizontal route picker up top switches which active route's geometry
@@ -1278,10 +1342,16 @@ function renderRoutesTab() {
 // ---------------------------------------------------------------------
 function renderMapTab() {
   const pickable = state.routes.filter(r => r.status === 'active');
-  if (!state.currentRoute && pickable.length) {
+  if (!state.currentRoute && pickable.length && !mapAutoSelectPending) {
     // Defer selection to after this render pass — selectMapRoute() re-
     // renders itself once the full route detail (with geometry) loads.
-    setTimeout(() => selectMapRoute(pickable[0].id), 0);
+    // The flag is what keeps that from compounding: this function runs on
+    // every render, and each render before the fetch resolves would
+    // otherwise queue another identical request for the same route.
+    mapAutoSelectPending = true;
+    setTimeout(() => {
+      selectMapRoute(pickable[0].id).finally(() => { mapAutoSelectPending = false; });
+    }, 0);
   }
 
   if (!pickable.length) {
@@ -1382,7 +1452,7 @@ function renderMoreTab() {
         <p class="${SECTION_LABEL} !pt-0">Über diese App</p>
         <div class="${GROUP}">
           <div class="flex items-center gap-3 px-4 py-3.5">
-            <img data-logo-src src="" alt="ASBÖ" class="w-10 h-10 rounded-xl shrink-0" />
+            <img data-logo-src alt="ASBÖ" class="w-10 h-10 rounded-xl shrink-0" />
             <div class="min-w-0">
               <p class="font-medium">EAR Routing</p>
               <p class="text-[13px] text-black/50">Ein Service des Arbeiter-Samariter-Bundes Österreichs</p>
@@ -1412,6 +1482,15 @@ function renderMoreTab() {
       </div>
     </div>
   `;
+}
+
+// "3.4 km · 8 min bis zum nächsten Stopp" under a stop row. Both numbers
+// are written together by the optimizer and are null together on the last
+// stop — but they arrive from the network, so each is checked on its own
+// rather than letting one missing value render "NaN min".
+function legLabel(stop, extraClass = 'mt-1') {
+  if (stop.next_leg_km == null || stop.next_leg_min == null) return '';
+  return `<p class="text-[12px] text-black/40 ${extraClass}">${stop.next_leg_km.toFixed(1)} km · ${Math.round(stop.next_leg_min)} min bis zum nächsten Stopp</p>`;
 }
 
 function stopKindMeta(stop) {
@@ -1568,9 +1647,9 @@ function renderRouteDetail() {
           <div class="flex-1 min-w-0 pt-0.5">
             <p class="font-medium">${meta.title}</p>
             <p class="text-[13px] text-black/50">${escapeHtml(meta.subtitle)}</p>
-            ${s.next_leg_km != null ? `<p class="text-[12px] text-black/40 mt-1">${s.next_leg_km.toFixed(1)} km · ${Math.round(s.next_leg_min)} min bis zum nächsten Stopp</p>` : ''}
+            ${legLabel(s)}
           </div>
-          <a href="${url}" class="press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.mapPin}</a>
+          <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.mapPin}</a>
         </div>
       `;
     }
@@ -1603,13 +1682,13 @@ function renderRouteDetail() {
           <p class="text-[13px] ${delivered ? 'text-black/35' : 'text-black/50'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien</p>
           ${s.paket ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] font-medium mt-1.5 px-1.5 py-0.5 rounded ${delivered ? 'text-black/35 bg-black/5' : 'text-brand-700 bg-brand-50'}"><span class="flex shrink-0">${ICONS.box}</span><span class="truncate">${escapeHtml(s.paket)}</span></p>` : ''}
           ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/35 bg-black/5' : 'text-warn bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
-          ${s.next_leg_km != null ? `<p class="text-[12px] text-black/40 mt-1.5">${s.next_leg_km.toFixed(1)} km · ${Math.round(s.next_leg_min)} min bis zum nächsten Stopp</p>` : ''}
+          ${legLabel(s, 'mt-1.5')}
         </div>
         <div class="flex flex-col gap-2 shrink-0 mt-0.5">
-          <button onclick="toggleDelivered(${s.id}, ${!delivered})" title="Als zugestellt markieren" class="press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${delivered ? 'bg-success text-white' : 'bg-white border-2 border-black/15 text-black/30'}">
+          <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" title="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" class="press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${delivered ? 'bg-success text-white' : 'bg-white border-2 border-black/15 text-black/30'}">
             ${delivered ? ICONS.checkCircleFill : ICONS.circle}
           </button>
-          <a href="${url}" title="In Maps öffnen" class="press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
+          <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
         </div>
       </div>
     `;
@@ -1619,11 +1698,11 @@ function renderRouteDetail() {
     <div data-scroll class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
       <div class="sticky top-0 z-20 bg-[#F2F2F7]/85 backdrop-blur-xl border-b border-black/10" style="padding-top: calc(env(safe-area-inset-top) + 0.5rem)">
         <div class="flex items-center gap-1 px-2 pb-2.5">
-          <button onclick="closeDetail()" class="press-fade w-9 h-9 flex items-center justify-center text-brand-600 text-lg shrink-0">${ICONS.back}</button>
+          <button onclick="closeDetail()" aria-label="Zurück zur Übersicht" title="Zurück" class="press-fade w-9 h-9 flex items-center justify-center text-brand-600 text-lg shrink-0">${ICONS.back}</button>
           <p data-compact-title class="compact-title flex-1 min-w-0 text-[15px] font-semibold text-center truncate px-1" style="opacity:0">${escapeHtml(r.name)}</p>
-          <button onclick="openAddSheet()" class="press-fade w-9 h-9 flex items-center justify-center text-brand-600 text-lg shrink-0">${ICONS.plus}</button>
+          <button onclick="openAddSheet()" aria-label="Stopp hinzufügen" title="Stopp hinzufügen" class="press-fade w-9 h-9 flex items-center justify-center text-brand-600 text-lg shrink-0">${ICONS.plus}</button>
           <div class="relative shrink-0">
-            <button onclick="document.getElementById('route-menu').classList.toggle('hidden')" class="press-fade w-9 h-9 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>
+            <button onclick="document.getElementById('route-menu').classList.toggle('hidden')" aria-label="Weitere Aktionen" title="Weitere Aktionen" class="press-fade w-9 h-9 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>
             ${renderRouteMenu()}
           </div>
         </div>

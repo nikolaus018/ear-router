@@ -1,7 +1,7 @@
-// Service worker for EAR Routing — embedded into the server binary the same
-// way index.html is (see `include_str!("../sw.js")` in src/main.rs) and
-// served at /sw.js, so this stays a two-file app with no separate static
-// asset pipeline.
+// Service worker for EAR Routing — read straight off disk on every request
+// and served at /sw.js, exactly like index.html (see `SW_JS_PATH` in
+// src/main.rs), so this stays a two-file app with no separate static asset
+// pipeline and editing it takes effect without a rebuild.
 //
 // This app is NOT fully offline-capable: adding/editing a stop calls
 // Nominatim/Wien-OGD (geocoding) and OSRM (routing) live every time, and
@@ -15,7 +15,13 @@
 const CACHE_NAME = 'ear-routing-v1';
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.add('/')));
+  // `.catch()`: a failed precache (server restarting mid-install, no
+  // connection at first load) must not reject the install event, or the
+  // worker never activates at all and the app loses offline support
+  // entirely over one badly-timed request.
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.add('/')).catch(() => {})
+  );
   self.skipWaiting();
 });
 
@@ -43,11 +49,26 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          // Only successful responses are worth keeping — caching a 500
+          // from a briefly-broken server would pin that error page as the
+          // offline fallback until the cache is cleared by hand.
+          if (res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {});
+          }
           return res;
         })
-        .catch(() => caches.match(request))
+        .catch(async () => {
+          // `caches.match` resolves to undefined on a miss, and
+          // respondWith(undefined) is a hard error ("Failed to convert
+          // value to 'Response'") that shows as a browser network-error
+          // page — worse than the offline notice below. A navigation also
+          // falls back to the cached shell itself: the app is a single
+          // page, so "/" is the right answer for any in-app URL.
+          const hit = (await caches.match(request)) ||
+            (request.mode === 'navigate' ? await caches.match('/') : undefined);
+          return hit || new Response('Offline', { status: 503, statusText: 'Offline' });
+        })
     );
     return;
   }
@@ -64,7 +85,7 @@ self.addEventListener('fetch', (event) => {
       return fetch(request).then((res) => {
         if (res.ok) {
           const copy = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {});
         }
         return res;
       });

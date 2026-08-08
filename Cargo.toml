@@ -7,7 +7,9 @@ default-run = "ear_routing"
 [dependencies]
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.5", features = ["trace", "catch-panic", "timeout", "limit"] }
+# Body-size capping uses axum's own `DefaultBodyLimit`, not tower-http's
+# `limit` feature — that feature is deliberately not enabled.
+tower-http = { version = "0.5", features = ["trace", "catch-panic", "timeout"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }

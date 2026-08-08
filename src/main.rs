@@ -22,10 +22,12 @@
 //!     actual multi-stop ordering problem; there's no reason to hand-roll
 //!     a weaker 2-opt/or-opt solver when a well-tested one is a request
 //!     away. See `osrm_route_leg`/`osrm_trip` below.
+//!
 //! Both Nominatim and OSRM's public servers are free to use but shared —
 //! Nominatim's usage policy caps at ~1 request/second, enforced here via
 //! `nominatim_throttle` (see `AppState::nominatim_last`) rather than
-//! trusting callers not to hammer it.
+//! trusting callers not to hammer it, and OSRM's demo server caps a single
+//! `/trip` call at `OSRM_MAX_TRIP_COORDS` waypoints.
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
@@ -208,8 +210,16 @@ const MAX_ROUTE_NAME_LEN: usize = 200;
 /// Uncached entries each cost a throttled ~1.1s Nominatim round-trip
 /// (see `NOMINATIM_MIN_INTERVAL`), so an unbounded list turns one HTTP
 /// request into an effectively unbounded amount of work tying up a
-/// handler and hammering a shared public service.
-const MAX_BULK_STOPS: usize = 300;
+/// handler and hammering a shared public service. Pinned to what OSRM can
+/// actually optimize in one `/trip` call (its cap, minus the fixed
+/// warehouse and destination waypoints) so an oversized paste is rejected
+/// in milliseconds, up front — rather than geocoding for minutes first and
+/// only then failing at the routing step with the stops already saved.
+const MAX_BULK_STOPS: usize = OSRM_MAX_TRIP_COORDS - 2;
+/// Compile-time guard on the sentence above: a full-size paste plus the
+/// fixed warehouse and destination waypoints must fit in one OSRM `/trip`
+/// call. Breaks the build, not a route, if the two constants ever drift.
+const _: () = assert!(MAX_BULK_STOPS + 2 <= OSRM_MAX_TRIP_COORDS);
 
 /// A generous bounding box around Vienna and its immediate surroundings
 /// (well outside the city limits in every direction) — just enough to
@@ -221,8 +231,15 @@ const LAT_MAX: f64 = 48.6;
 const LON_MIN: f64 = 15.8;
 const LON_MAX: f64 = 16.8;
 
+fn is_plausible_latlon(lat: f64, lon: f64) -> bool {
+    lat.is_finite()
+        && lon.is_finite()
+        && (LAT_MIN..=LAT_MAX).contains(&lat)
+        && (LON_MIN..=LON_MAX).contains(&lon)
+}
+
 fn check_latlon(lat: f64, lon: f64) -> Result<(), AppError> {
-    if !lat.is_finite() || !lon.is_finite() || !(LAT_MIN..=LAT_MAX).contains(&lat) || !(LON_MIN..=LON_MAX).contains(&lon) {
+    if !is_plausible_latlon(lat, lon) {
         return Err(AppError::BadRequest(
             "Ungültige Koordinaten (außerhalb des erwarteten Bereichs).".into(),
         ));
@@ -409,6 +426,13 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
     display_name TEXT,
     precision TEXT NOT NULL DEFAULT 'exact'
 );
+
+-- Every single stop query in this app filters by `route_id` (usually
+-- ordering by `order_index` on top of it). Without this, SQLite has no
+-- choice but a full scan of every stop of every route ever created for
+-- each of those — cheap today, needlessly linear in the app's whole
+-- history forever after.
+CREATE INDEX IF NOT EXISTS idx_stops_route_order ON stops(route_id, order_index);
 "#;
 
 fn init_db(path: &FsPath) -> Result<(), AppError> {
@@ -432,6 +456,18 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     if !cache_cols.contains("precision") {
         conn.execute("ALTER TABLE geocode_cache ADD COLUMN precision TEXT NOT NULL DEFAULT 'exact'", [])?;
     }
+
+    // The warehouse stop was originally written as "Oberlaa Straße 298",
+    // which isn't a real street name — the actual one is "Oberlaaer
+    // Straße". It's cosmetic in the app itself (the coordinates were
+    // always right) but not in the "In Maps öffnen" link, which hands the
+    // stored text to the phone's own Maps app to geocode from scratch and
+    // gets a dead search for it. Fix it in place on routes created before
+    // that was corrected.
+    conn.execute(
+        "UPDATE stops SET strasse = 'Oberlaaer Straße 298' WHERE kind = 'via' AND strasse = 'Oberlaa Straße 298'",
+        [],
+    )?;
     Ok(())
 }
 
@@ -442,11 +478,32 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
 // address anyway.
 // ---------------------------------------------------------------------
 
+/// Sent on every outbound geocoder call. Nominatim's usage policy requires
+/// a calling application to identify itself so a misbehaving client can be
+/// traced/blocked individually instead of the shared server being locked
+/// down for everyone; Wien-OGD doesn't require it, but there's no reason to
+/// be anonymous there either.
+const GEOCODER_USER_AGENT: &str = "EAR-Routing/1.0 (local delivery route planner)";
+
 fn geocode_error_not_found(query: &str) -> AppError {
     AppError::Geocode {
         status: 422,
         code: "address_not_found".into(),
         message: format!("Adresse nicht automatisch gefunden: {}.", query),
+    }
+}
+
+/// The geocoders themselves are down/unreachable — a different situation
+/// from "this address doesn't exist", and one the frontend handles the same
+/// productive way (offering the manual pin-drop sheet) as long as it can
+/// tell the two apart, which is what the `geocode_unavailable` code is for.
+/// Returned as 503 rather than a bare 500 because it is explicitly a
+/// temporary upstream failure, not a bug in this app.
+fn geocode_error_unavailable() -> AppError {
+    AppError::Geocode {
+        status: 503,
+        code: "geocode_unavailable".into(),
+        message: "Geocoding-Dienst nicht erreichbar. Standort bitte manuell setzen.".into(),
     }
 }
 
@@ -542,6 +599,7 @@ async fn wien_ogd_search_one(state: &AppState, query: &str, plz: &str) -> Option
         .http
         .get(WIEN_OGD_URL)
         .query(&[("Address", query), ("crs", "EPSG:4326")])
+        .header(reqwest::header::USER_AGENT, GEOCODER_USER_AGENT)
         .send()
         .await
         .ok()?;
@@ -597,6 +655,14 @@ async fn wien_ogd_search_one(state: &AppState, query: &str, plz: &str) -> Option
         Precision::Street
     };
     let [lon, lat] = best.geometry.coordinates;
+    // `crs=EPSG:4326` is requested above, but a service that ever ignored
+    // it would hand back projected metres (EPSG:3857) that look nothing
+    // like degrees — fall through to Nominatim rather than storing a point
+    // in the middle of the ocean as a confident "exact" match.
+    if !is_plausible_latlon(lat, lon) {
+        tracing::warn!(lat, lon, query, "wien ogd returned out-of-range coordinates, ignoring");
+        return None;
+    }
     let display_name = props.adresse.map(|a| format!("{a}, {plz} Wien")).unwrap_or_else(|| format!("{query}, {plz} Wien"));
     Some((lat, lon, display_name, precision))
 }
@@ -670,7 +736,7 @@ async fn nominatim_raw_search(state: &AppState, query: &str) -> Result<Option<No
     // caller can act on.
     let geocode_unreachable = |e: reqwest::Error| {
         tracing::error!(error = %e, "nominatim unreachable");
-        AppError::Internal("Geocoding-Dienst nicht erreichbar.".into())
+        geocode_error_unavailable()
     };
     let resp = state
         .http
@@ -685,7 +751,7 @@ async fn nominatim_raw_search(state: &AppState, query: &str) -> Result<Option<No
         // Required by Nominatim's usage policy: identify the calling
         // application so misbehaving clients can be traced/blocked
         // individually instead of the shared server being locked down.
-        .header(reqwest::header::USER_AGENT, "EAR-Routing/1.0 (local delivery route planner)")
+        .header(reqwest::header::USER_AGENT, GEOCODER_USER_AGENT)
         .send()
         .await
         .map_err(geocode_unreachable)?
@@ -693,7 +759,7 @@ async fn nominatim_raw_search(state: &AppState, query: &str) -> Result<Option<No
         .map_err(geocode_unreachable)?;
     let hits: Vec<NominatimHit> = resp.json().await.map_err(|e| {
         tracing::error!(error = %e, "nominatim response parse failed");
-        AppError::Internal("Geocoding-Dienst: ungültige Antwort.".into())
+        geocode_error_unavailable()
     })?;
     Ok(hits.into_iter().next())
 }
@@ -705,6 +771,17 @@ async fn nominatim_search_one(state: &AppState, query: &str) -> Result<Option<(f
     let (Ok(lat), Ok(lon)) = (top.lat.parse::<f64>(), top.lon.parse::<f64>()) else {
         return Err(AppError::Internal("Geocoding-Dienst: ungültige Koordinaten in der Antwort".into()));
     };
+    // Nominatim's free-text search is fuzzy and country-wide (`countrycodes=at`
+    // is as narrow as it gets): a Viennese street name that also exists in
+    // Graz or Linz can come back as a confident top hit hundreds of
+    // kilometres away. Treat anything outside the Vienna bounding box as no
+    // match at all, so the caller falls through to its next strategy (the
+    // fuller query, then the district centroid) instead of pinning a stop in
+    // the wrong federal state.
+    if !is_plausible_latlon(lat, lon) {
+        tracing::warn!(lat, lon, query, "nominatim hit outside the Vienna area, ignoring");
+        return Ok(None);
+    }
     let precision = match &top.address {
         Some(a) if a.house_number.is_some() => Precision::Exact,
         Some(a) if a.road.is_some() => Precision::Street,
@@ -722,7 +799,11 @@ async fn nominatim_search_one(state: &AppState, query: &str) -> Result<Option<(f
 /// genuine no-match falls through to the frontend's manual pin-drop.
 async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(f64, f64, String, Precision), AppError> {
     let original_query = format!("{}, {} Wien, Österreich", strasse.trim(), plz);
-    let key = original_query.trim().to_lowercase();
+    // Cache on the *normalized* form, not the raw input: "Hauptstr. 5",
+    // "Hauptstrasse 5" and "Hauptstraße  5" are one address written three
+    // ways and all resolve identically, so keying on the raw text would pay
+    // a throttled round-trip again for each spelling.
+    let key = format!("{}, {} wien, österreich", normalize_strasse_text(strasse).to_lowercase(), plz);
     {
         let conn = open_db(&state.db_path)?;
         if let Some(hit) = cache_lookup(&conn, &key)? {
@@ -770,7 +851,9 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
         if let Some(hit) = nominatim_raw_search(state, &district_query).await? {
             let postcode_matches = hit.address.as_ref().and_then(|a| a.postcode.as_deref()) == Some(plz);
             if let (true, Ok(lat), Ok(lon)) = (postcode_matches, hit.lat.parse::<f64>(), hit.lon.parse::<f64>()) {
-                result = Some((lat, lon, format!("{plz} Wien (nur Bezirk, Adresse unbekannt)"), Precision::District));
+                if is_plausible_latlon(lat, lon) {
+                    result = Some((lat, lon, format!("{plz} Wien (nur Bezirk, Adresse unbekannt)"), Precision::District));
+                }
             }
         }
     }
@@ -799,6 +882,11 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
 // ---------------------------------------------------------------------
 
 const OSRM_BASE: &str = "https://router.project-osrm.org";
+/// OSRM's public demo server refuses a `/trip` request with more waypoints
+/// than this (`max-trip-size`, 100 by default) — checked before sending so
+/// an oversized route gets a German sentence explaining the real limit
+/// instead of an opaque relayed "OSRM trip: TooBig".
+const OSRM_MAX_TRIP_COORDS: usize = 100;
 
 #[derive(Deserialize)]
 struct OsrmGeometry {
@@ -889,6 +977,13 @@ async fn osrm_route_leg(client: &reqwest::Client, a: (f64, f64), b: (f64, f64)) 
 /// Returns (visiting order as indices into `coords`, per-consecutive-leg
 /// (distance_m, duration_s) in that visiting order, full route geometry).
 async fn osrm_trip(client: &reqwest::Client, coords: &[(f64, f64)]) -> Result<(Vec<usize>, Vec<(f64, f64)>, Vec<[f64; 2]>), AppError> {
+    if coords.len() > OSRM_MAX_TRIP_COORDS {
+        return Err(AppError::BadRequest(format!(
+            "Zu viele Stopps für die Routenoptimierung ({}, max. {}). Bitte die Route auf mehrere Touren aufteilen.",
+            coords.len().saturating_sub(2),
+            OSRM_MAX_TRIP_COORDS - 2
+        )));
+    }
     let url = format!(
         "{OSRM_BASE}/trip/v1/driving/{}?source=first&destination=last&roundtrip=false&overview=full&geometries=geojson",
         osrm_coord_string(coords)
@@ -914,11 +1009,17 @@ async fn osrm_trip(client: &reqwest::Client, coords: &[(f64, f64)]) -> Result<(V
     // `waypoints[i].waypoint_index` is where input point `i` landed in the
     // optimized visiting order — invert it into "order[position] = input
     // index" so the caller can walk the trip in visiting order directly.
+    // The result has to be a genuine permutation: anything else (a repeated
+    // index, an out-of-range one) would silently produce a route that
+    // visits one stop twice and drops another entirely, which is far worse
+    // than refusing to reorder at all.
     let mut order = vec![0usize; coords.len()];
+    let mut seen = vec![false; coords.len()];
     for (input_idx, wp) in resp.waypoints.iter().enumerate() {
-        if wp.waypoint_index >= order.len() {
-            return Err(AppError::Internal("OSRM: unerwartete Antwort (Wegpunkt-Index außerhalb des Bereichs)".into()));
+        if wp.waypoint_index >= order.len() || seen[wp.waypoint_index] {
+            return Err(AppError::Internal("OSRM: unerwartete Antwort (ungültige Stopp-Reihenfolge)".into()));
         }
+        seen[wp.waypoint_index] = true;
         order[wp.waypoint_index] = input_idx;
     }
 
@@ -1162,22 +1263,6 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         }
     }
 
-    let conn = open_db(&state.db_path)?;
-    for (pos, node) in nodes.iter().enumerate() {
-        let (leg_km, leg_min) = if pos == 0 {
-            (Some(start_dist / 1000.0), Some(start_dur / 60.0))
-        } else if pos - 1 < legs.len() {
-            let (d, t) = legs[pos - 1];
-            (Some(d / 1000.0), Some(t / 60.0))
-        } else {
-            (None, None) // last stop — no next leg
-        };
-        conn.execute(
-            "UPDATE stops SET order_index = ?1, next_leg_km = ?2, next_leg_min = ?3 WHERE id = ?4",
-            params![pos as i64, leg_km, leg_min, node.id],
-        )?;
-    }
-
     let mut geometry = start_geom;
     if !geometry.is_empty() && !trip_geom.is_empty() {
         geometry.pop(); // drop the warehouse point duplicated between the two legs
@@ -1191,10 +1276,33 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         tracing::error!(error = %e, "route geometry serialization failed");
         AppError::Internal("Routen-Geometrie konnte nicht gespeichert werden.".into())
     })?;
-    conn.execute(
+
+    // The new stop order, the per-leg distances and the geometry describe
+    // one single solution — committed together so a failure partway
+    // through can't leave stops renumbered against a geometry drawn for
+    // the old order (which would look plausible on screen and be wrong),
+    // and so `needs_optimize` is only ever cleared once all of it landed.
+    let mut conn = open_db(&state.db_path)?;
+    let tx = conn.transaction()?;
+    for (pos, node) in nodes.iter().enumerate() {
+        let (leg_km, leg_min) = if pos == 0 {
+            (Some(start_dist / 1000.0), Some(start_dur / 60.0))
+        } else if pos - 1 < legs.len() {
+            let (d, t) = legs[pos - 1];
+            (Some(d / 1000.0), Some(t / 60.0))
+        } else {
+            (None, None) // last stop — no next leg
+        };
+        tx.execute(
+            "UPDATE stops SET order_index = ?1, next_leg_km = ?2, next_leg_min = ?3 WHERE id = ?4",
+            params![pos as i64, leg_km, leg_min, node.id],
+        )?;
+    }
+    tx.execute(
         "UPDATE routes SET geometry = ?1, needs_optimize = 0 WHERE id = ?2",
         params![geometry_json, route_id],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -1280,9 +1388,10 @@ async fn create_route(
     check_len(&name, "Name", MAX_ROUTE_NAME_LEN)?;
     check_no_control_chars(&name, "Name", false)?;
 
-    // Fixed points, looked up once ahead of time — no geocoding needed at all.
-    let (start_lat, start_lon) = (START_LAT, START_LON);
-    let (via_lat, via_lon) = (VIA_LAT, VIA_LON);
+    // One timestamp for the whole creation, not one per INSERT — the route
+    // and its three fixed stops are created in the same instant, and four
+    // separate `now_iso()` calls only make that look otherwise.
+    let created_at = now_iso();
 
     // The route row and its 3 fixed stops are one transaction — without
     // this, a crash between the route insert and the stop inserts leaves
@@ -1293,23 +1402,25 @@ async fn create_route(
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO routes (name, status, created_at) VALUES (?1, 'active', ?2)",
-            params![name, now_iso()],
+            params![name, created_at],
         )?;
         let route_id = tx.last_insert_rowid();
+        // Fixed points, geocoded once ahead of time (see START_LAT/VIA_LAT)
+        // — route creation never needs to resolve these at runtime.
         tx.execute(
             "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
              VALUES (?1, 'start', 'Start', 'Petritschgasse 24', '1210', ?2, ?3, 0, ?4)",
-            params![route_id, start_lat, start_lon, now_iso()],
+            params![route_id, START_LAT, START_LON, created_at],
         )?;
         tx.execute(
             "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
-             VALUES (?1, 'via', 'Lager', 'Oberlaa Straße 298', '1230', ?2, ?3, 1, ?4)",
-            params![route_id, via_lat, via_lon, now_iso()],
+             VALUES (?1, 'via', 'Lager', 'Oberlaaer Straße 298', '1230', ?2, ?3, 1, ?4)",
+            params![route_id, VIA_LAT, VIA_LON, created_at],
         )?;
         tx.execute(
             "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
              VALUES (?1, 'end', 'Ziel', 'Petritschgasse 24', '1210', ?2, ?3, 2, ?4)",
-            params![route_id, start_lat, start_lon, now_iso()],
+            params![route_id, START_LAT, START_LON, created_at],
         )?;
         tx.commit()?;
         route_id
@@ -1329,31 +1440,43 @@ async fn update_route(
     AxPath(route_id): AxPath<i64>,
     Json(payload): Json<RouteUpdate>,
 ) -> Result<Json<RouteDetail>, AppError> {
-    let conn = open_db(&state.db_path)?;
+    let mut conn = open_db(&state.db_path)?;
     let exists: bool = conn.query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(())).optional()?.is_some();
     if !exists {
         return Err(AppError::NotFound("Route nicht gefunden".into()));
     }
 
-    if let Some(name) = payload.name.as_deref() {
-        let new_name = name.trim();
-        if new_name.is_empty() {
-            return Err(AppError::BadRequest("Name darf nicht leer sein.".into()));
+    // Validate everything before writing anything: a request carrying a
+    // good name and a bogus status must change neither, rather than
+    // renaming the route and then 400-ing as if it had done nothing.
+    let new_name = match payload.name.as_deref().map(str::trim) {
+        Some("") => return Err(AppError::BadRequest("Name darf nicht leer sein.".into())),
+        Some(name) => {
+            check_len(name, "Name", MAX_ROUTE_NAME_LEN)?;
+            check_no_control_chars(name, "Name", false)?;
+            Some(name.to_string())
         }
-        check_len(new_name, "Name", MAX_ROUTE_NAME_LEN)?;
-        check_no_control_chars(new_name, "Name", false)?;
-        conn.execute("UPDATE routes SET name = ?1 WHERE id = ?2", params![new_name, route_id])?;
+        None => None,
+    };
+    let new_status = match payload.status.as_deref() {
+        Some(s) if s != "active" && s != "completed" => {
+            return Err(AppError::BadRequest("Ungültiger Status".into()))
+        }
+        other => other,
+    };
+
+    let tx = conn.transaction()?;
+    if let Some(name) = &new_name {
+        tx.execute("UPDATE routes SET name = ?1 WHERE id = ?2", params![name, route_id])?;
     }
-    if let Some(status) = payload.status.as_deref() {
-        if status != "active" && status != "completed" {
-            return Err(AppError::BadRequest("Ungültiger Status".into()));
-        }
+    if let Some(status) = new_status {
         let completed_at = if status == "completed" { Some(now_iso()) } else { None };
-        conn.execute(
+        tx.execute(
             "UPDATE routes SET status = ?1, completed_at = ?2 WHERE id = ?3",
             params![status, completed_at, route_id],
         )?;
     }
+    tx.commit()?;
     Ok(Json(get_route_detail(&conn, route_id)?))
 }
 
@@ -1442,15 +1565,18 @@ async fn add_stop(
 
     {
         let mut conn = open_db(&state.db_path)?;
-        let max_order: i64 = conn.query_row(
+        // Both writes commit together — a crash between them would
+        // otherwise either lose the stop entirely or save it without ever
+        // flagging the route stale. The MAX(order_index) read belongs
+        // inside the transaction too: read outside it, two stops added at
+        // the same moment both see the same maximum and land on the same
+        // order_index.
+        let tx = conn.transaction()?;
+        let max_order: i64 = tx.query_row(
             "SELECT COALESCE(MAX(order_index), 0) FROM stops WHERE route_id = ?1",
             params![route_id],
             |r| r.get(0),
         )?;
-        // Both writes commit together — a crash between them would
-        // otherwise either lose the stop entirely or save it without ever
-        // flagging the route stale.
-        let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, location_precision, created_at) \
              VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -1518,26 +1644,44 @@ async fn update_stop(
         }
         None => None,
     };
-    if let Some(paket) = payload.paket.as_deref() {
-        check_len(paket.trim(), "Paket", MAX_PAKET_LEN)?;
-        check_no_control_chars(paket.trim(), "Paket", false)?;
-    }
-    if let Some(notiz) = payload.notiz.as_deref() {
-        check_len(notiz.trim(), "Notiz", MAX_NOTIZ_LEN)?;
-        check_no_control_chars(notiz.trim(), "Notiz", true)?;
-    }
+    // `Some(None)` = "the caller sent this field, and it was blank" —
+    // stored as SQL NULL, the same as a stop created without it, so an
+    // emptied Paket/Notiz disappears from the UI instead of lingering as an
+    // empty-string chip (`add_stop` already normalizes it this way).
+    let paket = match payload.paket.as_deref().map(str::trim) {
+        Some(p) => {
+            check_len(p, "Paket", MAX_PAKET_LEN)?;
+            check_no_control_chars(p, "Paket", false)?;
+            Some((!p.is_empty()).then(|| p.to_string()))
+        }
+        None => None,
+    };
+    let notiz = match payload.notiz.as_deref().map(str::trim) {
+        Some(n) => {
+            check_len(n, "Notiz", MAX_NOTIZ_LEN)?;
+            check_no_control_chars(n, "Notiz", true)?;
+            Some((!n.is_empty()).then(|| n.to_string()))
+        }
+        None => None,
+    };
 
     let new_strasse = payload.strasse.as_deref().map(str::trim).unwrap_or(&cur_strasse).to_string();
     let new_plz = payload.plz.as_deref().map(str::trim).unwrap_or(&cur_plz).to_string();
     let address_changed = kind == "customer"
         && ((payload.strasse.is_some() && new_strasse != cur_strasse) || (payload.plz.is_some() && new_plz != cur_plz));
+    // A pin the driver placed by hand (the pin-drop sheet) is honored on
+    // its own, not only as a side effect of an address edit: re-pinning a
+    // stop whose text address stays the same is a legitimate correction,
+    // and silently ignoring the coordinates would leave the map showing
+    // the position the driver just told us was wrong.
+    let manual_pin = kind == "customer" && payload.lat.is_some() && payload.lon.is_some();
 
     let mut new_coords: Option<(f64, f64, Option<&'static str>)> = None;
-    if address_changed {
+    if address_changed || manual_pin {
         check_plz(&new_plz)?;
         new_coords = Some(if let (Some(lat), Some(lon)) = (payload.lat, payload.lon) {
             check_latlon(lat, lon)?;
-            (lat, lon, None)
+            (lat, lon, None) // a human placed this pin — that's exact by definition
         } else {
             let (lat, lon, _, precision) = geocode_address(&state, &new_strasse, &new_plz).await?;
             (lat, lon, (precision != Precision::Exact).then(|| precision.as_str()))
@@ -1555,11 +1699,11 @@ async fn update_stop(
         if let Some(k) = &kunde {
             tx.execute("UPDATE stops SET kunde = ?1 WHERE id = ?2", params![k, stop_id])?;
         }
-        if let Some(paket) = &payload.paket {
-            tx.execute("UPDATE stops SET paket = ?1 WHERE id = ?2", params![paket.trim(), stop_id])?;
+        if let Some(paket) = &paket {
+            tx.execute("UPDATE stops SET paket = ?1 WHERE id = ?2", params![paket, stop_id])?;
         }
-        if let Some(notiz) = &payload.notiz {
-            tx.execute("UPDATE stops SET notiz = ?1 WHERE id = ?2", params![notiz.trim(), stop_id])?;
+        if let Some(notiz) = &notiz {
+            tx.execute("UPDATE stops SET notiz = ?1 WHERE id = ?2", params![notiz, stop_id])?;
         }
         if address_changed {
             tx.execute(
@@ -1579,16 +1723,16 @@ async fn update_stop(
                 params![lat, lon, precision, stop_id],
             )?;
         }
-        if address_changed {
+        if new_coords.is_some() {
             tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
         }
         tx.commit()?;
     }
 
-    // Only a real address change moves the stop's position in the route —
-    // marking delivered, editing the note/package text etc. never touch
-    // order/geometry, so there's nothing to re-solve for those.
-    if address_changed {
+    // Only a moved stop changes the route's shape — marking delivered,
+    // editing the note/package text etc. never touch order/geometry, so
+    // there's nothing to re-solve for those.
+    if new_coords.is_some() {
         reoptimize_route(&state, route_id).await?;
     }
     let conn = open_db(&state.db_path)?;
@@ -1626,9 +1770,11 @@ async fn delete_stop(State(state): State<Arc<AppState>>, AxPath(stop_id): AxPath
 /// Bulk-edit endpoint backing the "Route als JSON" editor. Customer-facing
 /// fields only, stops matched by normalized (strasse, plz), unmatched
 /// existing stops deleted (unless something failed to geocode this round
-/// — see `deletions_skipped`), new ones geocoded and inserted. Geocoding
-/// is local (no network, no rate limit) but still runs outside the write
-/// transaction, matching the original design's separation of concerns.
+/// — see `deletions_skipped`), new ones geocoded and inserted. Every
+/// geocode is a throttled call to a shared public service, so all of them
+/// happen up front, before the write transaction is opened — a 300-stop
+/// import must never hold a SQLite write lock across minutes of network
+/// round-trips.
 #[derive(Serialize)]
 struct GeocodeFailure {
     kunde: String,
@@ -1670,10 +1816,12 @@ async fn update_route_from_json(
     AxPath(route_id): AxPath<i64>,
     Json(payload): Json<Value>,
 ) -> Result<Json<BulkJsonResult>, AppError> {
-    let stops_in: Vec<Value> = match &payload {
-        Value::Array(a) => a.clone(),
+    // Borrowed, not cloned: the editor's payload can be hundreds of
+    // objects, and every one of them is read-only from here on.
+    let stops_in: &Vec<Value> = match &payload {
+        Value::Array(a) => a,
         Value::Object(o) => match o.get("stops") {
-            Some(Value::Array(a)) => a.clone(),
+            Some(Value::Array(a)) => a,
             _ => return Err(AppError::BadRequest("Ungültiges JSON: erwarte eine Liste von Kundenstopps.".into())),
         },
         _ => return Err(AppError::BadRequest("Ungültiges JSON: erwarte eine Liste von Kundenstopps.".into())),
@@ -1685,8 +1833,13 @@ async fn update_route_from_json(
         )));
     }
 
+    /// Matching key for "is this submitted stop the one already stored?".
+    /// Normalized, not raw: "Hauptstr. 5" and "Hauptstraße 5" are the same
+    /// address, and treating them as different would delete the stored stop
+    /// and re-insert an identical one — losing its delivered flag and
+    /// burning a geocode round-trip to end up exactly where it started.
     fn addr_key(strasse: &str, plz: &str) -> (String, String) {
-        (strasse.trim().to_lowercase(), plz.trim().to_string())
+        (normalize_strasse_text(strasse).to_lowercase(), plz.trim().to_string())
     }
 
     struct ExistingStop {
@@ -1694,6 +1847,11 @@ async fn update_route_from_json(
         strasse: String,
         plz: String,
     }
+
+    /// (kunde, strasse, plz, paket, notiz) — one validated submitted entry.
+    type SubmittedStop = (String, String, String, Option<String>, Option<String>);
+    /// A `SubmittedStop` plus its resolved (lat, lon) and precision tag.
+    type NewStop = (SubmittedStop, f64, f64, Option<&'static str>);
 
     let existing_customers: Vec<ExistingStop> = {
         let conn = open_db(&state.db_path)?;
@@ -1714,8 +1872,8 @@ async fn update_route_from_json(
         rows
     };
 
-    let mut normalized: Vec<(String, String, String, Option<String>, Option<String>)> = Vec::new();
-    for entry in &stops_in {
+    let mut normalized: Vec<SubmittedStop> = Vec::new();
+    for entry in stops_in {
         let obj = entry
             .as_object()
             .ok_or_else(|| AppError::BadRequest("Ungültiger Eintrag in der Liste (kein Objekt).".into()))?;
@@ -1746,13 +1904,13 @@ async fn update_route_from_json(
         normalized.push((kunde, strasse, plz, paket, notiz));
     }
 
-    let mut by_key: std::collections::HashMap<(String, String), Vec<i64>> = std::collections::HashMap::new();
+    let mut by_key: HashMap<(String, String), Vec<i64>> = HashMap::new();
     for s in &existing_customers {
         by_key.entry(addr_key(&s.strasse, &s.plz)).or_default().push(s.id);
     }
 
     let mut to_update: Vec<(String, Option<String>, Option<String>, i64)> = Vec::new();
-    let mut to_insert: Vec<(String, String, String, Option<String>, Option<String>, f64, f64, Option<&'static str>)> = Vec::new();
+    let mut to_insert: Vec<NewStop> = Vec::new();
     let mut matched_ids: HashSet<i64> = HashSet::new();
     // Geocoding failures are collected, not fatal: everything else in the
     // batch still gets saved instead of one bad address blocking all 30.
@@ -1778,7 +1936,7 @@ async fn update_route_from_json(
                     if let Some(p) = precision_tag {
                         approximate.push(GeocodeApproximate { kunde: kunde.clone(), strasse: strasse.clone(), plz: plz.clone(), precision: p });
                     }
-                    to_insert.push((kunde, strasse, plz, paket, notiz, lat, lon, precision_tag));
+                    to_insert.push(((kunde, strasse, plz, paket, notiz), lat, lon, precision_tag));
                 }
                 Err(_) => failures.push(GeocodeFailure { kunde, strasse, plz }),
             }
@@ -1828,12 +1986,13 @@ async fn update_route_from_json(
                 params![route_id],
                 |r| r.get(0),
             )?;
-            for (kunde, strasse, plz, paket, notiz, lat, lon, precision) in &to_insert {
+            let created_at = now_iso();
+            for ((kunde, strasse, plz, paket, notiz), lat, lon, precision) in &to_insert {
                 max_order += 1;
                 tx.execute(
                     "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, delivered, location_precision, created_at) \
                      VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11)",
-                    params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order, precision, now_iso()],
+                    params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order, precision, created_at],
                 )?;
             }
             changed = true;
@@ -1876,42 +2035,86 @@ const INDEX_HTML_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/index.html")
 const SW_JS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/sw.js");
 const ICON_PNG_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/icon.png");
 
-async fn index() -> impl IntoResponse {
-    let html = tokio::fs::read_to_string(INDEX_HTML_PATH)
-        .await
-        .expect("failed to read index.html");
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html)
+/// Reads one of the three static files off disk, turning a missing/unreadable
+/// file into a logged 500 rather than a panic. `CatchPanicLayer` would keep
+/// the server alive through an `.expect()` here either way, but a panic
+/// backtrace on every single page load is a terrible way to say "index.html
+/// isn't next to the binary".
+async fn read_static(path: &'static str) -> Result<Vec<u8>, AppError> {
+    tokio::fs::read(path).await.map_err(|e| {
+        tracing::error!(error = %e, path, "failed to read static file");
+        AppError::Internal("Datei konnte nicht geladen werden.".into())
+    })
 }
 
 /// `Cache-Control: no-cache` (not "no-store") so the browser always
-/// revalidates before using its cached copy — the whole point of a service
-/// worker is to update itself promptly on the next visit, and a long-lived
-/// cached /sw.js would defeat that for however long the header allows.
-async fn sw_js() -> impl IntoResponse {
-    let js = tokio::fs::read_to_string(SW_JS_PATH).await.expect("failed to read sw.js");
-    (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
-        js,
-    )
+/// revalidates before using its cached copy — the app shell is edited in
+/// place and served straight off disk, so a stale cached copy would hide a
+/// deploy for however long the header allows.
+async fn index() -> Result<impl IntoResponse, AppError> {
+    let html = read_static(INDEX_HTML_PATH).await?;
+    Ok((
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
+        html,
+    ))
 }
 
-async fn icon_png() -> impl IntoResponse {
-    let bytes = tokio::fs::read(ICON_PNG_PATH).await.expect("failed to read icon.png");
-    ([(header::CONTENT_TYPE, "image/png")], bytes)
+/// Same `no-cache` reasoning as `index`, and doubly so here: the whole
+/// point of a service worker is to update itself promptly on the next
+/// visit, which a long-lived cached /sw.js would defeat.
+async fn sw_js() -> Result<impl IntoResponse, AppError> {
+    let js = read_static(SW_JS_PATH).await?;
+    Ok((
+        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
+        js,
+    ))
+}
+
+/// The one genuinely static asset (the ASBÖ logo, ~190 KB, reused as
+/// favicon/app icon/in-app header image) — worth an actual cache lifetime
+/// rather than re-fetching it on every load.
+async fn icon_png() -> Result<impl IntoResponse, AppError> {
+    let bytes = read_static(ICON_PNG_PATH).await?;
+    Ok((
+        [(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "public, max-age=86400")],
+        bytes,
+    ))
 }
 
 // ---------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------
 
-/// Waits for Ctrl+C so `main` can pass it to `with_graceful_shutdown` —
+/// Waits for a shutdown signal so `main` can pass it to
+/// `with_graceful_shutdown` —
 /// without that, killing the process (a redeploy, a driver's own Ctrl+C)
 /// drops every in-flight connection immediately, including one mid-way
 /// through a multi-step handler like `update_route_from_json`. Graceful
 /// shutdown lets axum stop accepting new connections but finish the ones
 /// already in progress first.
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+    };
+
+    // A service manager (systemd, Docker, a reverse-proxy supervisor) stops
+    // a process with SIGTERM, not Ctrl+C — without this arm, the graceful
+    // shutdown below only ever runs for a human at a terminal, and every
+    // real restart still severs in-flight requests.
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
     tracing::info!("shutdown signal received, draining in-flight requests");
 }
 
@@ -1934,7 +2137,7 @@ async fn main() {
         .timeout(Duration::from_secs(20))
         .build()
         .expect("failed to build HTTP client");
-    tracing::info!("Geocoding via Nominatim, routing via OSRM — both live services, no local dataset.");
+    tracing::info!("Geocoding via Wien-OGD with Nominatim fallback, routing via OSRM — all live services, no local dataset.");
 
     let state = Arc::new(AppState {
         db_path,
@@ -1987,11 +2190,93 @@ async fn main() {
         .layer(middleware::from_fn(security_headers_mw))
         .layer(TraceLayer::new_for_http());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
+    // Port is overridable so a second instance (or a deployment where 8000
+    // is already taken) doesn't need a recompile; 8000 stays the default
+    // every existing shortcut and launch.json points at.
+    let port: u16 = std::env::var("EAR_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8000);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("EAR Routing listening on http://{addr}");
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("failed to bind port 8000");
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .unwrap_or_else(|e| panic!("failed to bind port {port}: {e}"));
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server error");
+}
+
+// ---------------------------------------------------------------------
+// Tests — the pure, network-free parts: address text normalization (which
+// decides what every geocoder query actually looks like) and the input
+// validators. These are exactly the pieces that fail silently and wrongly
+// rather than loudly: a normalization regression doesn't crash, it just
+// starts pinning stops at the wrong address.
+// ---------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::text::{normalize_strasse_text, simplify_housenumber, street_name_only};
+    use super::*;
+
+    #[test]
+    fn normalizes_strasse_spellings() {
+        assert_eq!(normalize_strasse_text("Hauptstr. 5"), "Hauptstraße 5");
+        assert_eq!(normalize_strasse_text("Hauptstrasse 5"), "Hauptstraße 5");
+        assert_eq!(normalize_strasse_text("  Gentzgasse   129  "), "Gentzgasse 129");
+        // Already correct spelling passes through untouched.
+        assert_eq!(normalize_strasse_text("Gentzgasse 129"), "Gentzgasse 129");
+    }
+
+    #[test]
+    fn strips_stiege_and_tuer_but_keeps_housenumber_ranges() {
+        assert_eq!(simplify_housenumber("Gentzgasse 129/1/2/23"), "Gentzgasse 129");
+        assert_eq!(
+            simplify_housenumber("Dr.-Heinrich-Maier-Straße 28-34/Haus 2/12"),
+            "Dr.-Heinrich-Maier-Straße 28-34"
+        );
+        assert_eq!(simplify_housenumber("Gutzkowplatz 2-5"), "Gutzkowplatz 2-5");
+        assert_eq!(simplify_housenumber("Favoritenstraße 45a"), "Favoritenstraße 45a");
+        // No housenumber at all (a place name) — left exactly as-is rather
+        // than mangled into something that won't geocode.
+        assert_eq!(simplify_housenumber("Stephansplatz"), "Stephansplatz");
+    }
+
+    #[test]
+    fn extracts_street_name_without_housenumber() {
+        assert_eq!(street_name_only("Gentzgasse 129/1/2/23"), "Gentzgasse");
+        assert_eq!(street_name_only("Am Hof 2"), "Am Hof");
+        assert_eq!(street_name_only("Stephansplatz"), "Stephansplatz");
+    }
+
+    #[test]
+    fn accepts_only_real_vienna_postcodes() {
+        assert!(is_valid_vienna_plz("1010"));
+        assert!(is_valid_vienna_plz("1230"));
+        assert!(!is_valid_vienna_plz("1240")); // no 24th district
+        assert!(!is_valid_vienna_plz("8010")); // Graz
+        assert!(!is_valid_vienna_plz(""));
+        assert!(!is_valid_vienna_plz("1010 "));
+    }
+
+    #[test]
+    fn rejects_coordinates_outside_vienna() {
+        assert!(is_plausible_latlon(48.2082, 16.3738)); // Stephansplatz
+        assert!(!is_plausible_latlon(0.0, 0.0));
+        assert!(!is_plausible_latlon(16.3738, 48.2082)); // swapped lat/lon
+        assert!(!is_plausible_latlon(47.0707, 15.4395)); // Graz
+        assert!(!is_plausible_latlon(f64::NAN, 16.3738));
+        assert!(!is_plausible_latlon(48.2082, f64::INFINITY));
+    }
+
+    #[test]
+    fn rejects_oversized_and_control_char_fields() {
+        assert!(check_len("ok", "Kunde", 10).is_ok());
+        assert!(check_len(&"ä".repeat(11), "Kunde", 10).is_err()); // counted in chars, not bytes
+        assert!(check_no_control_chars("Fam. Gruber", "Kunde", false).is_ok());
+        assert!(check_no_control_chars("Fam.\u{0}Gruber", "Kunde", false).is_err());
+        assert!(check_no_control_chars("Zeile 1\nZeile 2", "Notiz", false).is_err());
+        assert!(check_no_control_chars("Zeile 1\nZeile 2", "Notiz", true).is_ok());
+    }
 }

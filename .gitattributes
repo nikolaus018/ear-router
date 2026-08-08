@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Belt and braces for the one binary in the repo: `text=auto` relies on
+# Git's content heuristic to leave it alone, and a PNG that ever got
+# CRLF-normalized would be silently corrupted.
+*.png binary
