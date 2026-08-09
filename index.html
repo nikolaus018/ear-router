@@ -2,7 +2,17 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<!-- No `maximum-scale=1`: it was there to stop iOS auto-zooming when a
+     small input is focused, but it does that by disabling pinch-zoom
+     outright — for everybody, permanently. That's the wrong trade for an
+     app whose users read customer names and house numbers at arm's length
+     in a van, some of them with reading glasses they don't have on. The
+     auto-zoom it was suppressing is instead prevented at the source: every
+     focusable field in this app is at least 16px, which is the threshold
+     iOS actually checks. Zoom stays available to anyone who needs it.
+     `touch-action: manipulation` (see the stylesheet) still suppresses the
+     double-tap-to-zoom delay on buttons, so tapping stays instant. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>EAR Routing</title>
 <meta name="description" content="Essen auf Rädern – Routenplanung für Zusteller des Arbeiter-Samariter-Bundes Österreichs" />
 <meta name="color-scheme" content="light" />
@@ -76,7 +86,15 @@
           // Apple's own semantic system colors (light values — this app
           // is light-mode only, see the module doc comment).
           success: '#34C759',
+          // `warn` is Apple's system orange and stays exactly that — but
+          // only ever as a *fill* (the stale-route dot, the approximate-pin
+          // ring). As text it is unreadable: #FF9500 on white is ~2.2:1,
+          // less than half the 4.5:1 small text needs, and this app is read
+          // one-handed in a van in daylight by drivers who are not all
+          // twenty-five. `warnText` is the same hue darkened to ~7:1 for
+          // anything actually spelled out in words.
           warn: '#FF9500',
+          warnText: '#8A4B00',
         },
         boxShadow: {
           fab: '0 8px 20px -4px rgba(237, 22, 57, 0.45)',
@@ -197,7 +215,11 @@
   </div>
 </div>
 
-<div id="toast-container" class="fixed top-0 left-0 right-0 z-[70] flex flex-col items-center gap-2 px-4 pointer-events-none" style="padding-top: calc(env(safe-area-inset-top) + 0.75rem);"></div>
+<!-- role/aria-live so a toast is actually announced: these carry the only
+     confirmation that a stop saved, and the only report that it didn't.
+     "polite" on the container, with individual error toasts marked
+     role="alert" (assertive) so a failure interrupts rather than queues. -->
+<div id="toast-container" role="status" aria-live="polite" class="fixed top-0 left-0 right-0 z-[70] flex flex-col items-center gap-2 px-4 pointer-events-none" style="padding-top: calc(env(safe-area-inset-top) + 0.75rem);"></div>
 
 <div id="modal-root"></div>
 
@@ -254,6 +276,19 @@ const VIENNA_DISTRICTS = [
 const DISTRICT_BY_PLZ = Object.fromEntries(VIENNA_DISTRICTS.map(d => [d.plz, d]));
 let lastUsedPlz = null;
 
+// Mirrors MAX_BULK_STOPS in src/main.rs (OSRM's 100-waypoint /trip cap
+// minus the fixed warehouse and destination). Duplicated rather than
+// fetched because it's a hard limit of the routing engine, not a setting —
+// and the server still enforces it either way; this copy only exists so an
+// oversized paste is refused before it's uploaded.
+const MAX_BULK_STOPS = 98;
+
+// Field limits, matching the MAX_*_LEN constants in src/main.rs. Enforced
+// here as `maxlength` purely so the input stops accepting characters that
+// the server is going to reject anyway — losing a long note to a 400 after
+// the round trip is a worse way to learn about the limit.
+const LIMITS = { kunde: 120, strasse: 200, paket: 200, notiz: 1000, routeName: 200 };
+
 // Thin-stroke, geometry-only line icons (no emoji) — the app's whole visual
 // vocabulary for status/actions, styled after SF Symbols' "regular" weight.
 // Plain glyphs ("+", "←") and emoji both render with font-metric-dependent
@@ -297,15 +332,56 @@ const ICONS = {
   person: icon('<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7"/>'),
 };
 
+// A stalled mobile connection never rejects a `fetch` on its own — the
+// request just hangs, forever, with the progress bar crawling and (in the
+// JSON sheet's case) every control disabled behind it. These are the
+// deadlines after which the app gives up and says so. The bulk-import one
+// is minutes rather than seconds on purpose: that endpoint legitimately
+// spends ~1.1s per uncached address against Nominatim's rate limit, so a
+// 30s cap would abort perfectly healthy large imports.
+const API_TIMEOUT_MS = 30000;
+const API_TIMEOUT_LONG_MS = 6 * 60 * 1000;
+
 async function api(path, options = {}) {
-  const res = await fetch('/api' + path, {
-    // Only declare a JSON body when there actually is one — a
-    // Content-Type on a bodyless GET/DELETE is meaningless and is exactly
-    // the kind of header that turns a same-origin request into a
-    // preflighted one behind some proxies.
-    headers: options.body ? { 'Content-Type': 'application/json' } : {},
-    ...options,
-  });
+  const { timeoutMs = API_TIMEOUT_MS, signal: callerSignal, ...fetchOptions } = options;
+
+  // AbortSignal.any() would be tidier but isn't in older mobile WebKit,
+  // which is exactly the platform this app runs on.
+  const controller = new AbortController();
+  const onCallerAbort = () => controller.abort();
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+
+  let res;
+  try {
+    res = await fetch('/api' + path, {
+      // Only declare a JSON body when there actually is one — a
+      // Content-Type on a bodyless GET/DELETE is meaningless and is exactly
+      // the kind of header that turns a same-origin request into a
+      // preflighted one behind some proxies.
+      headers: fetchOptions.body ? { 'Content-Type': 'application/json' } : {},
+      ...fetchOptions,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    // `fetch` rejects with an opaque TypeError ("Failed to fetch" /
+    // "Load failed") for every network-level problem, and with an
+    // AbortError for both our timeout and a deliberate cancel. None of
+    // those strings mean anything to a driver, so each becomes a sentence
+    // that says what actually happened and what to do about it.
+    if (timedOut) throw apiError('Zeitüberschreitung – der Server hat nicht rechtzeitig geantwortet.', 'timeout');
+    if (err?.name === 'AbortError') throw apiError('Abgebrochen.', 'aborted');
+    if (navigator.onLine === false) throw apiError('Keine Internetverbindung.', 'offline');
+    throw apiError('Server nicht erreichbar.', 'network');
+  } finally {
+    clearTimeout(timer);
+    if (callerSignal) callerSignal.removeEventListener('abort', onCallerAbort);
+  }
+
   if (!res.ok) {
     let msg = 'Ein Fehler ist aufgetreten.';
     let code = null;
@@ -318,11 +394,29 @@ async function api(path, options = {}) {
         msg = data.detail;
       }
     } catch (_) {}
-    const err = new Error(msg);
-    err.code = code;
-    throw err;
+    // A 429 carries no `detail` the driver can act on beyond "wait" — and
+    // it's the one status where the app itself is the likely cause (a
+    // retry loop), so it gets its own sentence rather than the generic one.
+    if (res.status === 429 && msg === 'Ein Fehler ist aufgetreten.') {
+      msg = 'Zu viele Anfragen. Bitte kurz warten und erneut versuchen.';
+    }
+    throw apiError(msg, code || `http_${res.status}`);
   }
-  return res.json();
+  // A 204 (or any empty body) would make `res.json()` throw a parse error
+  // that reads to the caller like the request failed, when it succeeded.
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    throw apiError('Unerwartete Antwort vom Server.', 'bad_response');
+  }
+}
+
+function apiError(message, code) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
 }
 
 // ---------------------------------------------------------------------
@@ -368,6 +462,8 @@ function hideProgress() {
   document.getElementById('progress-pill-wrap').classList.add('hidden');
 }
 
+const MAX_VISIBLE_TOASTS = 3;
+
 function toast(message, type = 'info', durationMs = 3800) {
   const colors = {
     info: 'bg-white/95 text-black',
@@ -376,8 +472,15 @@ function toast(message, type = 'info', durationMs = 3800) {
   };
   const el = document.createElement('div');
   el.className = `toast-enter pointer-events-auto max-w-sm w-full backdrop-blur-xl border border-black/5 ${colors[type] || colors.info} rounded-2xl px-4 py-3 text-sm font-medium shadow-xl`;
+  if (type === 'error') el.setAttribute('role', 'alert');
   el.textContent = message;
-  document.getElementById('toast-container').appendChild(el);
+  const container = document.getElementById('toast-container');
+  // A burst of failures (a bulk import that can't reach the server, a
+  // handful of quick taps while offline) otherwise stacks messages down
+  // the screen until they cover the list underneath — the oldest ones no
+  // longer being read by anyone. Keep the newest few.
+  while (container.childElementCount >= MAX_VISIBLE_TOASTS) container.firstElementChild.remove();
+  container.appendChild(el);
   if (navigator.vibrate && type === 'error') navigator.vibrate(30);
   setTimeout(() => { el.style.transition = 'opacity .3s, transform .3s'; el.style.opacity = '0'; el.style.transform = 'translateY(-8px)'; setTimeout(() => el.remove(), 300); }, durationMs);
 }
@@ -392,13 +495,83 @@ function toast(message, type = 'info', durationMs = 3800) {
 // ---------------------------------------------------------------------
 function closeAlert() {
   document.getElementById('modal-root').innerHTML = '';
+  onModalEscape = null;
+  restoreFocusAfterModal();
+  updateHistoryGuard();
 }
+
+// Whatever should happen when Escape is pressed, set by whichever modal is
+// currently open. Without it there is no keyboard way out of a sheet at
+// all — the backdrop is a click target only — which on a desktop browser
+// means a confirm dialog that can't be dismissed without reaching for the
+// mouse, and a promise that never settles if the driver assumes it can.
+let onModalEscape = null;
+
+// ---------------------------------------------------------------------
+// Modal focus handling.
+//
+// Two problems, both invisible with a mouse and both blocking with a
+// keyboard or a screen reader. First, focus stays wherever it was when a
+// sheet opens, so Tab walks the *page behind* the dialog — a screen reader
+// user gets read the route list they can't see instead of the question
+// they're being asked. Second, focus is not put back afterwards, so
+// dismissing a sheet drops the caret at the top of the document and the
+// driver has to tab all the way back to where they were.
+// ---------------------------------------------------------------------
+let focusBeforeModal = null;
+
+const FOCUSABLE = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function rememberFocusBeforeModal() {
+  // Only the first modal in a chain records it: a confirm opened from
+  // inside a sheet must restore to what was focused before the *sheet*,
+  // not to a button inside a sheet that no longer exists.
+  if (!isModalOpen()) focusBeforeModal = document.activeElement;
+}
+
+function restoreFocusAfterModal() {
+  const target = focusBeforeModal;
+  focusBeforeModal = null;
+  // `isConnected` because render() replaces #app wholesale — the element
+  // that had focus before the modal is very often no longer in the document.
+  if (target && target.isConnected && typeof target.focus === 'function') {
+    target.focus({ preventScroll: true });
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const menu = document.getElementById('route-menu');
+    if (menu && !menu.classList.contains('hidden')) { closeRouteMenu(); return; }
+    if (onModalEscape) onModalEscape();
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  // Focus trap: keep Tab inside the open dialog by wrapping at its ends.
+  const root = document.getElementById('modal-root');
+  if (!root.childElementCount) return;
+  const items = Array.from(root.querySelectorAll(FOCUSABLE)).filter((el) => el.offsetParent !== null);
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  } else if (!root.contains(document.activeElement)) {
+    e.preventDefault();
+    first.focus();
+  }
+});
 
 function confirmSheet({ title, message, confirmLabel = 'Bestätigen', cancelLabel = 'Abbrechen', danger = false }) {
   return new Promise((resolve) => {
+    rememberFocusBeforeModal();
     const root = document.getElementById('modal-root');
     root.innerHTML = `
-      <div class="fixed inset-0 z-[60] flex items-center justify-center px-6">
+      <div class="fixed inset-0 z-[60] flex items-center justify-center px-6" role="dialog" aria-modal="true" aria-label="${escapeAttr(title)}">
         <div class="sheet-backdrop absolute inset-0 bg-black/30" data-cancel></div>
         <div class="alert-panel relative w-full max-w-[300px] bg-white/95 backdrop-blur-xl border border-black/5 rounded-2xl overflow-hidden shadow-2xl text-center">
           <div class="px-5 pt-5 pb-4">
@@ -412,22 +585,31 @@ function confirmSheet({ title, message, confirmLabel = 'Bestätigen', cancelLabe
         </div>
       </div>
     `;
-    root.querySelectorAll('[data-cancel]').forEach(el => el.addEventListener('click', () => { closeAlert(); resolve(false); }));
+    const cancel = () => { closeAlert(); resolve(false); };
+    root.querySelectorAll('[data-cancel]').forEach(el => el.addEventListener('click', cancel));
     root.querySelector('[data-confirm]').addEventListener('click', () => { closeAlert(); resolve(true); });
+    onModalEscape = cancel;
+    updateHistoryGuard();
+    // Focus lands on the safe choice, never the destructive one: a stray
+    // Enter should not confirm "delete route".
+    setTimeout(() => root.querySelector('[data-cancel]:not(.absolute)')?.focus(), 60);
   });
 }
 
-function promptSheet({ title, message, placeholder = '', initial = '', confirmLabel = 'Speichern', cancelLabel = 'Abbrechen' }) {
+function promptSheet({ title, message, placeholder = '', initial = '', confirmLabel = 'Speichern', cancelLabel = 'Abbrechen', maxLength = LIMITS.routeName }) {
   return new Promise((resolve) => {
+    rememberFocusBeforeModal();
     const root = document.getElementById('modal-root');
     root.innerHTML = `
-      <div class="fixed inset-0 z-[60] flex items-center justify-center px-6">
+      <div class="fixed inset-0 z-[60] flex items-center justify-center px-6" role="dialog" aria-modal="true" aria-label="${escapeAttr(title)}">
         <div class="sheet-backdrop absolute inset-0 bg-black/30" data-cancel></div>
         <div class="alert-panel relative w-full max-w-[300px] bg-white/95 backdrop-blur-xl border border-black/5 rounded-2xl overflow-hidden shadow-2xl text-center">
           <div class="px-5 pt-5 pb-4">
             <h3 class="font-semibold text-[15px]">${escapeHtml(title)}</h3>
             ${message ? `<p class="text-[13px] text-black/60 mt-1 mb-3 leading-snug">${escapeHtml(message)}</p>` : '<div class="mt-3"></div>'}
-            <input data-input value="${escapeAttr(initial)}" placeholder="${escapeAttr(placeholder)}" class="w-full bg-black/5 rounded-lg px-3 py-2 text-[15px] text-center focus:outline-none focus:ring-2 focus:ring-brand-600" />
+            <!-- 16px, not 15: iOS zooms the whole page in when a focused
+                 input's font-size is under 16px, and never zooms back out. -->
+            <input data-input value="${escapeAttr(initial)}" placeholder="${escapeAttr(placeholder)}" maxlength="${maxLength}" enterkeyhint="done" class="w-full bg-black/5 rounded-lg px-3 py-2 text-base text-center focus:outline-none focus:ring-2 focus:ring-brand-600" />
           </div>
           <div class="grid grid-cols-2 border-t border-black/10">
             <button data-cancel class="press-98 py-3 text-[15px] font-medium text-black/70 border-r border-black/10">${escapeHtml(cancelLabel)}</button>
@@ -444,9 +626,12 @@ function promptSheet({ title, message, placeholder = '', initial = '', confirmLa
     // accepting the suggested default route name by just tapping
     // "Speichern" used to silently do nothing.
     const submit = () => { const v = input.value; closeAlert(); resolve(v); };
-    root.querySelectorAll('[data-cancel]').forEach(el => el.addEventListener('click', () => { closeAlert(); resolve(null); }));
+    const cancel = () => { closeAlert(); resolve(null); };
+    root.querySelectorAll('[data-cancel]').forEach(el => el.addEventListener('click', cancel));
     root.querySelector('[data-confirm]').addEventListener('click', submit);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    onModalEscape = cancel;
+    updateHistoryGuard();
   });
 }
 
@@ -498,25 +683,103 @@ function syncRouteSummary() {
   if (idx === -1) state.routes.unshift(summary); else state.routes[idx] = summary;
 }
 
-// Both openRoute (tapping a route in a list) and selectMapRoute (the Karte
-// tab's picker) fetch a route by id and land it in state.currentRoute — the
-// single most routine action in the app, and the easiest to fire twice in
-// a row (tap one route, then quickly tap a different one before the first
-// finishes loading). Network responses aren't guaranteed to arrive in the
-// order they were sent, so without this guard the *first* tap's slower
-// response could land last and silently switch the driver back to a route
-// they already navigated away from. Both share `latestRouteRequestId` so
-// they also correctly supersede each other, not just themselves.
+// ---------------------------------------------------------------------
+// Ordering every route update the app receives.
+//
+// Nearly every endpoint answers with the *whole* route, and the app assigns
+// that answer straight to `state.currentRoute`. That is fine when responses
+// come back in the order they were sent, and responses do not come back in
+// the order they were sent — especially not on mobile data, and especially
+// not for the one action a driver fires in bursts: ticking off stops.
+//
+// Tick stop A, tick stop B a moment later. If A's reply is the slower of
+// the two, it lands last, and A's reply describes a route where B was still
+// outstanding. B's tick vanishes from the screen — not reverted by a
+// failure, just quietly overwritten by an older truth — and the driver has
+// no reason to doubt what they're looking at.
+//
+// Every request that will assign to `state.currentRoute` therefore takes a
+// ticket first, and a reply is only allowed to land if no newer reply has
+// landed already. Older replies are dropped: whatever is newer is closer to
+// what the server actually holds.
+// ---------------------------------------------------------------------
+let mutationSeq = 0;
+let lastAppliedSeq = 0;
+
+function nextSeq() {
+  return ++mutationSeq;
+}
+
+// Ticks the driver has made that the server has not confirmed yet, keyed by
+// stop id.
+//
+// Sequence numbers alone are not quite enough. They order replies by when
+// each request was *sent*, but the server is free to process two requests
+// in the other order — so the reply the app discards as "older" can be the
+// one carrying the newer truth, and a tick would sit on screen while the
+// route object underneath it says otherwise.
+//
+// Rather than trying to divine the server's ordering from replies that
+// carry no version, the app keeps what it knows for certain: which ticks
+// the driver has made and which have not been answered yet. Every incoming
+// route is re-stamped with those before it's displayed, and each entry is
+// dropped the moment its own request settles. What the driver did stays on
+// screen until the server has actually spoken about that exact stop.
+const pendingDelivered = new Map();
+
+/// Re-applies unconfirmed ticks on top of a freshly received route, and
+/// recomputes the count from the stops rather than adjusting it by hand —
+/// a counter nudged up and down through races drifts, a derived one cannot.
+function rebasePendingDelivered() {
+  const r = state.currentRoute;
+  if (!r || !Array.isArray(r.stops)) return;
+  for (const [stopId, delivered] of pendingDelivered) {
+    const stop = r.stops.find((s) => s.id === stopId);
+    if (stop) stop.delivered = delivered;
+  }
+  r.delivered_count = r.stops.filter((s) => s.kind === 'customer' && s.delivered).length;
+}
+
+/// Applies a server response to the route in focus, unless it's stale.
+/// Returns whether it was applied, so callers can skip their success
+/// toast/haptic for a reply that changed nothing on screen.
+function applyRouteUpdate(seq, routeId, updated) {
+  // The driver moved to a different route while this was in flight.
+  if (state.currentRoute?.id !== routeId) return false;
+  // A newer reply already landed; this one describes an older world.
+  if (seq < lastAppliedSeq) return false;
+  lastAppliedSeq = seq;
+  state.currentRoute = updated;
+  rebasePendingDelivered();
+  syncRouteSummary();
+  return true;
+}
+
+/// Loading a route wholesale (tapping one in a list, the Karte picker,
+/// a resume refresh) supersedes anything in flight for the previous one.
+function adoptRoute(seq, route) {
+  if (seq < lastAppliedSeq) return false;
+  lastAppliedSeq = seq;
+  state.currentRoute = route;
+  rebasePendingDelivered();
+  syncRouteSummary();
+  return true;
+}
+
+// `latestRouteRequestId` additionally guards *which route* wins when two
+// different routes are opened in quick succession: the sequence numbers
+// above would let the newer request win anyway, but this keeps the error
+// toast from firing for a request the driver has already abandoned.
 let latestRouteRequestId = null;
 
 async function openRoute(id) {
   latestRouteRequestId = id;
+  const seq = nextSeq();
   showProgress();
   try {
     const route = await api(`/routes/${id}`);
     if (latestRouteRequestId !== id) return;
-    state.currentRoute = route;
-    syncRouteSummary();
+    if (!adoptRoute(seq, route)) return;
     state.detailOrigin = state.tab;
     render();
   } catch (err) {
@@ -529,17 +792,20 @@ async function openRoute(id) {
 function closeDetail() {
   state.currentRoute = null;
   state.detailOrigin = null;
+  // Predictions belong to the route that was on screen; carrying them to
+  // the next one would stamp its stops with another route's ids.
+  pendingDelivered.clear();
   render();
 }
 
 async function selectMapRoute(id) {
   latestRouteRequestId = id;
+  const seq = nextSeq();
   showProgress();
   try {
     const route = await api(`/routes/${id}`);
     if (latestRouteRequestId !== id) return;
-    state.currentRoute = route;
-    syncRouteSummary();
+    if (!adoptRoute(seq, route)) return;
     state.detailOrigin = null;
     render();
   } catch (err) {
@@ -561,7 +827,11 @@ function openCurrentRouteDetail() {
 // ---------------------------------------------------------------------
 async function loadRoutes() {
   try {
-    state.routes = await api('/routes');
+    // `|| []` rather than trusting the shape: every list render indexes
+    // straight into this, and one malformed response would otherwise take
+    // the whole screen down with a TypeError instead of an error message.
+    state.routes = (await api('/routes')) || [];
+    lastRefreshAt = Date.now();
     render();
   } catch (err) {
     toast(err.message || 'Routen konnten nicht geladen werden.', 'error');
@@ -577,6 +847,55 @@ async function loadRoutes() {
   }
 }
 
+// ---------------------------------------------------------------------
+// Refresh on resume. Installed as a home-screen PWA, this app is opened,
+// used, backgrounded and reopened all day — but it only ever fetched at
+// startup, so a driver returning to it hours later was looking at this
+// morning's list: routes someone else completed still showing as active,
+// stops added on another device missing entirely, and no indication any
+// of it was stale.
+//
+// The throttle is what keeps this from being a nuisance: switching apps
+// for three seconds to check a phone number shouldn't fire a network
+// request, and on a bad connection a burst of them would queue up behind
+// each other.
+// ---------------------------------------------------------------------
+const REFRESH_ON_RESUME_AFTER_MS = 60000;
+let lastRefreshAt = 0;
+let refreshInFlight = false;
+
+async function refreshOnResume() {
+  if (document.visibilityState !== 'visible') return;
+  if (refreshInFlight || Date.now() - lastRefreshAt < REFRESH_ON_RESUME_AFTER_MS) return;
+  refreshInFlight = true;
+  const seq = nextSeq();
+  try {
+    const routes = (await api('/routes')) || [];
+    state.routes = routes;
+    lastRefreshAt = Date.now();
+    // The route in focus carries the stop list the driver is actually
+    // working from, and it goes stale the same way — but only refetch it
+    // if it still exists, so a route deleted elsewhere closes cleanly
+    // instead of throwing a 404 toast in the driver's face on resume.
+    const current = state.currentRoute;
+    if (current && !routes.some((r) => r.id === current.id)) {
+      closeDetail();
+    } else if (current) {
+      const fresh = await api(`/routes/${current.id}`);
+      // Sequenced like every other update: a background refresh must never
+      // overwrite a tick the driver made while it was in flight.
+      applyRouteUpdate(seq, current.id, fresh);
+    }
+    render(true);
+  } catch (_) {
+    // A silent background refresh that fails is not worth interrupting
+    // anyone over — whatever is on screen stays, and the next resume (or
+    // any deliberate action) tries again.
+  } finally {
+    refreshInFlight = false;
+  }
+}
+
 function hideSplash() {
   const el = document.getElementById('splash');
   if (!el) return;
@@ -585,20 +904,17 @@ function hideSplash() {
   setTimeout(() => el.remove(), 320);
 }
 
-async function refreshCurrentRoute(promise) {
-  // Guards against the driver navigating to a *different* route while this
-  // request is still in flight — without this, a slow delete/optimize call
-  // for route A could resolve after the driver has already opened route B
-  // and silently stomp the screen with A's stale data (same class of race
-  // toggleDelivered already guards against).
+/// Runs a mutating request and lands its result on the route in focus,
+/// with both guards applied: the wrong-route check (the driver navigated
+/// away) and the stale-reply check (something newer already landed).
+async function refreshCurrentRoute(makeRequest, label) {
   const routeId = state.currentRoute?.id;
-  showProgress();
+  if (routeId == null) return;
+  const seq = nextSeq();
+  showProgress(label);
   try {
-    const updated = await promise;
-    if (state.currentRoute?.id !== routeId) return;
-    state.currentRoute = updated;
-    syncRouteSummary();
-    render();
+    const updated = await makeRequest();
+    if (applyRouteUpdate(seq, routeId, updated)) render();
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -618,8 +934,7 @@ async function createRoute() {
     // "Route <heutiges Datum>" for an omitted name.
     const body = name.trim() ? { name: name.trim() } : {};
     const route = await api('/routes', { method: 'POST', body: JSON.stringify(body) });
-    state.currentRoute = route;
-    syncRouteSummary();
+    adoptRoute(nextSeq(), route);
     state.detailOrigin = 'routes';
     state.tab = 'routes';
     render();
@@ -629,6 +944,19 @@ async function createRoute() {
   } finally {
     hideProgress();
   }
+}
+
+// Mirrors `addr_key` in src/main.rs closely enough to catch the case that
+// matters here: the same address typed twice with different spellings of
+// "Straße". Only used to decide whether to ask a question — the server
+// remains the authority on what actually matches what.
+function addrKey(strasse, plz) {
+  const s = String(strasse || '')
+    .trim().toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/str\.(\s|$)/g, 'straße$1')
+    .replace(/strasse\b/g, 'straße');
+  return `${s}|${String(plz || '').trim()}`;
 }
 
 async function submitStop(form, stopId) {
@@ -641,7 +969,27 @@ async function submitStop(form, stopId) {
 
   lastUsedPlz = plz;
   const data = { kunde, strasse, plz, paket, notiz, stopId };
+  // closeSheet() first, always: the confirm dialog below shares #modal-root
+  // with this sheet, so closing afterwards would wipe the dialog out of the
+  // DOM while it's still being awaited.
   closeSheet();
+
+  // Two menus for the same address on one route is occasionally real (two
+  // flats in one building) and much more often a double entry — worth one
+  // question, not worth blocking.
+  const key = addrKey(strasse, plz);
+  const duplicate = state.currentRoute?.stops?.find(
+    (s) => s.kind === 'customer' && s.id !== stopId && addrKey(s.strasse, s.plz) === key
+  );
+  if (duplicate) {
+    const ok = await confirmSheet({
+      title: 'Adresse schon in der Route',
+      message: `„${duplicate.kunde}" steht bereits unter ${strasse}, ${plz} Wien. Trotzdem hinzufügen?`,
+      confirmLabel: 'Trotzdem',
+    });
+    if (!ok) { openAddSheet(stopId ? { ...data, id: stopId } : data); return; }
+  }
+
   await sendStop(data);
 }
 
@@ -660,14 +1008,13 @@ async function sendStop(data, coords) {
   if (coords) { payload.lat = coords.lat; payload.lon = coords.lon; }
   const body = JSON.stringify(payload);
 
+  const seq = nextSeq();
   showProgress(data.stopId ? 'Adresse wird aktualisiert …' : 'Stopp wird hinzugefügt …');
   try {
     const updated = data.stopId
       ? await api(`/stops/${data.stopId}`, { method: 'PATCH', body })
       : await api(`/routes/${routeId}/stops`, { method: 'POST', body });
-    if (state.currentRoute?.id !== routeId) return;
-    state.currentRoute = updated;
-    syncRouteSummary();
+    if (!applyRouteUpdate(seq, routeId, updated)) return;
     render();
     if (navigator.vibrate) navigator.vibrate(15);
     if (coords) toast('Standort manuell gesetzt ✓', 'success');
@@ -677,7 +1024,16 @@ async function sendStop(data, coords) {
       openPinDropSheet(data);
       return;
     }
+    // Everything the driver typed lives only in `data` at this point — the
+    // sheet was closed before the request went out. Losing a connection
+    // must not also lose the address they just keyed in one-handed in a
+    // van, so the form comes back with every field exactly as it was and
+    // the error explains why. Without this, "Server nicht erreichbar" and
+    // a blank slate were the same event.
     toast(err.message, 'error');
+    if (state.currentRoute?.id === routeId) {
+      openAddSheet(data.stopId ? { ...data, id: data.stopId } : data);
+    }
   } finally {
     hideProgress();
   }
@@ -699,22 +1055,33 @@ async function toggleDelivered(stopId, delivered) {
   if (!stop) return;
 
   const prevDelivered = stop.delivered;
-  const prevDeliveredCount = route.delivered_count;
+  pendingDelivered.set(stopId, delivered);
   stop.delivered = delivered;
-  route.delivered_count += delivered ? 1 : -1;
+  route.delivered_count = route.stops.filter((s) => s.kind === 'customer' && s.delivered).length;
+  // The list screens read their counts from `state.routes`, not from the
+  // route in focus — without this the prediction only shows on the detail
+  // screen, and backing out to Routen before the server answers shows the
+  // old count next to a row the driver just ticked off.
+  syncRouteSummary();
   render(true);
   if (navigator.vibrate) navigator.vibrate(delivered ? [12, 40, 12] : 12);
 
+  const seq = nextSeq();
   try {
     const updated = await api(`/stops/${stopId}`, { method: 'PATCH', body: JSON.stringify({ delivered }) });
-    if (state.currentRoute?.id !== route.id) return;
-    state.currentRoute = updated;
-    syncRouteSummary();
+    // Confirmed: this stop's own request has been answered, so the
+    // prediction for it is no longer needed to hold the screen steady.
+    pendingDelivered.delete(stopId);
+    if (!applyRouteUpdate(seq, route.id, updated)) return;
     render(true);
   } catch (err) {
+    pendingDelivered.delete(stopId);
     if (state.currentRoute?.id === route.id) {
       stop.delivered = prevDelivered;
-      route.delivered_count = prevDeliveredCount;
+      // Derived, never nudged: a count adjusted by ±1 through a sequence of
+      // races ends up describing a route that doesn't exist.
+      route.delivered_count = route.stops.filter((s) => s.kind === 'customer' && s.delivered).length;
+      syncRouteSummary();
       render(true);
     }
     toast(err.message, 'error');
@@ -730,7 +1097,7 @@ async function toggleDelivered(stopId, delivered) {
 async function deleteStop(stopId) {
   const ok = await confirmSheet({ title: 'Stopp löschen?', message: 'Dieser Kundenstopp wird endgültig entfernt.', confirmLabel: 'Löschen', danger: true });
   if (!ok) return;
-  await refreshCurrentRoute(api(`/stops/${stopId}`, { method: 'DELETE' }));
+  await refreshCurrentRoute(() => api(`/stops/${stopId}`, { method: 'DELETE' }), 'Stopp wird entfernt …');
 }
 
 // Each of these captures the route's id *before* its confirm/prompt sheet
@@ -740,29 +1107,33 @@ async function deleteStop(stopId) {
 // silently overwrite (or, for deleteRoute, close) whatever route they've
 // since navigated to instead of the one this action was actually for.
 async function renameRoute() {
-  const routeId = state.currentRoute.id;
+  const routeId = state.currentRoute?.id;
+  if (routeId == null) return;
   const name = await promptSheet({ title: 'Route umbenennen', initial: state.currentRoute.name });
   if (name === null) return;
   if (!name.trim()) { toast('Name darf nicht leer sein.', 'error'); return; }
+  const seq = nextSeq();
+  showProgress();
   try {
     const updated = await api(`/routes/${routeId}`, { method: 'PATCH', body: JSON.stringify({ name: name.trim() }) });
-    if (state.currentRoute?.id !== routeId) return;
-    state.currentRoute = updated;
-    syncRouteSummary();
-    render();
-  } catch (err) { toast(err.message, 'error'); }
+    if (applyRouteUpdate(seq, routeId, updated)) render();
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    hideProgress();
+  }
 }
 
 async function resetDelivered() {
-  const routeId = state.currentRoute.id;
+  const routeId = state.currentRoute?.id;
+  if (routeId == null) return;
   const ok = await confirmSheet({ title: 'Zustellungen zurücksetzen?', message: 'Alle Häkchen dieser Route werden entfernt. Adressen und Reihenfolge bleiben erhalten.', confirmLabel: 'Zurücksetzen' });
   if (!ok) return;
+  const seq = nextSeq();
   showProgress();
   try {
     const updated = await api(`/routes/${routeId}/reset-delivered`, { method: 'POST' });
-    if (state.currentRoute?.id !== routeId) return;
-    state.currentRoute = updated;
-    syncRouteSummary();
+    if (!applyRouteUpdate(seq, routeId, updated)) return;
     render();
     toast('Zustellungen zurückgesetzt ✓', 'success');
   } catch (err) {
@@ -773,7 +1144,8 @@ async function resetDelivered() {
 }
 
 async function toggleRouteStatus() {
-  const routeId = state.currentRoute.id;
+  const routeId = state.currentRoute?.id;
+  if (routeId == null) return;
   const newStatus = state.currentRoute.status === 'completed' ? 'active' : 'completed';
   const ok = await confirmSheet({
     title: newStatus === 'completed' ? 'Route abschließen?' : 'Route reaktivieren?',
@@ -781,31 +1153,48 @@ async function toggleRouteStatus() {
     confirmLabel: newStatus === 'completed' ? 'Abschließen' : 'Reaktivieren',
   });
   if (!ok) return;
+  const seq = nextSeq();
+  showProgress();
   try {
     const updated = await api(`/routes/${routeId}`, { method: 'PATCH', body: JSON.stringify({ status: newStatus }) });
-    if (state.currentRoute?.id !== routeId) return;
-    state.currentRoute = updated;
-    syncRouteSummary();
+    if (!applyRouteUpdate(seq, routeId, updated)) return;
+    // A completed route belongs in Verlauf and an active one in Routen, so
+    // the detail screen follows it across rather than being left in a tab
+    // whose list no longer contains it.
     state.tab = newStatus === 'completed' ? 'verlauf' : 'routes';
     state.detailOrigin = state.tab;
     render();
     toast(newStatus === 'completed' ? 'Route abgeschlossen ✓' : 'Route wieder aktiv ✓', 'success');
-  } catch (err) { toast(err.message, 'error'); }
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    hideProgress();
+  }
 }
 
 async function deleteRoute() {
-  const routeId = state.currentRoute.id;
+  const routeId = state.currentRoute?.id;
+  if (routeId == null) return;
   const ok = await confirmSheet({ title: 'Route löschen?', message: `„${state.currentRoute.name}" wird mit allen Stopps endgültig gelöscht. Das kann nicht rückgängig gemacht werden.`, confirmLabel: 'Löschen', danger: true });
   if (!ok) return;
+  showProgress('Route wird gelöscht …');
   try {
     await api(`/routes/${routeId}`, { method: 'DELETE' });
-    await loadRoutes();
+    // Close the detail screen *before* reloading the list: closeDetail()
+    // renders, and rendering a detail screen for a route that no longer
+    // exists would read its stops off an object the server has forgotten.
     if (state.currentRoute?.id === routeId) closeDetail();
-  } catch (err) { toast(err.message, 'error'); }
+    await loadRoutes();
+    toast('Route gelöscht ✓', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    hideProgress();
+  }
 }
 
 async function manualOptimize() {
-  await refreshCurrentRoute(api(`/routes/${state.currentRoute.id}/optimize`, { method: 'POST' }));
+  await refreshCurrentRoute(() => api(`/routes/${state.currentRoute.id}/optimize`, { method: 'POST' }), 'Route wird optimiert …');
 }
 
 async function clearOfflineCache() {
@@ -824,10 +1213,11 @@ async function clearOfflineCache() {
 // Generic bottom-sheet shell — shared by the add/edit-stop sheet, the
 // JSON-import sheet and the pin-drop fallback.
 // ---------------------------------------------------------------------
-function renderSheetShell(bodyHtml, { scrollable = true } = {}) {
+function renderSheetShell(bodyHtml, { scrollable = true, label = '' } = {}) {
+  rememberFocusBeforeModal();
   const root = document.getElementById('modal-root');
   root.innerHTML = `
-    <div class="fixed inset-0 z-50 flex items-end justify-center">
+    <div class="fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true" ${label ? `aria-label="${escapeAttr(label)}"` : ''}>
       <div id="sheet-backdrop" class="sheet-backdrop absolute inset-0 bg-black/30" onclick="closeSheet()"></div>
       <div class="sheet-panel relative w-full max-w-md bg-[#F2F2F7] rounded-t-3xl flex flex-col ${scrollable ? 'max-h-[92vh]' : ''} shadow-sheet" style="padding-bottom: calc(env(safe-area-inset-bottom) + 1.25rem)">
         <div class="w-9 h-1.5 bg-black/15 rounded-full mx-auto mt-3 mb-1 shrink-0"></div>
@@ -835,11 +1225,30 @@ function renderSheetShell(bodyHtml, { scrollable = true } = {}) {
       </div>
     </div>
   `;
+  onModalEscape = closeSheet;
+  updateHistoryGuard();
+
+  // The on-screen keyboard covers roughly the bottom half of the screen,
+  // and iOS does not shrink the visual viewport for a `position: fixed`
+  // sheet — so focusing Notiz on a phone puts the caret in a field the
+  // driver cannot see while typing into it. Scrolling the focused field to
+  // the middle of the sheet is what keeps it visible.
+  root.addEventListener('focusin', (e) => {
+    if (!e.target.matches('input, textarea, select')) return;
+    setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 250);
+  });
 }
 
 function closeSheet() {
+  // A bulk import in flight has deliberately locked the sheet (see
+  // setJsonSheetBusy) — Escape and the back button must not be a way around
+  // that, or the sheet can be dismissed mid-save after all.
+  if (jsonSaveController) return;
   document.getElementById('modal-root').innerHTML = '';
+  onModalEscape = null;
   if (pinDropMap) { pinDropMap.remove(); pinDropMap = null; pinDropMarker = null; }
+  restoreFocusAfterModal();
+  updateHistoryGuard();
 }
 
 // ---------------------------------------------------------------------
@@ -875,11 +1284,27 @@ function openAddSheet(stop) {
 // few px — scrolling the list) cancels the hold; a finger is never
 // perfectly still, so cancelling on any movement at all meant the hold
 // almost never survived long enough to fire on a real touchscreen.
+//
+// "A plain tap does nothing" is right for avoiding stray edits and wrong
+// as the *only* feedback a driver ever gets: there is nothing on the row
+// that says a hold does anything at all, so the whole edit flow is
+// invisible until someone happens to rest a finger on it. A tap that was
+// clearly a tap — released early, no movement — therefore says so once,
+// which teaches the gesture without ever acting on the stray taps this
+// was built to ignore. It says it *once*: after the first time, a driver
+// who taps a row is not asking to be told again.
 // ---------------------------------------------------------------------
 let stopPressTimer = null;
 let stopPressEl = null;
 let stopPressStart = null;
 let lastTouchTime = 0;
+let editHintShown = false;
+
+function hintLongPressToEdit() {
+  if (editHintShown) return;
+  editHintShown = true;
+  toast('Zum Bearbeiten den Stopp gedrückt halten.', 'info', 3000);
+}
 
 function getStop(stopOrId) {
   if (typeof stopOrId === 'object' && stopOrId !== null) return stopOrId;
@@ -918,11 +1343,16 @@ function stopLongPressMove(e) {
 }
 
 function stopLongPressEnd() {
+  // A pending timer at release time means the press ended before the hold
+  // fired — i.e. this was a tap, not a hold, and not a scroll (which
+  // clears the timer via stopLongPressMove).
+  const wasTap = stopPressTimer !== null;
   clearTimeout(stopPressTimer);
   stopPressEl?.classList.remove('opacity-60');
   stopPressTimer = null;
   stopPressEl = null;
   stopPressStart = null;
+  if (wasTap) hintLongPressToEdit();
 }
 
 function stopLongPressContext(e, stopOrId) {
@@ -933,6 +1363,19 @@ function stopLongPressContext(e, stopOrId) {
   openAddSheet(stop);
 }
 
+// The keyboard equivalent of the long-press. A touch gesture is the only
+// way to reach the edit sheet otherwise, which leaves it unreachable with
+// a keyboard or a screen reader — and unlike a stray tap, pressing Enter
+// on a focused row is unambiguously deliberate, so it opens the sheet
+// directly rather than showing the hint.
+function stopRowKeydown(e, stopOrId) {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const stop = getStop(stopOrId);
+  if (!stop) return;
+  e.preventDefault();
+  openAddSheet(stop);
+}
+
 const FIELD = 'mt-1 w-full bg-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-600';
 const LABEL = 'text-[13px] font-medium text-black/50';
 
@@ -940,38 +1383,44 @@ function renderManualForm(stop) {
   const isEdit = !!stop?.id;
   const defaultPlz = stop?.plz || (isEdit ? '' : lastUsedPlz) || '';
 
+  // Every field is wired to its input with a real for/id pair rather than
+  // a bare floating <label>: an unassociated label is not a label at all —
+  // tapping it doesn't focus the field, and a screen reader announces the
+  // input as unlabelled.
+  const uid = (name) => `stop-field-${name}`;
+
   renderSheetShell(`
     <h2 class="text-[22px] font-bold mb-4">${isEdit ? 'Stopp bearbeiten' : 'Neuer Stopp'}</h2>
     <form id="stop-form" class="space-y-3 pb-2">
       <div>
-        <label class="${LABEL}">Kunde</label>
-        <input name="kunde" required autocomplete="off" value="${escapeAttr(stop?.kunde || '')}" placeholder="z.B. Fam. Gruber" class="${FIELD}" />
+        <label class="${LABEL}" for="${uid('kunde')}">Kunde</label>
+        <input id="${uid('kunde')}" name="kunde" required autocomplete="off" maxlength="${LIMITS.kunde}" enterkeyhint="next" value="${escapeAttr(stop?.kunde || '')}" placeholder="z.B. Fam. Gruber" class="${FIELD}" />
       </div>
       <div>
-        <label class="${LABEL}">Straße &amp; Hausnummer</label>
-        <input name="strasse" required autocomplete="off" value="${escapeAttr(stop?.strasse || '')}" placeholder="z.B. Favoritenstraße 45 (Adresse einfügen geht auch)" class="${FIELD}" />
+        <label class="${LABEL}" for="${uid('strasse')}">Straße &amp; Hausnummer</label>
+        <input id="${uid('strasse')}" name="strasse" required autocomplete="off" maxlength="${LIMITS.strasse}" enterkeyhint="next" value="${escapeAttr(stop?.strasse || '')}" placeholder="z.B. Favoritenstraße 45 (Adresse einfügen geht auch)" class="${FIELD}" />
       </div>
       <div>
-        <label class="${LABEL}">Bezirk</label>
-        <select name="plz" required class="${FIELD}">
+        <label class="${LABEL}" for="${uid('plz')}">Bezirk</label>
+        <select id="${uid('plz')}" name="plz" required class="${FIELD}">
           <option value="" disabled ${!defaultPlz ? 'selected' : ''}>Bezirk wählen …</option>
           ${VIENNA_DISTRICTS.map(d => `<option value="${d.plz}" ${defaultPlz === d.plz ? 'selected' : ''}>${d.bezirk}. Bezirk – ${d.name} (${d.plz})</option>`).join('')}
         </select>
       </div>
       <div>
-        <label class="${LABEL}">Paket</label>
-        <input name="paket" autocomplete="off" value="${escapeAttr(stop?.paket || '')}" placeholder="z.B. 2 Pakete, 1x Kühlware" class="${FIELD}" />
+        <label class="${LABEL}" for="${uid('paket')}">Paket</label>
+        <input id="${uid('paket')}" name="paket" autocomplete="off" maxlength="${LIMITS.paket}" enterkeyhint="next" value="${escapeAttr(stop?.paket || '')}" placeholder="z.B. 2 Pakete, 1x Kühlware" class="${FIELD}" />
       </div>
       <div>
-        <label class="${LABEL}">Notiz</label>
-        <textarea name="notiz" rows="2" placeholder="z.B. persönlich übergeben, Lift im Hof, Code 1234" class="${FIELD} resize-none">${escapeHtml(stop?.notiz || '')}</textarea>
+        <label class="${LABEL}" for="${uid('notiz')}">Notiz</label>
+        <textarea id="${uid('notiz')}" name="notiz" rows="2" maxlength="${LIMITS.notiz}" placeholder="z.B. persönlich übergeben, Lift im Hof, Code 1234" class="${FIELD} resize-none">${escapeHtml(stop?.notiz || '')}</textarea>
       </div>
       <div class="flex gap-3 pt-2">
         ${isEdit ? `<button type="button" onclick="closeSheet(); deleteStop(${stop.id});" class="press-98 px-4 py-3 rounded-xl bg-red-50 text-red-600 font-semibold">Löschen</button>` : ''}
         <button type="submit" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">${isEdit ? 'Speichern' : 'Hinzufügen & Optimieren'}</button>
       </div>
     </form>
-  `);
+  `, { label: isEdit ? 'Stopp bearbeiten' : 'Neuer Stopp' });
 
   const form = document.getElementById('stop-form');
   form.addEventListener('submit', (e) => {
@@ -1013,19 +1462,20 @@ function renderJsonForm() {
   renderSheetShell(`
     <h2 class="text-[22px] font-bold mb-1">Als JSON bearbeiten</h2>
     <p class="text-[12px] text-black/50 mb-2 leading-snug">Nur Kunde, Straße &amp; Hausnummer, Bezirk, Paket, Notiz. Start/Lager/Ziel sind fix und stehen hier nicht drin. Einen Stopp entfernst du, indem du sein Objekt aus der Liste löschst; neue fügst du als zusätzliche Objekte hinzu.</p>
-    ${!customers.length ? `<p class="text-[12px] text-warn mb-2">Noch keine Kundenstopps – unten steht ein Beispiel-Objekt. Bearbeite es zu einem echten Stopp oder lösche es, bevor du speicherst.</p>` : ''}
+    ${!customers.length ? `<p class="text-[12px] text-warnText mb-2">Noch keine Kundenstopps – unten steht ein Beispiel-Objekt. Bearbeite es zu einem echten Stopp oder lösche es, bevor du speicherst.</p>` : ''}
     <div class="flex gap-2 mb-2">
       <button type="button" onclick="pasteIntoJsonEditor()" class="press-98 flex-1 py-2 rounded-lg bg-white text-black/70 text-xs font-semibold disabled:opacity-50">Einfügen</button>
       <button type="button" onclick="clearJsonEditor()" class="press-98 flex-1 py-2 rounded-lg bg-white text-black/70 text-xs font-semibold disabled:opacity-50">Leeren</button>
     </div>
     <textarea id="json-editor" spellcheck="false" autocapitalize="off" autocomplete="off"
-      class="w-full h-[38vh] text-[11px] leading-relaxed font-mono bg-white rounded-xl p-3 overflow-auto whitespace-pre focus:outline-none focus:ring-2 focus:ring-brand-600 momentum disabled:opacity-50"
+      class="w-full h-[38vh] text-base leading-relaxed font-mono bg-white rounded-xl p-3 overflow-auto whitespace-pre focus:outline-none focus:ring-2 focus:ring-brand-600 momentum disabled:opacity-50"
     >${escapeHtml(editorInitial)}</textarea>
     <div class="flex gap-3 mt-4 pb-2">
       <button type="button" onclick="copyJsonToClipboard()" class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold text-sm disabled:opacity-50">Kopieren</button>
+      <button type="button" id="json-cancel-btn" onclick="cancelJsonSave()" class="hidden press-98 px-4 py-3 rounded-xl bg-white text-red-600 font-semibold text-sm">Abbrechen</button>
       <button type="button" id="json-save-btn" onclick="saveJsonEdits()" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white disabled:opacity-50">Speichern &amp; Optimieren</button>
     </div>
-  `);
+  `, { label: 'Kundenstopps als JSON bearbeiten' });
 }
 
 async function copyJsonToClipboard() {
@@ -1066,13 +1516,27 @@ function clearJsonEditor() {
 // second tap, this is what actually prevents a double-submit or the sheet
 // being closed mid-save (this endpoint can legitimately run for a minute
 // or more against Nominatim's rate limit).
+//
+// The one control deliberately left alive is the cancel button: without
+// it, a request that stalls on a dead mobile connection leaves the driver
+// staring at a locked sheet with no way out but force-quitting the app.
 function setJsonSheetBusy(busy) {
   const root = document.getElementById('modal-root');
-  root.querySelectorAll('button, textarea').forEach((el) => { el.disabled = busy; });
+  root.querySelectorAll('button, textarea').forEach((el) => {
+    if (el.id !== 'json-cancel-btn') el.disabled = busy;
+  });
   const backdrop = document.getElementById('sheet-backdrop');
   if (backdrop) backdrop.style.pointerEvents = busy ? 'none' : '';
   const saveBtn = document.getElementById('json-save-btn');
   if (saveBtn) saveBtn.textContent = busy ? 'Wird gespeichert …' : 'Speichern & Optimieren';
+  const cancelBtn = document.getElementById('json-cancel-btn');
+  if (cancelBtn) cancelBtn.classList.toggle('hidden', !busy);
+}
+
+let jsonSaveController = null;
+
+function cancelJsonSave() {
+  if (jsonSaveController) jsonSaveController.abort();
 }
 
 async function saveJsonEdits() {
@@ -1089,20 +1553,33 @@ async function saveJsonEdits() {
     toast('Erwarte eine Liste von Kundenstopps ([...]).', 'error');
     return;
   }
+  // Caught here as well as on the server so an oversized paste is rejected
+  // instantly, instead of after a full upload that can only end in the
+  // same refusal.
+  if (parsed.length > MAX_BULK_STOPS) {
+    toast(`Zu viele Stopps auf einmal (${parsed.length}, max. ${MAX_BULK_STOPS}). Bitte in kleineren Gruppen importieren.`, 'error', 7000);
+    return;
+  }
   const routeId = state.currentRoute.id;
+  const seq = nextSeq();
+  jsonSaveController = new AbortController();
   setJsonSheetBusy(true);
   showProgress('Adressen werden abgeglichen — bitte nicht schließen …');
   try {
     const data = await api(`/routes/${routeId}/json`, {
       method: 'PUT',
       body: JSON.stringify(parsed),
+      timeoutMs: API_TIMEOUT_LONG_MS,
+      signal: jsonSaveController.signal,
     });
+    // Cleared the moment the request resolves, not in `finally`: it's what
+    // closeSheet() checks to refuse dismissing a save that's still running,
+    // and the success path below closes the sheet itself.
+    jsonSaveController = null;
     // This request can legitimately run for a minute against the
     // geocoders' rate limit — long enough for the driver to have moved to
     // another route, whose screen must not be replaced by this one's result.
-    if (state.currentRoute?.id !== routeId) { closeSheet(); return; }
-    state.currentRoute = data;
-    syncRouteSummary();
+    if (!applyRouteUpdate(seq, routeId, data)) { closeSheet(); return; }
     closeSheet();
     render();
     if (data.geocode_failures && data.geocode_failures.length) {
@@ -1115,9 +1592,19 @@ async function saveJsonEdits() {
       toast('Route aktualisiert & optimiert ✓', 'success');
     }
   } catch (err) {
-    toast(err.message || 'Speichern fehlgeschlagen.', 'error');
+    // A cancel is the driver's own decision, not a failure to apologize
+    // for — and it explicitly cannot promise nothing was saved, since the
+    // server may well have finished the import after the connection was
+    // dropped. Saying so is what stops a driver from pasting it all again
+    // on top of a route that already has it.
+    if (err.code === 'aborted') {
+      toast('Abgebrochen. Bitte die Route prüfen — Teile könnten schon gespeichert sein.', 'info', 7000);
+    } else {
+      toast(err.message || 'Speichern fehlgeschlagen.', 'error');
+    }
     setJsonSheetBusy(false); // sheet stays open on failure — let the driver retry/edit
   } finally {
+    jsonSaveController = null;
     hideProgress();
   }
 }
@@ -1141,7 +1628,7 @@ function openPinDropSheet(data) {
       <button type="button" id="pin-back" class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold">Zurück</button>
       <button type="button" id="pin-confirm" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">Standort bestätigen</button>
     </div>
-  `, { scrollable: false });
+  `, { scrollable: false, label: 'Standort manuell setzen' });
 
   setTimeout(() => {
     const container = document.getElementById('pin-map');
@@ -1166,6 +1653,71 @@ function openPinDropSheet(data) {
     openAddSheet(data.stopId ? { ...data, id: data.stopId } : { ...data });
   });
 }
+
+// ---------------------------------------------------------------------
+// Hardware/browser back button.
+//
+// Installed to a home screen this looks and behaves like a native app, and
+// on Android that sets an expectation the app was not meeting: back from an
+// open sheet, or from a route's stop list, quit the app outright. Losing a
+// half-typed stop to a reflex is a bad way to learn that.
+//
+// The mechanism is one spare history entry, not one entry per screen.
+// Whenever the app is showing something that back ought to dismiss — a
+// modal, or a pushed detail screen — a single guard entry exists behind it.
+// Back consumes that entry, `popstate` dismisses one layer, and `render()`
+// (or the modal helpers) immediately re-establish a guard if there is still
+// something left to dismiss. When there is nothing left, no guard is
+// pushed, and back leaves the app exactly as it should.
+//
+// Closing something with a button instead has to retire the guard too, or
+// it would linger and turn the next back press into a no-op. `history.back()`
+// does that, with `suppressPop` marking it as bookkeeping rather than a
+// press to act on.
+// ---------------------------------------------------------------------
+let navGuardActive = false;
+let suppressPop = false;
+
+function isModalOpen() {
+  return document.getElementById('modal-root').childElementCount > 0;
+}
+
+function needsNavGuard() {
+  return isModalOpen() || isDetailShowing();
+}
+
+function updateHistoryGuard() {
+  const needed = needsNavGuard();
+  if (needed && !navGuardActive) {
+    navGuardActive = true;
+    history.pushState({ ear: 'guard' }, '');
+  } else if (!needed && navGuardActive) {
+    navGuardActive = false;
+    suppressPop = true;
+    history.back();
+  }
+}
+
+window.addEventListener('popstate', () => {
+  if (suppressPop) { suppressPop = false; return; }
+  // The guard entry we pushed has just been consumed by this press.
+  navGuardActive = false;
+  // Dismiss exactly one layer, outermost first — a confirm dialog opened
+  // over the stop list must not also close the stop list.
+  if (isModalOpen()) {
+    // The modal helpers resolve their promise on close; going through the
+    // same path they use keeps a pending confirm from hanging forever.
+    if (onModalEscape) onModalEscape();
+    else closeSheet();
+    updateHistoryGuard();
+    return;
+  }
+  if (isDetailShowing()) {
+    closeDetail();
+    return; // closeDetail renders, and render() re-syncs the guard
+  }
+  // Nothing left to dismiss: the press falls through and leaves the app.
+});
 
 // Customer names, addresses and notes are free text that ends up inside
 // template strings assigned to innerHTML — these are what keep an
@@ -1228,7 +1780,7 @@ function renderTabBar() {
     <nav class="fixed bottom-0 inset-x-0 z-40 bg-white border-t border-black/10" style="padding-bottom: env(safe-area-inset-bottom, 0px)">
       <div class="max-w-md mx-auto grid grid-cols-4">
         ${tabs.map(t => `
-          <button onclick="switchTab('${t.id}')" class="press-fade flex flex-col items-center justify-center gap-0.5 pt-2 pb-1.5 ${state.tab === t.id ? 'text-brand-600' : 'text-black/40'}">
+          <button onclick="switchTab('${t.id}')" ${state.tab === t.id ? 'aria-current="page"' : ''} aria-label="${t.label}" class="press-fade flex flex-col items-center justify-center gap-0.5 pt-2 pb-1.5 ${state.tab === t.id ? 'text-brand-600' : 'text-black/50'}">
             <span class="text-[22px] flex">${t.icon}</span>
             <span class="text-[10px] font-medium">${t.label}</span>
           </button>
@@ -1248,13 +1800,38 @@ function renderTabBar() {
 // "reloads" on every single tap.
 let suppressRowAnim = false;
 
+/// Which screen the current state resolves to. Used as the key for scroll
+/// memory, so that "where was I scrolled to" is remembered per screen
+/// rather than as one shared number.
+function currentScreenKey() {
+  return isDetailShowing() ? `detail:${state.currentRoute.id}` : `tab:${state.tab}`;
+}
+
+function isDetailShowing() {
+  return !!(state.currentRoute && state.detailOrigin === state.tab);
+}
+
+// Scroll offsets, one per screen. A single shared offset — which is what
+// this was — restores the *previous* screen's position onto the next one,
+// so scrolling halfway down a long Routen list and then tapping Verlauf
+// opened Verlauf already scrolled halfway down, past the top of a list the
+// driver had never looked at. Per-screen, going back to a list returns to
+// exactly where it was left, and a screen never inherits a position that
+// was never its own.
+const scrollMemory = new Map();
+let renderedScreenKey = null;
+
 function render(skipRowAnim) {
   suppressRowAnim = !!skipRowAnim;
   const app = document.getElementById('app');
-  const prevScroller = document.querySelector('[data-scroll]');
-  const prevScrollTop = prevScroller ? prevScroller.scrollTop : 0;
 
-  const showingDetail = state.currentRoute && state.detailOrigin === state.tab;
+  const prevScroller = document.querySelector('[data-scroll]');
+  if (prevScroller && renderedScreenKey) {
+    scrollMemory.set(renderedScreenKey, prevScroller.scrollTop);
+  }
+
+  const showingDetail = isDetailShowing();
+  const screenKey = currentScreenKey();
   let screen;
   if (showingDetail) screen = renderRouteDetail();
   else if (state.tab === 'routes') screen = renderRoutesTab();
@@ -1266,20 +1843,32 @@ function render(skipRowAnim) {
   document.querySelectorAll('[data-logo-src]').forEach(img => img.src = APP_LOGO);
 
   // innerHTML replacement above tears down and rebuilds the scroll
-  // container, which resets scrollTop to 0 by default — restore it so a
-  // re-render (e.g. an optimistic update immediately followed by the
-  // server-confirmed one) never visibly yanks the screen back to the top.
+  // container, which resets scrollTop to 0 — restore this screen's own
+  // remembered offset so a re-render (an optimistic update immediately
+  // followed by the server-confirmed one, say) never visibly jumps.
   const nextScroller = document.querySelector('[data-scroll]');
-  if (nextScroller) nextScroller.scrollTop = prevScrollTop;
+  if (nextScroller) nextScroller.scrollTop = scrollMemory.get(screenKey) || 0;
+  renderedScreenKey = screenKey;
 
   mountLargeTitle();
 
+  // Leaving the Karte tab deliberately does *not* destroy the map: the
+  // innerHTML replacement above already detached its element, which costs
+  // nothing while it's off screen, and keeping the instance means coming
+  // back is instant rather than a fresh style/tile download every time.
   if (state.tab === 'map' && !showingDetail) {
     initMapTabMap();
-  } else if (mapTabMap) {
-    mapTabMap.remove();
-    mapTabMap = null;
+    scrollActiveChipIntoView();
   }
+
+  updateHistoryGuard();
+}
+
+// Screens the driver is no longer able to return to shouldn't keep an
+// entry: a deleted route's detail position is dead weight, and without
+// this the map would grow for the life of the page.
+function forgetScrollMemory(key) {
+  scrollMemory.delete(key);
 }
 
 // ---------------------------------------------------------------------
@@ -1320,7 +1909,7 @@ function renderRoutesTab() {
         <h1 data-large-title class="large-title text-[34px] font-bold tracking-tight pt-3 pb-4">Routen</h1>
 
         ${active.length ? `<div class="${GROUP}">${active.map(routeRow).join('')}</div>` : `
-          <div class="text-center py-20 text-black/40">
+          <div class="text-center py-20 text-black/55">
             <span class="text-4xl flex justify-center mb-3 opacity-40">${ICONS.box}</span>
             <p class="text-[15px]">${state.routes.length ? 'Keine aktiven Routen.' : 'Noch keine Route angelegt.'}<br/>Starte mit dem <span class="text-brand-600 font-medium">+</span> oben.</p>
           </div>
@@ -1356,7 +1945,7 @@ function renderMapTab() {
 
   if (!pickable.length) {
     return `
-      <div class="flex-1 min-h-0 flex flex-col items-center justify-center px-8 text-center text-black/40">
+      <div class="flex-1 min-h-0 flex flex-col items-center justify-center px-8 text-center text-black/55">
         <span class="text-4xl flex justify-center mb-3 opacity-40">${ICONS.tabMap}</span>
         <p class="text-[15px]">Noch keine aktive Route.<br/>Lege zuerst eine Route an.</p>
       </div>
@@ -1372,7 +1961,7 @@ function renderMapTab() {
 
       <div class="absolute top-0 inset-x-0 z-10 momentum overflow-x-auto flex gap-2 px-4" style="padding-top: calc(env(safe-area-inset-top) + 0.75rem); padding-bottom: 0.75rem;">
         ${pickable.map(p => `
-          <button onclick="selectMapRoute(${p.id})" class="press-98 shrink-0 px-3.5 py-2 rounded-full text-[13px] font-semibold shadow-lg backdrop-blur-xl ${r && r.id === p.id ? 'bg-brand-600 text-white' : 'bg-white/90 text-black/70'}">${escapeHtml(p.name)}</button>
+          <button onclick="selectMapRoute(${p.id})" ${r && r.id === p.id ? 'data-route-chip-active aria-current="true"' : ''} class="press-98 shrink-0 px-3.5 py-2 rounded-full text-[13px] font-semibold shadow-lg backdrop-blur-xl ${r && r.id === p.id ? 'bg-brand-600 text-white' : 'bg-white/90 text-black/70'}">${escapeHtml(p.name)}</button>
         `).join('')}
       </div>
 
@@ -1423,7 +2012,7 @@ function renderVerlaufTab() {
         </div>
 
         ${done.length ? `<div class="${GROUP}">${done.map(routeRow).join('')}</div>` : `
-          <div class="text-center py-20 text-black/40">
+          <div class="text-center py-20 text-black/55">
             <span class="text-4xl flex justify-center mb-3 opacity-40">${ICONS.archive}</span>
             <p class="text-[15px]">Noch keine abgeschlossene Route.</p>
           </div>
@@ -1490,7 +2079,7 @@ function renderMoreTab() {
 // rather than letting one missing value render "NaN min".
 function legLabel(stop, extraClass = 'mt-1') {
   if (stop.next_leg_km == null || stop.next_leg_min == null) return '';
-  return `<p class="text-[12px] text-black/40 ${extraClass}">${stop.next_leg_km.toFixed(1)} km · ${Math.round(stop.next_leg_min)} min bis zum nächsten Stopp</p>`;
+  return `<p class="text-[12px] text-black/55 ${extraClass}">${stop.next_leg_km.toFixed(1)} km · ${Math.round(stop.next_leg_min)} min bis zum nächsten Stopp</p>`;
 }
 
 function stopKindMeta(stop) {
@@ -1539,10 +2128,15 @@ function newMap(container, opts) {
   return map;
 }
 
-function drawRouteOnMap(map, r) {
+function drawRouteOnMap(map, r, { fit = true } = {}) {
   if (map.getLayer('route-line')) map.removeLayer('route-line');
   if (map.getSource('route-line')) map.removeSource('route-line');
-  document.querySelectorAll('.ear-route-marker').forEach(el => el._marker?.remove());
+  // Scoped to this map's own container. A document-wide query would also
+  // rip the markers out of any *other* map that happens to be open — the
+  // pin-drop sheet's, most obviously — which is a bug waiting for the day
+  // two maps are on screen at once rather than a hypothetical.
+  (map._earMarkers || []).forEach((m) => m.remove());
+  map._earMarkers = [];
 
   map.addSource('route-line', {
     type: 'geojson',
@@ -1587,10 +2181,16 @@ function drawRouteOnMap(map, r) {
       `<b>${escapeHtml(meta ? meta.title : s.kunde)}</b><br>${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien${precisionNote}`
     );
     const marker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([s.lon, s.lat]).setPopup(popup).addTo(map);
-    el._marker = marker;
+    map._earMarkers.push(marker);
     bounds.extend([s.lon, s.lat]);
   });
 
+  // Only frame the route when it's a route the map wasn't already showing.
+  // Redrawing after a stop is ticked off (or after any other in-place
+  // update) must leave the camera exactly where the driver put it —
+  // re-fitting on every redraw would silently undo their zoom/pan each
+  // time, which is maddening while actually using the map to navigate.
+  if (!fit) return;
   if (!bounds.isEmpty()) {
     map.fitBounds(bounds, { padding: 48, maxZoom: 16, duration: 0 });
   } else {
@@ -1598,28 +2198,84 @@ function drawRouteOnMap(map, r) {
   }
 }
 
+// ---------------------------------------------------------------------
+// The Karte tab's map is built exactly once and then kept alive for the
+// life of the page.
+//
+// It can't simply live in the markup `renderMapTab()` returns: render()
+// replaces all of #app's innerHTML, so any element written there is a
+// brand new DOM node every single pass, and a map bound to the old one
+// would have to be torn down and rebuilt — refetching the style JSON,
+// glyphs and sprites, and throwing away the driver's zoom and pan — on
+// every re-render, including something as routine as tapping a different
+// route chip.
+//
+// So MapLibre gets its own element that render() never touches
+// (`mapTabEl`, created detached), and each render just re-parents that
+// element into the empty `#route-map` slot the freshly built screen
+// provides. Moving a node between parents preserves its canvas and its
+// WebGL context — the map keeps its tiles, its camera and its state, and
+// switching routes becomes "swap the line and the markers".
+// ---------------------------------------------------------------------
 let mapTabMap = null;
+let mapTabEl = null;
+let mapTabRouteId = null;
 
 function initMapTabMap() {
-  const container = document.getElementById('route-map');
-  if (!container || typeof maplibregl === 'undefined' || !state.currentRoute) return;
+  const slot = document.getElementById('route-map');
+  if (!slot || typeof maplibregl === 'undefined' || !state.currentRoute) return;
 
-  if (mapTabMap) { mapTabMap.remove(); mapTabMap = null; }
-  const map = newMap(container, {});
-  mapTabMap = map;
-  // The container is freshly inserted into the DOM this same tick, so its
-  // real size can still be settling when the map is constructed (Tailwind's
-  // CDN runtime applies utility classes asynchronously, safe-area values
-  // resolve, etc.) — a ResizeObserver keeps the canvas in sync with
-  // whatever the container's actual box turns out to be, for as long as
-  // this map instance lives, instead of guessing at one fixed delay.
-  const resizeObserver = new ResizeObserver(() => map.resize());
-  resizeObserver.observe(container);
-  map.once('remove', () => resizeObserver.disconnect());
-  map.on('load', () => {
-    if (mapTabMap !== map) return;
-    drawRouteOnMap(map, state.currentRoute);
-  });
+  if (!mapTabEl) {
+    mapTabEl = document.createElement('div');
+    mapTabEl.className = 'absolute inset-0';
+  }
+  if (mapTabEl.parentElement !== slot) slot.appendChild(mapTabEl);
+
+  if (!mapTabMap) {
+    const map = newMap(mapTabEl, {});
+    mapTabMap = map;
+    // The element's real size is still settling the tick it's inserted
+    // (Tailwind's CDN runtime applies utility classes asynchronously,
+    // safe-area values resolve) — and it's detached and re-attached on
+    // every tab switch from then on. A ResizeObserver keeps the canvas in
+    // sync with whatever the box actually turns out to be, each time,
+    // instead of guessing at one fixed delay.
+    const resizeObserver = new ResizeObserver(() => map.resize());
+    resizeObserver.observe(mapTabEl);
+    map.once('remove', () => resizeObserver.disconnect());
+    map.on('load', () => { if (mapTabMap === map) syncMapTabRoute(); });
+    return;
+  }
+
+  // Re-attached from a previous tab visit: the element had no layout box
+  // while it was detached, so the canvas needs one explicit nudge before
+  // the ResizeObserver takes over again.
+  mapTabMap.resize();
+  syncMapTabRoute();
+}
+
+function syncMapTabRoute() {
+  const map = mapTabMap;
+  const r = state.currentRoute;
+  // Before the style has finished loading there are no sources or layers
+  // to add to — the map's own 'load' handler calls back here.
+  if (!map || !r || !map.isStyleLoaded()) return;
+  drawRouteOnMap(map, r, { fit: mapTabRouteId !== r.id });
+  mapTabRouteId = r.id;
+}
+
+// Keeps the selected route's chip visible in the horizontally scrolling
+// picker — auto-selecting the first active route, or picking one far down
+// a long list, otherwise leaves the highlighted chip off-screen with no
+// hint that the map is showing anything at all.
+let chipScrolledOnce = false;
+function scrollActiveChipIntoView() {
+  const chip = document.querySelector('[data-route-chip-active]');
+  if (!chip) return;
+  // The very first paint has nowhere to animate *from*, and a smooth scroll
+  // there just looks like the row drifting on arrival.
+  chip.scrollIntoView({ inline: 'center', block: 'nearest', behavior: chipScrolledOnce ? 'smooth' : 'auto' });
+  chipScrolledOnce = true;
 }
 
 // ---------------------------------------------------------------------
@@ -1657,14 +2313,16 @@ function renderRouteDetail() {
     customerNum++;
     const delivered = s.delivered;
     const precisionBadge = s.location_precision === 'street'
-      ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warn bg-warn/10 px-1.5 py-0.5 rounded" title="Genaue Hausnummer nicht gefunden — nächstgelegene bekannte Adresse auf der Straße verwendet.">≈ Straße</span>`
+      ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Genaue Hausnummer nicht gefunden — nächstgelegene bekannte Adresse auf der Straße verwendet.">≈ Straße</span>`
       : s.location_precision === 'district'
-      ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warn bg-warn/10 px-1.5 py-0.5 rounded" title="Straße nicht gefunden — nur Bezirksmitte verwendet. Position bitte prüfen.">≈ Bezirk</span>`
+      ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Straße nicht gefunden — nur Bezirksmitte verwendet. Position bitte prüfen.">≈ Bezirk</span>`
       : '';
 
     return `
-      <div class="${suppressRowAnim ? '' : 'row-enter '}flex items-start gap-2 px-4 py-3.5 ${isNext && !delivered ? 'bg-brand-50/60' : ''}" ${suppressRowAnim ? '' : `style="animation-delay:${i * 25}ms"`}>
-        <div class="flex-1 min-w-0 select-none cursor-pointer"
+      <div ${isNext && !delivered ? 'data-next-stop' : ''} class="${suppressRowAnim ? '' : 'row-enter '}flex items-start gap-2 px-4 py-3.5 ${isNext && !delivered ? 'bg-brand-50/60' : ''}" ${suppressRowAnim ? '' : `style="animation-delay:${i * 25}ms"`}>
+        <div class="flex-1 min-w-0 select-none cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+          role="button" tabindex="0"
+          aria-label="${escapeAttr(`${s.kunde}, ${s.strasse}, ${s.plz} Wien — bearbeiten`)}"
           ontouchstart="stopLongPressStart(event, ${s.id})"
           ontouchend="stopLongPressEnd(event)"
           ontouchcancel="stopLongPressEnd(event)"
@@ -1673,15 +2331,16 @@ function renderRouteDetail() {
           onmouseup="stopLongPressEnd(event)"
           onmouseleave="stopLongPressEnd(event)"
           onmousemove="stopLongPressMove(event)"
+          onkeydown="stopRowKeydown(event, ${s.id})"
           oncontextmenu="stopLongPressContext(event, ${s.id})">
           <div class="flex items-center gap-1.5 flex-wrap">
             ${isNext && !delivered ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded">Nächster Stopp</span>` : ''}
             ${precisionBadge}
           </div>
-          <p class="font-medium ${delivered ? 'text-black/40 line-through' : ''}">${escapeHtml(s.kunde)}</p>
-          <p class="text-[13px] ${delivered ? 'text-black/35' : 'text-black/50'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien</p>
-          ${s.paket ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] font-medium mt-1.5 px-1.5 py-0.5 rounded ${delivered ? 'text-black/35 bg-black/5' : 'text-brand-700 bg-brand-50'}"><span class="flex shrink-0">${ICONS.box}</span><span class="truncate">${escapeHtml(s.paket)}</span></p>` : ''}
-          ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/35 bg-black/5' : 'text-warn bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
+          <p class="font-medium ${delivered ? 'text-black/50 line-through' : ''}">${escapeHtml(s.kunde)}</p>
+          <p class="text-[13px] ${delivered ? 'text-black/50' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien</p>
+          ${s.paket ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] font-medium mt-1.5 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-brand-700 bg-brand-50'}"><span class="flex shrink-0">${ICONS.box}</span><span class="truncate">${escapeHtml(s.paket)}</span></p>` : ''}
+          ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
           ${legLabel(s, 'mt-1.5')}
         </div>
         <div class="flex flex-col gap-2 shrink-0 mt-0.5">
@@ -1702,7 +2361,7 @@ function renderRouteDetail() {
           <p data-compact-title class="compact-title flex-1 min-w-0 text-[15px] font-semibold text-center truncate px-1" style="opacity:0">${escapeHtml(r.name)}</p>
           <button onclick="openAddSheet()" aria-label="Stopp hinzufügen" title="Stopp hinzufügen" class="press-fade w-9 h-9 flex items-center justify-center text-brand-600 text-lg shrink-0">${ICONS.plus}</button>
           <div class="relative shrink-0">
-            <button onclick="document.getElementById('route-menu').classList.toggle('hidden')" aria-label="Weitere Aktionen" title="Weitere Aktionen" class="press-fade w-9 h-9 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>
+            <button id="route-menu-btn" onclick="toggleRouteMenu()" aria-label="Weitere Aktionen" title="Weitere Aktionen" aria-haspopup="menu" aria-expanded="false" aria-controls="route-menu" class="press-fade w-9 h-9 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>
             ${renderRouteMenu()}
           </div>
         </div>
@@ -1713,7 +2372,7 @@ function renderRouteDetail() {
         <p class="text-[13px] text-black/50 pb-3">${r.status === 'active' ? 'Aktiv' : 'Abgeschlossen'} · ${fmtDate(r.created_at)}</p>
 
         ${r.needs_optimize ? `
-          <button onclick="manualOptimize()" class="press-98 w-full flex items-center justify-between gap-2 bg-warn/10 text-warn text-[13px] font-semibold px-4 py-2.5 rounded-xl mb-3">
+          <button onclick="manualOptimize()" class="press-98 w-full flex items-center justify-between gap-2 bg-warn/10 text-warnText text-[13px] font-semibold px-4 py-2.5 rounded-xl mb-3">
             <span class="flex items-center gap-1.5"><span class="flex">${ICONS.warning}</span>Route nicht aktuell</span>
             <span class="underline">Jetzt optimieren</span>
           </button>
@@ -1732,6 +2391,8 @@ function renderRouteDetail() {
           <span class="text-brand-600 shrink-0 flex items-center gap-1 text-[13px] font-medium">${ICONS.mapPin} Karte<span class="flex">${ICONS.chevron}</span></span>
         </button>
 
+        ${nextStopBar(stops, firstOpenIdx)}
+
         <div class="${GROUP}">
           ${stops.map(stopRow).join('')}
         </div>
@@ -1740,16 +2401,70 @@ function renderRouteDetail() {
   `;
 }
 
+// A route is 20–30 stops, and the one that matters is whichever is next.
+// Partway through a shift that row is somewhere in the middle of a list
+// the driver has to scroll and scan to find — every single time they come
+// back to the app after a delivery. This puts it one tap away, and names
+// the customer so it doubles as an answer to "who am I going to?" without
+// scrolling at all. Hidden once everything is delivered, when there is no
+// next stop to go to.
+function nextStopBar(stops, firstOpenIdx) {
+  if (firstOpenIdx < 0) return '';
+  const next = stops[firstOpenIdx];
+  return `
+    <button onclick="scrollToNextStop()" class="press-98 w-full flex items-center gap-3 bg-brand-600 text-white rounded-2xl px-4 py-3 mb-4 shadow-sm text-left">
+      <span class="w-8 h-8 shrink-0 rounded-full bg-white/20 flex items-center justify-center">${ICONS.mapPin}</span>
+      <span class="flex-1 min-w-0">
+        <span class="block text-[11px] font-semibold uppercase tracking-wide text-white/75">Nächster Stopp</span>
+        <span class="block text-[15px] font-semibold truncate">${escapeHtml(next.kunde)}</span>
+        <span class="block text-[12px] text-white/80 truncate">${escapeHtml(next.strasse)}, ${escapeHtml(next.plz)} Wien</span>
+      </span>
+      <span class="shrink-0 text-white/70 flex">${ICONS.chevron}</span>
+    </button>
+  `;
+}
+
+function scrollToNextStop() {
+  const row = document.querySelector('[data-next-stop]');
+  if (!row) return;
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  // A brief highlight so the eye lands on the right row rather than on
+  // wherever the scroll happened to stop.
+  row.animate(
+    [{ backgroundColor: 'rgba(237,22,57,0.22)' }, { backgroundColor: 'rgba(237,22,57,0)' }],
+    { duration: 1200, easing: 'ease-out' }
+  );
+}
+
+function closeRouteMenu() {
+  document.getElementById('route-menu')?.classList.add('hidden');
+  document.getElementById('route-menu-btn')?.setAttribute('aria-expanded', 'false');
+}
+
+function toggleRouteMenu() {
+  const menu = document.getElementById('route-menu');
+  if (!menu) return;
+  const open = menu.classList.toggle('hidden') === false;
+  document.getElementById('route-menu-btn')?.setAttribute('aria-expanded', String(open));
+  // Move into the menu when it opens so a keyboard user lands on the first
+  // action rather than having to tab through the rest of the header.
+  if (open) menu.querySelector('button')?.focus();
+}
+
 function renderRouteMenu() {
   const r = state.currentRoute;
-  const item = (onclick, iconSvg, label, danger) => `<button onclick="${onclick}" class="w-full flex items-center gap-3 text-left px-4 py-3 text-[15px] ${danger ? 'text-red-600' : ''} active:bg-black/5">
+  // Every item closes the menu before running its action. Most end in a
+  // render() that rebuilds the (hidden) menu anyway — but the ones that
+  // open a confirm sheet first do not, so cancelling out of "Route
+  // löschen?" used to leave the menu still hanging open over the route.
+  const item = (onclick, iconSvg, label, danger) => `<button onclick="closeRouteMenu(); ${onclick}" role="menuitem" class="w-full flex items-center gap-3 text-left px-4 py-3 text-[15px] ${danger ? 'text-red-600' : ''} active:bg-black/5">
     <span class="w-5 flex shrink-0 ${danger ? 'text-red-600' : 'text-black/50'}">${iconSvg}</span>${label}
   </button>`;
   return `
-    <div id="route-menu" class="hidden absolute right-0 top-10 w-56 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden z-30 divide-y divide-black/10">
+    <div id="route-menu" role="menu" aria-label="Weitere Aktionen" class="hidden absolute right-0 top-10 w-56 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden z-30 divide-y divide-black/10">
       ${item("renameRoute()", ICONS.pencil, "Umbenennen")}
       ${item("manualOptimize()", ICONS.compass, "Neu optimieren")}
-      ${item("document.getElementById('route-menu').classList.add('hidden'); renderJsonForm();", ICONS.doc, "Als JSON bearbeiten")}
+      ${item("renderJsonForm();", ICONS.doc, "Als JSON bearbeiten")}
       ${item("resetDelivered()", ICONS.refresh, "Zustellungen zurücksetzen")}
       ${item("toggleRouteStatus()", ICONS.checkCircle, r.status === 'completed' ? 'Wieder aktivieren' : 'Route abschließen')}
       ${item("deleteRoute()", ICONS.trash, "Löschen", true)}
@@ -1762,13 +2477,19 @@ function renderRouteMenu() {
 // ---------------------------------------------------------------------
 document.querySelectorAll('[data-logo-src]').forEach(img => img.src = APP_LOGO);
 
-window.addEventListener('online', () => toast('Wieder online', 'success'));
+window.addEventListener('online', () => { toast('Wieder online', 'success'); refreshOnResume(); });
 window.addEventListener('offline', () => toast('Keine Internetverbindung – Änderungen können nicht gespeichert werden.', 'error'));
+
+document.addEventListener('visibilitychange', refreshOnResume);
+// iOS restores a backgrounded standalone PWA from the back/forward cache,
+// which in some versions skips visibilitychange entirely — pageshow is the
+// event that always fires there.
+window.addEventListener('pageshow', refreshOnResume);
 
 document.addEventListener('click', (e) => {
   const menu = document.getElementById('route-menu');
-  if (menu && !menu.classList.contains('hidden') && !e.target.closest('#route-menu') && !e.target.closest('button[onclick*="route-menu"]')) {
-    menu.classList.add('hidden');
+  if (menu && !menu.classList.contains('hidden') && !e.target.closest('#route-menu') && !e.target.closest('#route-menu-btn')) {
+    closeRouteMenu();
   }
 });
 
@@ -1781,6 +2502,34 @@ document.addEventListener('click', (e) => {
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+
+  // A deployed update installs and takes over immediately (the worker calls
+  // skipWaiting/clients.claim), but the *page* keeps running whatever
+  // JavaScript it started with. That leaves an old app talking to a new
+  // server for as long as the driver keeps the tab open — which for an
+  // installed PWA is days. Reloading once when control changes hands puts
+  // the two back in step.
+  //
+  // The flag is the whole safety of this: a reload that itself triggers
+  // another controllerchange would loop forever, and a reload loop on a
+  // delivery app in the field is far worse than a stale tab.
+  //
+  // Only when a worker *replaces* another one. On a first-ever visit the
+  // page starts with no controller at all, and the freshly installed worker
+  // claiming it also fires `controllerchange` — reloading there would mean
+  // every new install, and every visit after the caches are cleared, paying
+  // a pointless second page load. There is nothing stale to correct in that
+  // case: the JavaScript running *is* the JavaScript that was just fetched.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloadingForUpdate = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloadingForUpdate) return;
+    // Not during a save: an import can legitimately run for minutes, and a
+    // reload mid-request abandons it with no way to know what landed.
+    if (jsonSaveController) return;
+    reloadingForUpdate = true;
+    window.location.reload();
   });
 }
 
