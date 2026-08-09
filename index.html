@@ -2,17 +2,28 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8" />
-<!-- No `maximum-scale=1`: it was there to stop iOS auto-zooming when a
-     small input is focused, but it does that by disabling pinch-zoom
-     outright — for everybody, permanently. That's the wrong trade for an
-     app whose users read customer names and house numbers at arm's length
-     in a van, some of them with reading glasses they don't have on. The
-     auto-zoom it was suppressing is instead prevented at the source: every
-     focusable field in this app is at least 16px, which is the threshold
-     iOS actually checks. Zoom stays available to anyone who needs it.
-     `touch-action: manipulation` (see the stylesheet) still suppresses the
-     double-tap-to-zoom delay on buttons, so tapping stays instant. -->
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<!-- Zoom is locked. Installed to a home screen this is an app, not a page,
+     and browser zoom on an app reads as breakage: a stray two-finger touch
+     while steadying the phone in a van leaves the whole UI at 1.4× with the
+     tab bar half off screen and no visible way back.
+
+     Deliberate trade, recorded here so it isn't "fixed" by accident: this
+     is the one thing that let a driver enlarge a house number they couldn't
+     quite read. Nothing replaces it — the app's own type is sized for that
+     (nothing readable below 13px, addresses at 13–15px), and the OS-level
+     accessibility zoom still works, but in-app pinch does not. Reverting is
+     just dropping `maximum-scale`/`user-scalable` below and the zoom-lock
+     listeners in the Init section.
+
+     `user-scalable=no` is honored by Android/Chrome and ignored outright by
+     iOS Safari since iOS 10, so it is the `gesturestart` handlers in the
+     Init section that actually do the work on the platform this mostly runs
+     on. The map is exempt — see there for why it needs no exemption code.
+
+     Keeping every focusable field at ≥16px still matters independently: it
+     is the threshold iOS checks before auto-zooming a focused input, and
+     that auto-zoom fires regardless of these settings. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>EAR Routing</title>
 <meta name="description" content="Essen auf Rädern – Routenplanung für Zusteller des Arbeiter-Samariter-Bundes Österreichs" />
 <meta name="color-scheme" content="light" />
@@ -121,9 +132,17 @@
      document, and the native iOS/Android selection handles + callout
      menu popping up on every long-press read as "web page", not "app".
      Form fields are excluded (see below) so typing/editing still works. */
+  /* `manipulation` is the double-tap-to-zoom half of the zoom lock (see the
+     viewport comment in <head>): it kills double-tap zoom app-wide while
+     still permitting ordinary panning. Deliberately not `pan-x pan-y`,
+     which would also forbid browser pinch here — the viewport meta and the
+     gesture listeners already do that, and an ancestor that forbids pinch
+     outright risks the engine claiming a two-finger drag as a pan before
+     MapLibre's own handler can read it as a map zoom. */
   html, body {
     height: 100%; overflow: hidden; overscroll-behavior-y: none; background: #F2F2F7;
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    touch-action: manipulation;
   }
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', Inter, system-ui, sans-serif;
@@ -234,9 +253,11 @@
 // `detailOrigin` records *which* tab's list a route was opened from, so
 // the pushed stops-list detail screen only appears in that one tab — the
 // same per-tab navigation-stack behavior a native UITabBarController gives
-// you for free. Picking a route in the Karte tab's own picker sets
-// `detailOrigin` to 'map', which intentionally matches no tab's list, so
-// browsing the map never leaves a stray detail screen behind in Routen/Mehr.
+// you for free. Picking a route in the Karte tab's own picker clears
+// `detailOrigin` to null — "in focus, but no tab has a pushed detail for
+// it" — so browsing the map never leaves a stray detail screen behind in
+// Routen/Mehr. (Not the string 'map': see `switchTab`'s comment for why
+// that value in particular would do the opposite of what it looks like.)
 const state = { tab: 'routes', routes: [], currentRoute: null, detailOrigin: null };
 
 const GROUP = 'bg-white rounded-2xl overflow-hidden divide-y divide-black/10 shadow-sm';
@@ -1180,10 +1201,18 @@ async function deleteRoute() {
   showProgress('Route wird gelöscht …');
   try {
     await api(`/routes/${routeId}`, { method: 'DELETE' });
+    // Ladeliste ticks for a route that no longer exists describe a van
+    // loaded for a job that isn't happening.
+    ladelisteChecked.delete(routeId);
     // Close the detail screen *before* reloading the list: closeDetail()
     // renders, and rendering a detail screen for a route that no longer
     // exists would read its stops off an object the server has forgotten.
     if (state.currentRoute?.id === routeId) closeDetail();
+    // Only *after* that close, never before it: render() opens by writing
+    // the outgoing screen's scroll offset under `renderedScreenKey`, which
+    // is still this route's detail screen until closeDetail() has run. Drop
+    // the entry any earlier and the very next render puts it straight back.
+    forgetScrollMemory(`detail:${routeId}`);
     await loadRoutes();
     toast('Route gelöscht ✓', 'success');
   } catch (err) {
@@ -1607,6 +1636,182 @@ async function saveJsonEdits() {
     jsonSaveController = null;
     hideProgress();
   }
+}
+
+// ---------------------------------------------------------------------
+// Ladeliste — the pre-departure packing check.
+//
+// The stop list answers "where am I going". It does not answer the question
+// a driver actually has standing at an open boot: did the right number of
+// the right things come out of the kitchen. Reading that off 25 individual
+// rows means counting the same menu name over and over and losing the
+// count halfway down.
+//
+// So every stop's `paket` is summed across the route into one line per
+// distinct item ("5× TGM7"), each one tickable. That field has always been
+// free text, so the parsing is deliberately forgiving: one entry may hold
+// several items separated by commas, semicolons or " + ", and each may
+// carry a leading count ("2x TGM7", "2 Menüs") or none at all. Anything it
+// can't read a number off stays whole and counts as one — a label that
+// looks odd is a great deal better than a quantity that is quietly wrong,
+// because the whole point of this screen is that the number can be trusted.
+// ---------------------------------------------------------------------
+
+// Ticks live only in this tab's memory, keyed by route. "Is the right stuff
+// in the van" is a fact about this morning's loading, not a property of the
+// route worth storing on the server — and a checklist that came back
+// already ticked tomorrow morning would be worse than no checklist at all.
+// Kept across sheet opens (closing it to glance at a stop has not unloaded
+// the van), gone on reload.
+const ladelisteChecked = new Map();
+
+// "2x TGM7" / "2 × TGM7", or a bare count followed by a space ("2 Menüs").
+// Deliberately not a plain leading `\d+`: "3er Karton" is the name of one
+// thing, not three of anything, and the × or the space is exactly what
+// tells those two apart.
+const PAKET_QTY_X_RE = /^(\d+)\s*[x×]\s*(.+)$/i;
+const PAKET_QTY_SPACE_RE = /^(\d+)\s+(.+)$/;
+
+function parsePaketItems(paket) {
+  return String(paket || '')
+    .split(/[,;]|\s\+\s/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const m = part.match(PAKET_QTY_X_RE) || part.match(PAKET_QTY_SPACE_RE);
+      if (!m) return { qty: 1, label: part };
+      const qty = parseInt(m[1], 10);
+      const label = m[2].trim();
+      // A zero/absurd count, or a count with nothing left after it, means
+      // the guess was wrong — keep the driver's original text intact.
+      return qty > 0 && label ? { qty, label } : { qty: 1, label: part };
+    });
+}
+
+// Every distinct package across the route's customer stops, summed, busiest
+// first. `key` is the case/whitespace-insensitive identity used for both
+// grouping and the tick state; `label` is the first spelling that appeared,
+// so the list reads back in the driver's own words rather than a normalized
+// one nobody wrote.
+function ladelisteItems(route) {
+  const byKey = new Map();
+  for (const s of route.stops) {
+    if (s.kind !== 'customer' || !s.paket) continue;
+    for (const { qty, label } of parsePaketItems(s.paket)) {
+      const key = label.toLowerCase().replace(/\s+/g, ' ');
+      const entry = byKey.get(key);
+      if (entry) entry.qty += qty;
+      else byKey.set(key, { key, label, qty });
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => b.qty - a.qty || a.label.localeCompare(b.label, 'de'));
+}
+
+// Shared by the initial render and the in-place repaint below, so a ticked
+// row can never drift into looking different depending on which of the two
+// last touched it.
+const ladeQtyClass = (on) => `shrink-0 w-12 text-[17px] font-bold tabular-nums ${on ? 'text-black/30' : 'text-brand-600'}`;
+const ladeLabelClass = (on) => `flex-1 min-w-0 text-[15px] font-medium ${on ? 'text-black/40 line-through' : ''}`;
+const ladeMarkClass = (on) => `shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-[20px] shadow-sm ${on ? 'bg-success text-white' : 'bg-white border-2 border-black/15 text-black/30'}`;
+
+function ladelisteProgress(items, checked) {
+  // Counted from the items actually on screen, not from `checked.size` —
+  // the set can still hold a key from a package that has since been edited
+  // away, and "4 von 3 abgehakt" is a great way to lose a driver's trust in
+  // the whole list.
+  const done = items.filter((it) => checked.has(it.key)).length;
+  const pieces = items.reduce((n, it) => n + it.qty, 0);
+  return done >= items.length
+    ? `Alles abgehakt ✓ · ${pieces} Stück gesamt`
+    : `${done} von ${items.length} Positionen abgehakt · ${pieces} Stück gesamt`;
+}
+
+function renderLadeliste() {
+  const r = state.currentRoute;
+  if (!r) return;
+  const items = ladelisteItems(r);
+  const checked = ladelisteChecked.get(r.id) || new Set();
+  const withoutPaket = r.stops.filter((s) => s.kind === 'customer' && !s.paket).length;
+
+  // The row index, not the label, is what goes into `onclick`: the label is
+  // the driver's own free text and has no business being interpolated into
+  // an attribute as a JS string literal. Indices are stable while the sheet
+  // is open — `ladelisteItems` is deterministic and the route underneath it
+  // can't change without a re-render.
+  const row = (it, i) => {
+    const on = checked.has(it.key);
+    return `
+      <button type="button" id="lade-row-${i}" role="checkbox" aria-checked="${on}"
+        aria-label="${escapeAttr(`${it.qty} mal ${it.label}`)}"
+        onclick="toggleLadelisteItem(${i})"
+        class="w-full flex items-center gap-3 px-4 py-3.5 text-left press-fade">
+        <span data-lade-qty class="${ladeQtyClass(on)}">${it.qty}×</span>
+        <span data-lade-label class="${ladeLabelClass(on)}">${escapeHtml(it.label)}</span>
+        <span data-lade-mark class="${ladeMarkClass(on)}">${on ? ICONS.checkCircleFill : ICONS.circle}</span>
+      </button>`;
+  };
+
+  renderSheetShell(`
+    <h2 class="text-[22px] font-bold mb-1">Ladeliste</h2>
+    <p class="text-[13px] text-black/55 mb-4 leading-snug">Alle Pakete dieser Route zusammengezählt. Vor der Abfahrt abhaken, was tatsächlich im Auto liegt.</p>
+    ${items.length ? `
+      <p id="lade-progress" aria-live="polite" class="text-[13px] font-medium text-black/50 px-1 pb-1.5">${ladelisteProgress(items, checked)}</p>
+      <div class="${GROUP}">${items.map(row).join('')}</div>
+      ${withoutPaket ? `<p class="text-[12px] text-black/45 mt-3 px-1 leading-snug">${withoutPaket} Kundenstopp(e) ohne Paketangabe – die stehen hier nicht drin.</p>` : ''}
+      <div class="flex gap-3 mt-4 pb-2">
+        <button type="button" onclick="resetLadeliste()" class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold text-sm">Zurücksetzen</button>
+        <button type="button" onclick="closeSheet()" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">Fertig</button>
+      </div>
+    ` : `
+      <div class="${CARD} px-4 py-6 text-center">
+        <p class="text-[15px] font-medium text-black/70">Keine Paketangaben</p>
+        <p class="text-[13px] text-black/50 mt-1 leading-snug">Kein Stopp dieser Route hat etwas im Feld „Paket" stehen. Trag es beim Stopp ein (z.B. „2x TGM7"), dann wird hier automatisch zusammengezählt.</p>
+      </div>
+      <div class="mt-4 pb-2">
+        <button type="button" onclick="closeSheet()" class="press-98 w-full py-3 rounded-xl bg-brand-600 font-semibold text-white">Schließen</button>
+      </div>
+    `}
+  `, { label: 'Ladeliste' });
+}
+
+function toggleLadelisteItem(index) {
+  const r = state.currentRoute;
+  if (!r) return;
+  const items = ladelisteItems(r);
+  const it = items[index];
+  if (!it) return;
+
+  let checked = ladelisteChecked.get(r.id);
+  if (!checked) { checked = new Set(); ladelisteChecked.set(r.id, checked); }
+  const on = !checked.has(it.key);
+  if (on) checked.add(it.key); else checked.delete(it.key);
+
+  // Repainting the one row in place rather than re-rendering the sheet: a
+  // rebuild would throw away the scroll position halfway down a long list
+  // and move focus off the row that was just tapped — on every single tick.
+  const rowEl = document.getElementById(`lade-row-${index}`);
+  if (rowEl) {
+    rowEl.setAttribute('aria-checked', String(on));
+    const qty = rowEl.querySelector('[data-lade-qty]');
+    const label = rowEl.querySelector('[data-lade-label]');
+    const mark = rowEl.querySelector('[data-lade-mark]');
+    if (qty) qty.className = ladeQtyClass(on);
+    if (label) label.className = ladeLabelClass(on);
+    if (mark) { mark.className = ladeMarkClass(on); mark.innerHTML = on ? ICONS.checkCircleFill : ICONS.circle; }
+  }
+  const progress = document.getElementById('lade-progress');
+  if (progress) progress.textContent = ladelisteProgress(items, checked);
+  if (navigator.vibrate) navigator.vibrate(on ? [12, 40, 12] : 12);
+}
+
+function resetLadeliste() {
+  const r = state.currentRoute;
+  if (!r) return;
+  ladelisteChecked.delete(r.id);
+  // Every row changes at once here, so a full re-render is the honest way
+  // to do it — unlike a single tick, there is no scroll position worth
+  // preserving through a "start over".
+  renderLadeliste();
 }
 
 // ---------------------------------------------------------------------
@@ -2254,12 +2459,37 @@ function initMapTabMap() {
   syncMapTabRoute();
 }
 
+// One outstanding "try again once more of the style has landed" listener at
+// a time. render() can call syncMapTabRoute() many times while the map is
+// still coming up, and without this each of those would arm its own
+// `styledata` handler — every one of which fires on the same event and arms
+// another.
+let mapTabSyncPending = false;
+
 function syncMapTabRoute() {
   const map = mapTabMap;
   const r = state.currentRoute;
-  // Before the style has finished loading there are no sources or layers
-  // to add to — the map's own 'load' handler calls back here.
-  if (!map || !r || !map.isStyleLoaded()) return;
+  if (!map || !r) return;
+  // Before the style has finished loading there are no sources or layers to
+  // add to. The map's own 'load' handler calls back here — but `load` is not
+  // a guarantee that `isStyleLoaded()` is true: it also requires every
+  // *source* to have its tiles, which on a van's connection can still be in
+  // flight when `load` fires. Simply returning there left the Karte tab
+  // showing a bare basemap with no route line and no stop markers, and
+  // nothing scheduled to fix it — it only came right if some unrelated
+  // re-render happened to call back in. `styledata` fires again each time
+  // more of the style and its sources arrive, so re-arming on it turns that
+  // dead end into a short wait.
+  if (!map.isStyleLoaded()) {
+    if (!mapTabSyncPending) {
+      mapTabSyncPending = true;
+      map.once('styledata', () => {
+        mapTabSyncPending = false;
+        if (mapTabMap === map) syncMapTabRoute();
+      });
+    }
+    return;
+  }
   drawRouteOnMap(map, r, { fit: mapTabRouteId !== r.id });
   mapTabRouteId = r.id;
 }
@@ -2462,6 +2692,7 @@ function renderRouteMenu() {
   </button>`;
   return `
     <div id="route-menu" role="menu" aria-label="Weitere Aktionen" class="hidden absolute right-0 top-10 w-56 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden z-30 divide-y divide-black/10">
+      ${item("renderLadeliste()", ICONS.box, "Ladeliste")}
       ${item("renameRoute()", ICONS.pencil, "Umbenennen")}
       ${item("manualOptimize()", ICONS.compass, "Neu optimieren")}
       ${item("renderJsonForm();", ICONS.doc, "Als JSON bearbeiten")}
@@ -2476,6 +2707,36 @@ function renderRouteMenu() {
 // Init
 // ---------------------------------------------------------------------
 document.querySelectorAll('[data-logo-src]').forEach(img => img.src = APP_LOGO);
+
+// ---------------------------------------------------------------------
+// Zoom lock — the half of it that has to be JavaScript.
+//
+// `user-scalable=no` in the viewport meta is honored by Android/Chrome and
+// has been ignored outright by iOS Safari since iOS 10, so on the platform
+// this app mostly runs on these listeners *are* the mechanism. Safari
+// reports a page pinch as its own `gesture*` events; cancelling those is
+// what stops a stray two-finger touch leaving the app stuck at 1.4×.
+//
+// The map needs no exemption, and that is precisely why this is done with
+// event handlers rather than a `touch-action: pan-x pan-y` blanket:
+// MapLibre implements pinch and wheel zoom itself, from raw touch/wheel
+// events, and never asks the browser to zoom. `preventDefault()` cancels
+// the browser's default action without stopping propagation, so every one
+// of these events still reaches MapLibre's own handlers intact. Pinching
+// the map still zooms the map — it just no longer resizes the whole app
+// around it at the same time.
+//
+// Not covered, because a page cannot: the desktop browser's own Ctrl/Cmd
+// +/- keyboard zoom. That is browser chrome, it is not reachable from
+// here, and it is not a gesture anyone hits by accident in a van.
+// ---------------------------------------------------------------------
+for (const gestureType of ['gesturestart', 'gesturechange', 'gestureend']) {
+  document.addEventListener(gestureType, (e) => e.preventDefault(), { passive: false });
+}
+// A trackpad pinch (and Ctrl+scroll) arrives as a wheel event with ctrlKey
+// set — the desktop equivalent of the above. MapLibre's own scroll zoom is
+// plain-wheel and is unaffected either way.
+document.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
 
 window.addEventListener('online', () => { toast('Wieder online', 'success'); refreshOnResume(); });
 window.addEventListener('offline', () => toast('Keine Internetverbindung – Änderungen können nicht gespeichert werden.', 'error'));

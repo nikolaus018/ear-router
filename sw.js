@@ -1,7 +1,8 @@
 // Service worker for EAR Routing — read straight off disk on every request
-// and served at /sw.js, exactly like index.html (see `SW_JS_PATH` in
-// src/main.rs), so this stays a two-file app with no separate static asset
-// pipeline and editing it takes effect without a rebuild.
+// and served at /sw.js, exactly like index.html (see `assets_dir`/
+// `read_static` in src/main.rs), so this stays a two-file app with no
+// separate static asset pipeline and editing it takes effect without a
+// rebuild.
 //
 // This app is NOT fully offline-capable: adding/editing a stop calls
 // Nominatim/Wien-OGD (geocoding) and OSRM (routing) live every time, and

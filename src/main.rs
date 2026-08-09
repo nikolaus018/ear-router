@@ -4,7 +4,7 @@
 //! MapLibre GL JS/OpenFreeMap UI, ASBÖ-branded, PWA-ready — no separate JS/
 //! CSS build) and a matching `/sw.js` service worker for offline app-shell
 //! caching, both read straight off disk on every request (see
-//! `INDEX_HTML_PATH`/`SW_JS_PATH` below) rather than compiled into the
+//! `assets_dir`/`read_static` below) rather than compiled into the
 //! binary, so editing either file takes effect immediately. The JSON API is
 //! otherwise the main interface. Axum backend, SQLite storage. Geocoding
 //! and routing both run against real, actively-maintained open services
@@ -372,8 +372,9 @@ struct AppState {
     /// service should be able to point it at their own instance without
     /// editing Rust. For testing: handlers that reach the network can't be
     /// tested offline or deterministically, so the entire route/stop API
-    /// went untested — pointing these at an unreachable address is what
-    /// makes those tests possible (see the `handlers` test module).
+    /// goes untested — pointing these at an unreachable address is what
+    /// would make handler-level tests possible. Nothing does that yet; the
+    /// suite at the bottom of this file covers only the network-free parts.
     upstreams: Upstreams,
     /// One lock per route id, held for the duration of `reoptimize_route`.
     /// Two optimizations of the *same* route running concurrently (a stop
@@ -617,10 +618,28 @@ async fn security_headers_mw(req: Request, next: Next) -> Response {
 /// cached copy of one would show a driver a delivery list that's quietly
 /// out of date. `no-store` rather than `no-cache` because there is no
 /// version of this data worth keeping on disk at all.
+///
+/// Path-checked and mounted on the *outer* router rather than inside the
+/// API router, for the same reason `api_error_shape_mw` is: the two `/api`
+/// responses that don't come from a handler were missing the header
+/// entirely. `/api/health` is deliberately mounted outside the rate limiter
+/// (so a monitor can't be starved by a flood), and the limiter's own 429 is
+/// generated above every layer the API router nests inside — so neither
+/// could ever reach a middleware living in there. The health one is the
+/// one that mattered: a 200 with no freshness information at all is
+/// heuristically cacheable, and a proxy replaying a stale "ok" while the
+/// database is unreachable defeats the entire point of the endpoint.
+///
+/// The path check is what keeps this off the static routes, which have
+/// their own deliberate caching (`no-cache` + ETag for the app shell, a
+/// day's `max-age` for the logo) and must not be flattened to `no-store`.
 async fn api_no_store_mw(req: Request, next: Next) -> Response {
+    let is_api = req.uri().path().starts_with("/api");
     let mut res = next.run(req).await;
-    res.headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if is_api {
+        res.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     res
 }
 
@@ -718,10 +737,10 @@ async fn api_error_shape_mw(req: Request, next: Next) -> Response {
     };
     // The original *body* is dropped — it has already been logged where it
     // mattered, and passing an upstream's raw error text to a client is how
-    // internals leak — but its headers are kept. Inner layers have already
-    // put things there that must survive being reshaped: `Cache-Control:
-    // no-store` above all, since an error response that loses it becomes a
-    // cacheable one.
+    // internals leak — but its headers are kept, since inner layers may have
+    // put things there worth preserving across the reshape. (`Cache-Control:
+    // no-store` is no longer among them — `api_no_store_mw` now sits outside
+    // this and stamps it on whatever comes out.)
     tracing::debug!(%status, "rewrote a non-JSON rejection into the API error shape");
     let (mut parts, _) = res.into_parts();
     let body = Json(json!({ "detail": detail })).into_response();
@@ -851,9 +870,9 @@ CREATE TABLE IF NOT EXISTS stops (
     created_at TEXT NOT NULL,
     -- NULL = exact match (or a human placed the pin). 'street'/'district'
     -- mean geocoding only found an approximate fallback location — see
-    -- the `addresses` module above. Surfaced in the UI so a driver knows to
-    -- double check before setting off, instead of an approximation silently
-    -- pretending to be precise.
+    -- `Precision` and `geocode_address`. Surfaced in the UI so a driver knows
+    -- to double check before setting off, instead of an approximation
+    -- silently pretending to be precise.
     location_precision TEXT
 );
 
@@ -1651,8 +1670,8 @@ struct StopOut {
     next_leg_km: Option<f64>,
     next_leg_min: Option<f64>,
     /// "street" or "district" when the location is only an approximation
-    /// (see the `addresses` module above); absent for an exact match or a
-    /// manually placed pin.
+    /// (see `Precision` and `geocode_address`); absent for an exact match or
+    /// a manually placed pin.
     location_precision: Option<String>,
 }
 
@@ -2891,11 +2910,12 @@ fn base_dir() -> PathBuf {
 
 /// The complete application, assembled from a ready `AppState`.
 ///
-/// Separate from `main` so the tests can drive the real router — the same
-/// routes, the same middleware stack, the same extractors — over a
+/// Separate from `main` so a test can one day drive the real router — the
+/// same routes, the same middleware stack, the same extractors — over a
 /// throwaway database, instead of calling handler functions directly and
 /// missing everything the layers do (body limits, error shaping, the
-/// rejections axum produces before a handler is reached).
+/// rejections axum produces before a handler is reached). No test does that
+/// yet; the seam is here for when one does.
 fn build_router(state: Arc<AppState>) -> Router {
     // Rate-limited, size-capped: only the JSON API a script could actually
     // abuse. Kept as its own router (rather than one global limiter) so a
@@ -2911,10 +2931,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/stops/:id", patch(update_stop).delete(delete_stop))
         // Ordering matters here, and it reads bottom-up: the rate limiter
         // is outermost so a flood is rejected before a body is buffered,
-        // then the body limit. Error shaping is deliberately *not* here —
-        // see `build_router`'s outer stack for why.
+        // then the body limit. Error shaping and cache suppression are
+        // deliberately *not* here — see `build_router`'s outer stack for why.
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .layer(middleware::from_fn(api_no_store_mw))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit_mw));
 
     Router::new()
@@ -2947,6 +2966,12 @@ fn build_router(state: Arc<AppState>) -> Router {
         // own, and nested any deeper this would never see either. It leaves
         // non-/api responses untouched.
         .layer(middleware::from_fn(api_error_shape_mw))
+        // Outermost of the /api layers, so no response can slip out without
+        // it — including the rate limiter's 429 and `/api/health`, both of
+        // which are generated above the API router entirely. Also outside
+        // the error shaping, so the header is stamped on the final response
+        // rather than relying on a reshaped one to carry it across.
+        .layer(middleware::from_fn(api_no_store_mw))
         .layer(middleware::from_fn(security_headers_mw))
         .layer(TraceLayer::new_for_http())
 }
