@@ -657,16 +657,17 @@ function promptSheet({ title, message, placeholder = '', initial = '', confirmLa
 }
 
 // ---------------------------------------------------------------------
-// Maps link (platform-aware) — deep-links with the plain address, not
-// coordinates, so the phone's own Maps app does its own (usually better)
-// geocoding/routing to the door.
+// Maps link — deep-links with the plain address, not coordinates, so
+// Waze does its own (usually better) geocoding/routing to the door.
+// waze.com/ul is Waze's universal link: it opens the Waze app directly if
+// installed (iOS and Android both), and falls back to the Waze website if
+// not — one URL covers both platforms, unlike the old Apple/Google split.
+// `navigate=yes` starts turn-by-turn immediately instead of just centering
+// the map on the address.
 // ---------------------------------------------------------------------
 function mapsUrl(address) {
-  const ua = navigator.userAgent || '';
-  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const encAddr = encodeURIComponent(address || '');
-  if (isIOS) return `https://maps.apple.com/?daddr=${encAddr}&dirflg=d`;
-  return `https://www.google.com/maps/dir/?api=1&destination=${encAddr}&travelmode=driving`;
+  return `https://waze.com/ul?q=${encAddr}&navigate=yes`;
 }
 
 // ---------------------------------------------------------------------
@@ -1688,6 +1689,15 @@ function parsePaketItems(paket) {
     });
 }
 
+// Sums the quantities parsed from a single stop's free-text `paket` field
+// (same forgiving parser the Ladeliste uses) — used to decide whether the
+// stop-detail row's Paket badge should read as "just one thing" or as a
+// multi-item delivery worth flagging at a glance.
+function paketQty(paket) {
+  if (!paket) return 0;
+  return parsePaketItems(paket).reduce((n, it) => n + it.qty, 0);
+}
+
 // Every distinct package across the route's customer stops, summed, busiest
 // first. `key` is the case/whitespace-insensitive identity used for both
 // grouping and the tick state; `label` is the first spelling that appeared,
@@ -2569,7 +2579,17 @@ function renderRouteDetail() {
           </div>
           <p class="font-medium ${delivered ? 'text-black/50 line-through' : ''}">${escapeHtml(s.kunde)}</p>
           <p class="text-[13px] ${delivered ? 'text-black/50' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien</p>
-          ${s.paket ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] font-medium mt-1.5 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-brand-700 bg-brand-50'}"><span class="flex shrink-0">${ICONS.box}</span><span class="truncate">${escapeHtml(s.paket)}</span></p>` : ''}
+          ${s.paket ? (() => {
+            const qty = paketQty(s.paket);
+            const multi = qty > 1 && !delivered;
+            return `<p class="inline-flex items-center gap-1 max-w-full text-[12px] ${multi ? 'font-bold' : 'font-medium'} mt-1.5 px-1.5 py-0.5 rounded ${
+              delivered ? 'text-black/55 bg-black/5' : multi ? 'text-white bg-brand-600 shadow-sm' : 'text-brand-700 bg-brand-50'
+            }">${
+              multi
+                ? `<span class="shrink-0 w-4 h-4 rounded-full bg-white/25 flex items-center justify-center text-[10px] font-bold">${qty}</span>`
+                : `<span class="flex shrink-0">${ICONS.box}</span>`
+            }<span class="truncate">${escapeHtml(s.paket)}</span></p>`;
+          })() : ''}
           ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
           ${legLabel(s, 'mt-1.5')}
         </div>
