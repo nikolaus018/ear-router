@@ -657,17 +657,39 @@ function promptSheet({ title, message, placeholder = '', initial = '', confirmLa
 }
 
 // ---------------------------------------------------------------------
-// Maps link — deep-links with the plain address, not coordinates, so
-// Waze does its own (usually better) geocoding/routing to the door.
-// waze.com/ul is Waze's universal link: it opens the Waze app directly if
-// installed (iOS and Android both), and falls back to the Waze website if
-// not — one URL covers both platforms, unlike the old Apple/Google split.
-// `navigate=yes` starts turn-by-turn immediately instead of just centering
-// the map on the address.
+// Maps link — deep-links with the plain address, not coordinates, so the
+// chosen app does its own (usually better) geocoding/routing to the door.
+// Driver's choice of app is persisted in localStorage (see Mehr tab) and
+// defaults to Waze, whose waze.com/ul universal link opens the Waze app
+// directly if installed (iOS and Android both) and falls back to the
+// website if not — one URL for both platforms. `navigate=yes`/`dirflg=d`/
+// `travelmode=driving` all start turn-by-turn directions immediately
+// instead of just centering the map on the address.
 // ---------------------------------------------------------------------
+const MAPS_PROVIDER_KEY = 'ear_maps_provider';
+const MAPS_PROVIDERS = {
+  waze: { label: 'Waze', url: (addr) => `https://waze.com/ul?q=${encodeURIComponent(addr)}&navigate=yes` },
+  apple: { label: 'Apple Maps', url: (addr) => `https://maps.apple.com/?daddr=${encodeURIComponent(addr)}&dirflg=d` },
+  google: { label: 'Google Maps', url: (addr) => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}&travelmode=driving` },
+};
+
+function getMapsProvider() {
+  let saved;
+  try { saved = localStorage.getItem(MAPS_PROVIDER_KEY); } catch (_) { /* private-browsing storage lockout */ }
+  // hasOwnProperty, not a plain truthy lookup: a stray stored value like
+  // "toString" or "constructor" would otherwise resolve to an inherited
+  // Object.prototype function instead of `undefined`, and the provider's
+  // missing `.url` would then throw when a maps link is built.
+  return Object.prototype.hasOwnProperty.call(MAPS_PROVIDERS, saved) ? saved : 'waze';
+}
+
+function setMapsProvider(id) {
+  if (!Object.prototype.hasOwnProperty.call(MAPS_PROVIDERS, id)) return;
+  try { localStorage.setItem(MAPS_PROVIDER_KEY, id); } catch (_) { /* private-browsing storage lockout */ }
+}
+
 function mapsUrl(address) {
-  const encAddr = encodeURIComponent(address || '');
-  return `https://waze.com/ul?q=${encAddr}&navigate=yes`;
+  return MAPS_PROVIDERS[getMapsProvider()].url(address || '');
 }
 
 // ---------------------------------------------------------------------
@@ -748,6 +770,12 @@ function nextSeq() {
 // dropped the moment its own request settles. What the driver did stays on
 // screen until the server has actually spoken about that exact stop.
 const pendingDelivered = new Map();
+// Per-stop generation counter backing `toggleDelivered`'s own race guard —
+// see the comment there. Not the same thing `nextSeq()`/`lastAppliedSeq`
+// guard: those order which *route* snapshot wins app-wide, this orders
+// which of two rapid taps on the *same stop* gets to clear/revert the
+// prediction it made.
+const pendingDeliveredGen = new Map();
 
 /// Re-applies unconfirmed ticks on top of a freshly received route, and
 /// recomputes the count from the stops rather than adjusting it by hand —
@@ -817,6 +845,7 @@ function closeDetail() {
   // Predictions belong to the route that was on screen; carrying them to
   // the next one would stamp its stops with another route's ids.
   pendingDelivered.clear();
+  pendingDeliveredGen.clear();
   render();
 }
 
@@ -976,7 +1005,7 @@ function addrKey(strasse, plz) {
   const s = String(strasse || '')
     .trim().toLowerCase()
     .replace(/\s+/g, ' ')
-    .replace(/str\.(\s|$)/g, 'straße$1')
+    .replace(/str\.(\s|$|\d)/g, 'straße$1')
     .replace(/strasse\b/g, 'straße');
   return `${s}|${String(plz || '').trim()}`;
 }
@@ -1037,7 +1066,10 @@ async function sendStop(data, coords) {
       ? await api(`/stops/${data.stopId}`, { method: 'PATCH', body })
       : await api(`/routes/${routeId}/stops`, { method: 'POST', body });
     if (!applyRouteUpdate(seq, routeId, updated)) return;
-    render();
+    // Skips the staggered row-enter replay across the whole list for what
+    // is, from the driver's point of view, a one-row add/edit — the same
+    // reasoning `toggleDelivered` already applies below.
+    render(true);
     if (navigator.vibrate) navigator.vibrate(15);
     if (coords) toast('Standort manuell gesetzt ✓', 'success');
     else toast(data.stopId ? 'Stopp aktualisiert ✓' : 'Stopp hinzugefügt ✓', 'success');
@@ -1077,6 +1109,14 @@ async function toggleDelivered(stopId, delivered) {
   if (!stop) return;
 
   const prevDelivered = stop.delivered;
+  // A generation counter per stop, not just the presence of a
+  // `pendingDelivered` entry: a rapid double-tap of the same checkbox
+  // starts a second request while the first is still in flight, and
+  // whichever settles first must not clear a prediction the *other* one is
+  // still relying on — only the response matching this call's own
+  // generation is allowed to clear/revert it below.
+  const gen = (pendingDeliveredGen.get(stopId) || 0) + 1;
+  pendingDeliveredGen.set(stopId, gen);
   pendingDelivered.set(stopId, delivered);
   stop.delivered = delivered;
   route.delivered_count = route.stops.filter((s) => s.kind === 'customer' && s.delivered).length;
@@ -1092,17 +1132,29 @@ async function toggleDelivered(stopId, delivered) {
   try {
     const updated = await api(`/stops/${stopId}`, { method: 'PATCH', body: JSON.stringify({ delivered }) });
     // Confirmed: this stop's own request has been answered, so the
-    // prediction for it is no longer needed to hold the screen steady.
-    pendingDelivered.delete(stopId);
+    // prediction for it is no longer needed to hold the screen steady —
+    // unless a newer tap for the same stop has since started, in which
+    // case this reply is stale and must not clear *its* prediction.
+    if (pendingDeliveredGen.get(stopId) === gen) pendingDelivered.delete(stopId);
     if (!applyRouteUpdate(seq, route.id, updated)) return;
     render(true);
   } catch (err) {
-    pendingDelivered.delete(stopId);
-    if (state.currentRoute?.id === route.id) {
-      stop.delivered = prevDelivered;
+    if (pendingDeliveredGen.get(stopId) === gen) pendingDelivered.delete(stopId);
+    // Looked up fresh, not the `route`/`stop` captured at the top of this
+    // call: a route refresh that landed while this request was in flight
+    // (`refreshOnResume` after the driver backgrounded the app, most
+    // realistically) replaces `state.currentRoute` with a new object
+    // entirely. Reverting the *old* object's stop would silently leave the
+    // checkmark on screen — the one actually rendered — stuck showing the
+    // optimistic value forever, with no correction and no visible link to
+    // this error toast.
+    const currentRoute = state.currentRoute;
+    if (currentRoute?.id === route.id) {
+      const currentStop = currentRoute.stops.find((s) => s.id === stopId);
+      if (currentStop) currentStop.delivered = prevDelivered;
       // Derived, never nudged: a count adjusted by ±1 through a sequence of
       // races ends up describing a route that doesn't exist.
-      route.delivered_count = route.stops.filter((s) => s.kind === 'customer' && s.delivered).length;
+      currentRoute.delivered_count = currentRoute.stops.filter((s) => s.kind === 'customer' && s.delivered).length;
       syncRouteSummary();
       render(true);
     }
@@ -1138,7 +1190,10 @@ async function renameRoute() {
   showProgress();
   try {
     const updated = await api(`/routes/${routeId}`, { method: 'PATCH', body: JSON.stringify({ name: name.trim() }) });
-    if (applyRouteUpdate(seq, routeId, updated)) render();
+    // Renaming touches only the header text, never the stop list — a full
+    // staggered row-enter replay across every stop for a header-only edit
+    // reads as "the list just reloaded" when nothing in it did.
+    if (applyRouteUpdate(seq, routeId, updated)) render(true);
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -1243,6 +1298,26 @@ async function clearOfflineCache() {
 // Generic bottom-sheet shell — shared by the add/edit-stop sheet, the
 // JSON-import sheet and the pin-drop fallback.
 // ---------------------------------------------------------------------
+// Bound once, not per sheet-open: `#modal-root` is a persistent node
+// `renderSheetShell` never recreates (only its `innerHTML`), so a listener
+// attached inside that function on every call — as this one used to be —
+// stacks a duplicate on every single add/edit-stop, JSON-import, and
+// Ladeliste open for the life of the page. A driver who opens 30-40 sheets
+// over a shift (routine for this app) ended up with 30-40 permanent
+// duplicate `focusin` handlers, each independently scheduling a
+// `scrollIntoView` on every future field focus — a real, unbounded leak on
+// a PWA meant to stay open all day. Attached once at module load instead,
+// against the one `#modal-root` element that always exists.
+document.getElementById('modal-root').addEventListener('focusin', (e) => {
+  // The on-screen keyboard covers roughly the bottom half of the screen,
+  // and iOS does not shrink the visual viewport for a `position: fixed`
+  // sheet — so focusing Notiz on a phone puts the caret in a field the
+  // driver cannot see while typing into it. Scrolling the focused field to
+  // the middle of the sheet is what keeps it visible.
+  if (!e.target.matches('input, textarea, select')) return;
+  setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 250);
+});
+
 function renderSheetShell(bodyHtml, { scrollable = true, label = '' } = {}) {
   rememberFocusBeforeModal();
   const root = document.getElementById('modal-root');
@@ -1257,16 +1332,6 @@ function renderSheetShell(bodyHtml, { scrollable = true, label = '' } = {}) {
   `;
   onModalEscape = closeSheet;
   updateHistoryGuard();
-
-  // The on-screen keyboard covers roughly the bottom half of the screen,
-  // and iOS does not shrink the visual viewport for a `position: fixed`
-  // sheet — so focusing Notiz on a phone puts the caret in a field the
-  // driver cannot see while typing into it. Scrolling the focused field to
-  // the middle of the sheet is what keeps it visible.
-  root.addEventListener('focusin', (e) => {
-    if (!e.target.matches('input, textarea, select')) return;
-    setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 250);
-  });
 }
 
 function closeSheet() {
@@ -1471,7 +1536,16 @@ function renderManualForm(stop) {
 }
 
 function autoFillDistrictFromText(strasseInput, plzSelect) {
-  const match = strasseInput.value.match(/\b1\d{3}\b/);
+  const text = strasseInput.value;
+  // Prefers a match after a comma — the expected "Straße Hausnummer, PLZ"
+  // paste shape the comment above describes — over the first matching
+  // token anywhere in the string. Without this, a housenumber that happens
+  // to coincide with a real Vienna PLZ (e.g. a combined house/door number
+  // like "12 1200") could get read as the district instead, stripping it
+  // out of the address text. `DISTRICT_BY_PLZ` still has the final say
+  // either way: only one of the 23 real Vienna postal codes ever matches.
+  const afterComma = text.slice(text.indexOf(',') + 1);
+  const match = afterComma.match(/\b1\d{3}\b/) || text.match(/\b1\d{3}\b/);
   if (!match || !DISTRICT_BY_PLZ[match[0]]) return;
   plzSelect.value = match[0];
   let cleaned = strasseInput.value.replace(match[0], '');
@@ -1555,8 +1629,23 @@ function setJsonSheetBusy(busy) {
   root.querySelectorAll('button, textarea').forEach((el) => {
     if (el.id !== 'json-cancel-btn') el.disabled = busy;
   });
-  const backdrop = document.getElementById('sheet-backdrop');
-  if (backdrop) backdrop.style.pointerEvents = busy ? 'none' : '';
+  // The backdrop is deliberately left clickable here, not set to
+  // `pointer-events: none` — it's `position: absolute; inset: 0`, covering
+  // the *entire* viewport (the sheet panel only occupies the bottom
+  // portion), so it's the only thing standing between a stray tap and
+  // whatever's behind the modal in `#app`. Disabling its pointer events
+  // let clicks in the exposed strip above the sheet fall straight through
+  // to the route detail screen underneath — which could open a *second*
+  // sheet on top of this "locked" one (wiping this one's DOM, including
+  // its own cancel button, via the next `renderSheetShell`'s
+  // `root.innerHTML = ...`) while `jsonSaveController` was still set, at
+  // which point `closeSheet()`'s own guard for that same controller
+  // refused to close *anything* until the original import — which can
+  // legitimately run for minutes — finally settled in the background.
+  // `closeSheet()` already no-ops while `jsonSaveController` is set (see
+  // its own guard), so simply leaving the backdrop's clicks intact and
+  // routed to it, as normal, is what actually keeps a stray tap from
+  // reaching anything behind the sheet during a save.
   const saveBtn = document.getElementById('json-save-btn');
   if (saveBtn) saveBtn.textContent = busy ? 'Wird gespeichert …' : 'Speichern & Optimieren';
   const cancelBtn = document.getElementById('json-cancel-btn');
@@ -1612,12 +1701,21 @@ async function saveJsonEdits() {
     if (!applyRouteUpdate(seq, routeId, data)) { closeSheet(); return; }
     closeSheet();
     render();
-    if (data.geocode_failures && data.geocode_failures.length) {
+    // Independent counts, not mutually exclusive: a batch can have both
+    // addresses that failed outright AND separate ones that only resolved
+    // approximately. A plain if/else-if here would silently drop the
+    // approximate-location warning whenever failures were also present —
+    // those stops still saved and still need the pin double-checked, so
+    // the note is folded into the failure toast instead of lost.
+    const failureCount = data.geocode_failures ? data.geocode_failures.length : 0;
+    const approxCount = data.approximate ? data.approximate.length : 0;
+    if (failureCount) {
       const names = data.geocode_failures.map((f) => `${f.kunde} (${f.strasse}, ${f.plz})`).join('; ');
       const skipNote = data.deletions_skipped ? ' Entfernte Adressen wurden diesmal nicht gelöscht, bis alle Adressen aufgelöst sind.' : '';
-      toast(`${data.geocode_failures.length} Adresse(n) nicht gefunden, übersprungen: ${names}.${skipNote} Restliche Route wurde gespeichert.`, 'error', 12000);
-    } else if (data.approximate && data.approximate.length) {
-      toast(`Route aktualisiert ✓ — ${data.approximate.length} Adresse(n) nur ungefähr lokalisiert, bitte im Kartenpin prüfen.`, 'success', 6000);
+      const approxNote = approxCount ? ` Außerdem ${approxCount} Adresse(n) nur ungefähr lokalisiert, bitte im Kartenpin prüfen.` : '';
+      toast(`${failureCount} Adresse(n) nicht gefunden, übersprungen: ${names}.${skipNote}${approxNote} Restliche Route wurde gespeichert.`, 'error', 12000);
+    } else if (approxCount) {
+      toast(`Route aktualisiert ✓ — ${approxCount} Adresse(n) nur ungefähr lokalisiert, bitte im Kartenpin prüfen.`, 'success', 6000);
     } else {
       toast('Route aktualisiert & optimiert ✓', 'success');
     }
@@ -2270,6 +2368,17 @@ function renderMoreTab() {
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.refresh}</span>
             <p class="flex-1 text-[15px]">Offline-Daten leeren</p>
           </button>
+        </div>
+
+        <p class="${SECTION_LABEL}">Einstellungen</p>
+        <div class="${GROUP}">
+          <label class="flex items-center gap-3 px-4 py-3">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.compass}</span>
+            <span class="flex-1 text-[15px]">Navigations-App</span>
+            <select onchange="setMapsProvider(this.value)" aria-label="Navigations-App für „In Maps öffnen“-Links" class="text-[15px] text-black/50 bg-transparent text-right focus:outline-none">
+              ${Object.entries(MAPS_PROVIDERS).map(([id, p]) => `<option value="${id}" ${getMapsProvider() === id ? 'selected' : ''}>${p.label}</option>`).join('')}
+            </select>
+          </label>
         </div>
 
         <p class="${SECTION_LABEL}">Entwickelt von</p>

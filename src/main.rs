@@ -65,7 +65,7 @@ use axum::{
     Json, Router,
 };
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use text::{normalize_strasse_text, simplify_housenumber};
 use tokio::sync::Mutex as AsyncMutex;
@@ -164,6 +164,41 @@ const START_LAT: f64 = 48.2788118;
 const START_LON: f64 = 16.4356537;
 const VIA_LAT: f64 = 48.1499425;
 const VIA_LON: f64 = 16.3587494;
+
+// ---------------------------------------------------------------------
+// External service endpoints — the three upstreams this app calls out to
+// (see the module doc comment above). Kept together at the top, rather
+// than next to the code that uses each one, so self-hosting any of them
+// is a one-line edit here instead of a hunt through the file. Each has a
+// matching `EAR_*_URL` environment variable that overrides it at startup
+// without touching this file at all — see `Upstreams::from_env`.
+// ---------------------------------------------------------------------
+
+/// Vienna OGD "Adressservice Wien" `GetAddressInfo` endpoint — tried first
+/// for geocoding, see `wien_ogd_search_one`. Override with `EAR_WIEN_OGD_URL`.
+const WIEN_OGD_URL_DEFAULT: &str = "https://data.wien.gv.at/daten/OGDAddressService.svc/GetAddressInfo";
+/// Nominatim (OpenStreetMap) `/search` endpoint — geocoding fallback, see
+/// `geocode_address`. Override with `EAR_NOMINATIM_URL`.
+const NOMINATIM_URL_DEFAULT: &str = "https://nominatim.openstreetmap.org/search";
+/// OSRM base URL, no trailing slash — routing/trip-optimization, see
+/// `osrm_route_leg`/`osrm_trip`. Override with `EAR_OSRM_URL`. Currently a
+/// self-hosted instance on the local network; `osrm_get` automatically
+/// falls back to `OSRM_PUBLIC_FALLBACK` if this one is unreachable, so a
+/// self-host outage degrades routing rather than breaking it.
+const OSRM_BASE_DEFAULT: &str = "http://192.168.178.216:5000";
+/// The public OSRM demo server, used only as a fallback when the configured
+/// primary (`OSRM_BASE_DEFAULT`/`EAR_OSRM_URL`) is unreachable — see
+/// `osrm_get`. Not itself overridable by env var: it's a last resort, not a
+/// deployment choice, so there's nothing to configure.
+const OSRM_PUBLIC_FALLBACK: &str = "https://router.project-osrm.org";
+/// OSRM's public demo server refuses a `/trip` request with more waypoints
+/// than this (`max-trip-size`, 100 by default) — checked before sending so
+/// an oversized route gets a German sentence explaining the real limit
+/// instead of an opaque relayed "OSRM trip: TooBig". A self-hosted OSRM
+/// instance may raise `max-trip-size`; bump this to match if so — but note
+/// the public fallback above still enforces the default 100, so a bump only
+/// helps while the self-hosted primary is actually reachable.
+const OSRM_MAX_TRIP_COORDS: usize = 100;
 
 // ---------------------------------------------------------------------
 // Input validation — every one of these guards a value that ends up
@@ -384,6 +419,12 @@ struct AppState {
     /// keep the leg distances of an order that no longer exists. Different
     /// routes never contend with each other.
     route_locks: AsyncMutex<HashMap<i64, Arc<AsyncMutex<()>>>>,
+    /// When the primary OSRM (`upstreams.osrm_base`) was last seen failing,
+    /// if it was recently enough that `osrm_get` should skip straight to
+    /// `OSRM_PUBLIC_FALLBACK` instead of paying a full connect timeout on
+    /// every request while a self-hosted instance stays down. `None` means
+    /// either it's never failed or it has since recovered — see `osrm_get`.
+    osrm_primary_down_since: StdMutex<Option<Instant>>,
 }
 
 #[derive(Clone)]
@@ -881,7 +922,15 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
     lat REAL NOT NULL,
     lon REAL NOT NULL,
     display_name TEXT,
-    precision TEXT NOT NULL DEFAULT 'exact'
+    precision TEXT NOT NULL DEFAULT 'exact',
+    -- Unix seconds this row was (last) written. Only consulted for a
+    -- non-'exact' precision — see GEOCODE_APPROX_TTL_SECS and
+    -- `cache_lookup`: an exact hit stays true forever, but a
+    -- street/district-level approximation is an admitted guess that a
+    -- geocoder catching up later (a new building getting properly mapped)
+    -- should eventually get to override instead of this app serving the
+    -- same coarse pin to that address forever.
+    cached_at INTEGER
 );
 
 -- Addresses that every geocoder confidently reported as not existing.
@@ -926,6 +975,20 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     if !cache_cols.contains("precision") {
         conn.execute("ALTER TABLE geocode_cache ADD COLUMN precision TEXT NOT NULL DEFAULT 'exact'", [])?;
     }
+    if !cache_cols.contains("cached_at") {
+        conn.execute("ALTER TABLE geocode_cache ADD COLUMN cached_at INTEGER", [])?;
+        // Backfilled to "now", not left NULL: a pre-existing approximate
+        // entry's real age is unknown, and treating unknown as "ancient" —
+        // NULL/0 — would expire every one of them on the very next lookup
+        // after an upgrade, undoing the whole point of a persistent cache
+        // for every driver's route the moment this migration runs. Starting
+        // the TTL fresh from "now" is the conservative reading of an
+        // unknown age.
+        conn.execute(
+            "UPDATE geocode_cache SET cached_at = ?1 WHERE cached_at IS NULL",
+            params![chrono::Utc::now().timestamp()],
+        )?;
+    }
 
     // The warehouse stop was originally written as "Oberlaa Straße 298",
     // which isn't a real street name — the actual one is "Oberlaaer
@@ -967,12 +1030,16 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
 // address anyway.
 // ---------------------------------------------------------------------
 
-/// Sent on every outbound geocoder call. Nominatim's usage policy requires
-/// a calling application to identify itself so a misbehaving client can be
+/// Sent on every outbound call to a shared public service (geocoders and
+/// OSRM's public fallback alike). Nominatim's usage policy requires a
+/// calling application to identify itself so a misbehaving client can be
 /// traced/blocked individually instead of the shared server being locked
 /// down for everyone; Wien-OGD doesn't require it, but there's no reason to
-/// be anonymous there either.
-const GEOCODER_USER_AGENT: &str = "EAR-Routing/1.0 (local delivery route planner)";
+/// be anonymous there either. The public OSRM demo server goes further and
+/// outright rejects a request with no `User-Agent` at all (403) — reqwest
+/// sends none by default, so without this header `osrm_get`'s fallback to
+/// it would fail every single time, not just when the primary is down too.
+const UPSTREAM_USER_AGENT: &str = "EAR-Routing/1.0 (local delivery route planner)";
 
 fn geocode_error_not_found(query: &str) -> AppError {
     AppError::Geocode {
@@ -996,10 +1063,23 @@ fn geocode_error_unavailable() -> AppError {
     }
 }
 
+/// How long a *non-exact* cached geocode (`Precision::Street`/`District`) is
+/// trusted before the next lookup for that address goes live again instead
+/// of serving the stored approximation. An exact match never expires — it's
+/// a confirmed real location — but street/district precision is an admitted
+/// guess (see `Precision`), and the building it's guessing about can get
+/// properly mapped at any time; without this, the very first coarse fallback
+/// for an address would pin it to that guess forever, even after a better
+/// answer becomes available. Long enough that ordinary route traffic isn't
+/// re-paying a throttled round trip for the same still-unresolved address
+/// every day; short enough that a building mapped this month is found well
+/// within a season of deliveries there.
+const GEOCODE_APPROX_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+
 fn cache_lookup(conn: &Connection, key: &str) -> Result<Option<(f64, f64, String, Precision)>, AppError> {
-    Ok(conn
+    let row = conn
         .query_row(
-            "SELECT lat, lon, display_name, precision FROM geocode_cache WHERE query = ?1",
+            "SELECT lat, lon, display_name, precision, cached_at FROM geocode_cache WHERE query = ?1",
             params![key],
             |r| {
                 Ok((
@@ -1007,16 +1087,33 @@ fn cache_lookup(conn: &Connection, key: &str) -> Result<Option<(f64, f64, String
                     r.get::<_, f64>(1)?,
                     r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     parse_precision(&r.get::<_, String>(3)?),
+                    r.get::<_, Option<i64>>(4)?,
                 ))
             },
         )
-        .optional()?)
+        .optional()?;
+    let Some((lat, lon, display_name, precision, cached_at)) = row else {
+        return Ok(None);
+    };
+    if precision != Precision::Exact {
+        // `cached_at` is only `NULL` for a row nothing has re-migrated or
+        // re-written yet, which `init_db`'s backfill prevents — but a
+        // missing value is treated as "expire it" rather than "keep it
+        // forever" regardless, since silently trusting an approximation of
+        // unknown age indefinitely is exactly the bug this TTL exists to
+        // avoid.
+        let age = cached_at.map(|ts| chrono::Utc::now().timestamp() - ts);
+        if age.is_none_or(|a| a > GEOCODE_APPROX_TTL_SECS) {
+            return Ok(None);
+        }
+    }
+    Ok(Some((lat, lon, display_name, precision)))
 }
 
 fn cache_store(conn: &Connection, key: &str, lat: f64, lon: f64, display_name: &str, precision: Precision) -> Result<(), AppError> {
     conn.execute(
-        "INSERT OR REPLACE INTO geocode_cache (query, lat, lon, display_name, precision) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![key, lat, lon, display_name, precision.as_str()],
+        "INSERT OR REPLACE INTO geocode_cache (query, lat, lon, display_name, precision, cached_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![key, lat, lon, display_name, precision.as_str(), chrono::Utc::now().timestamp()],
     )?;
     Ok(())
 }
@@ -1077,8 +1174,6 @@ fn miss_clear(conn: &Connection, key: &str) -> Result<(), AppError> {
 // service outage, or on the rare chance a query isn't in its register).
 // Docs: https://digitales.wien.gv.at/adressservice-doku
 // ---------------------------------------------------------------------
-const WIEN_OGD_URL_DEFAULT: &str = "https://data.wien.gv.at/daten/OGDAddressService.svc/GetAddressInfo";
-
 #[derive(Deserialize)]
 struct OgdFeatureCollection {
     #[serde(default)]
@@ -1153,25 +1248,52 @@ fn pick_ogd_feature(features: Vec<OgdFeature>, plz: &str, our_street_lower: &str
 /// night before a route is due degrades to the existing Nominatim
 /// pipeline, not a failure.
 async fn wien_ogd_search_one(state: &AppState, query: &str, plz: &str) -> Option<(f64, f64, String, Precision)> {
-    let resp = state
+    // Only genuine failure modes (network error, a non-2xx status, a body
+    // that doesn't even parse) are logged here — a "no match" (empty body,
+    // or a body with no feature surviving `pick_ogd_feature`'s filter) is
+    // the ordinary, expected outcome for most queries and would just be log
+    // spam. Without this distinction, none of the real failure modes were
+    // logged at all: a broken/misconfigured Wien-OGD endpoint degraded the
+    // app to Nominatim-only geocoding silently, indistinguishable in the
+    // logs from every query simply not being in Vienna's register.
+    let resp = match state
         .http
         .get(&state.upstreams.wien_ogd)
         .query(&[("Address", query), ("crs", "EPSG:4326")])
-        .header(reqwest::header::USER_AGENT, GEOCODER_USER_AGENT)
+        .header(reqwest::header::USER_AGENT, UPSTREAM_USER_AGENT)
         .send()
         .await
-        .ok()?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, query, "wien ogd unreachable, falling back to nominatim");
+            return None;
+        }
+    };
     if !resp.status().is_success() {
+        tracing::warn!(status = %resp.status(), query, "wien ogd returned an error status, falling back to nominatim");
         return None;
     }
     // A query with zero matches comes back as an HTTP 200 with a
     // completely empty body (not `{"features":[]}`) — has to be checked
     // before handing an empty string to the JSON parser.
-    let body = resp.text().await.ok()?;
+    let body = match resp.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, query, "wien ogd response body unreadable, falling back to nominatim");
+            return None;
+        }
+    };
     if body.trim().is_empty() {
         return None;
     }
-    let parsed: OgdFeatureCollection = serde_json::from_str(&body).ok()?;
+    let parsed: OgdFeatureCollection = match serde_json::from_str(&body) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, query, "wien ogd response did not parse, falling back to nominatim");
+            return None;
+        }
+    };
 
     let our_street = text::street_name_only(query).to_lowercase();
     let best = pick_ogd_feature(parsed.features, plz, &our_street)?;
@@ -1220,7 +1342,6 @@ async fn wien_ogd_geocode(state: &AppState, strasse: &str, plz: &str) -> Option<
     None
 }
 
-const NOMINATIM_URL_DEFAULT: &str = "https://nominatim.openstreetmap.org/search";
 // Nominatim's usage policy: max ~1 request/second from a single client,
 // enforced ourselves rather than trusting every call site to remember.
 const NOMINATIM_MIN_INTERVAL: Duration = Duration::from_millis(1100);
@@ -1285,7 +1406,7 @@ async fn nominatim_raw_search(state: &AppState, query: &str) -> Result<Option<No
         // Required by Nominatim's usage policy: identify the calling
         // application so misbehaving clients can be traced/blocked
         // individually instead of the shared server being locked down.
-        .header(reqwest::header::USER_AGENT, GEOCODER_USER_AGENT)
+        .header(reqwest::header::USER_AGENT, UPSTREAM_USER_AGENT)
         .send()
         .await
         .map_err(geocode_unreachable)?
@@ -1429,13 +1550,6 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
 //     offline graph).
 // ---------------------------------------------------------------------
 
-const OSRM_BASE_DEFAULT: &str = "https://router.project-osrm.org";
-/// OSRM's public demo server refuses a `/trip` request with more waypoints
-/// than this (`max-trip-size`, 100 by default) — checked before sending so
-/// an oversized route gets a German sentence explaining the real limit
-/// instead of an opaque relayed "OSRM trip: TooBig".
-const OSRM_MAX_TRIP_COORDS: usize = 100;
-
 #[derive(Deserialize)]
 struct OsrmGeometry {
     coordinates: Vec<[f64; 2]>, // [lon, lat] per GeoJSON convention
@@ -1493,26 +1607,75 @@ fn geojson_to_polyline(geom: OsrmGeometry) -> Vec<[f64; 2]> {
     geom.coordinates.into_iter().map(|[lon, lat]| [lat, lon]).collect()
 }
 
+/// How long a primary-OSRM failure is remembered before the next request
+/// tries the primary again. Without this, a persistently-down self-hosted
+/// instance would pay a full connect attempt on *every single* route/trip
+/// call before falling back — added latency on the one thing a driver waits
+/// on interactively. Short enough that a primary coming back (a reboot, a
+/// restarted container) is noticed again within about a minute rather than
+/// being held down by a stale verdict.
+const OSRM_PRIMARY_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// One GET+JSON-decode attempt against a single OSRM base — no fallback
+/// logic, just the HTTP mechanics `osrm_get` needs to try twice.
+async fn osrm_try<T: DeserializeOwned>(client: &reqwest::Client, base: &str, path_and_query: &str) -> Result<T, reqwest::Error> {
+    client
+        .get(format!("{base}{path_and_query}"))
+        .header(reqwest::header::USER_AGENT, UPSTREAM_USER_AGENT)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<T>()
+        .await
+}
+
+/// GETs `path_and_query` (an OSRM route/trip path plus its query string)
+/// against the configured primary OSRM (`upstreams.osrm_base` — self-hosted
+/// by default, see `OSRM_BASE_DEFAULT`), falling back to the public demo
+/// server (`OSRM_PUBLIC_FALLBACK`) if the primary can't be reached or
+/// answers with something that doesn't even parse as OSRM JSON. The point
+/// of a self-hosted instance is speed and not sharing the public server's
+/// quota, not availability — an outage there shouldn't take routing down
+/// entirely when the public server can still answer the same request.
+///
+/// A primary that just failed is skipped for `OSRM_PRIMARY_RETRY_AFTER`
+/// rather than retried on every call — see that constant. This does not
+/// apply, and the primary is always tried, when it's already configured to
+/// *be* the public fallback (nothing to skip to).
+async fn osrm_get<T: DeserializeOwned>(state: &AppState, path_and_query: &str) -> Result<T, AppError> {
+    let primary = &state.upstreams.osrm_base;
+    let skip_primary = primary != OSRM_PUBLIC_FALLBACK
+        && state
+            .osrm_primary_down_since
+            .lock()
+            .unwrap()
+            .is_some_and(|since| since.elapsed() < OSRM_PRIMARY_RETRY_AFTER);
+
+    if !skip_primary {
+        match osrm_try::<T>(&state.http, primary, path_and_query).await {
+            Ok(v) => {
+                // Recovered (or never down) — clear any earlier verdict so
+                // the next failure gets a fresh cooldown, not a leftover one.
+                *state.osrm_primary_down_since.lock().unwrap() = None;
+                return Ok(v);
+            }
+            Err(e) if primary == OSRM_PUBLIC_FALLBACK => return Err(osrm_unreachable(e)),
+            Err(e) => {
+                tracing::warn!(error = %e, base = %primary, "primary OSRM unreachable, falling back to public server");
+                *state.osrm_primary_down_since.lock().unwrap() = Some(Instant::now());
+            }
+        }
+    }
+
+    osrm_try::<T>(&state.http, OSRM_PUBLIC_FALLBACK, path_and_query).await.map_err(osrm_unreachable)
+}
+
 /// Real distance/duration/geometry for a single fixed leg (no ordering
 /// choice involved) — used for the depot -> warehouse leg, which is
 /// always first and never reordered.
 async fn osrm_route_leg(state: &AppState, a: (f64, f64), b: (f64, f64)) -> Result<(f64, f64, Vec<[f64; 2]>), AppError> {
-    let client = &state.http;
-    let url = format!(
-        "{}/route/v1/driving/{}?overview=full&geometries=geojson",
-        state.upstreams.osrm_base,
-        osrm_coord_string(&[a, b])
-    );
-    let resp: OsrmRouteResp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(osrm_unreachable)?
-        .error_for_status()
-        .map_err(osrm_unreachable)?
-        .json()
-        .await
-        .map_err(osrm_unreachable)?;
+    let path = format!("/route/v1/driving/{}?overview=full&geometries=geojson", osrm_coord_string(&[a, b]));
+    let resp: OsrmRouteResp = osrm_get(state, &path).await?;
     if resp.code != "Ok" {
         return Err(AppError::Internal(format!("OSRM route: {}", resp.code)));
     }
@@ -1527,7 +1690,6 @@ async fn osrm_route_leg(state: &AppState, a: (f64, f64), b: (f64, f64)) -> Resul
 /// Returns (visiting order as indices into `coords`, per-consecutive-leg
 /// (distance_m, duration_s) in that visiting order, full route geometry).
 async fn osrm_trip(state: &AppState, coords: &[(f64, f64)]) -> Result<(Vec<usize>, Vec<(f64, f64)>, Vec<[f64; 2]>), AppError> {
-    let client = &state.http;
     if coords.len() > OSRM_MAX_TRIP_COORDS {
         return Err(AppError::BadRequest(format!(
             "Zu viele Stopps für die Routenoptimierung ({}, max. {}). Bitte die Route auf mehrere Touren aufteilen.",
@@ -1535,21 +1697,11 @@ async fn osrm_trip(state: &AppState, coords: &[(f64, f64)]) -> Result<(Vec<usize
             OSRM_MAX_TRIP_COORDS - 2
         )));
     }
-    let url = format!(
-        "{}/trip/v1/driving/{}?source=first&destination=last&roundtrip=false&overview=full&geometries=geojson",
-        state.upstreams.osrm_base,
+    let path = format!(
+        "/trip/v1/driving/{}?source=first&destination=last&roundtrip=false&overview=full&geometries=geojson",
         osrm_coord_string(coords)
     );
-    let resp: OsrmTripResp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(osrm_unreachable)?
-        .error_for_status()
-        .map_err(osrm_unreachable)?
-        .json()
-        .await
-        .map_err(osrm_unreachable)?;
+    let resp: OsrmTripResp = osrm_get(state, &path).await?;
     if resp.code != "Ok" {
         return Err(AppError::Internal(format!("OSRM trip: {}", resp.code)));
     }
@@ -1675,22 +1827,22 @@ struct StopOut {
     location_precision: Option<String>,
 }
 
-fn to_stop_out(r: &StopRow) -> StopOut {
+fn to_stop_out(r: StopRow) -> StopOut {
     StopOut {
         id: r.id,
-        kind: r.kind.clone(),
-        kunde: r.kunde.clone(),
-        strasse: r.strasse.clone(),
-        plz: r.plz.clone(),
-        paket: r.paket.clone(),
-        notiz: r.notiz.clone(),
+        kind: r.kind,
+        kunde: r.kunde,
+        strasse: r.strasse,
+        plz: r.plz,
+        paket: r.paket,
+        notiz: r.notiz,
         lat: r.lat,
         lon: r.lon,
         order_index: r.order_index,
         delivered: r.delivered,
         next_leg_km: r.next_leg_km,
         next_leg_min: r.next_leg_min,
-        location_precision: r.location_precision.clone(),
+        location_precision: r.location_precision,
     }
 }
 
@@ -1722,6 +1874,23 @@ struct RouteSummary {
     needs_optimize: bool,
 }
 
+/// `Err(NotFound)` if `route_id` doesn't exist, `Ok(())` otherwise. Used by
+/// every handler that needs to reject a stale/bogus route id *before* doing
+/// slower work (geocoding, a transaction) that a bare foreign-key failure
+/// further down would only report as an opaque 500 — this is the one place
+/// that "does this route exist" check is written, instead of the same
+/// `SELECT 1 FROM routes ...` copy-pasted at every call site.
+fn require_route_exists(conn: &Connection, route_id: i64) -> Result<(), AppError> {
+    let exists: bool = conn
+        .query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if !exists {
+        return Err(AppError::NotFound("Route nicht gefunden".into()));
+    }
+    Ok(())
+}
+
 fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, AppError> {
     let route = conn
         .query_row("SELECT * FROM routes WHERE id = ?1", params![route_id], RouteRow::from_row)
@@ -1734,7 +1903,7 @@ fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, App
         .collect::<Result<_, _>>()?;
     drop(stmt);
 
-    let stop_outs: Vec<StopOut> = stops.iter().map(to_stop_out).collect();
+    let stop_outs: Vec<StopOut> = stops.into_iter().map(to_stop_out).collect();
     let customer_stops: Vec<&StopOut> = stop_outs.iter().filter(|s| s.kind == "customer").collect();
     let total_km: f64 = stop_outs.iter().filter_map(|s| s.next_leg_km).sum();
     let total_min: f64 = stop_outs.iter().filter_map(|s| s.next_leg_min).sum();
@@ -1785,27 +1954,35 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
 
     let (start, via, end, customers) = {
         let conn = state.db()?;
-        let mut stmt = conn.prepare("SELECT * FROM stops WHERE route_id = ?1 ORDER BY id")?;
-        let stops: Vec<StopRow> = stmt.query_map(params![route_id], StopRow::from_row)?.collect::<Result<_, _>>()?;
+        // Only id/kind/lat/lon, not `SELECT *`: this runs on every single
+        // add/edit/delete of a stop (via `reoptimize_best_effort`), and
+        // every other column — `kunde`, `strasse`, up to 1000 chars of
+        // `notiz`, etc. — is fetched into a `String` here only to be
+        // dropped a few lines down; none of it is used for planning the
+        // route order.
+        let mut stmt = conn.prepare("SELECT id, kind, lat, lon FROM stops WHERE route_id = ?1 ORDER BY id")?;
+        let stops: Vec<(i64, String, f64, f64)> = stmt
+            .query_map(params![route_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<Result<_, _>>()?;
         drop(stmt);
 
-        let to_coord = |s: &StopRow| StopCoord { id: s.id, lat: s.lat, lon: s.lon };
+        let to_coord = |s: &(i64, String, f64, f64)| StopCoord { id: s.0, lat: s.2, lon: s.3 };
         let start = stops
             .iter()
-            .find(|s| s.kind == "start")
+            .find(|s| s.1 == "start")
             .map(to_coord)
             .ok_or_else(|| AppError::Internal("Route hat keinen Start-Stopp".into()))?;
         let via = stops
             .iter()
-            .find(|s| s.kind == "via")
+            .find(|s| s.1 == "via")
             .map(to_coord)
             .ok_or_else(|| AppError::Internal("Route hat keinen Lager-Stopp".into()))?;
         let end = stops
             .iter()
-            .find(|s| s.kind == "end")
+            .find(|s| s.1 == "end")
             .map(to_coord)
             .ok_or_else(|| AppError::Internal("Route hat keinen Ziel-Stopp".into()))?;
-        let customers: Vec<StopCoord> = stops.iter().filter(|s| s.kind == "customer").map(to_coord).collect();
+        let customers: Vec<StopCoord> = stops.iter().filter(|s| s.1 == "customer").map(to_coord).collect();
         (start, via, end, customers)
     };
 
@@ -2043,10 +2220,7 @@ async fn update_route(
     Json(payload): Json<RouteUpdate>,
 ) -> Result<Json<RouteDetail>, AppError> {
     let mut conn = state.db()?;
-    let exists: bool = conn.query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(())).optional()?.is_some();
-    if !exists {
-        return Err(AppError::NotFound("Route nicht gefunden".into()));
-    }
+    require_route_exists(&conn, route_id)?;
 
     // Validate everything before writing anything: a request carrying a
     // good name and a bogus status must change neither, rather than
@@ -2084,10 +2258,7 @@ async fn update_route(
 
 async fn delete_route(State(state): State<Arc<AppState>>, AxPath(route_id): AxPath<i64>) -> Result<Json<Value>, AppError> {
     let conn = state.db()?;
-    let exists: bool = conn.query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(())).optional()?.is_some();
-    if !exists {
-        return Err(AppError::NotFound("Route nicht gefunden".into()));
-    }
+    require_route_exists(&conn, route_id)?;
     // `stops.route_id` has `ON DELETE CASCADE` (and `open_db` turns
     // `PRAGMA foreign_keys` on for every connection), so deleting the route
     // alone already removes its stops atomically — no separate DELETE
@@ -2099,10 +2270,7 @@ async fn delete_route(State(state): State<Arc<AppState>>, AxPath(route_id): AxPa
 async fn optimize_route(State(state): State<Arc<AppState>>, AxPath(route_id): AxPath<i64>) -> Result<Json<RouteDetail>, AppError> {
     {
         let conn = state.db()?;
-        let exists: bool = conn.query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(())).optional()?.is_some();
-        if !exists {
-            return Err(AppError::NotFound("Route nicht gefunden".into()));
-        }
+        require_route_exists(&conn, route_id)?;
     }
     reoptimize_route(&state, route_id).await?;
     let conn = state.db()?;
@@ -2111,10 +2279,7 @@ async fn optimize_route(State(state): State<Arc<AppState>>, AxPath(route_id): Ax
 
 async fn reset_delivered(State(state): State<Arc<AppState>>, AxPath(route_id): AxPath<i64>) -> Result<Json<RouteDetail>, AppError> {
     let conn = state.db()?;
-    let exists: bool = conn.query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(())).optional()?.is_some();
-    if !exists {
-        return Err(AppError::NotFound("Route nicht gefunden".into()));
-    }
+    require_route_exists(&conn, route_id)?;
     conn.execute(
         "UPDATE stops SET delivered = 0 WHERE route_id = ?1 AND kind = 'customer'",
         params![route_id],
@@ -2129,10 +2294,7 @@ async fn add_stop(
 ) -> Result<Json<RouteDetail>, AppError> {
     {
         let conn = state.db()?;
-        let exists: bool = conn.query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(())).optional()?.is_some();
-        if !exists {
-            return Err(AppError::NotFound("Route nicht gefunden".into()));
-        }
+        require_route_exists(&conn, route_id)?;
     }
 
     let kunde = payload.kunde.trim().to_string();
@@ -2157,6 +2319,31 @@ async fn add_stop(
     }
     check_plz(&plz)?;
 
+    // OSRM's `/trip` endpoint (see `OSRM_MAX_TRIP_COORDS`) caps how many
+    // waypoints one optimization call can take — via + customers + end.
+    // The bulk JSON import enforces this up front by rejecting an
+    // oversized paste (`MAX_BULK_STOPS`), but a route grown one `add_stop`
+    // call at a time had no equivalent guard: once the customer count
+    // reached the cap, every reoptimize after that silently failed and the
+    // route was stuck flagged stale forever, with the only fix being to
+    // manually delete stops back under the limit. Checked here, before
+    // spending a geocode round-trip on a stop that couldn't be routed
+    // anyway.
+    {
+        let conn = state.db()?;
+        let customer_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM stops WHERE route_id = ?1 AND kind = 'customer'",
+            params![route_id],
+            |r| r.get(0),
+        )?;
+        if customer_count + 3 > OSRM_MAX_TRIP_COORDS as i64 {
+            return Err(AppError::BadRequest(format!(
+                "Diese Route hat bereits die maximale Anzahl an Stopps ({}). Bitte eine neue Route anlegen.",
+                OSRM_MAX_TRIP_COORDS - 3
+            )));
+        }
+    }
+
     let (lat, lon, precision) = if let (Some(lat), Some(lon)) = (payload.lat, payload.lon) {
         check_latlon(lat, lon)?;
         (lat, lon, None) // a human placed this pin — that's exact by definition
@@ -2174,6 +2361,14 @@ async fn add_stop(
         // the same moment both see the same maximum and land on the same
         // order_index.
         let tx = conn.transaction()?;
+        // Re-checked here, not just before the geocode call above: that
+        // call (and Nominatim's throttle behind it) can take seconds —
+        // long enough for a concurrent `delete_route` to have removed this
+        // route in the meantime. Without this, the INSERT below would
+        // still fail on the `stops.route_id REFERENCES routes(id)`
+        // foreign key, but as an opaque 500 instead of the same "Route
+        // nicht gefunden" every other stale-route path already returns.
+        require_route_exists(&tx, route_id)?;
         let max_order: i64 = tx.query_row(
             "SELECT COALESCE(MAX(order_index), 0) FROM stops WHERE route_id = ?1",
             params![route_id],
@@ -2473,12 +2668,24 @@ async fn update_route_from_json(
     /// A `SubmittedStop` plus its resolved (lat, lon) and precision tag.
     type NewStop = (SubmittedStop, f64, f64, Option<&'static str>);
 
+    // Serialized per route (see `AppState::route_locks`, also used by
+    // `reoptimize_route`): everything below reads `existing_customers` up
+    // front and only writes back minutes later, once every uncached address
+    // in the paste has been geocoded through Nominatim's throttle. Without
+    // this lock, two overlapping imports for the same route — most
+    // realistically the driver's own retry after a client-side timeout on a
+    // slow connection, since the frontend's timeout is well short of what a
+    // large uncached paste can take server-side — would each plan from the
+    // same "before" snapshot and both commit, duplicating every stop that
+    // didn't match anything yet. Dropped before the closing
+    // `reoptimize_best_effort` call below, which takes this same lock
+    // itself and would deadlock if it were still held here.
+    let lock = state.route_lock(route_id).await;
+    let route_guard = lock.lock().await;
+
     let existing_customers: Vec<ExistingStop> = {
         let conn = state.db()?;
-        let exists: bool = conn.query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(())).optional()?.is_some();
-        if !exists {
-            return Err(AppError::NotFound("Route nicht gefunden".into()));
-        }
+        require_route_exists(&conn, route_id)?;
         let mut stmt = conn.prepare("SELECT id, kunde, strasse, plz FROM stops WHERE route_id = ?1 AND kind = 'customer'")?;
         let rows: Vec<ExistingStop> = stmt
             .query_map(params![route_id], |r| {
@@ -2651,10 +2858,7 @@ async fn update_route_from_json(
 
     let changed = {
         let mut conn = state.db()?;
-        let exists: bool = conn.query_row("SELECT 1 FROM routes WHERE id = ?1", params![route_id], |_| Ok(())).optional()?.is_some();
-        if !exists {
-            return Err(AppError::NotFound("Route nicht gefunden".into()));
-        }
+        require_route_exists(&conn, route_id)?;
 
         // A bulk import can be dozens of updates/inserts/deletes in one
         // request — without a transaction, a crash or panic partway
@@ -2723,6 +2927,7 @@ async fn update_route_from_json(
         tx.commit()?;
         changed
     };
+    drop(route_guard);
 
     if changed {
         reoptimize_best_effort(&state, route_id).await;
@@ -3023,6 +3228,7 @@ async fn main() {
         trust_proxy,
         upstreams: Upstreams::from_env(),
         route_locks: AsyncMutex::new(HashMap::new()),
+        osrm_primary_down_since: StdMutex::new(None),
     });
 
     let app = build_router(state);
