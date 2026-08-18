@@ -2508,6 +2508,119 @@ function renderVerlaufTab() {
 }
 
 // ---------------------------------------------------------------------
+// Zivildienst-Fortschritt — a personal countdown to the fixed service end
+// date, reachable from the Mehr tab. Every number here is still literally
+// true; they're just each reframed into whichever true form reads as
+// smaller/less daunting — elapsed % instead of remaining %, weeks instead
+// of days, and the entitled sick/vacation days subtracted from what's
+// still "owed" in service, since those genuinely don't have to be endured
+// day-by-day either. That reframing (not fabrication) is the whole trick.
+// ---------------------------------------------------------------------
+const ZIVILDIENST_START = '2026-08-03';
+const ZIVILDIENST_END = '2027-04-30';
+const ZIVILDIENST_SICK_DAYS = 24;
+const ZIVILDIENST_VACATION_WEEKS = 2;
+const ZIVILDIENST_VACATION_DAYS = ZIVILDIENST_VACATION_WEEKS * 7;
+const MS_PER_DAY = 86400000;
+
+function zivildienstDaysBetween(a, b) {
+  return Math.round((b.getTime() - a.getTime()) / MS_PER_DAY);
+}
+
+function zivildienstStats() {
+  const startDate = new Date(ZIVILDIENST_START + 'T00:00:00');
+  const endDate = new Date(ZIVILDIENST_END + 'T00:00:00');
+  const today = new Date(new Date().toDateString());
+
+  const totalDays = Math.max(zivildienstDaysBetween(startDate, endDate), 1);
+  const elapsedDays = Math.min(Math.max(zivildienstDaysBetween(startDate, today), 0), totalDays);
+  const remainingDays = totalDays - elapsedDays;
+  const effectiveRemainingDays = Math.max(remainingDays - ZIVILDIENST_SICK_DAYS - ZIVILDIENST_VACATION_DAYS, 0);
+  const pctDone = Math.min(100, Math.round((elapsedDays / totalDays) * 100));
+
+  return {
+    totalDays, elapsedDays, remainingDays, effectiveRemainingDays, pctDone,
+    remainingWeeks: Math.ceil(remainingDays / 7),
+    effectiveWeeks: Math.ceil(effectiveRemainingDays / 7),
+  };
+}
+
+function zivildienstMessage(pctDone) {
+  if (pctDone >= 100) return 'Geschafft! Der Zivildienst ist vorbei. 🎉';
+  if (pctDone >= 90) return 'Fast geschafft — die letzten Tage zählen kaum noch.';
+  if (pctDone >= 75) return 'Zielgerade: mehr als drei Viertel liegen schon hinter dir.';
+  if (pctDone >= 50) return 'Mehr als die Hälfte ist bereits geschafft.';
+  if (pctDone >= 25) return 'Ein gutes Stück ist schon erledigt — es geht spürbar voran.';
+  return 'Der Anfang ist gemacht. Von hier an wird jede Woche eine von immer weniger.';
+}
+
+function renderZivildienstSheetBody() {
+  const s = zivildienstStats();
+  const circumference = 326.73; // 2 * PI * r=52
+  const dashoffset = (circumference * (1 - s.pctDone / 100)).toFixed(1);
+
+  return `
+    <h2 class="text-[22px] font-bold mb-1 text-center">Zivildienst-Fortschritt</h2>
+    <p class="text-[13px] text-black/55 mb-4 text-center leading-snug">Bis ${fmtDate(ZIVILDIENST_END)}</p>
+
+    <div class="relative w-40 h-40 mx-auto">
+      <svg viewBox="0 0 120 120" class="w-40 h-40 -rotate-90">
+        <circle cx="60" cy="60" r="52" fill="none" stroke="rgba(0,0,0,0.08)" stroke-width="10"/>
+        <circle cx="60" cy="60" r="52" fill="none" stroke="#34C759" stroke-width="10" stroke-linecap="round"
+          stroke-dasharray="${circumference}" stroke-dashoffset="${dashoffset}"
+          style="transition: stroke-dashoffset .6s ease"/>
+      </svg>
+      <div class="absolute inset-0 flex flex-col items-center justify-center">
+        <p class="text-[32px] font-bold tabular-nums leading-none">${s.pctDone}%</p>
+        <p class="text-[12px] font-medium text-black/50 mt-1">geschafft</p>
+      </div>
+    </div>
+
+    <div class="text-center mt-5 mb-1">
+      <p class="text-[13px] font-medium text-black/50">Effektiv noch etwa</p>
+      <p class="text-[40px] font-bold tracking-tight text-brand-600 leading-none mt-0.5">${s.effectiveWeeks}<span class="text-[20px] font-semibold text-black/40 ml-1.5">Wochen</span></p>
+      <p class="text-[12px] text-black/45 mt-1 px-6 leading-snug">Diensttage – nach Abzug von Krankenstand &amp; Urlaub</p>
+    </div>
+
+    <p class="text-center text-[14px] font-medium px-4 mt-3 mb-5 leading-snug">${zivildienstMessage(s.pctDone)}</p>
+
+    <p class="${SECTION_LABEL} !pt-0 !pb-1.5">Die Zahlen dahinter</p>
+    <div class="${GROUP} mb-4">
+      <div class="flex items-center justify-between px-4 py-3">
+        <p class="text-[14px] text-black/70">Dienstbeginn</p>
+        <p class="text-[14px] font-semibold">${fmtDate(ZIVILDIENST_START)}</p>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <p class="text-[14px] text-black/70">Diensteende</p>
+        <p class="text-[14px] font-semibold">${fmtDate(ZIVILDIENST_END)}</p>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <p class="text-[14px] text-black/70">Kalendertage übrig</p>
+        <p class="text-[14px] font-semibold">${s.remainingDays} (${s.remainingWeeks} Wochen)</p>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <p class="text-[14px] text-black/70">– Krankenstand-Kontingent</p>
+        <p class="text-[14px] font-semibold text-black/50">${ZIVILDIENST_SICK_DAYS} Tage</p>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <p class="text-[14px] text-black/70">– Urlaubsanspruch</p>
+        <p class="text-[14px] font-semibold text-black/50">${ZIVILDIENST_VACATION_WEEKS} Wochen</p>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3 bg-success/5">
+        <p class="text-[14px] font-semibold text-black/80">= Diensttage effektiv übrig</p>
+        <p class="text-[15px] font-bold text-success">${s.effectiveRemainingDays}</p>
+      </div>
+    </div>
+
+    <button type="button" onclick="closeSheet()" class="press-98 w-full py-3 rounded-xl bg-brand-600 font-semibold text-white mb-2 mt-1">Fertig</button>
+  `;
+}
+
+function openZivildienstSheet() {
+  renderSheetShell(renderZivildienstSheetBody(), { label: 'Zivildienst-Fortschritt' });
+}
+
+// ---------------------------------------------------------------------
 // Mehr tab — app/data-source info + utilities. Grouped inset list, large
 // title, matching the Routen tab's language.
 // ---------------------------------------------------------------------
@@ -2539,6 +2652,18 @@ function renderMoreTab() {
           <button onclick="clearOfflineCache()" class="${ROW}">
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.refresh}</span>
             <p class="flex-1 text-[15px]">Offline-Daten leeren</p>
+          </button>
+        </div>
+
+        <p class="${SECTION_LABEL}">Zivildienst</p>
+        <div class="${GROUP}">
+          <button onclick="openZivildienstSheet()" class="${ROW}">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.flag}</span>
+            <div class="flex-1 min-w-0">
+              <p class="text-[15px] font-medium">Fortschritt</p>
+              <p class="text-[13px] text-black/50">${zivildienstStats().pctDone}% geschafft · bis ${fmtDate(ZIVILDIENST_END)}</p>
+            </div>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </button>
         </div>
 
