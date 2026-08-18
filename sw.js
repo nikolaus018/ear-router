@@ -64,6 +64,36 @@ async function trimCache(cacheName, maxEntries) {
   await Promise.all(keys.slice(0, keys.length - maxEntries).map((k) => cache.delete(k)));
 }
 
+// Shared by every stale-while-revalidate fetch below: serve the cached
+// response immediately if there is one (while a background fetch checks for
+// something newer, via `event.waitUntil` — a service worker is free to be
+// killed the instant its fetch handler resolves, so a refresh nobody is
+// waiting on would otherwise get cut off before it can write the cache);
+// fall back to waiting on the network if there's nothing cached yet.
+// `onPut` runs after a successful network response is cached (used by the
+// tile handler to also trim the cache) — everything else about the policy
+// is identical between the app shell and third-party assets, so it isn't
+// duplicated between the two call sites below.
+function staleWhileRevalidate(event, cache, request, { onPut } = {}) {
+  const network = fetch(request).then(async (res) => {
+    // Only successful responses are worth keeping — caching a 500 from a
+    // briefly-broken server would pin that error page as the offline
+    // fallback until the cache is cleared by hand.
+    if (res.ok) {
+      await cache.put(request, res.clone()).catch(() => {});
+      if (onPut) await onPut();
+    }
+    return res;
+  });
+  return cache.match(request).then((cached) => {
+    if (cached) {
+      event.waitUntil(network.catch(() => {}));
+      return cached;
+    }
+    return network;
+  });
+}
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
@@ -75,33 +105,61 @@ self.addEventListener('fetch', (event) => {
   if (url.origin === self.location.origin && url.pathname.startsWith('/api/')) return;
 
   if (url.origin === self.location.origin) {
-    // The app shell: network-first so a redeploy is picked up on the very
-    // next load, falling back to the last cached copy only when the
-    // network request itself fails (offline, DNS down, etc).
-    event.respondWith(
-      fetch(request)
-        .then((res) => {
-          // Only successful responses are worth keeping — caching a 500
-          // from a briefly-broken server would pin that error page as the
-          // offline fallback until the cache is cleared by hand.
-          if (res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {});
-          }
-          return res;
-        })
-        .catch(async () => {
-          // `caches.match` resolves to undefined on a miss, and
-          // respondWith(undefined) is a hard error ("Failed to convert
-          // value to 'Response'") that shows as a browser network-error
-          // page — worse than the offline notice below. A navigation also
-          // falls back to the cached shell itself: the app is a single
-          // page, so "/" is the right answer for any in-app URL.
-          const hit = (await caches.match(request)) ||
-            (request.mode === 'navigate' ? await caches.match('/') : undefined);
-          return hit || new Response('Offline', { status: 503, statusText: 'Offline' });
-        })
-    );
+    // The app shell: network raced against a short timeout, not plain
+    // stale-while-revalidate. This app's `index.html`/`sw.js` are read
+    // straight off disk on every request and hand-edited without a rebuild
+    // (see the module doc comment in src/main.rs) — "a deploy is picked up
+    // on the very next load" was a real, relied-on guarantee, not an
+    // incidental side effect of network-first. Plain stale-while-revalidate
+    // (tried here once, then reverted) silently gave that up: the existing
+    // `controllerchange` reload in index.html only fires when *sw.js's own
+    // bytes* change, so an index.html-only deploy would leave an
+    // already-open tab — and this is a PWA the app's own comments describe
+    // staying open "for days" — running stale JS against a new backend
+    // indefinitely, with nothing forcing a reload.
+    //
+    // Racing instead of blocking on the full round-trip keeps the fast-
+    // reopen win for a bad connection while keeping the freshness guarantee
+    // for the common case: this app talks to its own self-hosted backend,
+    // so the network normally answers well inside the timeout, and only
+    // actually falls back to cache when it doesn't.
+    const SHELL_NETWORK_TIMEOUT_MS = 400;
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE_NAME);
+      const network = fetch(request).then((res) => {
+        if (res.ok) cache.put(request, res.clone()).catch(() => {});
+        return res;
+      });
+      const timedOut = new Promise((resolve) => setTimeout(() => resolve(undefined), SHELL_NETWORK_TIMEOUT_MS));
+      // Raced against a version of `network` that can never *reject* — a
+      // bare `Promise.race([network, timedOut])` looked equivalent but
+      // isn't: `race` settles the instant ANY entry settles, rejection
+      // included, so a network failure that arrives before the timeout
+      // (not just a slow one) would reject the whole race immediately and
+      // crash this handler with net::ERR_FAILED instead of falling through
+      // to the cache fallback below, which is the entire point of this
+      // handler. `network` itself (still able to reject) is what the later
+      // fallbacks below correctly `.catch()` off of.
+      const raced = await Promise.race([network.catch(() => undefined), timedOut]);
+      if (raced) return raced;
+
+      // The network didn't answer in time — serve whatever's cached right
+      // now, but let the network attempt keep running in the background so
+      // the cache (and this tab, via `controllerchange` if it was a real
+      // update) still catches up as soon as it does answer.
+      event.waitUntil(network.catch(() => {}));
+      const cached = await cache.match(request);
+      if (cached) return cached;
+      // Nothing cached (first-ever load, or a cleared cache) and the
+      // network already missed its window: wait it out for real rather
+      // than serving nothing.
+      return network.catch(async () => {
+        // A navigation falls back to the cached shell itself: the app is a
+        // single page, so "/" is the right answer for any in-app URL.
+        const hit = request.mode === 'navigate' ? await caches.match('/') : undefined;
+        return hit || new Response('Offline', { status: 503, statusText: 'Offline' });
+      });
+    })());
     return;
   }
 
@@ -109,43 +167,19 @@ self.addEventListener('fetch', (event) => {
   // OpenFreeMap style JSON/glyphs/sprites/vector tiles): stale-while-
   // revalidate. Serving the cached copy immediately is what lets an
   // already-panned-into-view map area keep rendering with zero connection,
-  // and it's why this is cache-first rather than network-first.
-  //
-  // The revalidation in the background is the part that was missing.
-  // Plain cache-first never re-fetches anything it has ever stored, so a
-  // fixed MapLibre patch release, an updated OpenFreeMap style, or a tile
-  // covering a street that has since been re-mapped would be pinned at the
-  // first version this device ever saw — for as long as the cache lives,
-  // which is to say indefinitely. Now the driver still gets the instant
-  // cached response, and the next load gets the fresh one.
+  // and it's why this is cache-first rather than network-first. Unlike the
+  // app shell above, there's no "deploy this app just made" freshness
+  // guarantee to protect here — a pinned MapLibre/Tailwind build or a
+  // slightly-stale map tile is a cosmetic staleness, not this app's own
+  // broken code silently running forever, so plain stale-while-revalidate
+  // (not raced against a timeout) is the right trade.
   const isTile = url.hostname === 'tiles.openfreemap.org';
   const cacheName = isTile ? TILE_CACHE : CACHE_NAME;
-
-  event.respondWith((async () => {
-    const cache = await caches.open(cacheName);
-    const cached = await cache.match(request);
-
-    const network = fetch(request).then(async (res) => {
-      if (res.ok) {
-        await cache.put(request, res.clone()).catch(() => {});
-        if (isTile) await trimCache(TILE_CACHE, TILE_CACHE_MAX_ENTRIES).catch(() => {});
-      }
-      return res;
-    });
-
-    if (cached) {
-      // `waitUntil` is what makes the "revalidate" half actually happen: a
-      // service worker is free to be killed the moment its fetch handler
-      // resolves, so a background refresh nobody is waiting on gets
-      // terminated before it can write to the cache. Errors are swallowed
-      // — a failed refresh just means the cached copy stays another round.
-      event.waitUntil(network.catch(() => {}));
-      return cached;
-    }
-    // Nothing cached and the network is gone: let the caller see the
-    // failure. MapLibre treats a failed tile as "not loaded yet" and leaves
-    // that square blank, which is the right outcome — far better than a
-    // synthesized error response it would try to parse as vector data.
-    return network;
-  })());
+  event.respondWith(
+    caches.open(cacheName).then((cache) =>
+      staleWhileRevalidate(event, cache, request, {
+        onPut: isTile ? () => trimCache(TILE_CACHE, TILE_CACHE_MAX_ENTRIES) : undefined,
+      })
+    )
+  );
 });

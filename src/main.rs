@@ -68,7 +68,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use text::{normalize_strasse_text, simplify_housenumber};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, Semaphore};
+use tokio::task::JoinSet;
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
 /// How precisely a geocoded point is known to be located, coarsest last.
@@ -91,6 +92,17 @@ impl Precision {
             Precision::Street => "street",
             Precision::District => "district",
         }
+    }
+
+    /// What a stop/route-update response tags `location_precision` with —
+    /// `None` for an exact match (the common case, and what a legacy row
+    /// with no approximation at all also reads back as), `Some(..)` only
+    /// when the location is an admitted guess the driver should double
+    /// check. The same `(precision != Precision::Exact).then(...)` was
+    /// written out three separate times across `add_stop`, `update_stop`,
+    /// and the bulk JSON import before this existed.
+    fn tag(self) -> Option<&'static str> {
+        (self != Precision::Exact).then(|| self.as_str())
     }
 }
 
@@ -276,6 +288,16 @@ const MAX_BULK_STOPS: usize = OSRM_MAX_TRIP_COORDS - 2;
 /// fixed warehouse and destination waypoints must fit in one OSRM `/trip`
 /// call. Breaks the build, not a route, if the two constants ever drift.
 const _: () = assert!(MAX_BULK_STOPS + 2 <= OSRM_MAX_TRIP_COORDS);
+
+/// How many `geocode_address` calls a bulk "Route als JSON" import runs at
+/// once (see `update_route_from_json`). Modest on purpose: this is a
+/// polite concurrency limit against Vienna's own address service (which
+/// has no documented rate limit but is still a shared production system,
+/// not a load-test target), not an attempt to extract maximum throughput
+/// — Nominatim, the only *actually* rate-limited upstream in this chain,
+/// is protected independently by `nominatim_throttle` regardless of what
+/// this is set to.
+const BULK_GEOCODE_CONCURRENCY: usize = 6;
 
 /// Worst-case bytes one bulk-import entry can occupy on the wire, derived
 /// from the field limits rather than guessed at.
@@ -1891,6 +1913,29 @@ fn require_route_exists(conn: &Connection, route_id: i64) -> Result<(), AppError
     Ok(())
 }
 
+/// Length/control-character validation shared by `add_stop` and the bulk
+/// JSON import's per-entry loop — both require all four fields present and
+/// validate them identically. `update_stop`'s validation is deliberately
+/// NOT routed through this: it's a PATCH, so each field is independently
+/// optional and Paket/Notiz can be cleared to empty, a shape that doesn't
+/// compose cleanly with "these four are all required" without being harder
+/// to follow than just writing it out.
+fn validate_customer_fields(kunde: &str, strasse: &str, paket: Option<&str>, notiz: Option<&str>) -> Result<(), AppError> {
+    check_len(kunde, "Kunde", MAX_KUNDE_LEN)?;
+    check_no_control_chars(kunde, "Kunde", false)?;
+    check_len(strasse, "Straße", MAX_STRASSE_LEN)?;
+    check_no_control_chars(strasse, "Straße", false)?;
+    if let Some(p) = paket {
+        check_len(p, "Paket", MAX_PAKET_LEN)?;
+        check_no_control_chars(p, "Paket", false)?;
+    }
+    if let Some(n) = notiz {
+        check_len(n, "Notiz", MAX_NOTIZ_LEN)?;
+        check_no_control_chars(n, "Notiz", true)?;
+    }
+    Ok(())
+}
+
 fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, AppError> {
     let route = conn
         .query_row("SELECT * FROM routes WHERE id = ?1", params![route_id], RouteRow::from_row)
@@ -2305,18 +2350,7 @@ async fn add_stop(
     if kunde.is_empty() || strasse.is_empty() || plz.is_empty() {
         return Err(AppError::BadRequest("Kunde, Straße und Bezirk dürfen nicht leer sein.".into()));
     }
-    check_len(&kunde, "Kunde", MAX_KUNDE_LEN)?;
-    check_no_control_chars(&kunde, "Kunde", false)?;
-    check_len(&strasse, "Straße", MAX_STRASSE_LEN)?;
-    check_no_control_chars(&strasse, "Straße", false)?;
-    if let Some(p) = &paket {
-        check_len(p, "Paket", MAX_PAKET_LEN)?;
-        check_no_control_chars(p, "Paket", false)?;
-    }
-    if let Some(n) = &notiz {
-        check_len(n, "Notiz", MAX_NOTIZ_LEN)?;
-        check_no_control_chars(n, "Notiz", true)?;
-    }
+    validate_customer_fields(&kunde, &strasse, paket.as_deref(), notiz.as_deref())?;
     check_plz(&plz)?;
 
     // OSRM's `/trip` endpoint (see `OSRM_MAX_TRIP_COORDS`) caps how many
@@ -2349,7 +2383,7 @@ async fn add_stop(
         (lat, lon, None) // a human placed this pin — that's exact by definition
     } else {
         let (lat, lon, _, precision) = geocode_address(&state, &strasse, &plz).await?;
-        (lat, lon, (precision != Precision::Exact).then(|| precision.as_str()))
+        (lat, lon, precision.tag())
     };
 
     {
@@ -2491,7 +2525,7 @@ async fn update_stop(
             (lat, lon, None) // a human placed this pin — that's exact by definition
         } else {
             let (lat, lon, _, precision) = geocode_address(&state, &new_strasse, &new_plz).await?;
-            (lat, lon, (precision != Precision::Exact).then(|| precision.as_str()))
+            (lat, lon, precision.tag())
         });
     }
 
@@ -2600,9 +2634,28 @@ struct GeocodeApproximate {
 }
 
 #[derive(Serialize)]
+struct ValidationFailure {
+    /// Best-effort identifier for the offending entry — kunde if present,
+    /// else strasse, else plz, else "Eintrag N" (1-based position in the
+    /// submitted list) when none of those fields could be read at all
+    /// (e.g. the entry wasn't even a JSON object).
+    label: String,
+    reason: String,
+}
+
+#[derive(Serialize)]
 struct BulkJsonResult {
     #[serde(flatten)]
     route: RouteDetail,
+    /// Entries that failed basic validation (missing required field, over a
+    /// length limit, a raw control character) before geocoding was ever
+    /// attempted — everything else in the batch still gets saved instead of
+    /// one bad entry (a stray character from a pasted spreadsheet, say)
+    /// blocking the other 39. Previously any one of these aborted the
+    /// entire import with a single terse 400 identifying only the first
+    /// offending value, forcing the driver to hunt through however many
+    /// JSON objects by hand.
+    validation_failures: Vec<ValidationFailure>,
     /// Entries that couldn't be geocoded at all (not even a recognized
     /// PLZ) — everything else in the batch still gets saved. The frontend
     /// surfaces these so the driver can fix them or pin-drop manually.
@@ -2614,8 +2667,9 @@ struct BulkJsonResult {
     approximate: Vec<GeocodeApproximate>,
     /// True if stops that looked "removed" (their address wasn't in the
     /// submitted list) were deliberately *not* deleted this round, because
-    /// at least one geocode failure made it unsafe to tell a genuine
-    /// removal apart from an edited address that just failed to resolve.
+    /// at least one validation or geocode failure made it unsafe to tell a
+    /// genuine removal apart from an edited/malformed entry that just
+    /// failed to resolve.
     deletions_skipped: bool,
 }
 
@@ -2700,34 +2754,59 @@ async fn update_route_from_json(
         rows
     };
 
+    // Per-entry, not fatal to the whole request: a single stray control
+    // character or over-length field in one of up to 98 pasted stops used
+    // to abort the entire import with one generic 400 naming only the
+    // first offending value — the driver had to scan however many JSON
+    // objects by hand to find it. Collected into `validation_failures`
+    // instead, the same shape as `geocode_failures` below, so the rest of
+    // a large batch still saves.
     let mut normalized: Vec<SubmittedStop> = Vec::new();
-    for entry in stops_in {
-        let obj = entry
-            .as_object()
-            .ok_or_else(|| AppError::BadRequest("Ungültiger Eintrag in der Liste (kein Objekt).".into()))?;
+    let mut validation_failures: Vec<ValidationFailure> = Vec::new();
+    for (idx, entry) in stops_in.iter().enumerate() {
+        let Some(obj) = entry.as_object() else {
+            validation_failures.push(ValidationFailure {
+                label: format!("Eintrag {}", idx + 1),
+                reason: "Kein gültiges Objekt.".into(),
+            });
+            continue;
+        };
         let kunde = obj.get("kunde").and_then(Value::as_str).unwrap_or("").trim().to_string();
         let strasse = obj.get("strasse").and_then(Value::as_str).unwrap_or("").trim().to_string();
         let plz = obj.get("plz").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let label = if !kunde.is_empty() {
+            kunde.clone()
+        } else if !strasse.is_empty() {
+            strasse.clone()
+        } else if !plz.is_empty() {
+            plz.clone()
+        } else {
+            format!("Eintrag {}", idx + 1)
+        };
         if kunde.is_empty() || strasse.is_empty() || plz.is_empty() {
-            let label = if !kunde.is_empty() { &kunde } else if !strasse.is_empty() { &strasse } else if !plz.is_empty() { &plz } else { "?" };
-            return Err(AppError::BadRequest(format!(
-                "Ungültiger Stopp ({}): Kunde, Straße und Bezirk sind Pflichtfelder.",
-                label
-            )));
+            validation_failures.push(ValidationFailure {
+                label,
+                reason: "Kunde, Straße und Bezirk sind Pflichtfelder.".into(),
+            });
+            continue;
         }
         let paket = obj.get("paket").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
         let notiz = obj.get("notiz").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-        check_len(&kunde, "Kunde", MAX_KUNDE_LEN)?;
-        check_no_control_chars(&kunde, "Kunde", false)?;
-        check_len(&strasse, "Straße", MAX_STRASSE_LEN)?;
-        check_no_control_chars(&strasse, "Straße", false)?;
-        if let Some(p) = &paket {
-            check_len(p, "Paket", MAX_PAKET_LEN)?;
-            check_no_control_chars(p, "Paket", false)?;
-        }
-        if let Some(n) = &notiz {
-            check_len(n, "Notiz", MAX_NOTIZ_LEN)?;
-            check_no_control_chars(n, "Notiz", true)?;
+        // Exhaustively matched, not an `if let Err(AppError::BadRequest(_))`:
+        // `validate_customer_fields` is documented to only ever return that
+        // one variant, but an `if let` relies on that staying true forever
+        // — any *other* future error variant would silently fall through
+        // this check as if the entry had passed, pushing unvalidated data
+        // into `normalized` with no record in `validation_failures` at all.
+        // Propagating anything unexpected via `?` turns a silent validation
+        // bypass into a loud 500 instead.
+        match validate_customer_fields(&kunde, &strasse, paket.as_deref(), notiz.as_deref()) {
+            Ok(()) => {}
+            Err(AppError::BadRequest(reason)) => {
+                validation_failures.push(ValidationFailure { label, reason });
+                continue;
+            }
+            Err(other) => return Err(other),
         }
         normalized.push((kunde, strasse, plz, paket, notiz));
     }
@@ -2806,20 +2885,70 @@ async fn update_route_from_json(
         }
     }
 
-    // ----- Geocode whatever is left ------------------------------------
-    for (entry, existing_id) in unresolved {
-        let (kunde, strasse, plz, paket, notiz) = entry;
-        if !is_valid_vienna_plz(&plz) {
-            // Skip the external geocode round-trip entirely for a PLZ that
-            // can't possibly be a Vienna address — same outcome as it
-            // failing geocoding, just without spending a Nominatim/OSGD
-            // call (and its share of the shared rate limit) on it.
-            failures.push(GeocodeFailure { kunde, strasse, plz });
+    // ----- Geocode whatever is left, with bounded concurrency ----------
+    // Split out invalid-PLZ entries first — same as before, no network
+    // call spent on a PLZ that can't possibly be a Vienna address — so the
+    // concurrency below is spent only on entries that actually need a
+    // geocoder.
+    let mut to_geocode: Vec<(usize, SubmittedStop, Option<i64>)> = Vec::new();
+    for (idx, (entry, existing_id)) in unresolved.into_iter().enumerate() {
+        if !is_valid_vienna_plz(&entry.2) {
+            failures.push(GeocodeFailure { kunde: entry.0, strasse: entry.1, plz: entry.2 });
             continue;
         }
-        match geocode_address(&state, &strasse, &plz).await {
+        to_geocode.push((idx, entry, existing_id));
+    }
+
+    // Wien-OGD (tried first for every address, see `geocode_address`) has
+    // no rate limit of its own, so running these fully sequentially — one
+    // `.await` per entry in a plain loop, as this used to be — wasted real
+    // wall-clock time waiting on network round-trips that could overlap.
+    // Nominatim (the fallback, tried only for whatever Wien-OGD didn't
+    // resolve) *is* rate-limited, but that limit is enforced centrally by
+    // `nominatim_throttle` serializing on `AppState::nominatim_last` — the
+    // concurrent callers here just queue up there like any other caller
+    // would, so this can't push Nominatim traffic past its policy, only
+    // let more Wien-OGD lookups (and DB cache reads) run at once.
+    /// One `geocode_address` task's result: its original position in
+    /// `unresolved` (for restoring input order once tasks complete
+    /// out-of-order), the entry it was for, which existing stop it's an
+    /// edit of (if any), and the geocode outcome itself.
+    type GeocodeTaskResult = (usize, SubmittedStop, Option<i64>, Result<(f64, f64, String, Precision), AppError>);
+
+    let geocode_semaphore = Arc::new(Semaphore::new(BULK_GEOCODE_CONCURRENCY));
+    let mut geocode_tasks: JoinSet<GeocodeTaskResult> = JoinSet::new();
+    for (idx, entry, existing_id) in to_geocode {
+        let task_state = Arc::clone(&state);
+        let permit = Arc::clone(&geocode_semaphore);
+        geocode_tasks.spawn(async move {
+            // Held for the duration of the geocode call, not just the
+            // acquire — that's the entire point of a semaphore-gated
+            // concurrency limit, not just limiting how many tasks *start*.
+            let _permit = permit.acquire_owned().await.expect("semaphore is never closed");
+            let result = geocode_address(&task_state, &entry.1, &entry.2).await;
+            (idx, entry, existing_id, result)
+        });
+    }
+    // Collected out of completion order (`JoinSet` yields whichever
+    // finishes first) and sorted back by original position — the geocode
+    // failures/approximate lists that come out of this are user-facing, and
+    // reordering the driver's own pasted list in the response for no reason
+    // would be a needless surprise.
+    let mut geocoded = Vec::with_capacity(geocode_tasks.len());
+    while let Some(result) = geocode_tasks.join_next().await {
+        // `geocode_address` itself never panics on any of its own error
+        // paths (every failure is a returned `Err`) — a panic reaching here
+        // is a genuine bug worth crashing loudly on, not one to silently
+        // swallow and quietly drop an entry from the import.
+        geocoded.push(result.expect("bulk geocode task panicked"));
+    }
+    geocoded.sort_by_key(|(idx, ..)| *idx);
+
+    for (_, entry, existing_id, result) in geocoded {
+        let (kunde, strasse, plz, paket, notiz) = entry;
+        match result {
             Ok((lat, lon, _, precision)) => {
-                let precision_tag = (precision != Precision::Exact).then(|| precision.as_str());
+                let precision_tag = precision.tag();
                 if let Some(p) = precision_tag {
                     approximate.push(GeocodeApproximate { kunde: kunde.clone(), strasse: strasse.clone(), plz: plz.clone(), precision: p });
                 }
@@ -2848,8 +2977,14 @@ async fn update_route_from_json(
     // failed to resolve" (both look like "not in matched_ids"). Skip
     // deletions entirely this round rather than risk silently dropping a
     // customer who was only ever the victim of an unrelated typo elsewhere
-    // in the same paste.
-    let deletions_skipped = !failures.is_empty();
+    // in the same paste. A validation failure counts here too, not just a
+    // geocode one: an entry that never made it past validation never got a
+    // chance to match anything either, for exactly the same reason — and
+    // without this, a paste that was *entirely* invalid (every entry
+    // rejected) would have zero geocode failures, so nothing would skip
+    // deletion, and every existing customer stop on the route would be
+    // deleted as "no longer present" instead of the import safely no-op'ing.
+    let deletions_skipped = !failures.is_empty() || !validation_failures.is_empty();
     let to_delete: Vec<i64> = if deletions_skipped {
         Vec::new()
     } else {
@@ -2935,6 +3070,7 @@ async fn update_route_from_json(
     let conn = state.db()?;
     Ok(Json(BulkJsonResult {
         route: get_route_detail(&conn, route_id)?,
+        validation_failures,
         geocode_failures: failures,
         approximate,
         deletions_skipped,

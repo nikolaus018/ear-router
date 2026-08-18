@@ -116,8 +116,13 @@
   };
 </script>
 
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" />
-<script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
+<!-- MapLibre GL JS/CSS is loaded on demand (see `ensureMapLibre()` further
+     down), not as a blocking tag here: it's a several-hundred-KB library
+     needed only once the driver opens the Karte tab or the pin-drop
+     sheet, and this app's entire screen is built by `render()` in JS with
+     no static body content to paint in the meantime — every millisecond
+     spent blocking here on a library the very first screen (Routen) never
+     touches is a millisecond added to every cold start. -->
 
 <style>
   /* `dvh` is unreliable specifically inside an iOS home-screen standalone
@@ -194,6 +199,18 @@
      so this can't happen. ---- */
   #route-map, #pin-map { background: #e5e3df; }
   .maplibregl-map { font-family: inherit; z-index: 0; isolation: isolate; }
+  /* The Karte tab's map div is positioned via Tailwind's `.absolute
+     inset-0` (see `initMapTabMap`) so it fills `#route-map` — but
+     MapLibre's own stylesheet also targets `.maplibregl-map` with
+     `position: relative`, same specificity as `.absolute`. Since
+     maplibre-gl.css now loads lazily on first need (see `ensureMapLibre`)
+     instead of as a static <link> before Tailwind's generated stylesheet,
+     it lands *after* Tailwind's rules in the cascade and wins the tie,
+     silently collapsing the map div to 0 height (a blank gray `#route-map`
+     background showing through — no tiles, no error, nothing in the
+     console). `#route-map .maplibregl-map` outguns a bare `.maplibregl-map`
+     on specificity alone, so this holds regardless of load order. */
+  #route-map .maplibregl-map { position: absolute; inset: 0; }
   .maplibregl-ctrl-group { background: #fff !important; border: 1px solid rgba(0,0,0,.08); box-shadow: 0 1px 4px rgba(0,0,0,.12) !important; }
   .maplibregl-ctrl-group button { background: transparent !important; }
   /* Karte tab: controls sit top-right (not bottom-right) so the route-picker
@@ -329,7 +346,6 @@ const ICONS = {
   plus: icon('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>', 'stroke-width="2"'),
   back: icon('<polyline points="15 18 9 12 15 6"/>', 'stroke-width="2.25"'),
   chevron: icon('<polyline points="9 18 15 12 9 6"/>', 'stroke-width="2.25"'),
-  x: icon('<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>', 'stroke-width="2.25"'),
   kebab: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="12" cy="5" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="12" cy="19" r="1.9"/></svg>',
   tabRoutes: icon('<circle cx="4" cy="6" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="6" x2="20" y2="6"/><circle cx="4" cy="12" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="12" x2="20" y2="12"/><circle cx="4" cy="18" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="18" x2="20" y2="18"/>'),
   tabMap: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
@@ -348,7 +364,6 @@ const ICONS = {
   doc: icon('<path d="M7 3h7l5 5v13H7Z"/><path d="M14 3v5h5"/><path d="M9.3 13.7l-1.6 1.8 1.6 1.8"/><path d="M14.7 13.7l1.6 1.8-1.6 1.8"/>'),
   warning: icon('<path d="M12 4.2 2.5 20h19L12 4.2Z"/><path d="M12 10v4.5"/><circle cx="12" cy="17.3" r=".9" fill="currentColor" stroke="none"/>'),
   note: icon('<path d="M5 4h14v13.2l-3.8 2.8H5Z"/><path d="M8.5 9h7"/><path d="M8.5 13h7"/>'),
-  info: icon('<circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7.6" r=".9" fill="currentColor" stroke="none"/>'),
   archive: icon('<path d="M4 5h16v4H4Z"/><path d="M5 9v10h14V9"/><path d="M10 13h4"/>'),
   person: icon('<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7"/>'),
 };
@@ -490,10 +505,16 @@ function toast(message, type = 'info', durationMs = 3800) {
     info: 'bg-white/95 text-black',
     error: 'bg-red-50/95 text-red-700',
     success: 'bg-emerald-50/95 text-emerald-700',
+    // Same amber the app already uses for "this needs the driver's
+    // attention but isn't a failure" (approximate-location badges,
+    // location_precision) — the duplicate-address warning is the only
+    // caller today.
+    warning: 'bg-warn/15 text-warnText',
   };
+  const urgent = type === 'error' || type === 'warning';
   const el = document.createElement('div');
   el.className = `toast-enter pointer-events-auto max-w-sm w-full backdrop-blur-xl border border-black/5 ${colors[type] || colors.info} rounded-2xl px-4 py-3 text-sm font-medium shadow-xl`;
-  if (type === 'error') el.setAttribute('role', 'alert');
+  if (urgent) el.setAttribute('role', 'alert');
   el.textContent = message;
   const container = document.getElementById('toast-container');
   // A burst of failures (a bulk import that can't reach the server, a
@@ -502,6 +523,11 @@ function toast(message, type = 'info', durationMs = 3800) {
   // longer being read by anyone. Keep the newest few.
   while (container.childElementCount >= MAX_VISIBLE_TOASTS) container.firstElementChild.remove();
   container.appendChild(el);
+  // 'warning' is deliberately excluded from this generic buzz: its one
+  // caller today (the duplicate-address warning in `toggleDelivered`)
+  // fires its own distinct multi-pulse pattern immediately after calling
+  // `toast()`, and `navigator.vibrate()` replaces rather than queues — the
+  // generic pulse here would just be invoked and instantly overridden.
   if (navigator.vibrate && type === 'error') navigator.vibrate(30);
   setTimeout(() => { el.style.transition = 'opacity .3s, transform .3s'; el.style.opacity = '0'; el.style.transform = 'translateY(-8px)'; setTimeout(() => el.remove(), 300); }, durationMs);
 }
@@ -587,25 +613,37 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// Shared by confirmSheet/promptSheet, which are identical apart from what
+// goes in the header under the title (a plain message for one, a message
+// plus a text input for the other) and whether the confirm button can be
+// styled as destructive. `headerHtml` is pre-built by each caller — their
+// message paragraphs differ in spacing/fallback markup just enough (see
+// each function) that factoring the message rendering itself in here too
+// would need more parameters than it would save lines.
+function renderAlertShell(root, title, headerHtml, { confirmLabel, cancelLabel, danger = false }) {
+  root.innerHTML = `
+    <div class="fixed inset-0 z-[60] flex items-center justify-center px-6" role="dialog" aria-modal="true" aria-label="${escapeAttr(title)}">
+      <div class="sheet-backdrop absolute inset-0 bg-black/30" data-cancel></div>
+      <div class="alert-panel relative w-full max-w-[300px] bg-white/95 backdrop-blur-xl border border-black/5 rounded-2xl overflow-hidden shadow-2xl text-center">
+        <div class="px-5 pt-5 pb-4">
+          <h3 class="font-semibold text-[15px]">${escapeHtml(title)}</h3>
+          ${headerHtml}
+        </div>
+        <div class="grid grid-cols-2 border-t border-black/10">
+          <button data-cancel class="press-98 py-3 text-[15px] font-medium text-black/70 border-r border-black/10">${escapeHtml(cancelLabel)}</button>
+          <button data-confirm class="press-98 py-3 text-[15px] font-semibold ${danger ? 'text-red-600' : 'text-brand-600'}">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function confirmSheet({ title, message, confirmLabel = 'Bestätigen', cancelLabel = 'Abbrechen', danger = false }) {
   return new Promise((resolve) => {
     rememberFocusBeforeModal();
     const root = document.getElementById('modal-root');
-    root.innerHTML = `
-      <div class="fixed inset-0 z-[60] flex items-center justify-center px-6" role="dialog" aria-modal="true" aria-label="${escapeAttr(title)}">
-        <div class="sheet-backdrop absolute inset-0 bg-black/30" data-cancel></div>
-        <div class="alert-panel relative w-full max-w-[300px] bg-white/95 backdrop-blur-xl border border-black/5 rounded-2xl overflow-hidden shadow-2xl text-center">
-          <div class="px-5 pt-5 pb-4">
-            <h3 class="font-semibold text-[15px]">${escapeHtml(title)}</h3>
-            ${message ? `<p class="text-[13px] text-black/60 mt-1.5 leading-snug">${escapeHtml(message)}</p>` : ''}
-          </div>
-          <div class="grid grid-cols-2 border-t border-black/10">
-            <button data-cancel class="press-98 py-3 text-[15px] font-medium text-black/70 border-r border-black/10">${escapeHtml(cancelLabel)}</button>
-            <button data-confirm class="press-98 py-3 text-[15px] font-semibold ${danger ? 'text-red-600' : 'text-brand-600'}">${escapeHtml(confirmLabel)}</button>
-          </div>
-        </div>
-      </div>
-    `;
+    const messageHtml = message ? `<p class="text-[13px] text-black/60 mt-1.5 leading-snug">${escapeHtml(message)}</p>` : '';
+    renderAlertShell(root, title, messageHtml, { confirmLabel, cancelLabel, danger });
     const cancel = () => { closeAlert(); resolve(false); };
     root.querySelectorAll('[data-cancel]').forEach(el => el.addEventListener('click', cancel));
     root.querySelector('[data-confirm]').addEventListener('click', () => { closeAlert(); resolve(true); });
@@ -621,24 +659,13 @@ function promptSheet({ title, message, placeholder = '', initial = '', confirmLa
   return new Promise((resolve) => {
     rememberFocusBeforeModal();
     const root = document.getElementById('modal-root');
-    root.innerHTML = `
-      <div class="fixed inset-0 z-[60] flex items-center justify-center px-6" role="dialog" aria-modal="true" aria-label="${escapeAttr(title)}">
-        <div class="sheet-backdrop absolute inset-0 bg-black/30" data-cancel></div>
-        <div class="alert-panel relative w-full max-w-[300px] bg-white/95 backdrop-blur-xl border border-black/5 rounded-2xl overflow-hidden shadow-2xl text-center">
-          <div class="px-5 pt-5 pb-4">
-            <h3 class="font-semibold text-[15px]">${escapeHtml(title)}</h3>
-            ${message ? `<p class="text-[13px] text-black/60 mt-1 mb-3 leading-snug">${escapeHtml(message)}</p>` : '<div class="mt-3"></div>'}
-            <!-- 16px, not 15: iOS zooms the whole page in when a focused
-                 input's font-size is under 16px, and never zooms back out. -->
-            <input data-input value="${escapeAttr(initial)}" placeholder="${escapeAttr(placeholder)}" maxlength="${maxLength}" enterkeyhint="done" class="w-full bg-black/5 rounded-lg px-3 py-2 text-base text-center focus:outline-none focus:ring-2 focus:ring-brand-600" />
-          </div>
-          <div class="grid grid-cols-2 border-t border-black/10">
-            <button data-cancel class="press-98 py-3 text-[15px] font-medium text-black/70 border-r border-black/10">${escapeHtml(cancelLabel)}</button>
-            <button data-confirm class="press-98 py-3 text-[15px] font-semibold text-brand-600">${escapeHtml(confirmLabel)}</button>
-          </div>
-        </div>
-      </div>
-    `;
+    const messageHtml = message
+      ? `<p class="text-[13px] text-black/60 mt-1 mb-3 leading-snug">${escapeHtml(message)}</p>`
+      : '<div class="mt-3"></div>';
+    // 16px, not 15: iOS zooms the whole page in when a focused input's
+    // font-size is under 16px, and never zooms back out.
+    const inputHtml = `<input data-input value="${escapeAttr(initial)}" placeholder="${escapeAttr(placeholder)}" maxlength="${maxLength}" enterkeyhint="done" class="w-full bg-black/5 rounded-lg px-3 py-2 text-base text-center focus:outline-none focus:ring-2 focus:ring-brand-600" />`;
+    renderAlertShell(root, title, messageHtml + inputHtml, { confirmLabel, cancelLabel });
     const input = root.querySelector('[data-input]');
     setTimeout(() => { input.focus(); input.select(); }, 80);
     // Resolves `null` only for a real cancel, and the (possibly empty)
@@ -822,7 +849,17 @@ function adoptRoute(seq, route) {
 // toast from firing for a request the driver has already abandoned.
 let latestRouteRequestId = null;
 
-async function openRoute(id) {
+// Fetches route `id` and makes it the route in focus — shared by
+// `openRoute` (pushes a detail screen over whichever tab is current) and
+// `selectMapRoute` (the Karte tab's own picker, which shows the route
+// in-place rather than pushing detail over it). They differ only in what
+// `detailOrigin` ends up as, which is why that's a callback rather than a
+// plain value: it has to be evaluated *after* the fetch resolves, at the
+// same point in the control flow the original two copies of this each
+// read `state.tab` — evaluating it any earlier would capture whatever tab
+// was active when the request started, not when it actually completed,
+// which matters if the driver switches tabs while it's in flight.
+async function loadRouteIntoFocus(id, computeDetailOrigin) {
   latestRouteRequestId = id;
   const seq = nextSeq();
   showProgress();
@@ -830,13 +867,17 @@ async function openRoute(id) {
     const route = await api(`/routes/${id}`);
     if (latestRouteRequestId !== id) return;
     if (!adoptRoute(seq, route)) return;
-    state.detailOrigin = state.tab;
+    state.detailOrigin = computeDetailOrigin();
     render();
   } catch (err) {
     if (latestRouteRequestId === id) toast(err.message || 'Route konnte nicht geladen werden.', 'error');
   } finally {
     hideProgress();
   }
+}
+
+async function openRoute(id) {
+  await loadRouteIntoFocus(id, () => state.tab);
 }
 
 function closeDetail() {
@@ -850,20 +891,7 @@ function closeDetail() {
 }
 
 async function selectMapRoute(id) {
-  latestRouteRequestId = id;
-  const seq = nextSeq();
-  showProgress();
-  try {
-    const route = await api(`/routes/${id}`);
-    if (latestRouteRequestId !== id) return;
-    if (!adoptRoute(seq, route)) return;
-    state.detailOrigin = null;
-    render();
-  } catch (err) {
-    if (latestRouteRequestId === id) toast(err.message || 'Route konnte nicht geladen werden.', 'error');
-  } finally {
-    hideProgress();
-  }
+  await loadRouteIntoFocus(id, () => null);
 }
 
 function openCurrentRouteDetail() {
@@ -1093,6 +1121,62 @@ async function sendStop(data, coords) {
   }
 }
 
+// Patches exactly the DOM a delivered-toggle can affect — the tapped row,
+// the (at most two) rows a "next stop" handoff touches, the next-stop
+// banner, and the progress header — instead of `render()`'s full
+// innerHTML replace-and-reparse of the whole stop list. This is the app's
+// single most-tapped action, so on a route with dozens of stops the saved
+// work compounds all shift long.
+//
+// Returns `false` (having touched nothing) when the route-detail screen
+// for the current route isn't actually what's on screen — most
+// realistically the driver switched to the Karte tab or backed out to the
+// Routen list while a toggle was still in flight, in which case whatever
+// *is* visible (map markers, a route card's counts) needs the full
+// `render()` this was called instead of, and the caller falls back to it.
+function applyDeliveredDomPatch(stopId) {
+  const r = state.currentRoute;
+  if (!r || !isDetailShowing()) return false;
+
+  const stops = r.stops;
+  const firstOpenIdx = stops.findIndex(s => s.kind === 'customer' && !s.delivered);
+  const newNextId = firstOpenIdx >= 0 ? stops[firstOpenIdx].id : null;
+  const oldNextRow = document.querySelector('[data-next-stop]');
+  const oldNextId = oldNextRow ? Number(oldNextRow.getAttribute('data-stop-row')) : null;
+  const dupCounts = duplicateAddressCounts(stops);
+
+  const patchRow = (id) => {
+    const el = document.querySelector(`[data-stop-row="${id}"]`);
+    const stop = stops.find(s => s.id === id);
+    if (!el || !stop) return false;
+    el.outerHTML = renderCustomerRow(stop, id === newNextId, null, dupCounts.get(addrKey(stop.strasse, stop.plz)));
+    return true;
+  };
+
+  // The tapped row is the one thing guaranteed to need a patch; if its
+  // element isn't even on screen, this isn't the render this route is
+  // currently showing (a stale call, or `stops` doesn't contain it), and
+  // the safest thing is to fall back to a full render rather than leave
+  // the next-stop banner/progress header patched against a list that
+  // wasn't actually touched.
+  if (!patchRow(stopId)) return false;
+  if (oldNextId !== newNextId) {
+    if (oldNextId !== null && oldNextId !== stopId) patchRow(oldNextId);
+    if (newNextId !== null && newNextId !== stopId) patchRow(newNextId);
+  }
+
+  const barSlot = document.querySelector('[data-next-stop-bar-slot]');
+  if (barSlot) barSlot.innerHTML = nextStopBar(stops, firstOpenIdx);
+
+  const countEl = document.querySelector('[data-delivered-count-text]');
+  if (countEl) countEl.textContent = `${r.delivered_count} / ${r.customer_count} zugestellt`;
+  const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
+  const barEl = document.querySelector('[data-progress-bar]');
+  if (barEl) barEl.style.width = `${progress}%`;
+
+  return true;
+}
+
 // Optimistic — the delivered-toggle is the single most-tapped action in
 // the app, so it flips instantly instead of waiting on a network
 // round-trip, then reconciles with the server response in the background.
@@ -1125,8 +1209,38 @@ async function toggleDelivered(stopId, delivered) {
   // screen, and backing out to Routen before the server answers shows the
   // old count next to a row the driver just ticked off.
   syncRouteSummary();
-  render(true);
+  applyDeliveredDomPatch(stopId) || render(true);
   if (navigator.vibrate) navigator.vibrate(delivered ? [12, 40, 12] : 12);
+
+  // The exact moment a second package at the same door is easiest to
+  // miss: right after marking the first one delivered, about to walk back
+  // to the car. The badge on the row (see `renderCustomerRow`) covers
+  // "browsing the list", but this covers "standing at the door" — a loud
+  // toast + distinct vibration pattern for the specific case that still
+  // needs a driver's attention, not just a quiet visual that's easy to
+  // have already scrolled past.
+  if (delivered) {
+    const key = addrKey(stop.strasse, stop.plz);
+    // Cheap early-out via the same memoized counts the badge uses, before
+    // paying for the `.filter()` scan below — the common case (no
+    // duplicate address at all) never needs to touch `route.stops` again.
+    if ((duplicateAddressCounts(route.stops).get(key) || 1) > 1) {
+      // `.filter()`, not `.find()`: three or more stops can share one
+      // address (rare, but not impossible — a household ordering three
+      // different diet menus), and naming only the first still-open one
+      // would leave the others unmentioned even though the on-row badge
+      // already counts all of them.
+      const openSiblings = route.stops.filter(
+        (s) => s.id !== stopId && s.kind === 'customer' && !s.delivered && addrKey(s.strasse, s.plz) === key
+      );
+      if (openSiblings.length) {
+        const names = openSiblings.map((s) => s.kunde).join(', ');
+        const noun = openSiblings.length > 1 ? 'Pakete' : 'ein Paket';
+        toast(`⚠ Noch ${noun} an dieser Adresse offen — ${names}`, 'warning', 9000);
+        if (navigator.vibrate) navigator.vibrate([15, 60, 15, 60, 15]);
+      }
+    }
+  }
 
   const seq = nextSeq();
   try {
@@ -1137,7 +1251,7 @@ async function toggleDelivered(stopId, delivered) {
     // case this reply is stale and must not clear *its* prediction.
     if (pendingDeliveredGen.get(stopId) === gen) pendingDelivered.delete(stopId);
     if (!applyRouteUpdate(seq, route.id, updated)) return;
-    render(true);
+    applyDeliveredDomPatch(stopId) || render(true);
   } catch (err) {
     if (pendingDeliveredGen.get(stopId) === gen) pendingDelivered.delete(stopId);
     // Looked up fresh, not the `route`/`stop` captured at the top of this
@@ -1156,7 +1270,7 @@ async function toggleDelivered(stopId, delivered) {
       // races ends up describing a route that doesn't exist.
       currentRoute.delivered_count = currentRoute.stops.filter((s) => s.kind === 'customer' && s.delivered).length;
       syncRouteSummary();
-      render(true);
+      applyDeliveredDomPatch(stopId) || render(true);
     }
     toast(err.message, 'error');
   }
@@ -1701,19 +1815,30 @@ async function saveJsonEdits() {
     if (!applyRouteUpdate(seq, routeId, data)) { closeSheet(); return; }
     closeSheet();
     render();
-    // Independent counts, not mutually exclusive: a batch can have both
-    // addresses that failed outright AND separate ones that only resolved
-    // approximately. A plain if/else-if here would silently drop the
-    // approximate-location warning whenever failures were also present —
-    // those stops still saved and still need the pin double-checked, so
-    // the note is folded into the failure toast instead of lost.
+    // Independent counts, not mutually exclusive: a batch can have invalid
+    // entries, unresolvable addresses, AND separate ones that only
+    // resolved approximately, all at once. A plain if/else-if here would
+    // silently drop whichever category came second — those stops still
+    // saved (or, for invalid entries, still simply weren't included) and
+    // still need attention, so every non-empty category gets folded into
+    // one combined toast instead of the others being lost.
+    const validationCount = data.validation_failures ? data.validation_failures.length : 0;
     const failureCount = data.geocode_failures ? data.geocode_failures.length : 0;
     const approxCount = data.approximate ? data.approximate.length : 0;
-    if (failureCount) {
-      const names = data.geocode_failures.map((f) => `${f.kunde} (${f.strasse}, ${f.plz})`).join('; ');
+    if (validationCount || failureCount) {
+      const parts = [];
+      if (validationCount) {
+        const names = data.validation_failures.map((f) => `${f.label} (${f.reason})`).join('; ');
+        const noun = validationCount === 1 ? 'Eintrag' : 'Einträge';
+        parts.push(`${validationCount} ${noun} ungültig, übersprungen: ${names}.`);
+      }
+      if (failureCount) {
+        const names = data.geocode_failures.map((f) => `${f.kunde} (${f.strasse}, ${f.plz})`).join('; ');
+        parts.push(`${failureCount} Adresse(n) nicht gefunden, übersprungen: ${names}.`);
+      }
       const skipNote = data.deletions_skipped ? ' Entfernte Adressen wurden diesmal nicht gelöscht, bis alle Adressen aufgelöst sind.' : '';
       const approxNote = approxCount ? ` Außerdem ${approxCount} Adresse(n) nur ungefähr lokalisiert, bitte im Kartenpin prüfen.` : '';
-      toast(`${failureCount} Adresse(n) nicht gefunden, übersprungen: ${names}.${skipNote}${approxNote} Restliche Route wurde gespeichert.`, 'error', 12000);
+      toast(`${parts.join(' ')}${skipNote}${approxNote} Restliche Route wurde gespeichert.`, 'error', 14000);
     } else if (approxCount) {
       toast(`Route aktualisiert ✓ — ${approxCount} Adresse(n) nur ungefähr lokalisiert, bitte im Kartenpin prüfen.`, 'success', 6000);
     } else {
@@ -1734,6 +1859,11 @@ async function saveJsonEdits() {
   } finally {
     jsonSaveController = null;
     hideProgress();
+    // A deploy's controllerchange event may have landed while this save was
+    // still running and been deferred rather than acted on — see the
+    // reload listener near the bottom of this file. Now that the save has
+    // actually settled, act on it if it did.
+    reloadForUpdateIfPending();
   }
 }
 
@@ -1763,6 +1893,19 @@ async function saveJsonEdits() {
 // Kept across sheet opens (closing it to glance at a stop has not unloaded
 // the van), gone on reload.
 const ladelisteChecked = new Map();
+
+// The exact `items` array `renderLadeliste` last built the sheet's rows
+// from. `toggleLadelisteItem` reads from *this*, not a freshly recomputed
+// `ladelisteItems(state.currentRoute)`, on purpose: `render()` never
+// touches `#modal-root`, so the sheet's DOM (and the index baked into
+// every row's `onclick`) stays exactly as painted even if `state.currentRoute`
+// is replaced or edited in the background while the sheet is open (a
+// `refreshOnResume()` after the driver backgrounded the app, most
+// realistically). Recomputing fresh there would let a route change mid-view
+// silently reorder or resize the list out from under the indices already
+// baked into the visible buttons — checking off the wrong package, or
+// nothing at all, with no sign anything went wrong.
+let ladelisteRenderedItems = [];
 
 // "2x TGM7" / "2 × TGM7", or a bare count followed by a space ("2 Menüs").
 // Deliberately not a plain leading `\d+`: "3er Karton" is the name of one
@@ -1838,14 +1981,17 @@ function renderLadeliste() {
   const r = state.currentRoute;
   if (!r) return;
   const items = ladelisteItems(r);
+  ladelisteRenderedItems = items;
   const checked = ladelisteChecked.get(r.id) || new Set();
   const withoutPaket = r.stops.filter((s) => s.kind === 'customer' && !s.paket).length;
 
   // The row index, not the label, is what goes into `onclick`: the label is
   // the driver's own free text and has no business being interpolated into
   // an attribute as a JS string literal. Indices are stable while the sheet
-  // is open — `ladelisteItems` is deterministic and the route underneath it
-  // can't change without a re-render.
+  // is open because `toggleLadelisteItem` reads back from
+  // `ladelisteRenderedItems` — this exact `items` array, snapshotted just
+  // below — rather than recomputing from `state.currentRoute`, which is
+  // free to change in the background while the sheet stays open.
   const row = (it, i) => {
     const on = checked.has(it.key);
     return `
@@ -1885,7 +2031,9 @@ function renderLadeliste() {
 function toggleLadelisteItem(index) {
   const r = state.currentRoute;
   if (!r) return;
-  const items = ladelisteItems(r);
+  // From the snapshot `renderLadeliste` built the currently-open sheet
+  // from, not recomputed fresh — see the comment on `ladelisteRenderedItems`.
+  const items = ladelisteRenderedItems;
   const it = items[index];
   if (!it) return;
 
@@ -1945,14 +2093,23 @@ function openPinDropSheet(data) {
 
   setTimeout(() => {
     const container = document.getElementById('pin-map');
-    if (!container || typeof maplibregl === 'undefined') return;
-    const centerLngLat = [center[1], center[0]];
-    const map = newMap(container, { center: centerLngLat, zoom: 15 });
-    pinDropMap = map;
-    const marker = new maplibregl.Marker({ color: '#ED1639', draggable: true }).setLngLat(centerLngLat).addTo(map);
-    pinDropMarker = marker;
-    map.on('click', (e) => marker.setLngLat(e.lngLat));
-    setTimeout(() => { if (pinDropMap === map) map.resize(); }, 60);
+    if (!container) return;
+    ensureMapLibre()
+      .then(() => {
+        // The driver may have closed this sheet (or opened it again for a
+        // different address) while MapLibre was still loading — comparing
+        // object identity, not just "does #pin-map exist", is what catches
+        // that: a *new* sheet has a new #pin-map element with the same id.
+        if (document.getElementById('pin-map') !== container) return;
+        const centerLngLat = [center[1], center[0]];
+        const map = newMap(container, { center: centerLngLat, zoom: 15 });
+        pinDropMap = map;
+        const marker = new maplibregl.Marker({ color: '#ED1639', draggable: true }).setLngLat(centerLngLat).addTo(map);
+        pinDropMarker = marker;
+        map.on('click', (e) => marker.setLngLat(e.lngLat));
+        setTimeout(() => { if (pinDropMap === map) map.resize(); }, 60);
+      })
+      .catch(() => { toast('Karte konnte nicht geladen werden.', 'error'); });
   }, 50);
 
   document.getElementById('pin-confirm').addEventListener('click', () => {
@@ -2169,10 +2326,25 @@ function render(skipRowAnim) {
   // innerHTML replacement above already detached its element, which costs
   // nothing while it's off screen, and keeping the instance means coming
   // back is instant rather than a fresh style/tile download every time.
-  if (state.tab === 'map' && !showingDetail) {
+  const showingMapTab = state.tab === 'map' && !showingDetail;
+  if (showingMapTab) {
     initMapTabMap();
     scrollActiveChipIntoView();
+    // Only on the edge of *arriving* — calling this on every render while
+    // already on the tab would be a harmless no-op (`trigger()` is only
+    // invoked when a pause is actually recorded) but there's no reason to
+    // even check on every single re-render of a screen the driver hasn't
+    // left.
+    if (mapTabMap && !mapTabWasVisible) mapTabMap._earResumeGeolocate?.();
+  } else if (mapTabMap && mapTabWasVisible) {
+    // The map's own GPS watch (once a driver has tapped locate-me) would
+    // otherwise keep running for the rest of the session — see
+    // `_earPauseGeolocate`'s own comment in `newMap` — including the whole
+    // time spent on Routen/Verlauf/Mehr, which for a driver mid-shift is
+    // most of it.
+    mapTabMap._earPauseGeolocate?.();
   }
+  mapTabWasVisible = showingMapTab;
 
   updateHistoryGuard();
 }
@@ -2413,6 +2585,112 @@ function stopKindMeta(stop) {
   return null;
 }
 
+// How many customer stops on the route share each exact address — e.g. one
+// customer ordering two different menus, pasted in as two separate stop
+// entries instead of combined into one stop's Paket field (this is common:
+// the source list a route gets built from routinely has the same name and
+// address twice in a row for exactly this reason). Two rows in a
+// scrollable list read as two unrelated deliveries; a driver who reads
+// one, delivers it, and walks back to the car has no signal there's a
+// second package waiting at the exact door they just left. Keyed with the
+// same `addrKey` the "already in this route" duplicate check uses when
+// adding a stop by hand, so both stay consistent with each other.
+//
+// Memoized per `stops` array — `toggleDelivered`'s optimistic update, its
+// server-confirm reconciliation, and its error-revert path can each call
+// this (via `applyDeliveredDomPatch`) for the *same* route within one tap,
+// and the result can't have changed between them (nothing here depends on
+// `delivered`, only on which addresses exist). `state.currentRoute.stops`
+// is a fresh array every time the route is replaced wholesale from a server
+// response (see `applyRouteUpdate`/`adoptRoute`), never mutated in place, so
+// keying a `WeakMap` on the array itself invalidates the cache for free
+// exactly when it should, with nothing to remember to clear by hand.
+const dupCountsCache = new WeakMap();
+function duplicateAddressCounts(stops) {
+  const cached = dupCountsCache.get(stops);
+  if (cached) return cached;
+  const counts = new Map();
+  for (const s of stops) {
+    if (s.kind !== 'customer') continue;
+    const key = addrKey(s.strasse, s.plz);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  dupCountsCache.set(stops, counts);
+  return counts;
+}
+
+// A single customer row's markup — factored out of renderRouteDetail so
+// `applyDeliveredDomPatch` can rebuild exactly one row (or the two rows a
+// "next stop" handoff touches) without going through a full list render.
+// `animIndex` is only ever non-null from the full-list render path
+// (`renderRouteDetail`'s own `stopRow`); a DOM-patched row never plays the
+// staggered entrance animation — it's already on screen, mid-session, and
+// replaying it would be the "list just reloaded" flicker this whole patch
+// path exists to avoid.
+function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
+  const address = `${s.strasse}, ${s.plz} Wien`;
+  const url = mapsUrl(address);
+  const delivered = s.delivered;
+  const precisionBadge = s.location_precision === 'street'
+    ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Genaue Hausnummer nicht gefunden — nächstgelegene bekannte Adresse auf der Straße verwendet.">≈ Straße</span>`
+    : s.location_precision === 'district'
+    ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Straße nicht gefunden — nur Bezirksmitte verwendet. Position bitte prüfen.">≈ Bezirk</span>`
+    : '';
+  // Loud, solid-fill — not the quieter tinted style the precision badge
+  // above uses — on purpose: missing this is the one thing it exists to
+  // prevent, a second package at a door the driver has already left.
+  const duplicateBadge = duplicateCount > 1
+    ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-white bg-warn px-1.5 py-0.5 rounded flex items-center gap-1" title="Insgesamt ${duplicateCount} Stopps an dieser Adresse — alle Pakete mitnehmen."><span class="flex">${ICONS.warning}</span>${duplicateCount}× an dieser Adresse</span>`
+    : '';
+  const animClass = animIndex === null ? '' : 'row-enter ';
+  const animStyle = animIndex === null ? '' : ` style="animation-delay:${animIndex * 25}ms"`;
+
+  return `
+    <div data-stop-row="${s.id}" ${isNext && !delivered ? 'data-next-stop' : ''} class="${animClass}flex items-start gap-2 px-4 py-3.5 ${isNext && !delivered ? 'bg-brand-50/60' : ''}"${animStyle}>
+      <div class="flex-1 min-w-0 select-none cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+        role="button" tabindex="0"
+        aria-label="${escapeAttr(`${s.kunde}, ${s.strasse}, ${s.plz} Wien — bearbeiten`)}"
+        ontouchstart="stopLongPressStart(event, ${s.id})"
+        ontouchend="stopLongPressEnd(event)"
+        ontouchcancel="stopLongPressEnd(event)"
+        ontouchmove="stopLongPressMove(event)"
+        onmousedown="stopLongPressStart(event, ${s.id})"
+        onmouseup="stopLongPressEnd(event)"
+        onmouseleave="stopLongPressEnd(event)"
+        onmousemove="stopLongPressMove(event)"
+        onkeydown="stopRowKeydown(event, ${s.id})"
+        oncontextmenu="stopLongPressContext(event, ${s.id})">
+        <div class="flex items-center gap-1.5 flex-wrap">
+          ${isNext && !delivered ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded">Nächster Stopp</span>` : ''}
+          ${duplicateBadge}
+          ${precisionBadge}
+        </div>
+        <p class="font-medium ${delivered ? 'text-black/50 line-through' : ''}">${escapeHtml(s.kunde)}</p>
+        <p class="text-[13px] ${delivered ? 'text-black/50' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien</p>
+        ${s.paket ? (() => {
+          const qty = paketQty(s.paket);
+          const multi = qty > 1 && !delivered;
+          return `<p class="inline-flex items-center gap-1 max-w-full text-[12px] ${multi ? 'font-bold' : 'font-medium'} mt-1.5 px-1.5 py-0.5 rounded ${
+            delivered ? 'text-black/55 bg-black/5' : multi ? 'text-white bg-brand-600 shadow-sm' : 'text-brand-700 bg-brand-50'
+          }">${
+            multi
+              ? `<span class="shrink-0 w-4 h-4 rounded-full bg-white/25 flex items-center justify-center text-[10px] font-bold">${qty}</span>`
+              : `<span class="flex shrink-0">${ICONS.box}</span>`
+          }<span class="truncate">${escapeHtml(s.paket)}</span></p>`;
+        })() : ''}
+        ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
+        ${legLabel(s, 'mt-1.5')}
+      </div>
+      <div class="flex flex-col gap-2 shrink-0 mt-0.5">
+        <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" title="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" class="press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${delivered ? 'bg-success text-white' : 'bg-white border-2 border-black/15 text-black/30'}">
+          ${delivered ? ICONS.checkCircleFill : ICONS.circle}
+        </button>
+        <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
+      </div>
+    </div>
+  `;
+}
+
 // ---------------------------------------------------------------------
 // Map engine — OpenFreeMap (tiles.openfreemap.org), a free/open vector-
 // tile CDN built on OpenStreetMap data by the creator of OpenMapTiles: no
@@ -2425,6 +2703,88 @@ function stopKindMeta(stop) {
 // ---------------------------------------------------------------------
 const MAP_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 const VIENNA_CENTER = [16.3738, 48.2082]; // [lon, lat]
+
+// Loads MapLibre GL JS/CSS on first actual need (see the comment in
+// <head> where the old blocking <link>/<script> tags used to be) and
+// caches the in-flight promise so concurrent callers (the Karte tab and
+// the pin-drop sheet can both want it around the same time) share one
+// fetch instead of racing to inject duplicate tags. Idempotent — safe to
+// call from every site that touches `maplibregl`, including ones that
+// already ran once and found it loaded.
+let mapLibrePromise = null;
+function ensureMapLibre() {
+  if (typeof maplibregl !== 'undefined') return Promise.resolve();
+  if (mapLibrePromise) return mapLibrePromise;
+  mapLibrePromise = new Promise((resolve, reject) => {
+    // Waits for BOTH the stylesheet and the script, not just the script —
+    // the static <link>+<script> tags this replaced got that ordering for
+    // free (a browser holds a following synchronous <script> from
+    // *executing* until a preceding <link rel=stylesheet> has finished, so
+    // MapLibre's own code never used to run before its CSS was applied).
+    // Two independently `document.head.appendChild`-ed elements have no
+    // such relationship, so it's tracked explicitly here instead — without
+    // it, `new maplibregl.Map(...)` could run with the map's controls
+    // still unstyled for a frame.
+    let cssReady = false;
+    let jsReady = false;
+    const maybeResolve = () => { if (cssReady && jsReady) resolve(); };
+
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css';
+    // A CSS load failure degrades to unstyled map controls, not a broken
+    // map — worth letting the script side still resolve rather than
+    // blocking the whole map on a stylesheet that will never arrive.
+    link.onload = () => { cssReady = true; maybeResolve(); };
+    link.onerror = () => { cssReady = true; maybeResolve(); };
+    document.head.appendChild(link);
+    // Belt-and-suspenders against a real, documented cross-browser gotcha:
+    // a dynamically-appended <link rel=stylesheet> pointing at a resource
+    // the browser already has cached (the overwhelmingly common case after
+    // the very first load) does not reliably fire `load` at all in every
+    // browser/condition — no load, no error, nothing. Without this timeout,
+    // that silently wedged `ensureMapLibre()`'s promise forever, which
+    // wedged every caller awaiting it (`initMapTabMap`, the pin-drop sheet)
+    // — the map tab would render its empty container and just sit there,
+    // permanently, even though the MapLibre *script* loaded fine. A missed
+    // `onload` is now a cosmetic risk (rare, brief unstyled controls)
+    // instead of a functional one.
+    setTimeout(() => { cssReady = true; maybeResolve(); }, 1500);
+
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js';
+    script.onload = () => { jsReady = true; maybeResolve(); };
+    script.onerror = () => {
+      // Let a fresh attempt happen next time (a dropped connection loading
+      // this shouldn't permanently disable the map for the rest of the
+      // session) rather than caching a rejected promise forever.
+      mapLibrePromise = null;
+      reject(new Error('MapLibre GL JS konnte nicht geladen werden.'));
+    };
+    document.head.appendChild(script);
+  });
+  return mapLibrePromise;
+}
+
+// Speculatively starts the fetch a moment after first load — not blocking
+// anything (this fires well after `render()` has already painted the
+// first screen), just likely finished by the time a driver actually taps
+// the Karte tab instead of them watching it load right then.
+// `requestIdleCallback` doesn't exist in Safari, the platform this app
+// mostly runs on (see the zoom-lock comment in <head>), hence the
+// `setTimeout` fallback rather than skipping the idle path outright. The
+// `timeout` option is what actually matters, not just a nice-to-have: a
+// tab that's never truly "idle" (rendering, animating, handling touch
+// input the whole time a driver is using it) can otherwise leave this
+// speculative preload waiting forever — a real possibility, not a
+// hypothetical, for an app whose whole point is a driver actively poking
+// at it. Bounding it means the driver's very first tap on the Karte tab
+// is still at worst a few seconds' wait, not an indefinite one.
+if (typeof requestIdleCallback === 'function') {
+  requestIdleCallback(() => ensureMapLibre().catch(() => {}), { timeout: 3000 });
+} else {
+  setTimeout(() => ensureMapLibre().catch(() => {}), 1500);
+}
 
 function elFromHtml(html) {
   const t = document.createElement('template');
@@ -2445,11 +2805,56 @@ function newMap(container, opts) {
   });
   map.touchZoomRotate.disableRotation();
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
-  map.addControl(
-    new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true, showUserHeading: true }),
-    'top-right'
-  );
+  const geolocate = new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true, showUserHeading: true });
+  map.addControl(geolocate, 'top-right');
+
+  // `_earPauseGeolocate`/`_earResumeGeolocate` exist so the Karte tab's
+  // persistent map (see the section below — it's built once and kept
+  // alive for the app's whole lifetime) can stop `watchPosition()` while
+  // its own tab isn't the one on screen. Once a driver has tapped the
+  // locate-me button, `trackUserLocation: true` keeps that GPS watch
+  // running continuously — including while the map's canvas sits detached
+  // during a visit to Routen/Verlauf/Mehr — for as long as the app stays
+  // open, which for this PWA is realistically hours. `geolocate.trigger()`
+  // is the same action a tap on the control performs: a toggle, not a
+  // dedicated pause/resume API (MapLibre doesn't expose one), so whether
+  // it was actually active is tracked separately rather than assumed —
+  // pausing it while off, or resuming it when the driver had already
+  // turned it off themselves, would incorrectly turn it *on*.
+  let geolocateActive = false;
+  let pausedFromActive = false;
+  geolocate.on('trackuserlocationstart', () => { geolocateActive = true; });
+  geolocate.on('trackuserlocationend', () => { geolocateActive = false; });
+  map._earPauseGeolocate = () => {
+    pausedFromActive = geolocateActive;
+    if (geolocateActive) geolocate.trigger();
+  };
+  map._earResumeGeolocate = () => {
+    if (pausedFromActive) geolocate.trigger();
+    pausedFromActive = false;
+  };
   return map;
+}
+
+// A cheap fingerprint of exactly what `drawRouteOnMap` actually draws —
+// not the whole route object, which also carries fields (name,
+// created_at, status, ...) that change independently of anything on the
+// map and would otherwise force a pointless marker teardown/rebuild.
+// `total_km`/`total_min` stand in for the route geometry itself (a full
+// coordinate-array comparison on every sync would cost more than the
+// redraw it's trying to avoid): a reoptimization that changes the line
+// always changes the rounded totals too, even fractionally.
+function routeMarkerSignature(r) {
+  // Every field `drawRouteOnMap` actually reads into a marker or its popup
+  // — id/lat/lon (position), delivered/location_precision (marker color and
+  // ring), kunde/strasse/plz (the popup's text). `total_km`/`total_min`
+  // stand in for the route geometry itself (see the comment where this
+  // function is called) rather than the coordinate array, which would cost
+  // more to compare on every sync than the redraw it's trying to avoid.
+  const stopsSig = r.stops
+    .map(s => `${s.id}:${s.lat}:${s.lon}:${s.delivered ? 1 : 0}:${s.location_precision || ''}:${s.kunde}:${s.strasse}:${s.plz}`)
+    .join('|');
+  return `${r.id}|${r.total_km}|${r.total_min}|${stopsSig}`;
 }
 
 function drawRouteOnMap(map, r, { fit = true } = {}) {
@@ -2544,10 +2949,28 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
 let mapTabMap = null;
 let mapTabEl = null;
 let mapTabRouteId = null;
+// Tracks whether the Karte tab was the visible screen as of the last
+// render — see `render()`'s own use of this, right after the comment
+// about not destroying the map on tab-away.
+let mapTabWasVisible = false;
 
 function initMapTabMap() {
   const slot = document.getElementById('route-map');
-  if (!slot || typeof maplibregl === 'undefined' || !state.currentRoute) return;
+  if (!slot || !state.currentRoute) return;
+  if (typeof maplibregl === 'undefined') {
+    // Not loaded yet (the idle-time speculative fetch may still be in
+    // flight, or this is the very first thing the driver did after a cold
+    // start) — kick it off/join the in-flight load, then re-run this
+    // function from scratch once it lands. Re-running rather than
+    // continuing the stale call is what makes sure whatever's actually on
+    // screen by the time it resolves (maybe a different route, maybe a
+    // different tab entirely) is what gets initialized, not whatever was
+    // true when this call started.
+    ensureMapLibre()
+      .then(() => { if (state.tab === 'map' && !isDetailShowing()) initMapTabMap(); })
+      .catch(() => { toast('Kartenbibliothek konnte nicht geladen werden.', 'error'); });
+    return;
+  }
 
   if (!mapTabEl) {
     mapTabEl = document.createElement('div');
@@ -2609,6 +3032,16 @@ function syncMapTabRoute() {
     }
     return;
   }
+  // Skip the teardown/rebuild entirely when nothing that's actually drawn
+  // has changed since the last time this map was synced — `render()` calls
+  // this on every single re-render while the Karte tab is showing (see its
+  // call to `initMapTabMap()`), including a driver just switching away to
+  // the stop list and back with nothing having changed at all. Without
+  // this, every one of those visits tore down and recreated every marker
+  // and popup from scratch.
+  const signature = routeMarkerSignature(r);
+  if (map._earLastSignature === signature) return;
+  map._earLastSignature = signature;
   drawRouteOnMap(map, r, { fit: mapTabRouteId !== r.id });
   mapTabRouteId = r.id;
 }
@@ -2636,16 +3069,15 @@ function renderRouteDetail() {
   const stops = r.stops;
   const firstOpenIdx = stops.findIndex(s => s.kind === 'customer' && !s.delivered);
   const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
-
-  let customerNum = 0;
+  const dupCounts = duplicateAddressCounts(stops);
 
   const stopRow = (s, i) => {
     const isNext = i === firstOpenIdx;
     const meta = stopKindMeta(s);
-    const address = `${s.strasse}, ${s.plz} Wien`;
-    const url = mapsUrl(address);
 
     if (meta) {
+      const address = `${s.strasse}, ${s.plz} Wien`;
+      const url = mapsUrl(address);
       return `
         <div class="${suppressRowAnim ? '' : 'row-enter '}flex items-start gap-3 px-4 py-3.5" ${suppressRowAnim ? '' : `style="animation-delay:${i * 25}ms"`}>
           <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/60 flex items-center justify-center text-base">${meta.icon}</span>
@@ -2659,57 +3091,7 @@ function renderRouteDetail() {
       `;
     }
 
-    customerNum++;
-    const delivered = s.delivered;
-    const precisionBadge = s.location_precision === 'street'
-      ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Genaue Hausnummer nicht gefunden — nächstgelegene bekannte Adresse auf der Straße verwendet.">≈ Straße</span>`
-      : s.location_precision === 'district'
-      ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Straße nicht gefunden — nur Bezirksmitte verwendet. Position bitte prüfen.">≈ Bezirk</span>`
-      : '';
-
-    return `
-      <div ${isNext && !delivered ? 'data-next-stop' : ''} class="${suppressRowAnim ? '' : 'row-enter '}flex items-start gap-2 px-4 py-3.5 ${isNext && !delivered ? 'bg-brand-50/60' : ''}" ${suppressRowAnim ? '' : `style="animation-delay:${i * 25}ms"`}>
-        <div class="flex-1 min-w-0 select-none cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
-          role="button" tabindex="0"
-          aria-label="${escapeAttr(`${s.kunde}, ${s.strasse}, ${s.plz} Wien — bearbeiten`)}"
-          ontouchstart="stopLongPressStart(event, ${s.id})"
-          ontouchend="stopLongPressEnd(event)"
-          ontouchcancel="stopLongPressEnd(event)"
-          ontouchmove="stopLongPressMove(event)"
-          onmousedown="stopLongPressStart(event, ${s.id})"
-          onmouseup="stopLongPressEnd(event)"
-          onmouseleave="stopLongPressEnd(event)"
-          onmousemove="stopLongPressMove(event)"
-          onkeydown="stopRowKeydown(event, ${s.id})"
-          oncontextmenu="stopLongPressContext(event, ${s.id})">
-          <div class="flex items-center gap-1.5 flex-wrap">
-            ${isNext && !delivered ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded">Nächster Stopp</span>` : ''}
-            ${precisionBadge}
-          </div>
-          <p class="font-medium ${delivered ? 'text-black/50 line-through' : ''}">${escapeHtml(s.kunde)}</p>
-          <p class="text-[13px] ${delivered ? 'text-black/50' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien</p>
-          ${s.paket ? (() => {
-            const qty = paketQty(s.paket);
-            const multi = qty > 1 && !delivered;
-            return `<p class="inline-flex items-center gap-1 max-w-full text-[12px] ${multi ? 'font-bold' : 'font-medium'} mt-1.5 px-1.5 py-0.5 rounded ${
-              delivered ? 'text-black/55 bg-black/5' : multi ? 'text-white bg-brand-600 shadow-sm' : 'text-brand-700 bg-brand-50'
-            }">${
-              multi
-                ? `<span class="shrink-0 w-4 h-4 rounded-full bg-white/25 flex items-center justify-center text-[10px] font-bold">${qty}</span>`
-                : `<span class="flex shrink-0">${ICONS.box}</span>`
-            }<span class="truncate">${escapeHtml(s.paket)}</span></p>`;
-          })() : ''}
-          ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
-          ${legLabel(s, 'mt-1.5')}
-        </div>
-        <div class="flex flex-col gap-2 shrink-0 mt-0.5">
-          <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" title="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" class="press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${delivered ? 'bg-success text-white' : 'bg-white border-2 border-black/15 text-black/30'}">
-            ${delivered ? ICONS.checkCircleFill : ICONS.circle}
-          </button>
-          <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
-        </div>
-      </div>
-    `;
+    return renderCustomerRow(s, isNext, suppressRowAnim ? null : i, dupCounts.get(addrKey(s.strasse, s.plz)));
   };
 
   return `
@@ -2740,17 +3122,17 @@ function renderRouteDetail() {
         <button onclick="switchTab('map')" class="${CARD} w-full text-left px-4 py-3.5 flex items-center gap-3 mb-4">
           <div class="flex-1 min-w-0">
             <div class="flex justify-between items-baseline mb-1.5">
-              <p class="text-[15px] font-semibold">${r.delivered_count} / ${r.customer_count} zugestellt</p>
+              <p data-delivered-count-text class="text-[15px] font-semibold">${r.delivered_count} / ${r.customer_count} zugestellt</p>
               <p class="text-[12px] text-black/50">≈ ${r.total_km} km · ${r.total_min} min</p>
             </div>
             <div class="h-1.5 bg-black/10 rounded-full overflow-hidden">
-              <div class="h-full bg-success transition-all duration-500" style="width: ${progress}%"></div>
+              <div data-progress-bar class="h-full bg-success transition-all duration-500" style="width: ${progress}%"></div>
             </div>
           </div>
           <span class="text-brand-600 shrink-0 flex items-center gap-1 text-[13px] font-medium">${ICONS.mapPin} Karte<span class="flex">${ICONS.chevron}</span></span>
         </button>
 
-        ${nextStopBar(stops, firstOpenIdx)}
+        <div data-next-stop-bar-slot>${nextStopBar(stops, firstOpenIdx)}</div>
 
         <div class="${GROUP}">
           ${stops.map(stopRow).join('')}
@@ -2883,6 +3265,18 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// Top-level (not nested in the `if` block below) so `saveJsonEdits` can
+// call `reloadForUpdateIfPending()` from wherever it's defined in the
+// file — see the comments inside the `if` block for why this exists.
+let reloadingForUpdate = false;
+let reloadForUpdatePending = false;
+function reloadForUpdateIfPending() {
+  if (!reloadForUpdatePending || jsonSaveController || reloadingForUpdate) return;
+  reloadForUpdatePending = false;
+  reloadingForUpdate = true;
+  window.location.reload();
+}
+
 // Not fully offline-capable — adding/editing a stop still calls Nominatim/
 // Wien-OGD (geocoding) and OSRM (routing) live, and the map needs its
 // vector tiles from OpenFreeMap. What this buys: the app shell and any
@@ -2912,12 +3306,20 @@ if ('serviceWorker' in navigator) {
   // a pointless second page load. There is nothing stale to correct in that
   // case: the JavaScript running *is* the JavaScript that was just fetched.
   const hadController = !!navigator.serviceWorker.controller;
-  let reloadingForUpdate = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (!hadController || reloadingForUpdate) return;
     // Not during a save: an import can legitimately run for minutes, and a
-    // reload mid-request abandons it with no way to know what landed.
-    if (jsonSaveController) return;
+    // reload mid-request abandons it with no way to know what landed. The
+    // reload isn't dropped, only deferred — `saveJsonEdits`'s `finally`
+    // calls `reloadForUpdateIfPending()` the moment the save settles, so a
+    // deploy landing mid-import still gets picked up instead of leaving
+    // this tab running stale JavaScript against a new server indefinitely
+    // (which, for an installed PWA a driver might not close for days, is a
+    // real gap — not just a theoretical one).
+    if (jsonSaveController) {
+      reloadForUpdatePending = true;
+      return;
+    }
     reloadingForUpdate = true;
     window.location.reload();
   });
