@@ -1484,6 +1484,17 @@ function openAddSheet(stop) {
   if (!stop?.id) setTimeout(() => document.querySelector('#stop-form [name=kunde]')?.focus(), 80);
 }
 
+// Every gesture that opens "the sheet for this stop" comes through here.
+// Start/Lager/Ziel have nothing editable about them — the address is fixed
+// and the server rejects changing it — so they get their own sheet with the
+// one decision that *is* theirs to make, whether this tour drives them at
+// all. `stop` is sometimes a plain form-data object with no `kind` at all
+// (the retry path in `sendStop`), which is always a customer stop.
+function openStopSheet(stop) {
+  if (stop?.kind && stop.kind !== 'customer') openFixedStopSheet(stop);
+  else openAddSheet(stop);
+}
+
 // ---------------------------------------------------------------------
 // Stop row press handling — tapping a stop row used to open the edit
 // sheet immediately, which meant a stray tap while scrolling/scanning
@@ -1539,7 +1550,7 @@ function stopLongPressStart(e, stopOrId) {
     stopPressEl?.classList.remove('opacity-60');
     stopPressTimer = null;
     if (navigator.vibrate) navigator.vibrate(10);
-    openAddSheet(stop);
+    openStopSheet(stop);
   }, 450);
 }
 
@@ -1569,7 +1580,7 @@ function stopLongPressContext(e, stopOrId) {
   const stop = getStop(stopOrId);
   if (!stop) return;
   stopLongPressEnd();
-  openAddSheet(stop);
+  openStopSheet(stop);
 }
 
 // The keyboard equivalent of the long-press. A touch gesture is the only
@@ -1582,7 +1593,66 @@ function stopRowKeydown(e, stopOrId) {
   const stop = getStop(stopOrId);
   if (!stop) return;
   e.preventDefault();
-  openAddSheet(stop);
+  openStopSheet(stop);
+}
+
+// ---------------------------------------------------------------------
+// Start/Lager/Ziel sheet — the three fixed points every route is created
+// with. Their address is not editable (the server refuses it outright), so
+// the only thing this sheet offers is whether this particular tour drives
+// them: a shift that begins at the warehouse, or hands the van over instead
+// of returning it, would otherwise be planned around two legs nobody
+// drives, inflating the route's distance and its "bis zum nächsten Stopp"
+// figures all day.
+//
+// Switched off, the stop stays in the list — greyed and labelled — rather
+// than disappearing, because it is the only place the switch lives: a stop
+// removed from the screen is a stop the driver can never turn back on.
+// ---------------------------------------------------------------------
+function openFixedStopSheet(stop) {
+  const meta = stopKindMeta(stop);
+  if (!meta) return;
+  const excluded = !!stop.excluded;
+  renderSheetShell(`
+    <h2 class="text-[22px] font-bold mb-1">${meta.title}</h2>
+    <p class="text-[13px] text-black/55 mb-4 leading-snug">${escapeHtml(meta.subtitle)}</p>
+
+    <div class="${GROUP} mb-3">
+      <label class="flex items-start gap-3 px-4 py-3.5 cursor-pointer">
+        <input type="checkbox" id="fixed-stop-exclude" ${excluded ? 'checked' : ''}
+          class="mt-0.5 w-6 h-6 shrink-0 accent-brand-600" />
+        <span class="flex-1 min-w-0">
+          <span class="block text-[15px] font-medium">In dieser Tour überspringen</span>
+          <span class="block text-[13px] text-black/50 leading-snug mt-0.5">Wird nicht angefahren und nicht in Strecke und Fahrzeit eingerechnet.</span>
+        </span>
+      </label>
+    </div>
+
+    <p class="text-[12px] text-black/45 leading-snug mb-4 px-1">Gilt nur für diese Route. Adresse und Position von „${escapeHtml(meta.title)}" sind fix und können nicht geändert werden.</p>
+
+    <div class="flex gap-3 pb-2">
+      <button type="button" onclick="closeSheet()" class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold">Abbrechen</button>
+      <button type="button" onclick="saveFixedStopExclusion(${stop.id})" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">Speichern &amp; Optimieren</button>
+    </div>
+  `, { label: `${meta.title}: Stopp überspringen` });
+}
+
+async function saveFixedStopExclusion(stopId) {
+  const checkbox = document.getElementById('fixed-stop-exclude');
+  if (!checkbox) return;
+  const excluded = checkbox.checked;
+  // Read before `closeSheet()` tears the sheet (and its checkbox) out of
+  // the DOM — after that there is nothing left to read the choice from.
+  const stop = getStop(stopId);
+  closeSheet();
+  // Saving "no change" would still cost a full re-optimization round trip
+  // to arrive back at exactly the current route, so a cancel-by-Speichern
+  // is treated as the cancel it is.
+  if (!stop || !!stop.excluded === excluded) return;
+  await refreshCurrentRoute(
+    () => api(`/stops/${stopId}`, { method: 'PATCH', body: JSON.stringify({ excluded }) }),
+    excluded ? 'Stopp wird übersprungen …' : 'Stopp wird wieder eingeplant …',
+  );
 }
 
 const FIELD = 'mt-1 w-full bg-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-600';
@@ -2508,119 +2578,6 @@ function renderVerlaufTab() {
 }
 
 // ---------------------------------------------------------------------
-// Zivildienst-Fortschritt — a personal countdown to the fixed service end
-// date, reachable from the Mehr tab. Every number here is still literally
-// true; they're just each reframed into whichever true form reads as
-// smaller/less daunting — elapsed % instead of remaining %, weeks instead
-// of days, and the entitled sick/vacation days subtracted from what's
-// still "owed" in service, since those genuinely don't have to be endured
-// day-by-day either. That reframing (not fabrication) is the whole trick.
-// ---------------------------------------------------------------------
-const ZIVILDIENST_START = '2026-08-03';
-const ZIVILDIENST_END = '2027-04-30';
-const ZIVILDIENST_SICK_DAYS = 24;
-const ZIVILDIENST_VACATION_WEEKS = 2;
-const ZIVILDIENST_VACATION_DAYS = ZIVILDIENST_VACATION_WEEKS * 7;
-const MS_PER_DAY = 86400000;
-
-function zivildienstDaysBetween(a, b) {
-  return Math.round((b.getTime() - a.getTime()) / MS_PER_DAY);
-}
-
-function zivildienstStats() {
-  const startDate = new Date(ZIVILDIENST_START + 'T00:00:00');
-  const endDate = new Date(ZIVILDIENST_END + 'T00:00:00');
-  const today = new Date(new Date().toDateString());
-
-  const totalDays = Math.max(zivildienstDaysBetween(startDate, endDate), 1);
-  const elapsedDays = Math.min(Math.max(zivildienstDaysBetween(startDate, today), 0), totalDays);
-  const remainingDays = totalDays - elapsedDays;
-  const effectiveRemainingDays = Math.max(remainingDays - ZIVILDIENST_SICK_DAYS - ZIVILDIENST_VACATION_DAYS, 0);
-  const pctDone = Math.min(100, Math.round((elapsedDays / totalDays) * 100));
-
-  return {
-    totalDays, elapsedDays, remainingDays, effectiveRemainingDays, pctDone,
-    remainingWeeks: Math.ceil(remainingDays / 7),
-    effectiveWeeks: Math.ceil(effectiveRemainingDays / 7),
-  };
-}
-
-function zivildienstMessage(pctDone) {
-  if (pctDone >= 100) return 'Geschafft! Der Zivildienst ist vorbei. 🎉';
-  if (pctDone >= 90) return 'Fast geschafft — die letzten Tage zählen kaum noch.';
-  if (pctDone >= 75) return 'Zielgerade: mehr als drei Viertel liegen schon hinter dir.';
-  if (pctDone >= 50) return 'Mehr als die Hälfte ist bereits geschafft.';
-  if (pctDone >= 25) return 'Ein gutes Stück ist schon erledigt — es geht spürbar voran.';
-  return 'Der Anfang ist gemacht. Von hier an wird jede Woche eine von immer weniger.';
-}
-
-function renderZivildienstSheetBody() {
-  const s = zivildienstStats();
-  const circumference = 326.73; // 2 * PI * r=52
-  const dashoffset = (circumference * (1 - s.pctDone / 100)).toFixed(1);
-
-  return `
-    <h2 class="text-[22px] font-bold mb-1 text-center">Zivildienst-Fortschritt</h2>
-    <p class="text-[13px] text-black/55 mb-4 text-center leading-snug">Bis ${fmtDate(ZIVILDIENST_END)}</p>
-
-    <div class="relative w-40 h-40 mx-auto">
-      <svg viewBox="0 0 120 120" class="w-40 h-40 -rotate-90">
-        <circle cx="60" cy="60" r="52" fill="none" stroke="rgba(0,0,0,0.08)" stroke-width="10"/>
-        <circle cx="60" cy="60" r="52" fill="none" stroke="#34C759" stroke-width="10" stroke-linecap="round"
-          stroke-dasharray="${circumference}" stroke-dashoffset="${dashoffset}"
-          style="transition: stroke-dashoffset .6s ease"/>
-      </svg>
-      <div class="absolute inset-0 flex flex-col items-center justify-center">
-        <p class="text-[32px] font-bold tabular-nums leading-none">${s.pctDone}%</p>
-        <p class="text-[12px] font-medium text-black/50 mt-1">geschafft</p>
-      </div>
-    </div>
-
-    <div class="text-center mt-5 mb-1">
-      <p class="text-[13px] font-medium text-black/50">Effektiv noch etwa</p>
-      <p class="text-[40px] font-bold tracking-tight text-brand-600 leading-none mt-0.5">${s.effectiveWeeks}<span class="text-[20px] font-semibold text-black/40 ml-1.5">Wochen</span></p>
-      <p class="text-[12px] text-black/45 mt-1 px-6 leading-snug">Diensttage – nach Abzug von Krankenstand &amp; Urlaub</p>
-    </div>
-
-    <p class="text-center text-[14px] font-medium px-4 mt-3 mb-5 leading-snug">${zivildienstMessage(s.pctDone)}</p>
-
-    <p class="${SECTION_LABEL} !pt-0 !pb-1.5">Die Zahlen dahinter</p>
-    <div class="${GROUP} mb-4">
-      <div class="flex items-center justify-between px-4 py-3">
-        <p class="text-[14px] text-black/70">Dienstbeginn</p>
-        <p class="text-[14px] font-semibold">${fmtDate(ZIVILDIENST_START)}</p>
-      </div>
-      <div class="flex items-center justify-between px-4 py-3">
-        <p class="text-[14px] text-black/70">Diensteende</p>
-        <p class="text-[14px] font-semibold">${fmtDate(ZIVILDIENST_END)}</p>
-      </div>
-      <div class="flex items-center justify-between px-4 py-3">
-        <p class="text-[14px] text-black/70">Kalendertage übrig</p>
-        <p class="text-[14px] font-semibold">${s.remainingDays} (${s.remainingWeeks} Wochen)</p>
-      </div>
-      <div class="flex items-center justify-between px-4 py-3">
-        <p class="text-[14px] text-black/70">– Krankenstand-Kontingent</p>
-        <p class="text-[14px] font-semibold text-black/50">${ZIVILDIENST_SICK_DAYS} Tage</p>
-      </div>
-      <div class="flex items-center justify-between px-4 py-3">
-        <p class="text-[14px] text-black/70">– Urlaubsanspruch</p>
-        <p class="text-[14px] font-semibold text-black/50">${ZIVILDIENST_VACATION_WEEKS} Wochen</p>
-      </div>
-      <div class="flex items-center justify-between px-4 py-3 bg-success/5">
-        <p class="text-[14px] font-semibold text-black/80">= Diensttage effektiv übrig</p>
-        <p class="text-[15px] font-bold text-success">${s.effectiveRemainingDays}</p>
-      </div>
-    </div>
-
-    <button type="button" onclick="closeSheet()" class="press-98 w-full py-3 rounded-xl bg-brand-600 font-semibold text-white mb-2 mt-1">Fertig</button>
-  `;
-}
-
-function openZivildienstSheet() {
-  renderSheetShell(renderZivildienstSheetBody(), { label: 'Zivildienst-Fortschritt' });
-}
-
-// ---------------------------------------------------------------------
 // Mehr tab — app/data-source info + utilities. Grouped inset list, large
 // title, matching the Routen tab's language.
 // ---------------------------------------------------------------------
@@ -2652,18 +2609,6 @@ function renderMoreTab() {
           <button onclick="clearOfflineCache()" class="${ROW}">
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.refresh}</span>
             <p class="flex-1 text-[15px]">Offline-Daten leeren</p>
-          </button>
-        </div>
-
-        <p class="${SECTION_LABEL}">Zivildienst</p>
-        <div class="${GROUP}">
-          <button onclick="openZivildienstSheet()" class="${ROW}">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.flag}</span>
-            <div class="flex-1 min-w-0">
-              <p class="text-[15px] font-medium">Fortschritt</p>
-              <p class="text-[13px] text-black/50">${zivildienstStats().pctDone}% geschafft · bis ${fmtDate(ZIVILDIENST_END)}</p>
-            </div>
-            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </button>
         </div>
 
@@ -2742,6 +2687,45 @@ function duplicateAddressCounts(stops) {
   }
   dupCountsCache.set(stops, counts);
   return counts;
+}
+
+// A Start/Lager/Ziel row. Carries the same press handlers a customer row
+// does, so the gesture that opens "this stop" is one gesture everywhere —
+// it just lands on `openFixedStopSheet` instead (see `openStopSheet`).
+// A skipped stop is dimmed and labelled rather than hidden: the row is the
+// only way back to the switch that skipped it.
+function renderFixedRow(s, meta, animIndex = null) {
+  const url = mapsUrl(`${s.strasse}, ${s.plz} Wien`);
+  const skipped = !!s.excluded;
+  const animClass = animIndex === null ? '' : 'row-enter ';
+  const animStyle = animIndex === null ? '' : ` style="animation-delay:${animIndex * 25}ms"`;
+
+  return `
+    <div class="${animClass}flex items-start gap-3 px-4 py-3.5"${animStyle}>
+      <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 flex items-center justify-center text-base ${skipped ? 'text-black/25' : 'text-black/60'}">${meta.icon}</span>
+      <div class="flex-1 min-w-0 pt-0.5 select-none cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+        role="button" tabindex="0"
+        aria-label="${escapeAttr(`${meta.title}, ${meta.subtitle} — ${skipped ? 'übersprungen, wieder einplanen' : 'überspringen'}`)}"
+        ontouchstart="stopLongPressStart(event, ${s.id})"
+        ontouchend="stopLongPressEnd(event)"
+        ontouchcancel="stopLongPressEnd(event)"
+        ontouchmove="stopLongPressMove(event)"
+        onmousedown="stopLongPressStart(event, ${s.id})"
+        onmouseup="stopLongPressEnd(event)"
+        onmouseleave="stopLongPressEnd(event)"
+        onmousemove="stopLongPressMove(event)"
+        onkeydown="stopRowKeydown(event, ${s.id})"
+        oncontextmenu="stopLongPressContext(event, ${s.id})">
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <p class="font-medium ${skipped ? 'text-black/40 line-through' : ''}">${meta.title}</p>
+          ${skipped ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-black/45 bg-black/[0.07] px-1.5 py-0.5 rounded">Übersprungen</span>` : ''}
+        </div>
+        <p class="text-[13px] ${skipped ? 'text-black/35' : 'text-black/50'}">${escapeHtml(meta.subtitle)}</p>
+        ${skipped ? '' : legLabel(s)}
+      </div>
+      <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/50'}">${ICONS.mapPin}</a>
+    </div>
+  `;
 }
 
 // A single customer row's markup — factored out of renderRouteDetail so
@@ -2972,12 +2956,13 @@ function newMap(container, opts) {
 function routeMarkerSignature(r) {
   // Every field `drawRouteOnMap` actually reads into a marker or its popup
   // — id/lat/lon (position), delivered/location_precision (marker color and
-  // ring), kunde/strasse/plz (the popup's text). `total_km`/`total_min`
+  // ring), excluded (whether the stop gets a marker at all), kunde/strasse/plz
+  // (the popup's text). `total_km`/`total_min`
   // stand in for the route geometry itself (see the comment where this
   // function is called) rather than the coordinate array, which would cost
   // more to compare on every sync than the redraw it's trying to avoid.
   const stopsSig = r.stops
-    .map(s => `${s.id}:${s.lat}:${s.lon}:${s.delivered ? 1 : 0}:${s.location_precision || ''}:${s.kunde}:${s.strasse}:${s.plz}`)
+    .map(s => `${s.id}:${s.lat}:${s.lon}:${s.delivered ? 1 : 0}:${s.excluded ? 1 : 0}:${s.location_precision || ''}:${s.kunde}:${s.strasse}:${s.plz}`)
     .join('|');
   return `${r.id}|${r.total_km}|${r.total_min}|${stopsSig}`;
 }
@@ -3017,6 +3002,11 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
   let customerNum = 0;
 
   r.stops.forEach((s, i) => {
+    // A skipped fixed stop isn't on this tour at all: the line doesn't go
+    // there and neither does the van, so a marker for it would only be a
+    // pin the driver has to work out isn't a destination — and letting it
+    // into `bounds` would zoom the map out to frame a place nobody visits.
+    if (s.excluded) return;
     const meta = stopKindMeta(s);
     let el;
     if (meta) {
@@ -3200,21 +3190,7 @@ function renderRouteDetail() {
     const isNext = i === firstOpenIdx;
     const meta = stopKindMeta(s);
 
-    if (meta) {
-      const address = `${s.strasse}, ${s.plz} Wien`;
-      const url = mapsUrl(address);
-      return `
-        <div class="${suppressRowAnim ? '' : 'row-enter '}flex items-start gap-3 px-4 py-3.5" ${suppressRowAnim ? '' : `style="animation-delay:${i * 25}ms"`}>
-          <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/60 flex items-center justify-center text-base">${meta.icon}</span>
-          <div class="flex-1 min-w-0 pt-0.5">
-            <p class="font-medium">${meta.title}</p>
-            <p class="text-[13px] text-black/50">${escapeHtml(meta.subtitle)}</p>
-            ${legLabel(s)}
-          </div>
-          <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.mapPin}</a>
-        </div>
-      `;
-    }
+    if (meta) return renderFixedRow(s, meta, suppressRowAnim ? null : i);
 
     return renderCustomerRow(s, isNext, suppressRowAnim ? null : i, dupCounts.get(addrKey(s.strasse, s.plz)));
   };

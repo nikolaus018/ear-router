@@ -931,6 +931,14 @@ CREATE TABLE IF NOT EXISTS stops (
     next_leg_km REAL,
     next_leg_min REAL,
     created_at TEXT NOT NULL,
+    -- Only ever 1 on a fixed stop (start/via/end). Every route gets the same
+    -- three fixed points, but not every tour actually drives them: a shift
+    -- that starts straight from the warehouse, or ends somewhere other than
+    -- the depot, would otherwise be planned around two legs it never drives.
+    -- An excluded stop stays on the route (it's still shown, greyed, and can
+    -- be switched back on) but is left out of the OSRM optimization entirely
+    -- and carries no leg distance -- see `reoptimize_route`.
+    excluded INTEGER NOT NULL DEFAULT 0,
     -- NULL = exact match (or a human placed the pin). 'street'/'district'
     -- mean geocoding only found an approximate fallback location — see
     -- `Precision` and `geocode_address`. Surfaced in the UI so a driver knows
@@ -989,6 +997,9 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
         .collect::<Result<_, _>>()?;
     if !stop_cols.contains("location_precision") {
         conn.execute("ALTER TABLE stops ADD COLUMN location_precision TEXT", [])?;
+    }
+    if !stop_cols.contains("excluded") {
+        conn.execute("ALTER TABLE stops ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0", [])?;
     }
     let cache_cols: HashSet<String> = conn
         .prepare("PRAGMA table_info(geocode_cache)")?
@@ -1706,22 +1717,48 @@ async fn osrm_route_leg(state: &AppState, a: (f64, f64), b: (f64, f64)) -> Resul
 }
 
 /// Solves the actual multi-stop ordering problem via OSRM's `/trip`
-/// endpoint: `coords[0]` is pinned as the trip's start (`source=first`)
-/// and `coords.last()` as its end (`destination=last`), with every point
-/// in between free to be reordered however minimizes total travel time.
+/// endpoint, with every point that isn't pinned free to be reordered
+/// however minimizes total travel time.
+///
+/// `fix_first` pins `coords[0]` as the trip's start (`source=first`) and
+/// `fix_last` pins `coords.last()` as its end (`destination=last`); an
+/// unpinned end is left open (`any`). At least one of the two must be set:
+/// OSRM answers `roundtrip=false` with *both* open as `NotImplemented`, so
+/// that combination is a bug in the caller rather than a routing failure to
+/// report to the driver -- see `reoptimize_route`, which anchors the first
+/// customer when a route has no fixed points left at all.
+///
 /// Returns (visiting order as indices into `coords`, per-consecutive-leg
 /// (distance_m, duration_s) in that visiting order, full route geometry).
-async fn osrm_trip(state: &AppState, coords: &[(f64, f64)]) -> Result<(Vec<usize>, Vec<(f64, f64)>, Vec<[f64; 2]>), AppError> {
+async fn osrm_trip(
+    state: &AppState,
+    coords: &[(f64, f64)],
+    fix_first: bool,
+    fix_last: bool,
+) -> Result<(Vec<usize>, Vec<(f64, f64)>, Vec<[f64; 2]>), AppError> {
+    debug_assert!(fix_first || fix_last, "osrm_trip needs at least one pinned end");
+    // Callers already skip the trip call for a route with fewer than two
+    // points to connect; this makes that a returned error rather than an
+    // index panic below if one ever stops doing so.
+    if coords.len() < 2 {
+        return Err(AppError::Internal("OSRM: Routenabschnitt mit weniger als zwei Punkten".into()));
+    }
+    // A backstop `add_stop`/`MAX_BULK_STOPS` should already have caught.
+    // Counted in waypoints rather than being translated into "customers" by
+    // subtracting two fixed points: with the fixed stops skippable, this
+    // section carries anywhere from zero to two of them, so that subtraction
+    // would quietly under-report the driver's own stop count by up to two.
     if coords.len() > OSRM_MAX_TRIP_COORDS {
         return Err(AppError::BadRequest(format!(
-            "Zu viele Stopps für die Routenoptimierung ({}, max. {}). Bitte die Route auf mehrere Touren aufteilen.",
-            coords.len().saturating_sub(2),
-            OSRM_MAX_TRIP_COORDS - 2
+            "Zu viele Stopps für die Routenoptimierung ({} Wegpunkte, max. {OSRM_MAX_TRIP_COORDS}). Bitte die Route auf mehrere Touren aufteilen.",
+            coords.len()
         )));
     }
     let path = format!(
-        "/trip/v1/driving/{}?source=first&destination=last&roundtrip=false&overview=full&geometries=geojson",
-        osrm_coord_string(coords)
+        "/trip/v1/driving/{}?source={}&destination={}&roundtrip=false&overview=full&geometries=geojson",
+        osrm_coord_string(coords),
+        if fix_first { "first" } else { "any" },
+        if fix_last { "last" } else { "any" },
     );
     let resp: OsrmTripResp = osrm_get(state, &path).await?;
     if resp.code != "Ok" {
@@ -1747,6 +1784,18 @@ async fn osrm_trip(state: &AppState, coords: &[(f64, f64)]) -> Result<(Vec<usize
         }
         seen[wp.waypoint_index] = true;
         order[wp.waypoint_index] = input_idx;
+    }
+
+    // OSRM is asked to pin these ends, but the caller *relies* on it: the
+    // first visiting position is the node already written into the route's
+    // node list, and the last is the depot the tour has to finish at. A
+    // response that quietly reordered either one would be walked as if it
+    // hadn't, duplicating one stop and dropping another.
+    if fix_first && order[0] != 0 {
+        return Err(AppError::Internal("OSRM: unerwartete Antwort (Startpunkt wurde verschoben)".into()));
+    }
+    if fix_last && order[order.len() - 1] != coords.len() - 1 {
+        return Err(AppError::Internal("OSRM: unerwartete Antwort (Zielpunkt wurde verschoben)".into()));
     }
 
     // A non-roundtrip trip over n waypoints has exactly n-1 legs. Anything
@@ -1805,6 +1854,7 @@ struct StopRow {
     next_leg_km: Option<f64>,
     next_leg_min: Option<f64>,
     location_precision: Option<String>,
+    excluded: bool,
 }
 
 impl StopRow {
@@ -1824,6 +1874,7 @@ impl StopRow {
             next_leg_km: r.get("next_leg_km")?,
             next_leg_min: r.get("next_leg_min")?,
             location_precision: r.get("location_precision")?,
+            excluded: r.get::<_, i64>("excluded")? != 0,
         })
     }
 }
@@ -1847,6 +1898,9 @@ struct StopOut {
     /// (see `Precision` and `geocode_address`); absent for an exact match or
     /// a manually placed pin.
     location_precision: Option<String>,
+    /// `true` when this fixed stop was switched off for this route -- see the
+    /// `excluded` column in `SCHEMA`. Always `false` for a customer stop.
+    excluded: bool,
 }
 
 fn to_stop_out(r: StopRow) -> StopOut {
@@ -1865,6 +1919,7 @@ fn to_stop_out(r: StopRow) -> StopOut {
         next_leg_km: r.next_leg_km,
         next_leg_min: r.next_leg_min,
         location_precision: r.location_precision,
+        excluded: r.excluded,
     }
 }
 
@@ -1936,6 +1991,17 @@ fn validate_customer_fields(kunde: &str, strasse: &str, paket: Option<&str>, not
     Ok(())
 }
 
+/// `-0.0` is a perfectly ordinary `f64` that `serde_json` faithfully writes
+/// as `-0.0` — and Rust's `Sum` for floats folds from `-0.0`, so summing an
+/// empty iterator produces exactly that. A route with no driven legs at all
+/// (every fixed stop switched off and no customers entered yet) therefore
+/// showed the driver "≈ -0 km · -0 min". Adding zero is the IEEE-defined
+/// way to collapse a negative zero to a positive one and leaves every other
+/// value, including genuine negatives, untouched.
+fn strip_negative_zero(v: f64) -> f64 {
+    v + 0.0
+}
+
 fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, AppError> {
     let route = conn
         .query_row("SELECT * FROM routes WHERE id = ?1", params![route_id], RouteRow::from_row)
@@ -1967,20 +2033,96 @@ fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, App
         needs_optimize: route.needs_optimize,
         delivered_count: customer_stops.iter().filter(|s| s.delivered).count() as i64,
         customer_count: customer_stops.len() as i64,
-        total_km: (total_km * 10.0).round() / 10.0,
-        total_min: total_min.round(),
+        total_km: strip_negative_zero((total_km * 10.0).round() / 10.0),
+        total_min: strip_negative_zero(total_min.round()),
         stops: stop_outs,
         geometry,
     })
 }
 
+#[derive(Clone, Copy)]
 struct StopCoord {
     id: i64,
     lat: f64,
     lon: f64,
 }
 
+/// One of the three fixed points of a route (depot / warehouse /
+/// destination) as stored: where it is, plus whether this particular tour
+/// actually drives it.
+#[derive(Clone, Copy)]
+struct FixedStop {
+    coord: StopCoord,
+    excluded: bool,
+}
+
+impl FixedStop {
+    /// The coordinate, but only when this tour drives it. `None` covers
+    /// both "the route has no such stop at all" and "switched off for this
+    /// tour" — the optimizer plans identically for the two, so this is the
+    /// one place that distinction is deliberately collapsed.
+    fn active(slot: Option<FixedStop>) -> Option<StopCoord> {
+        slot.filter(|f| !f.excluded).map(|f| f.coord)
+    }
+}
+
+/// Every stop of a route sorted into the roles `reoptimize_route` plans
+/// around. The three fixed slots are `Option` because a route can be
+/// missing any of them; each also carries its own `excluded` flag, which
+/// is what keeps a switched-off stop visible in the list (see
+/// `display_order`) while being invisible to the routing calls.
+struct RouteNodes {
+    start: Option<FixedStop>,
+    via: Option<FixedStop>,
+    end: Option<FixedStop>,
+    customers: Vec<StopCoord>,
+}
+
+impl RouteNodes {
+    /// The fixed points that lead the tour, in their fixed order — depot
+    /// then warehouse, minus whichever of them this tour skips. Never
+    /// handed to the trip optimizer: driving to the warehouse before the
+    /// depot isn't a cheaper tour, it's a different one.
+    fn head(&self) -> Vec<StopCoord> {
+        [FixedStop::active(self.start), FixedStop::active(self.via)].into_iter().flatten().collect()
+    }
+}
+
+/// Appends one OSRM leg's geometry to the polyline built so far, dropping
+/// the junction point the two segments share — without this every seam
+/// between two legs carries a duplicated coordinate.
+fn append_geometry(acc: &mut Vec<[f64; 2]>, segment: Vec<[f64; 2]>) {
+    if !acc.is_empty() && !segment.is_empty() {
+        acc.pop();
+    }
+    acc.extend(segment);
+}
+
+/// The order the route's stops are *shown* in, which is not the order they
+/// are driven in: a switched-off fixed stop still belongs where it would
+/// have been driven — the depot at the top of the list, the destination at
+/// the bottom — rather than flushed to the end, where "Start" would sit
+/// underneath the last customer of the day. Only the customers are placed
+/// by `routed` (that ordering is the whole point of the optimization).
+fn display_order(nodes: &RouteNodes, routed: &[StopCoord]) -> Vec<StopCoord> {
+    let customer_ids: HashSet<i64> = nodes.customers.iter().map(|c| c.id).collect();
+    let mut out: Vec<StopCoord> = Vec::with_capacity(routed.len() + 3);
+    out.extend(nodes.start.map(|f| f.coord));
+    out.extend(nodes.via.map(|f| f.coord));
+    out.extend(routed.iter().copied().filter(|n| customer_ids.contains(&n.id)));
+    out.extend(nodes.end.map(|f| f.coord));
+    out
+}
+
 /// Re-solves stop order + fetches real geometry for a route via OSRM.
+///
+/// The shape of a tour is: the fixed head (depot -> warehouse) in exactly
+/// that order, then the customers in whatever order OSRM finds cheapest,
+/// then the fixed destination. Each of those three fixed points can be
+/// switched off per route (see the `excluded` column in `SCHEMA`), so none
+/// of them is assumed to be there — a tour that starts straight at the
+/// warehouse, or ends at its last customer, is planned on exactly the
+/// points it actually drives instead of on two legs it never will.
 ///
 /// Structured as read-then-await-then-write, with no connection held across
 /// an `.await`: the OSRM calls in the middle take seconds, and a connection
@@ -1997,71 +2139,100 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
     let lock = state.route_lock(route_id).await;
     let _guard = lock.lock().await;
 
-    let (start, via, end, customers) = {
+    let nodes = {
         let conn = state.db()?;
-        // Only id/kind/lat/lon, not `SELECT *`: this runs on every single
-        // add/edit/delete of a stop (via `reoptimize_best_effort`), and
-        // every other column — `kunde`, `strasse`, up to 1000 chars of
-        // `notiz`, etc. — is fetched into a `String` here only to be
-        // dropped a few lines down; none of it is used for planning the
-        // route order.
-        let mut stmt = conn.prepare("SELECT id, kind, lat, lon FROM stops WHERE route_id = ?1 ORDER BY id")?;
-        let stops: Vec<(i64, String, f64, f64)> = stmt
-            .query_map(params![route_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        // Only id/kind/lat/lon/excluded, not `SELECT *`: this runs on every
+        // single add/edit/delete of a stop (via `reoptimize_best_effort`),
+        // and every other column — `kunde`, `strasse`, up to 1000 chars of
+        // `notiz`, etc. — would be fetched into a `String` here only to be
+        // dropped a few lines down; none of it is used for planning.
+        let mut stmt = conn
+            .prepare("SELECT id, kind, lat, lon, excluded FROM stops WHERE route_id = ?1 ORDER BY id")?;
+        let stops: Vec<(i64, String, f64, f64, bool)> = stmt
+            .query_map(params![route_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? != 0))
+            })?
             .collect::<Result<_, _>>()?;
         drop(stmt);
 
-        let to_coord = |s: &(i64, String, f64, f64)| StopCoord { id: s.0, lat: s.2, lon: s.3 };
-        let start = stops
-            .iter()
-            .find(|s| s.1 == "start")
-            .map(to_coord)
-            .ok_or_else(|| AppError::Internal("Route hat keinen Start-Stopp".into()))?;
-        let via = stops
-            .iter()
-            .find(|s| s.1 == "via")
-            .map(to_coord)
-            .ok_or_else(|| AppError::Internal("Route hat keinen Lager-Stopp".into()))?;
-        let end = stops
-            .iter()
-            .find(|s| s.1 == "end")
-            .map(to_coord)
-            .ok_or_else(|| AppError::Internal("Route hat keinen Ziel-Stopp".into()))?;
-        let customers: Vec<StopCoord> = stops.iter().filter(|s| s.1 == "customer").map(to_coord).collect();
-        (start, via, end, customers)
+        let mut nodes =
+            RouteNodes { start: None, via: None, end: None, customers: Vec::new() };
+        for (id, kind, lat, lon, excluded) in stops {
+            let coord = StopCoord { id, lat, lon };
+            let fixed = FixedStop { coord, excluded };
+            // `excluded` is only ever written to a fixed stop, and a
+            // customer row carrying it anyway (a hand-edited database)
+            // must not silently disappear from the tour — hence matching
+            // on the kind rather than on the flag.
+            match kind.as_str() {
+                "start" => nodes.start = Some(fixed),
+                "via" => nodes.via = Some(fixed),
+                "end" => nodes.end = Some(fixed),
+                _ => nodes.customers.push(coord),
+            }
+        }
+        nodes
     };
 
-    // Leg 1: depot -> warehouse. Always first, never reordered — a plain
-    // point-to-point call, no trip optimization involved.
-    let (start_dist, start_dur, start_geom) = osrm_route_leg(state, (start.lat, start.lon), (via.lat, via.lon)).await?;
+    let head = nodes.head();
+    let end = FixedStop::active(nodes.end);
 
-    // Warehouse -> [customers, order chosen by OSRM] -> destination. OSRM's
-    // `/trip` solves the actual ordering problem here.
-    let mut sub_coords: Vec<(f64, f64)> = vec![(via.lat, via.lon)];
-    sub_coords.extend(customers.iter().map(|c| (c.lat, c.lon)));
-    sub_coords.push((end.lat, end.lon));
-    let (order, legs, trip_geom) = osrm_trip(state, &sub_coords).await?;
+    // `routed` is the driving order and `legs[i]` is the leg from
+    // `routed[i]` to `routed[i + 1]`, so `legs.len() + 1 == routed.len()`
+    // holds from here to the write below.
+    let mut routed: Vec<StopCoord> = head.clone();
+    let mut legs: Vec<(f64, f64)> = Vec::new();
+    let mut geometry: Vec<[f64; 2]> = Vec::new();
 
-    // `order[position]` is an index into `sub_coords` (0 = warehouse,
-    // 1..=n = customers[i-1], last = destination) — walk it to lay out the
-    // full stop sequence in the order OSRM actually chose.
-    let last_sub_idx = sub_coords.len() - 1;
-    let mut nodes: Vec<&StopCoord> = vec![&start];
-    for &idx in &order {
-        if idx == 0 {
-            nodes.push(&via);
-        } else if idx == last_sub_idx {
-            nodes.push(&end);
-        } else {
-            nodes.push(&customers[idx - 1]);
+    // Depot -> warehouse: fixed, never reordered, so a plain point-to-point
+    // call rather than anything the trip optimizer needs to see. Written as
+    // a loop over pairs because the head is 0, 1 or 2 points depending on
+    // what this tour skips — with either of them off there is no such leg.
+    for pair in head.windows(2) {
+        let (dist, dur, geom) =
+            osrm_route_leg(state, (pair[0].lat, pair[0].lon), (pair[1].lat, pair[1].lon)).await?;
+        legs.push((dist, dur));
+        append_geometry(&mut geometry, geom);
+    }
+
+    // The optimized section runs from the last fixed head point through
+    // every customer to the destination. That head point is the anchor: it
+    // is already in `routed` and goes into this call only to be routed
+    // *from*, never to be added a second time.
+    let anchor = head.last().copied();
+    let mut trip_nodes: Vec<StopCoord> = Vec::new();
+    trip_nodes.extend(anchor);
+    trip_nodes.extend(nodes.customers.iter().copied());
+    trip_nodes.extend(end);
+
+    if trip_nodes.len() >= 2 {
+        // OSRM cannot solve a `roundtrip=false` trip with both ends open
+        // (see `osrm_trip`). A tour with depot, warehouse *and* destination
+        // all switched off has no fixed point left to anchor to, so the
+        // first customer — first by stop id, i.e. the order they were
+        // entered — is pinned as the starting point and the tour is left
+        // free to end wherever is cheapest. That is a real choice made on
+        // the driver's behalf, but it is the only one on offer, and "start
+        // where the list starts" is what a hand-entered list already implies.
+        let fix_first = anchor.is_some() || end.is_none();
+        let fix_last = end.is_some();
+        let coords: Vec<(f64, f64)> = trip_nodes.iter().map(|n| (n.lat, n.lon)).collect();
+        let (order, trip_legs, trip_geom) = osrm_trip(state, &coords, fix_first, fix_last).await?;
+
+        for &idx in &order {
+            if anchor.is_some() && idx == 0 {
+                continue; // the anchor, already the last entry of `routed`
+            }
+            routed.push(trip_nodes[idx]);
         }
+        legs.extend(trip_legs);
+        append_geometry(&mut geometry, trip_geom);
+    } else {
+        // At most one point after the head — nothing to optimize, but it
+        // still belongs in the driving order.
+        routed.extend(trip_nodes.into_iter().skip(anchor.is_some() as usize));
     }
 
-    let mut geometry = start_geom;
-    if !geometry.is_empty() && !trip_geom.is_empty() {
-        geometry.pop(); // drop the warehouse point duplicated between the two legs
-    }
-    geometry.extend(trip_geom);
     // `[f64; 2]` pairs can't fail to serialize once finite, but OSRM is an
     // external service — treat a malformed/non-finite value in its
     // response as a normal (logged) error rather than a process-killing
@@ -2071,6 +2242,16 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         AppError::Internal("Routen-Geometrie konnte nicht gespeichert werden.".into())
     })?;
 
+    // Leg distances belong to the driving order; the row they're written
+    // onto is found by stop id, so the display order below can differ from
+    // it without the two ever drifting apart. A stop that isn't driven at
+    // all appears in neither map and has its stale legs cleared to NULL.
+    let leg_for: HashMap<i64, (f64, f64)> = routed
+        .iter()
+        .enumerate()
+        .filter_map(|(pos, node)| legs.get(pos).map(|&leg| (node.id, leg)))
+        .collect();
+
     // The new stop order, the per-leg distances and the geometry describe
     // one single solution — committed together so a failure partway
     // through can't leave stops renumbered against a geometry drawn for
@@ -2078,14 +2259,10 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
     // and so `needs_optimize` is only ever cleared once all of it landed.
     let mut conn = state.db()?;
     let tx = conn.transaction()?;
-    for (pos, node) in nodes.iter().enumerate() {
-        let (leg_km, leg_min) = if pos == 0 {
-            (Some(start_dist / 1000.0), Some(start_dur / 60.0))
-        } else if pos - 1 < legs.len() {
-            let (d, t) = legs[pos - 1];
-            (Some(d / 1000.0), Some(t / 60.0))
-        } else {
-            (None, None) // last stop — no next leg
+    for (pos, node) in display_order(&nodes, &routed).iter().enumerate() {
+        let (leg_km, leg_min) = match leg_for.get(&node.id) {
+            Some(&(dist, dur)) => (Some(dist / 1000.0), Some(dur / 60.0)),
+            None => (None, None),
         };
         tx.execute(
             "UPDATE stops SET order_index = ?1, next_leg_km = ?2, next_leg_min = ?3 WHERE id = ?4",
@@ -2161,6 +2338,9 @@ struct StopUpdate {
     delivered: Option<bool>,
     lat: Option<f64>,
     lon: Option<f64>,
+    /// Fixed stops (start/via/end) only -- switch this one out of, or back
+    /// into, this route's plan. See the `excluded` column in `SCHEMA`.
+    excluded: Option<bool>,
 }
 
 // ---------------------------------------------------------------------
@@ -2370,10 +2550,17 @@ async fn add_stop(
             params![route_id],
             |r| r.get(0),
         )?;
-        if customer_count + 3 > OSRM_MAX_TRIP_COORDS as i64 {
+        // Expressed with `MAX_BULK_STOPS` rather than open-coded against
+        // `OSRM_MAX_TRIP_COORDS`: the old `customer_count + 3 > cap` test
+        // accepted routes up to `cap - 2` customers (correctly — a trip is
+        // warehouse + customers + destination) while its message named
+        // `cap - 3` as the maximum, so a driver who filled a route was told
+        // the limit was one below the number of stops they were looking at,
+        // and told a different limit than the JSON import enforces for the
+        // very same route. One constant, one number, same behaviour.
+        if customer_count >= MAX_BULK_STOPS as i64 {
             return Err(AppError::BadRequest(format!(
-                "Diese Route hat bereits die maximale Anzahl an Stopps ({}). Bitte eine neue Route anlegen.",
-                OSRM_MAX_TRIP_COORDS - 3
+                "Diese Route hat bereits die maximale Anzahl an Stopps ({MAX_BULK_STOPS}). Bitte eine neue Route anlegen."
             )));
         }
     }
@@ -2454,14 +2641,63 @@ async fn update_stop(
         .ok_or_else(|| AppError::NotFound("Stopp nicht gefunden".into()))?
     };
 
-    // Start/Lager/Ziel are fixed points of every route, and the UI never
-    // offers editing them. Rejecting that outright — the way `delete_stop`
-    // already rejects deleting them — rather than the previous behavior of
-    // quietly dropping the address/coordinate fields and returning 200: a
-    // caller that renamed the warehouse or tried to move it got a success
-    // response describing a change that never happened.
+    // Start/Lager/Ziel are fixed points of every route: their address and
+    // position are not editable, and the UI never offers to. Rejecting that
+    // outright — the way `delete_stop` already rejects deleting them —
+    // rather than quietly dropping the address/coordinate fields and
+    // returning 200, which would hand a caller that renamed the warehouse a
+    // success response describing a change that never happened.
+    //
+    // The one thing a fixed stop *does* accept is `excluded`: not every
+    // tour drives all three, and switching one off is a per-route planning
+    // decision rather than an edit to what that stop is. Handled here and
+    // returned early — none of the customer-field validation below applies
+    // to a request that carries no customer fields.
     if kind != "customer" {
-        return Err(AppError::Forbidden("Fixe Stopps können nicht bearbeitet werden".into()));
+        let Some(excluded) = payload.excluded else {
+            return Err(AppError::Forbidden("Fixe Stopps können nicht bearbeitet werden".into()));
+        };
+        let only_exclusion = payload.kunde.is_none()
+            && payload.strasse.is_none()
+            && payload.plz.is_none()
+            && payload.paket.is_none()
+            && payload.notiz.is_none()
+            && payload.delivered.is_none()
+            && payload.lat.is_none()
+            && payload.lon.is_none();
+        if !only_exclusion {
+            return Err(AppError::Forbidden(
+                "An fixen Stopps kann nur das Überspringen geändert werden".into(),
+            ));
+        }
+
+        // Skipping a stop removes a leg the route was planned around, so
+        // the stored order/geometry is stale the instant this lands — both
+        // written in one transaction so a crash can't leave the route
+        // looking up to date against a plan that no longer matches it.
+        {
+            let mut conn = state.db()?;
+            let tx = conn.transaction()?;
+            tx.execute(
+                "UPDATE stops SET excluded = ?1 WHERE id = ?2",
+                params![excluded as i64, stop_id],
+            )?;
+            tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+            tx.commit()?;
+        }
+        reoptimize_best_effort(&state, route_id).await;
+        let conn = state.db()?;
+        return Ok(Json(get_route_detail(&conn, route_id)?));
+    }
+
+    // A customer stop is removed by deleting it, not by skipping it — and
+    // silently accepting the flag here would write an `excluded` a customer
+    // row that `reoptimize_route` deliberately ignores, i.e. a setting that
+    // appears to save and then does nothing.
+    if payload.excluded.is_some() {
+        return Err(AppError::BadRequest(
+            "Kundenstopps können nicht übersprungen werden — bitte löschen.".into(),
+        ));
     }
 
     if let Some(strasse) = payload.strasse.as_deref() {
