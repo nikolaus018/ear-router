@@ -10,7 +10,8 @@
 // route would be actively wrong, not just outdated. What this cache DOES
 // buy: the app shell (this origin's "/") and every third-party asset it
 // needs to render (Tailwind's CDN runtime, MapLibre GL JS/CSS, the
-// OpenFreeMap style/glyphs/sprites/vector tiles already panned into view)
+// OpenFreeMap style/glyphs/sprites/vector tiles and the Wien-Luftbild
+// aerial tiles already panned into view)
 // survive a dropped connection instead of a blank white tab — a driver
 // mid-route who loses signal can still see the route they already loaded.
 // Two caches, not one, because the two hold very different things and only
@@ -22,7 +23,24 @@
 // touching the files the app needs to start.
 const CACHE_NAME = 'ear-routing-v2';
 const TILE_CACHE = 'ear-routing-tiles-v1';
-const TILE_CACHE_MAX_ENTRIES = 600;
+// Raised from 600 when the aerial basemap landed (see `TILE_HOSTS`). A
+// driver zoomed into a building on the Luftbild pulls the aerial tiles AND
+// the label overlay for the same view, and both are requested at retina
+// density (see `RETINA_TILE_SIZE` in index.html — half-size tiles, so four
+// per nominal tile), which puts one aerial screenful an order of magnitude
+// above what a vector-only screenful cost. Entries, not bytes: these are
+// 8–20 KB JPEG/PNG tiles, so this is roughly 20 MB — enough to hold a
+// morning's route area, small enough that a browser won't evict the whole
+// origin (app shell included) over it.
+const TILE_CACHE_MAX_ENTRIES = 1400;
+
+// Hosts whose responses are map tiles — trimmed to `TILE_CACHE_MAX_ENTRIES`
+// and kept out of the app-shell cache. `maps.wien.gv.at` serves both the
+// aerial imagery and its label overlay (see `AERIAL_*` in index.html);
+// without it listed here, every aerial tile a driver panned over would land
+// in CACHE_NAME and grow it without limit — which is exactly the failure
+// the two-cache split above exists to prevent.
+const TILE_HOSTS = ['tiles.openfreemap.org', 'maps.wien.gv.at'];
 
 // The app shell, precached so a first-ever offline launch works rather than
 // only a second one. Each is added individually: `cache.addAll` is atomic,
@@ -173,7 +191,7 @@ self.addEventListener('fetch', (event) => {
   // slightly-stale map tile is a cosmetic staleness, not this app's own
   // broken code silently running forever, so plain stale-while-revalidate
   // (not raced against a timeout) is the right trade.
-  const isTile = url.hostname === 'tiles.openfreemap.org';
+  const isTile = TILE_HOSTS.includes(url.hostname);
   const cacheName = isTile ? TILE_CACHE : CACHE_NAME;
   event.respondWith(
     caches.open(cacheName).then((cache) =>

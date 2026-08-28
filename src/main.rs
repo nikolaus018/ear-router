@@ -1,8 +1,10 @@
 //! EAR Routing (Essen auf Rädern Routing) — delivery route planner.
 //!
 //! Serves a single self-contained `index.html` at `/` (Tailwind CDN +
-//! MapLibre GL JS/OpenFreeMap UI, ASBÖ-branded, PWA-ready — no separate JS/
-//! CSS build) and a matching `/sw.js` service worker for offline app-shell
+//! MapLibre GL JS, ASBÖ-branded, PWA-ready — no separate JS/CSS build; the
+//! map draws either OpenFreeMap's vector tiles or Stadt Wien's aerial
+//! imagery, which is why `CONTENT_SECURITY_POLICY` allows both hosts) and a
+//! matching `/sw.js` service worker for offline app-shell
 //! caching, both read straight off disk on every request (see
 //! `assets_dir`/`read_static` below) rather than compiled into the
 //! binary, so editing either file takes effect immediately. The JSON API is
@@ -136,6 +138,21 @@ mod text {
     static HOUSENUMBER_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"^(?P<street>.+?)\s+(?P<num>\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?)(?:[/\s(].*)?$").unwrap()
     });
+    // Same shape as HOUSENUMBER_RE, but requires (and captures) whatever
+    // follows the housenumber — the sub-address. See
+    // `housenumber_with_sub`. Separated from the housenumber by a slash OR
+    // by whitespace, because both spellings turn up in real lists
+    // ("9/Parz.68" and "9 Parz. 68"), and anything past the first slash is
+    // ignored rather than rejected, so "129/1/2/23" yields sub = "1".
+    static SUB_ADDRESS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^(?P<street>.+?)\s+(?P<num>\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?)(?:/|\s+)(?P<sub>[^/]+)").unwrap()
+    });
+    // The tail after "{street} {housenumber}" in an address string the
+    // register itself produced — used to read back which sub-address it
+    // actually matched. See `sub_address_of`.
+    static HOUSENUMBER_TAIL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^.+?\s+\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?(?P<tail>.*)$").unwrap()
+    });
 
     pub fn normalize_strasse_text(strasse: &str) -> String {
         let s = WHITESPACE_RE.replace_all(strasse.trim(), " ").to_string();
@@ -151,6 +168,97 @@ mod text {
             Some(caps) => format!("{} {}", &caps["street"], &caps["num"]),
             None => strasse.to_string(),
         }
+    }
+
+    /// The address's *sub-address* — what comes after the housenumber:
+    /// a Stiege ("129/1"), a Kleingarten-Parzelle ("9/Parz.68"), a Top.
+    /// Returns the query form to ask the register with, plus a normalized
+    /// key for verifying what came back.
+    ///
+    /// Vienna's register indexes these as addresses in their own right, at
+    /// their own front door:
+    ///   - "Gentzgasse 129/1" and "Gentzgasse 129/2" are ~30 m apart on one
+    ///     Gemeindebau block.
+    ///   - "Großfeldstraße 9 Parz. 68" is a specific plot in a Kleingarten
+    ///     colony, ~130 m from the "Großfeldstraße 9" the colony as a whole
+    ///     answers to — and asking for the bare housenumber there returns
+    ///     an arbitrary neighbouring plot ("Parz. 8"), not the colony
+    ///     entrance, so the bare form is actively misleading.
+    ///
+    /// `simplify_housenumber` throws all of that away — necessarily, since
+    /// it exists for Nominatim, which indexes none of it — so the register
+    /// is asked with the sub-address still attached first.
+    ///
+    /// Only the first segment after the housenumber is kept: what follows
+    /// is Tür/Stock ("129/1/2/23"), which no register indexes and which
+    /// only makes the query fail to match.
+    pub fn housenumber_with_sub(strasse: &str) -> Option<(String, String)> {
+        let caps = SUB_ADDRESS_RE.captures(strasse)?;
+        let sub = caps["sub"].trim();
+        let key = sub_address_key(sub);
+        // "Hauptstraße 12 " or "Gentzgasse 129/" carry no sub-address, and a
+        // key with nothing alphanumeric in it can never verify anything.
+        if key.is_empty() {
+            return None;
+        }
+        // Slash-joined regardless of how the driver wrote it: that is the
+        // form the register accepts for both a Stiege ("129/1") and a
+        // Parzelle ("9/Parz. 68"), whereas a space-joined query drops back
+        // to matching the housenumber alone.
+        Some((format!("{} {}/{}", &caps["street"], &caps["num"], sub), key))
+    }
+
+    /// The form two addresses are compared in when deciding whether they are
+    /// the *same address* — used to match a re-pasted list against the stops
+    /// already on a route (see `update_route_from_json`), where getting it
+    /// wrong means deleting and re-inserting a stop, and losing the tick
+    /// saying it was already delivered.
+    ///
+    /// On top of the "straße" spellings `normalize_strasse_text` handles,
+    /// this collapses every run of punctuation and whitespace to one space,
+    /// so the same door survives being re-exported by a different system:
+    /// "Großfeldstraße 9/Parz.68", "Großfeldstraße 9 Parz. 68" and
+    /// "Großfeldstraße 9 / Parz. 68" are one address. Collapsed rather than
+    /// deleted, because deleting separators would make "Gentzgasse 129/1"
+    /// and "Gentzgasse 12/91" collide.
+    pub fn address_match_key(strasse: &str) -> String {
+        let normalized = normalize_strasse_text(strasse).to_lowercase();
+        let mut out = String::with_capacity(normalized.len());
+        let mut pending_space = false;
+        for c in normalized.chars() {
+            if c.is_alphanumeric() {
+                if pending_space && !out.is_empty() {
+                    out.push(' ');
+                }
+                pending_space = false;
+                out.push(c);
+            } else {
+                pending_space = true;
+            }
+        }
+        out
+    }
+
+    /// Compares sub-addresses the way a human would, ignoring the many ways
+    /// the same one gets written: the driver types "9/Parz.68", the register
+    /// answers "Großfeldstraße 9 Parz. 68", and a Stiege comes back as
+    /// "/1". Everything that isn't a letter or a digit is noise here, and
+    /// so is case.
+    pub fn sub_address_key(sub: &str) -> String {
+        sub.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(|c| c.to_lowercase())
+            .collect()
+    }
+
+    /// The sub-address of an address string as the *register* spells it —
+    /// everything after "{street} {housenumber}", normalized by
+    /// `sub_address_key`. `None` when the register answered with a bare
+    /// housenumber and no sub-address at all.
+    pub fn sub_address_of(adresse: &str) -> Option<String> {
+        let caps = HOUSENUMBER_TAIL_RE.captures(adresse)?;
+        let key = sub_address_key(caps["tail"].trim());
+        (!key.is_empty()).then_some(key)
     }
 
     /// Just the street-name portion, no housenumber — used to cross-check
@@ -646,12 +754,17 @@ async fn rate_limit_mw(
 ///     parsing in a worker created from a blob URL.
 ///   - `data:` in `manifest-src`: the PWA manifest is an inline data: URI
 ///     (see the `addTag('link', { rel: 'manifest' ... })` call).
+///   - `maps.wien.gv.at` in BOTH `img-src` and `connect-src`: it serves the
+///     aerial basemap's tiles (see `aerialStyle` in index.html), and
+///     MapLibre fetches raster tiles with `fetch` (for `createImageBitmap`)
+///     rather than as plain `<img>` elements — listing only `img-src` left
+///     every aerial tile failing as an opaque "Failed to fetch".
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
 script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; \
 style-src 'self' 'unsafe-inline' https://unpkg.com; \
-img-src 'self' data: blob: https://tiles.openfreemap.org; \
+img-src 'self' data: blob: https://tiles.openfreemap.org https://maps.wien.gv.at; \
 font-src 'self' data:; \
-connect-src 'self' https://tiles.openfreemap.org https://unpkg.com https://cdn.tailwindcss.com; \
+connect-src 'self' https://tiles.openfreemap.org https://maps.wien.gv.at https://unpkg.com https://cdn.tailwindcss.com; \
 worker-src 'self' blob:; \
 child-src 'self' blob:; \
 manifest-src 'self' data:; \
@@ -1023,6 +1136,36 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
         )?;
     }
 
+    // One-time geocode-cache invalidation, bumped whenever the resolver
+    // itself learns to place an address better than the cached answer did.
+    //
+    // `exact` cache rows never expire on their own (see `cache_lookup`) —
+    // correctly, since a confirmed door doesn't move. But when the *resolver*
+    // improves, every one of those rows is a confidently-wrong answer that
+    // would outlive the fix forever: version 2 is the sub-address work (see
+    // `wien_ogd_geocode`), which resolves a Stiege to its own staircase and a
+    // Kleingarten-Parzelle to its own plot instead of to whatever the bare
+    // housenumber answers to. The whole cache is cleared rather than the rows
+    // guessed to be affected: which keys those are depends on how each
+    // address happened to be typed, and re-resolving a Vienna address costs
+    // one unthrottled call to the register.
+    //
+    // Guarded by `user_version`, so it happens once per upgrade rather than
+    // on every restart. Only the *cache* is cleared — stops already on a
+    // route keep the coordinates they were created with until something
+    // re-geocodes them (editing the address, or a JSON re-import). Moving a
+    // live route's pins out from under a driver at startup is not this
+    // function's call to make.
+    const GEOCODER_GENERATION: i64 = 2;
+    let cache_generation: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if cache_generation < GEOCODER_GENERATION {
+        let cleared = conn.execute("DELETE FROM geocode_cache", [])?;
+        conn.pragma_update(None, "user_version", GEOCODER_GENERATION)?;
+        if cleared > 0 {
+            tracing::info!(cleared, "cleared the geocode cache so addresses re-resolve with the sub-address-aware lookup");
+        }
+    }
+
     // The warehouse stop was originally written as "Oberlaa Straße 298",
     // which isn't a real street name — the actual one is "Oberlaaer
     // Straße". It's cosmetic in the app itself (the coordinates were
@@ -1257,12 +1400,78 @@ struct OgdProperties {
 /// query, and if the single best-ranked one happens to be in a neighbouring
 /// district, the whole lookup reported "not found" even though the right
 /// address was sitting in the same response.
-fn pick_ogd_feature(features: Vec<OgdFeature>, plz: &str, our_street_lower: &str) -> Option<OgdFeature> {
+/// What the caller knows about the address's sub-address (Stiege,
+/// Kleingarten-Parzelle, Top — see `text::housenumber_with_sub`) and how
+/// strictly the register's answer has to honour it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubCheck<'a> {
+    /// The address has no sub-address; anything the register returns for the
+    /// housenumber is as precise as this address gets.
+    Absent,
+    /// Accept *only* an answer carrying this sub-address. Used for the first
+    /// attempt, the one that can actually place the van at the right
+    /// staircase or plot.
+    Require(&'a str),
+    /// Accept whatever the register returns, but if it carries a *different*
+    /// sub-address than this one, the point is a neighbour rather than the
+    /// address asked for — precise-looking, and wrong. Used for the
+    /// housenumber-only fallback, where it downgrades the result to
+    /// `Precision::Street` so the app shows its "≈" warning instead of
+    /// presenting a guess as a confirmed door.
+    Downgrade(&'a str),
+}
+
+impl<'a> SubCheck<'a> {
+    /// The sub-address an answer must carry to be accepted at all.
+    fn required(self) -> Option<&'a str> {
+        match self {
+            SubCheck::Require(sub) => Some(sub),
+            SubCheck::Absent | SubCheck::Downgrade(_) => None,
+        }
+    }
+
+    /// Whether `adresse` (as the register spells it) is a *different*
+    /// sub-address than the one asked for — the "confidently wrong
+    /// neighbour" case.
+    fn is_wrong_neighbour(self, adresse: Option<&str>) -> bool {
+        let SubCheck::Downgrade(want) = self else { return false };
+        adresse
+            .and_then(text::sub_address_of)
+            .is_some_and(|got| got != want)
+    }
+}
+
+fn pick_ogd_feature(
+    features: Vec<OgdFeature>,
+    plz: &str,
+    our_street_lower: &str,
+    require_sub: Option<&str>,
+) -> Option<OgdFeature> {
     features
         .into_iter()
         .filter(|f| f.properties.postal_code.as_deref() == Some(plz))
         .filter(|f| {
             f.properties.street_name.as_deref().unwrap_or("").trim().to_lowercase() == our_street_lower
+        })
+        // A sub-address query only counts if the register came back with
+        // *that* sub-address. Asked for one it has never heard of, the
+        // service answers with a neighbour at a near-zero `Ranking` — which
+        // would otherwise be accepted as an exact match and quietly point
+        // the driver at the wrong staircase, or the wrong garden plot 130 m
+        // down the lane. Compared through `sub_address_of` rather than as
+        // raw text, because the register writes what the driver typed as
+        // "9/Parz.68" as "Großfeldstraße 9 Parz. 68" — the same address,
+        // spelled with a space and an abbreviation dot, and rejecting it
+        // over punctuation was itself the bug that put a pin on the wrong
+        // plot.
+        .filter(|f| match require_sub {
+            None => true,
+            Some(want) => f
+                .properties
+                .adresse
+                .as_deref()
+                .and_then(text::sub_address_of)
+                .is_some_and(|got| got == want),
         })
         .min_by(|a, b| {
             let ra = a.properties.ranking.unwrap_or(f64::MAX);
@@ -1280,7 +1489,12 @@ fn pick_ogd_feature(features: Vec<OgdFeature>, plz: &str, our_street_lower: &str
 /// a first attempt rather than a hard dependency — a Wien-OGD outage the
 /// night before a route is due degrades to the existing Nominatim
 /// pipeline, not a failure.
-async fn wien_ogd_search_one(state: &AppState, query: &str, plz: &str) -> Option<(f64, f64, String, Precision)> {
+async fn wien_ogd_search_one(
+    state: &AppState,
+    query: &str,
+    plz: &str,
+    sub: SubCheck<'_>,
+) -> Option<(f64, f64, String, Precision)> {
     // Only genuine failure modes (network error, a non-2xx status, a body
     // that doesn't even parse) are logged here — a "no match" (empty body,
     // or a body with no feature surviving `pick_ogd_feature`'s filter) is
@@ -1329,14 +1543,20 @@ async fn wien_ogd_search_one(state: &AppState, query: &str, plz: &str) -> Option
     };
 
     let our_street = text::street_name_only(query).to_lowercase();
-    let best = pick_ogd_feature(parsed.features, plz, &our_street)?;
+    let best = pick_ogd_feature(parsed.features, plz, &our_street, sub.required())?;
     let props = best.properties;
 
     let ranking = props.ranking.unwrap_or(f64::MAX);
     let precision = if props.kategorie.as_deref() == Some("Straßenname") {
         Precision::Street
+    } else if sub.is_wrong_neighbour(props.adresse.as_deref()) {
+        // The register knows this housenumber, but only as somebody else's
+        // staircase or garden plot. Same street, same number, different
+        // door — reported as the approximation it is.
+        tracing::debug!(query, matched = ?props.adresse, "wien ogd matched a neighbouring sub-address, downgrading to street precision");
+        Precision::Street
     } else if ranking < 1.0 {
-        // Genuine housenumber (and usually Stiege/Tür) match.
+        // Genuine housenumber (and usually Stiege/Parzelle/Tür) match.
         Precision::Exact
     } else {
         // Real street, but the exact housenumber wasn't registered —
@@ -1356,19 +1576,43 @@ async fn wien_ogd_search_one(state: &AppState, query: &str, plz: &str) -> Option
     Some((lat, lon, display_name, precision))
 }
 
-/// Tries the simplified "{street} {housenumber}" form first (see
-/// `simplify_housenumber`), falling back to the fuller normalized string
-/// only if that finds nothing — same two-tier shape as the Nominatim path
-/// below, for the same reason: the simplification is usually right and
-/// saves a round-trip, but shouldn't be the only thing tried.
+/// Tries, in order of how precisely each form can place the van:
+///   1. `"{street} {housenumber}/{sub-address}"`, when the address carries
+///      a Stiege, Parzelle or Top — the register knows that staircase's or
+///      plot's own door, tens to hundreds of metres from what the bare
+///      housenumber answers to (see `text::housenumber_with_sub`).
+///      Accepted only if the register really matched that sub-address (see
+///      `SubCheck`).
+///   2. The simplified `"{street} {housenumber}"`. If the address *did*
+///      carry a sub-address, an answer for somebody else's is downgraded to
+///      `Precision::Street` rather than passed off as the right door.
+///   3. The fuller normalized string, for an address that was never
+///      "street + number" to begin with and which simplifying would only
+///      have mangled.
+///
+/// Unlike the Nominatim path below, which pays a throttled ~1.1 s per
+/// attempt, these are unthrottled calls to a service with no published
+/// rate limit, so trying the most precise form first costs a few hundred
+/// milliseconds on the addresses that have a sub-address and nothing at all
+/// on the ones that don't.
 async fn wien_ogd_geocode(state: &AppState, strasse: &str, plz: &str) -> Option<(f64, f64, String, Precision)> {
     let normalized = normalize_strasse_text(strasse);
     let simplified = simplify_housenumber(&normalized);
-    if let Some(hit) = wien_ogd_search_one(state, &simplified, plz).await {
+    let sub = text::housenumber_with_sub(&normalized);
+    if let Some((query, key)) = &sub {
+        if let Some(hit) = wien_ogd_search_one(state, query, plz, SubCheck::Require(key)).await {
+            return Some(hit);
+        }
+    }
+    let fallback_check = match &sub {
+        Some((_, key)) => SubCheck::Downgrade(key),
+        None => SubCheck::Absent,
+    };
+    if let Some(hit) = wien_ogd_search_one(state, &simplified, plz, fallback_check).await {
         return Some(hit);
     }
     if simplified != normalized {
-        if let Some(hit) = wien_ogd_search_one(state, &normalized, plz).await {
+        if let Some(hit) = wien_ogd_search_one(state, &normalized, plz, fallback_check).await {
             return Some(hit);
         }
     }
@@ -1677,25 +1921,32 @@ async fn osrm_try<T: DeserializeOwned>(client: &reqwest::Client, base: &str, pat
 /// *be* the public fallback (nothing to skip to).
 async fn osrm_get<T: DeserializeOwned>(state: &AppState, path_and_query: &str) -> Result<T, AppError> {
     let primary = &state.upstreams.osrm_base;
+    // `.lock().ok()` rather than `.unwrap()`, matching how `AppState::db`
+    // treats the other std mutex in this file: a poisoned lock here would
+    // otherwise panic every OSRM call for the rest of the process's life —
+    // turning one unlucky panic into permanently broken routing, when the
+    // honest fallback is simply to treat the cooldown as unknown and try
+    // the primary.
+    let down_since = state.osrm_primary_down_since.lock().ok().and_then(|g| *g);
     let skip_primary = primary != OSRM_PUBLIC_FALLBACK
-        && state
-            .osrm_primary_down_since
-            .lock()
-            .unwrap()
-            .is_some_and(|since| since.elapsed() < OSRM_PRIMARY_RETRY_AFTER);
+        && down_since.is_some_and(|since| since.elapsed() < OSRM_PRIMARY_RETRY_AFTER);
 
     if !skip_primary {
         match osrm_try::<T>(&state.http, primary, path_and_query).await {
             Ok(v) => {
                 // Recovered (or never down) — clear any earlier verdict so
                 // the next failure gets a fresh cooldown, not a leftover one.
-                *state.osrm_primary_down_since.lock().unwrap() = None;
+                if let Ok(mut down) = state.osrm_primary_down_since.lock() {
+                    *down = None;
+                }
                 return Ok(v);
             }
             Err(e) if primary == OSRM_PUBLIC_FALLBACK => return Err(osrm_unreachable(e)),
             Err(e) => {
                 tracing::warn!(error = %e, base = %primary, "primary OSRM unreachable, falling back to public server");
-                *state.osrm_primary_down_since.lock().unwrap() = Some(Instant::now());
+                if let Ok(mut down) = state.osrm_primary_down_since.lock() {
+                    *down = Some(Instant::now());
+                }
             }
         }
     }
@@ -1903,7 +2154,43 @@ struct StopOut {
     excluded: bool,
 }
 
+/// Geometric centre of Vienna — the last-resort position for a stop whose
+/// stored coordinates are unusable. See `to_stop_out`.
+const VIENNA_CENTER_LAT: f64 = 48.2082;
+const VIENNA_CENTER_LON: f64 = 16.3738;
+
+/// A finite number, or `None`.
+///
+/// JSON has no way to write NaN or Infinity, so `serde_json` *fails* rather
+/// than inventing one — and a failure here is a failure to serialize the
+/// whole response. One unusable number in one column would therefore take
+/// out `GET /api/routes/{id}` entirely, permanently, for that route: the
+/// driver could not open their own stop list, and no amount of retrying or
+/// reloading would help.
+///
+/// Nothing this app writes today can produce one (`is_plausible_latlon` and
+/// `check_latlon` guard every path into `lat`/`lon`, and OSRM distances
+/// arrive as JSON, which has the same restriction). This is about the row
+/// that got in some other way — an older build, a hand-edited database, a
+/// half-written value from a disk that filled up. The route stays readable,
+/// which is what matters at 11am with a van full of meals.
+fn finite_or_none(v: Option<f64>) -> Option<f64> {
+    v.filter(|n| n.is_finite())
+}
+
 fn to_stop_out(r: StopRow) -> StopOut {
+    // An unusable position is *not* a reason to hide the stop: the customer
+    // and their address are the load-bearing part of the row, and the driver
+    // can still read them and navigate by address. It is reported as an
+    // approximation so it wears the "≈" badge, keeps its place out of the
+    // route optimization's way, and offers the manual pin-drop that fixes it
+    // for good.
+    let (lat, lon, precision) = if r.lat.is_finite() && r.lon.is_finite() {
+        (r.lat, r.lon, r.location_precision)
+    } else {
+        tracing::warn!(stop_id = r.id, lat = r.lat, lon = r.lon, "stop has unusable coordinates, reporting it as approximate");
+        (VIENNA_CENTER_LAT, VIENNA_CENTER_LON, Some(Precision::District.as_str().to_string()))
+    };
     StopOut {
         id: r.id,
         kind: r.kind,
@@ -1912,13 +2199,13 @@ fn to_stop_out(r: StopRow) -> StopOut {
         plz: r.plz,
         paket: r.paket,
         notiz: r.notiz,
-        lat: r.lat,
-        lon: r.lon,
+        lat,
+        lon,
         order_index: r.order_index,
         delivered: r.delivered,
-        next_leg_km: r.next_leg_km,
-        next_leg_min: r.next_leg_min,
-        location_precision: r.location_precision,
+        next_leg_km: finite_or_none(r.next_leg_km),
+        next_leg_min: finite_or_none(r.next_leg_min),
+        location_precision: precision,
         excluded: r.excluded,
     }
 }
@@ -2016,13 +2303,23 @@ fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, App
 
     let stop_outs: Vec<StopOut> = stops.into_iter().map(to_stop_out).collect();
     let customer_stops: Vec<&StopOut> = stop_outs.iter().filter(|s| s.kind == "customer").collect();
-    let total_km: f64 = stop_outs.iter().filter_map(|s| s.next_leg_km).sum();
-    let total_min: f64 = stop_outs.iter().filter_map(|s| s.next_leg_min).sum();
+    // Summed from the sanitized stops (see `finite_or_none`), so these can
+    // only be finite — but a sum of finite values can still overflow to
+    // infinity, and infinity is exactly as unserializable as NaN.
+    let total_km = finite_or_none(Some(stop_outs.iter().filter_map(|s| s.next_leg_km).sum())).unwrap_or(0.0);
+    let total_min = finite_or_none(Some(stop_outs.iter().filter_map(|s| s.next_leg_min).sum())).unwrap_or(0.0);
+    // A geometry that no longer parses costs the route line, not the route:
+    // `.ok()` degrades to "no line drawn". Non-finite pairs are dropped for
+    // the same reason the numbers above are — one of them would make the
+    // whole response unserializable.
     let geometry: Vec<[f64; 2]> = route
         .geometry
         .as_deref()
-        .and_then(|g| serde_json::from_str(g).ok())
-        .unwrap_or_default();
+        .and_then(|g| serde_json::from_str::<Vec<[f64; 2]>>(g).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p[0].is_finite() && p[1].is_finite())
+        .collect();
 
     Ok(RouteDetail {
         id: route.id,
@@ -2937,7 +3234,7 @@ async fn update_route_from_json(
     /// and re-insert an identical one — losing its delivered flag and
     /// burning a geocode round-trip to end up exactly where it started.
     fn addr_key(strasse: &str, plz: &str) -> (String, String) {
-        (normalize_strasse_text(strasse).to_lowercase(), plz.trim().to_string())
+        (text::address_match_key(strasse), plz.trim().to_string())
     }
 
     /// Matching key for the second pass — see the two-pass explanation
@@ -3708,7 +4005,7 @@ mod tests {
             ogd_feature("Hauptstraße", "1140", 0.1),
             ogd_feature("Hauptstraße", "1190", 0.4),
         ];
-        let picked = pick_ogd_feature(features, "1190", "hauptstraße").expect("1190 hit");
+        let picked = pick_ogd_feature(features, "1190", "hauptstraße", None).expect("1190 hit");
         assert_eq!(picked.properties.postal_code.as_deref(), Some("1190"));
     }
 
@@ -3719,7 +4016,7 @@ mod tests {
             ogd_feature("Gentzgasse", "1180", 0.2),
             ogd_feature("Gentzgasse", "1180", 12.0),
         ];
-        let picked = pick_ogd_feature(features, "1180", "gentzgasse").expect("hit");
+        let picked = pick_ogd_feature(features, "1180", "gentzgasse", None).expect("hit");
         assert_eq!(picked.properties.ranking, Some(0.2));
     }
 
@@ -3729,15 +4026,190 @@ mod tests {
         // exactly the confident-but-wrong result the street check exists
         // for — a low Ranking must not rescue it.
         let features = vec![ogd_feature("Gentzgasse", "1180", 0.0)];
-        assert!(pick_ogd_feature(features, "1180", "genzgasse").is_none());
+        assert!(pick_ogd_feature(features, "1180", "genzgasse", None).is_none());
         // Case and surrounding whitespace are not a real difference.
         let features = vec![ogd_feature("  Gentzgasse  ", "1180", 0.0)];
-        assert!(pick_ogd_feature(features, "1180", "gentzgasse").is_some());
+        assert!(pick_ogd_feature(features, "1180", "gentzgasse", None).is_some());
     }
 
     #[test]
     fn ogd_pick_handles_an_empty_response() {
-        assert!(pick_ogd_feature(Vec::new(), "1180", "gentzgasse").is_none());
+        assert!(pick_ogd_feature(Vec::new(), "1180", "gentzgasse", None).is_none());
+    }
+
+    /// Same as `ogd_feature`, but with the register's own `Adresse`
+    /// spelling — which is where the matched Stiege is carried.
+    fn ogd_feature_adresse(street: &str, plz: &str, ranking: f64, adresse: &str) -> OgdFeature {
+        OgdFeature {
+            geometry: OgdGeometry { coordinates: [16.3738, 48.2082] },
+            properties: OgdProperties {
+                street_name: Some(street.to_string()),
+                postal_code: Some(plz.to_string()),
+                kategorie: Some("Adresse".to_string()),
+                adresse: Some(adresse.to_string()),
+                ranking: Some(ranking),
+            },
+        }
+    }
+
+    #[test]
+    fn sub_address_query_is_only_built_when_there_is_one() {
+        let sub = |s: &str| text::housenumber_with_sub(s).map(|(q, k)| (q, k));
+        // Stiege, with Tür/Stock past it discarded.
+        assert_eq!(
+            sub("Gentzgasse 129/1/2/23"),
+            Some(("Gentzgasse 129/1".to_string(), "1".to_string()))
+        );
+        // Kleingarten plot, written the way a driver's list writes it.
+        assert_eq!(
+            sub("Großfeldstraße 9/Parz.68"),
+            Some(("Großfeldstraße 9/Parz.68".to_string(), "parz68".to_string()))
+        );
+        // Same plot, space-separated — the register's own spelling, and a
+        // form that used to fall through to the bare housenumber.
+        assert_eq!(
+            sub("Großfeldstraße 9 Parz. 68"),
+            Some(("Großfeldstraße 9/Parz. 68".to_string(), "parz68".to_string()))
+        );
+        // Ranges stay whole, same as in `simplify_housenumber`.
+        assert_eq!(
+            sub("Gutzkowplatz 2-5/3/14"),
+            Some(("Gutzkowplatz 2-5/3".to_string(), "3".to_string()))
+        );
+        // Nothing to ask for.
+        assert_eq!(sub("Gentzgasse 129"), None);
+        assert_eq!(sub("Gentzgasse 129/"), None);
+        assert_eq!(sub("Stephansplatz"), None);
+    }
+
+    fn stop_row(lat: f64, lon: f64, km: Option<f64>) -> StopRow {
+        StopRow {
+            id: 7,
+            kind: "customer".into(),
+            kunde: Some("Fam. Gruber".into()),
+            strasse: Some("Gentzgasse 129".into()),
+            plz: Some("1180".into()),
+            paket: None,
+            notiz: None,
+            lat,
+            lon,
+            order_index: 3,
+            delivered: false,
+            next_leg_km: km,
+            next_leg_min: km,
+            location_precision: None,
+            excluded: false,
+        }
+    }
+
+    #[test]
+    fn a_stop_with_unusable_numbers_stays_serializable() {
+        // The failure this prevents: `serde_json` cannot write NaN or
+        // Infinity, so one bad column would fail the *whole* response and
+        // leave the driver unable to open that route at all, permanently.
+        for (lat, lon) in [(f64::NAN, 16.33), (48.23, f64::INFINITY), (f64::NEG_INFINITY, f64::NAN)] {
+            let out = to_stop_out(stop_row(lat, lon, Some(f64::NAN)));
+            assert!(out.lat.is_finite() && out.lon.is_finite(), "coordinates repaired");
+            // Reported as an approximation, so the row wears the "≈" badge
+            // and offers the manual pin-drop instead of quietly lying.
+            assert_eq!(out.location_precision.as_deref(), Some("district"));
+            assert_eq!(out.next_leg_km, None);
+            assert!(serde_json::to_string(&out).is_ok(), "response must serialize");
+            // The part the driver actually needs is untouched.
+            assert_eq!(out.kunde.as_deref(), Some("Fam. Gruber"));
+            assert_eq!(out.strasse.as_deref(), Some("Gentzgasse 129"));
+        }
+        // A healthy row passes through unchanged, precision included.
+        let ok = to_stop_out(stop_row(48.230569, 16.330485, Some(1.5)));
+        assert_eq!(ok.lat, 48.230569);
+        assert_eq!(ok.next_leg_km, Some(1.5));
+        assert_eq!(ok.location_precision, None);
+    }
+
+    #[test]
+    fn addresses_match_across_punctuation_spellings() {
+        let k = text::address_match_key;
+        // The same door, exported by three different systems.
+        assert_eq!(k("Großfeldstraße 9/Parz.68"), k("Großfeldstraße 9 Parz. 68"));
+        assert_eq!(k("Großfeldstraße 9/Parz.68"), k("Großfeldstraße 9 / Parz. 68"));
+        assert_eq!(k("Gentzgasse 129/1"), k("Gentzgasse 129 / 1"));
+        // The "straße" spellings `normalize_strasse_text` already handled.
+        assert_eq!(k("Hauptstr. 5"), k("Hauptstrasse 5"));
+        // Separators collapse to a space rather than vanishing — deleting
+        // them would make these two the same address.
+        assert_ne!(k("Gentzgasse 129/1"), k("Gentzgasse 12/91"));
+        assert_ne!(k("Gentzgasse 9"), k("Gentzgasse 9a"));
+        // No leading/trailing filler, whatever the input looked like.
+        assert_eq!(k("  Gentzgasse 129.  "), "gentzgasse 129");
+        assert_eq!(k(""), "");
+        assert_eq!(k("///"), "");
+    }
+
+    #[test]
+    fn sub_addresses_compare_across_spellings() {
+        // The whole point: driver's "9/Parz.68" and the register's
+        // "Großfeldstraße 9 Parz. 68" are the same plot.
+        assert_eq!(text::sub_address_of("Großfeldstraße 9 Parz. 68").as_deref(), Some("parz68"));
+        assert_eq!(text::sub_address_key("Parz.68"), "parz68");
+        assert_eq!(text::sub_address_key("Parz. 68"), "parz68");
+        // Stiege.
+        assert_eq!(text::sub_address_of("Gentzgasse 129/1").as_deref(), Some("1"));
+        // A bare housenumber has no sub-address — not an empty one.
+        assert_eq!(text::sub_address_of("Gentzgasse 129"), None);
+        assert_eq!(text::sub_address_of("Gentzgasse 129/"), None);
+        // Different plots must not compare equal.
+        assert_ne!(
+            text::sub_address_of("Großfeldstraße 9 Parz. 8"),
+            text::sub_address_of("Großfeldstraße 9 Parz. 68")
+        );
+    }
+
+    #[test]
+    fn ogd_pick_requires_the_sub_address_it_was_asked_for() {
+        // The register's answer to a plot it doesn't have: a neighbouring
+        // one at a near-zero Ranking. Accepting it would put the pin at the
+        // wrong garden gate and still call it exact.
+        let features = vec![
+            ogd_feature_adresse("Großfeldstraße", "1210", 0.0008, "Großfeldstraße 9 Parz. 8"),
+            ogd_feature_adresse("Großfeldstraße", "1210", 0.0009, "Großfeldstraße 9 Parz. 8A"),
+        ];
+        assert!(pick_ogd_feature(features, "1210", "großfeldstraße", Some("parz68")).is_none());
+
+        // The regression that put a pin 130 m off: the register spells the
+        // plot with a space and an abbreviation dot, and matching on raw
+        // text rejected the *correct* hit.
+        let features = vec![ogd_feature_adresse("Großfeldstraße", "1210", 0.0068, "Großfeldstraße 9 Parz. 68")];
+        let picked = pick_ogd_feature(features, "1210", "großfeldstraße", Some("parz68")).expect("parz 68");
+        assert_eq!(picked.properties.adresse.as_deref(), Some("Großfeldstraße 9 Parz. 68"));
+
+        // Stiege, with a better-ranked sibling in the same response.
+        let features = vec![
+            ogd_feature_adresse("Gentzgasse", "1180", 0.0001, "Gentzgasse 129/2"),
+            ogd_feature_adresse("Gentzgasse", "1180", 0.0022, "Gentzgasse 129/1"),
+        ];
+        let picked = pick_ogd_feature(features, "1180", "gentzgasse", Some("1")).expect("stiege 1");
+        assert_eq!(picked.properties.adresse.as_deref(), Some("Gentzgasse 129/1"));
+
+        // Without a requirement the plain building point is still pickable —
+        // that's the fallback the check above falls through to.
+        let features = vec![ogd_feature_adresse("Gentzgasse", "1180", 0.0003, "Gentzgasse 129")];
+        assert!(pick_ogd_feature(features, "1180", "gentzgasse", None).is_some());
+    }
+
+    #[test]
+    fn a_neighbouring_sub_address_is_reported_as_approximate() {
+        // Asked for plot 68, register offers plot 8: same street, same
+        // housenumber, someone else's gate. Must not read as "exact".
+        assert!(SubCheck::Downgrade("parz68").is_wrong_neighbour(Some("Großfeldstraße 9 Parz. 8")));
+        // Asked for plot 68 and got it.
+        assert!(!SubCheck::Downgrade("parz68").is_wrong_neighbour(Some("Großfeldstraße 9 Parz. 68")));
+        // The building's own point, no sub-address at all: the honest answer
+        // for a Stiege the register doesn't list, and still exact for the
+        // building it does list.
+        assert!(!SubCheck::Downgrade("1").is_wrong_neighbour(Some("Gentzgasse 129")));
+        // An address with no sub-address never downgrades anything.
+        assert!(!SubCheck::Absent.is_wrong_neighbour(Some("Gentzgasse 129/2")));
+        assert!(!SubCheck::Require("1").is_wrong_neighbour(Some("Gentzgasse 129/2")));
     }
 
     #[test]

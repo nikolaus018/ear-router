@@ -173,8 +173,24 @@
   @keyframes slideUp { from { transform: translateY(100%) } to { transform: translateY(0) } }
   @keyframes popIn { from { opacity: 0; transform: scale(.92) } to { opacity: 1; transform: scale(1) } }
 
+  /* Toasts live wherever the controls aren't — see `positionToasts`.
+     Bottom is the normal case: the top of every screen carries the back
+     chevron, "+" and the "..." menu, and a toast parked over those covered
+     the three controls a driver reaches for most. When a sheet is open the
+     roles swap — a sheet is bottom-anchored and its buttons are at the
+     bottom edge — so toasts move up out of its way instead.
+     `--toast-lift` is whatever bottom-anchored UI the current screen puts
+     above the tab bar (the Karte tab's route card); `positionToasts` measures
+     it rather than hardcoding a height that would drift. */
+  #toast-container.toast-bottom { bottom: 0; top: auto; flex-direction: column; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem + var(--toast-lift, 0px) + 0.75rem); }
+  #toast-container.toast-top { top: 0; bottom: auto; flex-direction: column; padding-top: calc(env(safe-area-inset-top) + 0.75rem); }
+
   .toast-enter { animation: toastIn .25s cubic-bezier(.32,.72,0,1); }
   @keyframes toastIn { from { opacity: 0; transform: translateY(-14px) scale(.98) } to { opacity: 1; transform: translateY(0) scale(1) } }
+  /* Same motion, mirrored: a toast that appears at the bottom should rise
+     into place rather than drop in from somewhere off the top of itself. */
+  .toast-enter-up { animation: toastInUp .25s cubic-bezier(.32,.72,0,1); }
+  @keyframes toastInUp { from { opacity: 0; transform: translateY(14px) scale(.98) } to { opacity: 1; transform: translateY(0) scale(1) } }
 
   .spinner { border: 3px solid rgba(120,120,128,.25); border-top-color: #ED1639; border-radius: 50%; width: 22px; height: 22px; animation: spin .7s linear infinite; }
   .spinner-sm { display: inline-block; border: 2px solid rgba(120,120,128,.25); border-top-color: currentColor; border-radius: 50%; width: 13px; height: 13px; animation: spin .7s linear infinite; }
@@ -221,6 +237,14 @@
   .maplibregl-popup-tip { border-top-color: #fff !important; border-bottom-color: #fff !important; }
   .marker-badge { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; font-size: 12px; font-weight: 700; color: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); border: 2px solid #fff; }
   .marker-fixed { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: #fff; color: #48484a; box-shadow: 0 1px 4px rgba(0,0,0,.35); border: 2px solid #48484a; }
+  /* The exact registered position of an address — see the dot marker in
+     `drawRouteOnMap`. `pointer-events: none` because it sits under the
+     badges' tap targets and has nothing of its own to tap. */
+  .marker-dot { width: 9px; height: 9px; border-radius: 50%; background: #ED1639; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.35); pointer-events: none; }
+  /* Basemap switch (Karte ⇄ Luftbild). Text, not an icon: "which view am I
+     about to get" is not something a pictogram says unambiguously, and this
+     control is used mid-delivery with one hand. */
+  .basemap-toggle { width: auto !important; height: auto !important; padding: 6px 9px; font-size: 11px; font-weight: 700; letter-spacing: .02em; color: #1c1c1e; }
 
   .large-title { transition: opacity .15s, transform .15s; }
   .compact-title { transition: opacity .15s; }
@@ -255,7 +279,7 @@
      confirmation that a stop saved, and the only report that it didn't.
      "polite" on the container, with individual error toasts marked
      role="alert" (assertive) so a failure interrupts rather than queues. -->
-<div id="toast-container" role="status" aria-live="polite" class="fixed top-0 left-0 right-0 z-[70] flex flex-col items-center gap-2 px-4 pointer-events-none" style="padding-top: calc(env(safe-area-inset-top) + 0.75rem);"></div>
+<div id="toast-container" role="status" aria-live="polite" class="toast-bottom fixed left-0 right-0 z-[70] flex flex-col items-center gap-2 px-4 pointer-events-none"></div>
 
 <div id="modal-root"></div>
 
@@ -366,7 +390,6 @@ const ICONS = {
   note: icon('<path d="M5 4h14v13.2l-3.8 2.8H5Z"/><path d="M8.5 9h7"/><path d="M8.5 13h7"/>'),
   archive: icon('<path d="M4 5h16v4H4Z"/><path d="M5 9v10h14V9"/><path d="M10 13h4"/>'),
   person: icon('<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7"/>'),
-  copy: icon('<path d="M9 9h9.5v11.5H9Z"/><path d="M15.5 6H5.5v11"/>'),
 };
 
 // A stalled mobile connection never rejects a `fetch` on its own — the
@@ -501,7 +524,51 @@ function hideProgress() {
 
 const MAX_VISIBLE_TOASTS = 3;
 
-function toast(message, type = 'info', durationMs = 3800) {
+// How long each kind stays up. A confirmation of something the driver just
+// did needs only long enough to be seen out of the corner of an eye; a
+// failure has to be read, and possibly acted on. Callers can still pass an
+// explicit duration (the duplicate-package warning asks for nine seconds).
+const TOAST_MS = { success: 2400, info: 3200, warning: 4200, error: 4200 };
+
+// Puts the toast stack where the current screen has no controls.
+//
+// Everything used to appear at the top, which is precisely where the back
+// chevron, "Stopp hinzufügen" and the "..." menu sit on the detail screen,
+// and where the route chips sit on the Karte tab — so every confirmation
+// covered the controls, and (being `pointer-events-auto` with nothing
+// listening) swallowed taps on them for its whole lifetime.
+//
+// Bottom is the default: above the tab bar, and above whatever else the
+// screen anchors down there. When a sheet or dialog is open the bottom is
+// exactly where *its* buttons are, so the stack moves back to the top,
+// which is empty backdrop while a sheet is up.
+function positionToasts() {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const atTop = isModalOpen();
+  container.classList.toggle('toast-top', atTop);
+  container.classList.toggle('toast-bottom', !atTop);
+  // Measured, not hardcoded: the Karte tab's route card is as tall as its
+  // contents make it, and a fixed offset would either overlap it or float
+  // the toasts absurdly high on every other screen.
+  // The card itself, not the wrapper that positions it: the wrapper carries
+  // its own tab-bar padding, and measuring that would count the tab bar
+  // twice and float the toasts half a screen up.
+  const lift = atTop ? 0 : (document.querySelector('[data-bottom-dock]')?.getBoundingClientRect().height || 0);
+  container.style.setProperty('--toast-lift', `${Math.round(lift)}px`);
+  return atTop;
+}
+
+function dismissToast(el) {
+  if (!el.isConnected || el.dataset.leaving) return;
+  el.dataset.leaving = '1';
+  el.style.transition = 'opacity .25s, transform .25s';
+  el.style.opacity = '0';
+  el.style.transform = `translateY(${el.dataset.fromBottom ? '8px' : '-8px'}) scale(.98)`;
+  setTimeout(() => el.remove(), 250);
+}
+
+function toast(message, type = 'info', durationMs = null) {
   const colors = {
     info: 'bg-white/95 text-black',
     error: 'bg-red-50/95 text-red-700',
@@ -513,11 +580,19 @@ function toast(message, type = 'info', durationMs = 3800) {
     warning: 'bg-warn/15 text-warnText',
   };
   const urgent = type === 'error' || type === 'warning';
+  const container = document.getElementById('toast-container');
+  const atTop = positionToasts();
   const el = document.createElement('div');
-  el.className = `toast-enter pointer-events-auto max-w-sm w-full backdrop-blur-xl border border-black/5 ${colors[type] || colors.info} rounded-2xl px-4 py-3 text-sm font-medium shadow-xl`;
+  el.className = `${atTop ? 'toast-enter' : 'toast-enter-up'} pointer-events-auto cursor-pointer select-none max-w-sm w-full backdrop-blur-xl border border-black/5 ${colors[type] || colors.info} rounded-2xl px-4 py-3 text-sm font-medium shadow-xl`;
+  if (!atTop) el.dataset.fromBottom = '1';
   if (urgent) el.setAttribute('role', 'alert');
   el.textContent = message;
-  const container = document.getElementById('toast-container');
+  // A toast still covers *something*, and the driver is the one who knows
+  // whether they've read it — so a tap clears it immediately instead of
+  // leaving them waiting out the timer. This is also why the toast keeps
+  // `pointer-events-auto` rather than being made click-through: the tap
+  // now does something useful.
+  el.addEventListener('click', () => dismissToast(el));
   // A burst of failures (a bulk import that can't reach the server, a
   // handful of quick taps while offline) otherwise stacks messages down
   // the screen until they cover the list underneath — the oldest ones no
@@ -530,7 +605,7 @@ function toast(message, type = 'info', durationMs = 3800) {
   // `toast()`, and `navigator.vibrate()` replaces rather than queues — the
   // generic pulse here would just be invoked and instantly overridden.
   if (navigator.vibrate && type === 'error') navigator.vibrate(30);
-  setTimeout(() => { el.style.transition = 'opacity .3s, transform .3s'; el.style.opacity = '0'; el.style.transform = 'translateY(-8px)'; setTimeout(() => el.remove(), 300); }, durationMs);
+  setTimeout(() => dismissToast(el), durationMs ?? TOAST_MS[type] ?? TOAST_MS.info);
 }
 
 // ---------------------------------------------------------------------
@@ -546,6 +621,7 @@ function closeAlert() {
   onModalEscape = null;
   restoreFocusAfterModal();
   updateHistoryGuard();
+  positionToasts();
 }
 
 // Whatever should happen when Escape is pressed, set by whichever modal is
@@ -637,6 +713,7 @@ function renderAlertShell(root, title, headerHtml, { confirmLabel, cancelLabel, 
       </div>
     </div>
   `;
+  positionToasts();
 }
 
 function confirmSheet({ title, message, confirmLabel = 'Bestätigen', cancelLabel = 'Abbrechen', danger = false }) {
@@ -725,50 +802,6 @@ function mapsUrl(address) {
 // drift apart. Vienna-only app, hence the constant city.
 function stopAddress(s) {
   return `${s.strasse}, ${s.plz} Wien`;
-}
-
-// Copy a stop's address so the driver can paste it into whatever else the
-// day needs it in — a dispatcher chat, a doorbell-code note, a form in
-// another app. Looks the stop up by id rather than taking the text as an
-// inline handler argument: the address is free text, and passing it through
-// an onclick attribute would mean escaping it for HTML *and* for JS.
-//
-// Street and house number only ("Teststraße 3/1/5"), deliberately *not*
-// the `stopAddress` form the maps link uses: the district and "Wien" are
-// the same for every stop this app will ever have, so pasting them into a
-// chat message is noise the driver would just delete again. A geocoder
-// needs the full string; a human on the other end of the paste doesn't.
-//
-// `execCommand('copy')` is kept as a fallback, unlike the JSON sheet's
-// copy button: the async Clipboard API needs a secure context and is
-// missing on older in-app/Android WebViews, and here there's no visible
-// text field the driver could fall back to selecting by hand.
-async function copyStopAddress(stopId) {
-  const stop = state.currentRoute?.stops.find((s) => s.id === stopId);
-  if (!stop) return;
-  const address = stop.strasse;
-  try {
-    await navigator.clipboard.writeText(address);
-    toast('Adresse kopiert ✓', 'success');
-    return;
-  } catch (_) { /* no clipboard permission / insecure context — try below */ }
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = address;
-    // Off-screen but still focusable/selectable — `display:none` or
-    // `hidden` would make the selection (and the copy) a no-op.
-    ta.setAttribute('readonly', '');
-    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
-    document.body.appendChild(ta);
-    ta.select();
-    ta.setSelectionRange(0, address.length);
-    const ok = document.execCommand('copy');
-    ta.remove();
-    if (!ok) throw new Error('execCommand copy refused');
-    toast('Adresse kopiert ✓', 'success');
-  } catch (_) {
-    toast('Kopieren nicht möglich — Adresse bitte manuell übernehmen.', 'error');
-  }
 }
 
 // ---------------------------------------------------------------------
@@ -869,10 +902,35 @@ function rebasePendingDelivered() {
   r.delivered_count = r.stops.filter((s) => s.kind === 'customer' && s.delivered).length;
 }
 
+// Everything this app draws hangs off a route object it got over the wire,
+// and every screen indexes straight into `route.stops`. A response that is
+// the wrong shape — a proxy's HTML error page that happened to parse, a
+// half-written body from a connection cut mid-flight, a future server
+// version that renamed something — would sail past `api()` (which only
+// checks that the body is *JSON*) and blow up inside `render()`, where the
+// driver's only symptom is a screen that goes blank and stays blank.
+//
+// Checked once, here, at the seam where a response becomes app state: the
+// thing that arrived either looks like a route or it's an error, and an
+// error is something the app already knows how to show.
+function isRouteDetail(r) {
+  return !!r
+    && typeof r === 'object'
+    && typeof r.id === 'number'
+    && Array.isArray(r.stops)
+    && r.stops.every((s) => s && typeof s.id === 'number' && typeof s.kind === 'string');
+}
+
+function expectRouteDetail(r) {
+  if (!isRouteDetail(r)) throw apiError('Unerwartete Antwort vom Server.', 'bad_response');
+  return r;
+}
+
 /// Applies a server response to the route in focus, unless it's stale.
 /// Returns whether it was applied, so callers can skip their success
 /// toast/haptic for a reply that changed nothing on screen.
 function applyRouteUpdate(seq, routeId, updated) {
+  expectRouteDetail(updated);
   // The driver moved to a different route while this was in flight.
   if (state.currentRoute?.id !== routeId) return false;
   // A newer reply already landed; this one describes an older world.
@@ -887,6 +945,7 @@ function applyRouteUpdate(seq, routeId, updated) {
 /// Loading a route wholesale (tapping one in a list, the Karte picker,
 /// a resume refresh) supersedes anything in flight for the previous one.
 function adoptRoute(seq, route) {
+  expectRouteDetail(route);
   if (seq < lastAppliedSeq) return false;
   lastAppliedSeq = seq;
   state.currentRoute = route;
@@ -956,12 +1015,23 @@ function openCurrentRouteDetail() {
 // ---------------------------------------------------------------------
 // Data loading
 // ---------------------------------------------------------------------
+// The route *list* gets the same treatment as a route detail, one notch
+// looser: every list render reads `r.id`/`r.name`/`r.status` off each entry,
+// so an entry missing those is dropped rather than allowed to throw halfway
+// through building the screen. A response that isn't a list at all is an
+// error, not an empty list — "no routes yet" and "the server said something
+// unintelligible" must not look identical to the driver.
+function asRouteList(routes) {
+  if (!Array.isArray(routes)) throw apiError('Unerwartete Antwort vom Server.', 'bad_response');
+  return routes.filter((r) => r && typeof r.id === 'number' && typeof r.status === 'string');
+}
+
 async function loadRoutes() {
   try {
     // `|| []` rather than trusting the shape: every list render indexes
     // straight into this, and one malformed response would otherwise take
     // the whole screen down with a TypeError instead of an error message.
-    state.routes = (await api('/routes')) || [];
+    state.routes = asRouteList(await api('/routes'));
     lastRefreshAt = Date.now();
     render();
   } catch (err) {
@@ -1001,7 +1071,7 @@ async function refreshOnResume() {
   refreshInFlight = true;
   const seq = nextSeq();
   try {
-    const routes = (await api('/routes')) || [];
+    const routes = asRouteList(await api('/routes'));
     state.routes = routes;
     lastRefreshAt = Date.now();
     // The route in focus carries the stop list the driver is actually
@@ -1086,7 +1156,21 @@ function addrKey(strasse, plz) {
     .trim().toLowerCase()
     .replace(/\s+/g, ' ')
     .replace(/str\.(\s|$|\d)/g, 'straße$1')
-    .replace(/strasse\b/g, 'straße');
+    .replace(/strasse\b/g, 'straße')
+    // Punctuation collapses to a single space. One door gets written
+    // "Großfeldstraße 9/Parz.68", "Großfeldstraße 9 Parz. 68" or
+    // "Gentzgasse 129 / 1" depending on which list it was copied out of,
+    // and treating those as different addresses is what let a second
+    // package for the same door slip past every duplicate warning in the
+    // app.
+    //
+    // Collapsed to a space rather than removed outright: deleting the
+    // separators would make "Gentzgasse 129/1" and "Gentzgasse 12/91"
+    // the same key. Digits and letters are otherwise untouched, so "9"
+    // and "9a" stay the different houses they are. Mirrors
+    // `address_match_key` on the server.
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
   return `${s}|${String(plz || '').trim()}`;
 }
 
@@ -1195,13 +1279,13 @@ function applyDeliveredDomPatch(stopId) {
   const newNextId = firstOpenIdx >= 0 ? stops[firstOpenIdx].id : null;
   const oldNextRow = document.querySelector('[data-next-stop]');
   const oldNextId = oldNextRow ? Number(oldNextRow.getAttribute('data-stop-row')) : null;
-  const dupCounts = duplicateAddressCounts(stops);
+  const doors = sameDoorGroups(stops);
 
   const patchRow = (id) => {
     const el = document.querySelector(`[data-stop-row="${id}"]`);
     const stop = stops.find(s => s.id === id);
     if (!el || !stop) return false;
-    el.outerHTML = renderCustomerRow(stop, id === newNextId, null, dupCounts.get(addrKey(stop.strasse, stop.plz)));
+    el.outerHTML = renderCustomerRow(stop, id === newNextId, null, doors.get(id)?.length);
     return true;
   };
 
@@ -1272,18 +1356,18 @@ async function toggleDelivered(stopId, delivered) {
   // needs a driver's attention, not just a quiet visual that's easy to
   // have already scrolled past.
   if (delivered) {
-    const key = addrKey(stop.strasse, stop.plz);
-    // Cheap early-out via the same memoized counts the badge uses, before
-    // paying for the `.filter()` scan below — the common case (no
-    // duplicate address at all) never needs to touch `route.stops` again.
-    if ((duplicateAddressCounts(route.stops).get(key) || 1) > 1) {
-      // `.filter()`, not `.find()`: three or more stops can share one
-      // address (rare, but not impossible — a household ordering three
-      // different diet menus), and naming only the first still-open one
-      // would leave the others unmentioned even though the on-row badge
-      // already counts all of them.
+    // The same memoized grouping the on-row badge uses (see
+    // `sameDoorGroups`), so "same door" means one thing everywhere in the
+    // app — including the pair of stops whose addresses are written
+    // differently but resolve to one point.
+    const door = sameDoorGroups(route.stops).get(stopId);
+    if (door && door.length > 1) {
+      // Every still-open sibling, not just the first: three stops can share
+      // one door (a household ordering three different diet menus), and
+      // naming one of them would leave the others unmentioned even though
+      // the on-row badge counts them all.
       const openSiblings = route.stops.filter(
-        (s) => s.id !== stopId && s.kind === 'customer' && !s.delivered && addrKey(s.strasse, s.plz) === key
+        (s) => s.id !== stopId && !s.delivered && door.includes(s.id)
       );
       if (openSiblings.length) {
         const names = openSiblings.map((s) => s.kunde).join(', ');
@@ -1498,6 +1582,9 @@ function renderSheetShell(bodyHtml, { scrollable = true, label = '' } = {}) {
   `;
   onModalEscape = closeSheet;
   updateHistoryGuard();
+  // A toast already on screen has to move too — a sheet opening under one
+  // parked at the bottom would put it straight over the sheet's buttons.
+  positionToasts();
 }
 
 function closeSheet() {
@@ -1510,6 +1597,7 @@ function closeSheet() {
   if (pinDropMap) { pinDropMap.remove(); pinDropMap = null; pinDropMarker = null; }
   restoreFocusAfterModal();
   updateHistoryGuard();
+  positionToasts();
 }
 
 // ---------------------------------------------------------------------
@@ -1746,6 +1834,22 @@ function renderManualForm(stop) {
         <label class="${LABEL}" for="${uid('notiz')}">Notiz</label>
         <textarea id="${uid('notiz')}" name="notiz" rows="2" maxlength="${LIMITS.notiz}" placeholder="z.B. persönlich übergeben, Lift im Hof, Code 1234" class="${FIELD} resize-none">${escapeHtml(stop?.notiz || '')}</textarea>
       </div>
+      ${isEdit ? `
+        <button type="button" onclick="pinDropFromForm(${stop.id})"
+          class="press-98 w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left ${stop.location_precision ? 'bg-warn/15 text-warnText' : 'bg-white text-black/70'}">
+          <span class="flex shrink-0 text-[17px]">${ICONS.mapPin}</span>
+          <span class="flex-1 min-w-0">
+            <span class="block text-[15px] font-medium">Standort auf der Karte setzen</span>
+            <span class="block text-[12px] leading-snug ${stop.location_precision ? '' : 'text-black/50'}">${
+              stop.location_precision === 'district'
+                ? 'Adresse nicht gefunden — der Pin steht nur in der Bezirksmitte.'
+                : stop.location_precision === 'street'
+                ? 'Nur ungefähr — die genaue Hausnummer ist nicht registriert.'
+                : 'Pin von Hand auf das richtige Haus setzen.'
+            }</span>
+          </span>
+        </button>
+      ` : ''}
       <div class="flex gap-3 pt-2">
         ${isEdit ? `<button type="button" onclick="closeSheet(); deleteStop(${stop.id});" class="press-98 px-4 py-3 rounded-xl bg-red-50 text-red-600 font-semibold">Löschen</button>` : ''}
         <button type="submit" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">${isEdit ? 'Speichern' : 'Hinzufügen & Optimieren'}</button>
@@ -1769,6 +1873,42 @@ function renderManualForm(stop) {
     autoFillDistrictFromText(strasseInput, plzSelect);
   });
   strasseInput.addEventListener('blur', () => autoFillDistrictFromText(strasseInput, plzSelect));
+}
+
+// "Standort auf der Karte setzen", from the edit sheet.
+//
+// The pin-drop sheet used to be reachable only when geocoding failed
+// outright, which left the approximate cases — the ones wearing an "≈"
+// badge, where the app already admits it put the pin on the nearest known
+// housenumber or in the middle of the district — with no way to be
+// corrected at all short of rewriting the address text and hoping. This is
+// that way: the same sheet, opened deliberately, centred on where the stop
+// currently sits so the driver is nudging a pin rather than hunting for
+// the district.
+//
+// Reads the *form's* current values rather than the saved stop, so an
+// address the driver has just retyped is what gets saved with the pin,
+// and nothing typed is lost by taking this detour.
+function pinDropFromForm(stopId) {
+  const form = document.getElementById('stop-form');
+  if (!form) return;
+  // Missing only if the route was replaced under this sheet; the pin sheet
+  // still works, it just opens on the district instead of on the old pin.
+  const stop = getStop(stopId);
+  const data = {
+    kunde: form.kunde.value.trim(),
+    strasse: form.strasse.value.trim(),
+    plz: form.plz.value.trim(),
+    paket: form.paket.value.trim(),
+    notiz: form.notiz.value.trim(),
+    stopId,
+  };
+  if (!data.kunde || !data.strasse || !data.plz) {
+    toast('Bitte zuerst Kunde, Straße und Bezirk ausfüllen.', 'error');
+    return;
+  }
+  closeSheet();
+  openPinDropSheet(data, stop ? { lat: stop.lat, lon: stop.lon } : null);
 }
 
 function autoFillDistrictFromText(strasseInput, plzSelect) {
@@ -2199,13 +2339,27 @@ function resetLadeliste() {
 let pinDropMap = null;
 let pinDropMarker = null;
 
-function openPinDropSheet(data) {
+function openPinDropSheet(data, current = null) {
+  // Opened two ways, and they need different words and a different camera:
+  //   - after a geocode failure, where the app has nothing but the district
+  //     and the driver is placing the very first pin; and
+  //   - deliberately from the edit sheet ("Standort auf der Karte setzen"),
+  //     where a pin already exists and is merely in the wrong place, so the
+  //     map opens on it, close enough to see roofs.
+  const correcting = !!(current && Number.isFinite(current.lat) && Number.isFinite(current.lon));
   const district = DISTRICT_BY_PLZ[data.plz];
-  const center = district ? district.center : [48.2082, 16.3738];
+  const center = correcting ? [current.lat, current.lon] : (district ? district.center : [48.2082, 16.3738]);
+  // House level when nudging an existing pin; district level when the app
+  // genuinely does not know where this is and the driver has to find it.
+  const zoom = correcting ? 18 : 15;
+  const heading = correcting ? 'Standort auf der Karte setzen' : 'Adresse nicht automatisch gefunden';
+  const explainer = correcting
+    ? `Tippe auf das richtige Haus für „${escapeHtml(data.strasse)}, ${escapeHtml(data.plz)} Wien" — oder ziehe den Pin dorthin. Mit „Luftbild" siehst du die Dächer.`
+    : `„${escapeHtml(data.strasse)}, ${escapeHtml(data.plz)} Wien" – tippe auf die Karte, um den Standort selbst zu markieren. Der Stopp wird trotzdem hinzugefügt.`;
 
   renderSheetShell(`
-    <h2 class="text-[19px] font-bold mb-1">Adresse nicht automatisch gefunden</h2>
-    <p class="text-sm text-black/60 mb-3">„${escapeHtml(data.strasse)}, ${escapeHtml(data.plz)} Wien" – tippe auf die Karte, um den Standort selbst zu markieren. Der Stopp wird trotzdem hinzugefügt.</p>
+    <h2 class="text-[19px] font-bold mb-1">${heading}</h2>
+    <p class="text-sm text-black/60 mb-3">${explainer}</p>
     <div id="pin-map" class="w-full h-72 rounded-2xl mb-4 overflow-hidden"></div>
     <div class="flex gap-3 pb-2">
       <button type="button" id="pin-back" class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold">Zurück</button>
@@ -2224,7 +2378,7 @@ function openPinDropSheet(data) {
         // that: a *new* sheet has a new #pin-map element with the same id.
         if (document.getElementById('pin-map') !== container) return;
         const centerLngLat = [center[1], center[0]];
-        const map = newMap(container, { center: centerLngLat, zoom: 15 });
+        const map = newMap(container, { center: centerLngLat, zoom });
         pinDropMap = map;
         const marker = new maplibregl.Marker({ color: '#ED1639', draggable: true }).setLngLat(centerLngLat).addTo(map);
         pinDropMarker = marker;
@@ -2413,7 +2567,62 @@ function isDetailShowing() {
 const scrollMemory = new Map();
 let renderedScreenKey = null;
 
+// Every screen in this app is one `innerHTML` assignment, which makes
+// `render()` a single point of failure: anything that throws while building
+// a screen — one unexpected field in one stop — leaves the driver looking at
+// a blank white page, mid-shift, with no button to press and no way back.
+//
+// So a render that throws falls back to a screen that cannot: plain markup,
+// no route data in it at all, and the two ways out that always work. The
+// error is re-thrown into the console for anyone debugging, but never at the
+// driver.
 function render(skipRowAnim) {
+  try {
+    renderScreen(skipRowAnim);
+  } catch (err) {
+    console.error('render failed', err);
+    renderCrashScreen(err);
+  }
+}
+
+function renderCrashScreen(err) {
+  try {
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="flex-1 min-h-0 flex flex-col items-center justify-center px-8 text-center">
+        <span class="text-4xl flex justify-center mb-3 text-warnText">${ICONS.warning}</span>
+        <p class="text-[15px] font-semibold mb-1">Anzeige konnte nicht aufgebaut werden</p>
+        <p class="text-[13px] text-black/55 leading-snug mb-5">Die Daten dieser Ansicht sind unerwartet. Deine Zustellungen sind gespeichert — nichts ist verloren.</p>
+        <div class="flex flex-col gap-2 w-full max-w-[240px]">
+          <button onclick="recoverToOverview()" class="press-98 w-full py-3 rounded-xl bg-brand-600 font-semibold text-white text-sm">Zur Übersicht</button>
+          <button onclick="location.reload()" class="press-98 w-full py-3 rounded-xl bg-white font-semibold text-black/70 text-sm">App neu laden</button>
+        </div>
+      </div>
+    `;
+    hideSplash();
+  } catch (fatal) {
+    // The fallback itself failed (no #app, no ICONS — i.e. the document is
+    // not what this script was written against). One last resort that needs
+    // nothing but `document.body`.
+    console.error('crash screen failed', fatal);
+    document.body.innerHTML = '<div style="padding:2rem;font:15px system-ui;text-align:center">Die App konnte nicht geladen werden.<br><br><a href="/" style="color:#ED1639">Neu laden</a></div>';
+  }
+}
+
+// The way out of a crashed detail screen: drop the route in focus (the most
+// likely source of whatever the render choked on), go back to the list, and
+// refetch it. Deliberately not just `render()` again — re-rendering the same
+// state would reproduce the same crash.
+function recoverToOverview() {
+  state.currentRoute = null;
+  state.detailOrigin = null;
+  state.tab = 'routes';
+  pendingDelivered.clear();
+  pendingDeliveredGen.clear();
+  loadRoutes();
+}
+
+function renderScreen(skipRowAnim) {
   suppressRowAnim = !!skipRowAnim;
   const app = document.getElementById('app');
 
@@ -2469,6 +2678,10 @@ function render(skipRowAnim) {
   mapTabWasVisible = showingMapTab;
 
   updateHistoryGuard();
+  // The Karte tab docks a route card above the tab bar and the other
+  // screens don't, so how far up the toasts have to sit changes with the
+  // screen, not just with what's open over it.
+  positionToasts();
 }
 
 // Screens the driver is no longer able to return to shouldn't keep an
@@ -2574,7 +2787,7 @@ function renderMapTab() {
 
       ${r ? `
         <div class="absolute bottom-0 inset-x-0 z-10 px-4" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
-          <button onclick="openCurrentRouteDetail()" class="press-98 w-full text-left bg-white/90 backdrop-blur-xl rounded-2xl p-4 shadow-lg flex items-center gap-3">
+          <button data-bottom-dock onclick="openCurrentRouteDetail()" class="press-98 w-full text-left bg-white/90 backdrop-blur-xl rounded-2xl p-4 shadow-lg flex items-center gap-3">
             <div class="flex-1 min-w-0">
               <p class="font-semibold truncate">${escapeHtml(r.name)}</p>
               <p class="text-[13px] text-black/50 mt-0.5">${r.delivered_count}/${r.customer_count} zugestellt · ≈ ${r.total_km} km · ${r.total_min} min</p>
@@ -2728,17 +2941,65 @@ function stopKindMeta(stop) {
 // keying a `WeakMap` on the array itself invalidates the cache for free
 // exactly when it should, with nothing to remember to clear by hand.
 const dupCountsCache = new WeakMap();
-function duplicateAddressCounts(stops) {
+
+// Groups the route's customer stops by *door*, returning a Map from each
+// stop's id to the ids of every stop that shares that door (itself
+// included).
+//
+// Two things make two stops one door, and both are needed:
+//   - the same normalized address text (see `addrKey`), which catches the
+//     ordinary case of one address entered twice; and
+//   - the same resolved coordinate, when both stops were located exactly.
+//     Vienna's register reconciles wordings no text normalizer could —
+//     "Gentzgasse 129/1" and "Gentzgasse 129 Stiege 1" resolve to one point
+//     — and the point is the closest thing this app has to "the driver will
+//     be standing in the same place". Approximately located stops are left
+//     out of that half of the test on purpose: several unrelated addresses
+//     can share one district-centre fallback, and calling those one door
+//     would cry wolf.
+// Either relation can bridge a group, so the two are unioned rather than
+// applied in sequence.
+function sameDoorGroups(stops) {
   const cached = dupCountsCache.get(stops);
   if (cached) return cached;
-  const counts = new Map();
-  for (const s of stops) {
-    if (s.kind !== 'customer') continue;
-    const key = addrKey(s.strasse, s.plz);
-    counts.set(key, (counts.get(key) || 0) + 1);
+
+  const customers = stops.filter((s) => s.kind === 'customer');
+  // Union-find. A route caps out around a hundred stops so the cost is
+  // irrelevant, but the correctness isn't: "put each stop in the first
+  // group it matches" gets the wrong answer when a third stop is the one
+  // that reveals two earlier groups are the same door.
+  const parent = new Map(customers.map((s) => [s.id, s.id]));
+  const find = (id) => {
+    let root = id;
+    while (parent.get(root) !== root) root = parent.get(root);
+    while (parent.get(id) !== root) { const next = parent.get(id); parent.set(id, root); id = next; }
+    return root;
+  };
+  const union = (a, b) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  const firstBy = new Map();
+  const link = (key, id) => {
+    if (firstBy.has(key)) union(firstBy.get(key), id);
+    else firstBy.set(key, id);
+  };
+  for (const s of customers) {
+    link('a:' + addrKey(s.strasse, s.plz), s.id);
+    if (!s.location_precision) link('p:' + pointKey(s), s.id);
   }
-  dupCountsCache.set(stops, counts);
-  return counts;
+
+  const byRoot = new Map();
+  for (const s of customers) {
+    const root = find(s.id);
+    if (!byRoot.has(root)) byRoot.set(root, []);
+    byRoot.get(root).push(s.id);
+  }
+  const groups = new Map();
+  for (const s of customers) groups.set(s.id, byRoot.get(find(s.id)));
+
+  dupCountsCache.set(stops, groups);
+  return groups;
 }
 
 // A Start/Lager/Ziel row. Carries the same press handlers a customer row
@@ -2775,7 +3036,6 @@ function renderFixedRow(s, meta, animIndex = null) {
         <p class="text-[13px] ${skipped ? 'text-black/35' : 'text-black/50'}">${escapeHtml(meta.subtitle)}</p>
         ${skipped ? '' : legLabel(s)}
       </div>
-      <button onclick="copyStopAddress(${s.id})" aria-label="Adresse kopieren" title="Adresse kopieren" class="press-95 shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/50'}">${ICONS.copy}</button>
       <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/50'}">${ICONS.mapPin}</a>
     </div>
   `;
@@ -2842,14 +3102,11 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
         ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
         ${legLabel(s, 'mt-1.5')}
       </div>
-      <div class="flex flex-col items-end gap-2 shrink-0 mt-0.5">
+      <div class="flex flex-col gap-2 shrink-0 mt-0.5">
         <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" title="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" class="press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${delivered ? 'bg-success text-white' : 'bg-white border-2 border-black/15 text-black/30'}">
           ${delivered ? ICONS.checkCircleFill : ICONS.circle}
         </button>
-        <div class="flex gap-2">
-          <button onclick="copyStopAddress(${s.id})" aria-label="Adresse kopieren" title="Adresse kopieren" class="press-95 w-10 h-10 rounded-full bg-black/5 text-black/45 flex items-center justify-center text-[17px]">${ICONS.copy}</button>
-          <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
-        </div>
+        <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
       </div>
     </div>
   `;
@@ -2867,6 +3124,229 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
 // ---------------------------------------------------------------------
 const MAP_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 const VIENNA_CENTER = [16.3738, 48.2082]; // [lon, lat]
+
+// ---------------------------------------------------------------------
+// Aerial basemap — "which of these buildings is it, and how do I get in".
+// A vector street map draws Favoritenstraße 45 as a number next to a grey
+// block; the orthophoto shows the driver the actual entrance, the
+// courtyard, the driveway and where a van can stop, which is the thing
+// they're actually trying to work out on arrival.
+//
+// Sources, both free (CC-BY 4.0), no API key, no usage cap:
+//   - `lb` ("Luftbild") from maps.wien.gv.at — Stadt Wien's own aerial
+//     imagery, the same orthophoto the city's public map viewers show,
+//     reflown yearly and served down to zoom 21 (~10cm/px). Vienna-only,
+//     which is the entire operating area of this app.
+//   - `bmaporthofoto30cm` (basemap.at, served from the same host) sits
+//     underneath at a deliberately low `maxzoom`: it covers all of
+//     Austria, so a driver who pans past the city limits sees imagery
+//     instead of an empty grey void, and capping it at zoom 16 means
+//     MapLibre stretches a handful of coarse tiles rather than fetching a
+//     second full-resolution basemap nobody looks at.
+//   - `beschriftung` — Vienna's transparent label overlay (street names,
+//     house numbers) painted on top, because an orthophoto with no labels
+//     is unnavigable. Tops out at zoom 19 and is overzoomed above that.
+//
+// Built as a style object here rather than fetched as a style URL: it's
+// three raster layers with no glyphs, sprites or symbol layers to load, so
+// switching basemaps costs no round-trip at all beyond the tiles.
+// ---------------------------------------------------------------------
+const AERIAL_ATTRIB_WIEN = '© <a href="https://data.wien.gv.at" target="_blank" rel="noopener">Stadt Wien</a>';
+const AERIAL_ATTRIB_AT = '© <a href="https://basemap.at" target="_blank" rel="noopener">basemap.at</a>';
+
+// The WMTS serves 256px tiles and has no `@2x` variant, so on the phones
+// this app actually runs on (devicePixelRatio 2–3) a tile drawn at its
+// nominal size is upscaled and the imagery — house numbers worst of all —
+// goes soft and blocky. Declaring the tiles as *half* their real size makes
+// MapLibre fetch one zoom level deeper for the same ground area and draw it
+// into the same box: same apparent scale, twice the detail, which is exactly
+// what a `@2x` endpoint would have given us. Costs 4× the tile requests, so
+// it's spent only on a retina screen and only on the two layers the driver
+// reads (imagery and labels) — never on the coarse nationwide fallback.
+const RETINA_TILE_SIZE = (typeof devicePixelRatio === 'number' && devicePixelRatio > 1.5) ? 128 : 256;
+
+function aerialStyle() {
+  return {
+    version: 8,
+    sources: {
+      'at-ortho': {
+        type: 'raster',
+        tiles: ['https://maps.wien.gv.at/basemap/bmaporthofoto30cm/normal/google3857/{z}/{y}/{x}.jpeg'],
+        // Only ever seen stretched behind a gap in the Vienna imagery, so
+        // it stays at the native 256 the WMTS actually serves.
+        tileSize: 256,
+        maxzoom: 16,
+        attribution: AERIAL_ATTRIB_AT,
+      },
+      'wien-lb': {
+        type: 'raster',
+        tiles: ['https://maps.wien.gv.at/wmts/lb/farbe/google3857/{z}/{y}/{x}.jpeg'],
+        tileSize: RETINA_TILE_SIZE,
+        maxzoom: 21,
+        attribution: AERIAL_ATTRIB_WIEN,
+      },
+      'wien-labels': {
+        type: 'raster',
+        tiles: ['https://maps.wien.gv.at/wmts/beschriftung/normal/google3857/{z}/{y}/{x}.png'],
+        tileSize: RETINA_TILE_SIZE,
+        // The label overlay stops at 19 where the imagery goes to 21 — above
+        // that MapLibre stretches the deepest tiles it has, which is the
+        // right trade: by then the driver is looking at one roof and needs
+        // the picture, not the lettering.
+        maxzoom: 19,
+        attribution: AERIAL_ATTRIB_WIEN,
+      },
+    },
+    layers: [
+      // Not white: an unloaded tile reads as "imagery still coming" on a
+      // dark ground and as "nothing here" on a light one.
+      { id: 'aerial-bg', type: 'background', paint: { 'background-color': '#3a3a3c' } },
+      { id: 'at-ortho', type: 'raster', source: 'at-ortho' },
+      { id: 'wien-lb', type: 'raster', source: 'wien-lb' },
+      { id: 'wien-labels', type: 'raster', source: 'wien-labels', paint: { 'raster-opacity': 0.95 } },
+    ],
+  };
+}
+
+// Which basemap every map in the app opens with, persisted like the maps-app
+// choice (see `MAPS_PROVIDER_KEY`) — a driver who works off the Luftbild
+// wants it to still be the Luftbild after a reload, not a preference to
+// re-set on every route.
+const BASEMAP_KEY = 'ear_basemap';
+
+function getBasemap() {
+  let saved;
+  try { saved = localStorage.getItem(BASEMAP_KEY); } catch (_) { /* private-browsing storage lockout */ }
+  return saved === 'aerial' ? 'aerial' : 'map';
+}
+
+function setBasemap(mode) {
+  try { localStorage.setItem(BASEMAP_KEY, mode); } catch (_) { /* private-browsing storage lockout */ }
+}
+
+function basemapStyle(mode) {
+  return mode === 'aerial' ? aerialStyle() : MAP_STYLE_URL;
+}
+
+// Swaps one map's basemap in place. `setStyle` throws away every source and
+// layer the app added on top of the old style — the route line and its
+// casing — while DOM markers survive, so the route has to be put back once
+// the new style is actually the active one. `redrawWhenStyleActive` is what
+// works out when that is.
+function applyBasemap(map, mode) {
+  map._earBasemap = mode;
+  map._earStyleReady = false;
+  map._earLastSignature = null;
+  map.setStyle(basemapStyle(mode));
+  redrawWhenStyleActive(map);
+}
+
+// Is the style MapLibre currently reports the one this map was last asked
+// for? Returns its layer ids when it is, `null` while a swap is still in
+// flight. The aerial style's background layer is the marker: it exists in
+// that style and in no other.
+//
+// Read from a single `getStyle()` snapshot rather than from `map.getLayer`,
+// because during a swap those two disagree — the serialized style can still
+// be the outgoing one while `getLayer` already answers about the incoming
+// one, and a check that mixed them declared the route "already drawn" on a
+// style it had never been drawn on.
+function activeStyleLayerIds(map) {
+  let ids;
+  // getStyle() throws rather than returning undefined at some points mid-swap.
+  try { ids = (map.getStyle()?.layers || []).map((l) => l.id); } catch (_) { return null; }
+  if (!ids.length) return null;
+  if (ids.includes('aerial-bg') !== (map._earBasemap === 'aerial')) return null;
+  return ids;
+}
+
+// Redraws the route as soon as the requested style is live, then stops.
+//
+// MapLibre offers no reliable "the style you just set is now active" signal,
+// and both obvious candidates were tried and both left the route line
+// missing after a Karte/Luftbild switch:
+//   - `style.load` fires for a map's *first* style only, never again after
+//     `setStyle`.
+//   - `styledata` fires for a swap exactly once, too early — while
+//     `getStyle()` still describes the outgoing style — and then not again
+//     until the new style's sources settle, which on a stalled connection,
+//     offline, or over an area the imagery doesn't cover may be a long time
+//     or never.
+// So this watches for the style itself, on animation frames — which also
+// means it costs nothing while the app is backgrounded (no frames, no
+// polling) and resumes on its own when the driver comes back. It gives up
+// after ~3 s of frames rather than spinning for the life of the page; a
+// later `styledata` or re-render will call back in anyway.
+function redrawWhenStyleActive(map, framesLeft = 180) {
+  // One watcher at a time per map: a driver toggling back and forth would
+  // otherwise leave a chain running per tap, all racing to draw the same
+  // thing.
+  const token = (map._earStyleWatch || 0) + 1;
+  map._earStyleWatch = token;
+  const step = (left) => {
+    if (map._earStyleWatch !== token) return;
+    const ids = activeStyleLayerIds(map);
+    if (!ids) {
+      if (left > 0) requestAnimationFrame(() => step(left - 1));
+      return;
+    }
+    map._earStyleReady = true;
+    // Already drawn on this style — the common case, since every tile that
+    // lands fires `styledata` and calls back in here.
+    if (ids.includes('route-line')) return;
+    // The route counts as "not yet drawn" whatever the stops look like:
+    // `syncMapTabRoute` skips a redraw when the signature is unchanged, and
+    // from its point of view nothing changed when the basemap did.
+    map._earLastSignature = null;
+    if (mapTabMap === map) syncMapTabRoute();
+  };
+  step(framesLeft);
+}
+
+// Installed once per map at creation. `styledata` is unreliable as *the*
+// swap signal (see above) but it is a perfectly good nudge: it fires on the
+// map's first style and again as sources arrive, and `redrawWhenStyleActive`
+// is idempotent, so handing every tick to it costs nothing and covers any
+// style change that didn't come through `applyBasemap`.
+function mountBasemapRedraw(map) {
+  map._earStyleReady = false;
+  map.on('styledata', () => redrawWhenStyleActive(map));
+  redrawWhenStyleActive(map);
+}
+
+// The in-map basemap switch, added to every map this app creates (see
+// `newMap`) so the pin-drop sheet — where a driver is manually placing a
+// point on a specific roof, and the imagery matters most — gets it on the
+// same terms as the Karte tab. A plain object, not a class: MapLibre's
+// IControl is structural, and `maplibregl` isn't even defined until
+// `ensureMapLibre()` has run.
+function basemapControl() {
+  return {
+    onAdd(map) {
+      const container = elFromHtml('<div class="maplibregl-ctrl maplibregl-ctrl-group"><button type="button" class="basemap-toggle"></button></div>');
+      const btn = container.querySelector('button');
+      const paint = () => {
+        const aerial = map._earBasemap === 'aerial';
+        btn.textContent = aerial ? 'Karte' : 'Luftbild';
+        const label = aerial ? 'Zur Kartenansicht wechseln' : 'Zum Luftbild wechseln — Häuser von oben';
+        btn.title = label;
+        btn.setAttribute('aria-label', label);
+      };
+      btn.addEventListener('click', () => {
+        applyBasemap(map, map._earBasemap === 'aerial' ? 'map' : 'aerial');
+        setBasemap(map._earBasemap);
+        paint();
+      });
+      paint();
+      this._container = container;
+      return container;
+    },
+    onRemove() {
+      this._container?.remove();
+      this._container = null;
+    },
+  };
+}
 
 // Loads MapLibre GL JS/CSS on first actual need (see the comment in
 // <head> where the old blocking <link>/<script> tags used to be) and
@@ -2957,18 +3437,30 @@ function elFromHtml(html) {
 }
 
 function newMap(container, opts) {
+  const basemap = getBasemap();
   const map = new maplibregl.Map({
     container,
-    style: MAP_STYLE_URL,
+    style: basemapStyle(basemap),
     center: opts.center || VIENNA_CENTER,
     zoom: opts.zoom || 12,
+    // The aerial imagery stops at zoom 21 but is worth overzooming a
+    // little: a driver pinching all the way in on one building wants the
+    // biggest possible picture of the entrance, not a hard stop.
+    maxZoom: 22,
     dragRotate: false,
     touchPitch: false,
     pitchWithRotate: false,
     ...opts.extra,
   });
+  map._earBasemap = basemap;
+  mountBasemapRedraw(map);
+  // Whether two badges collide depends on the zoom, so the fan is recomputed
+  // whenever it changes. `zoomend` rather than `zoom`: this walks every
+  // marker, and doing that on each frame of a pinch is work nobody sees.
+  map.on('zoomend', () => relayoutStopMarkers(map));
   map.touchZoomRotate.disableRotation();
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+  map.addControl(basemapControl(), 'top-right');
   const geolocate = new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true, showUserHeading: true });
   map.addControl(geolocate, 'top-right');
 
@@ -3022,8 +3514,100 @@ function routeMarkerSignature(r) {
   return `${r.id}|${r.total_km}|${r.total_min}|${stopsSig}`;
 }
 
+// How far apart (in degrees) two stops' coordinates may be and still get one
+// shared dot rather than two. 1e-5 ° is a bit over a metre: two entries
+// geocoded to the same register point are bitwise identical, but two
+// registered entrances of one building can land a metre apart, where a second
+// dot would be indistinguishable from the first at any zoom — one dot is the
+// honest drawing of "one door, as far as this map can show it". Keeping the
+// badges apart is a separate job, done in screen space (see
+// `relayoutStopMarkers`) because whether two badges collide depends on zoom.
+const SAME_POINT_DECIMALS = 5;
+
+function pointKey(s) {
+  return `${s.lat.toFixed(SAME_POINT_DECIMALS)},${s.lon.toFixed(SAME_POINT_DECIMALS)}`;
+}
+
+// Where a badge sits relative to the point it belongs to, in screen pixels —
+// a marker `offset`, so it holds its distance at every zoom instead of
+// drifting as the map scales.
+//
+// A lone badge gets pushed straight up, clear of the dot marking the door.
+// Badges that would land on top of each other fan out evenly around the
+// group's shared centre.
+function badgeOffset(i, n) {
+  if (n <= 1) return [0, -22];
+  // Grows with the group so five-plus badges don't crowd each other back
+  // into the clump the fan exists to break up.
+  const radius = n <= 4 ? 26 : 26 + (n - 4) * 4;
+  // Starts at 12 o'clock and goes clockwise, so a pair reads as one above
+  // and one below the door rather than an arbitrary diagonal.
+  const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+  return [Math.cos(angle) * radius, Math.sin(angle) * radius];
+}
+
+// How close two badges have to be, on screen, to be fanned apart instead of
+// left to overlap.
+const FAN_CLUSTER_PX = 34;
+// Below street level, only *exactly* coincident stops are fanned. Two
+// entries for one door overlap at every zoom there is and must always be
+// separated; two neighbouring houses only overlap when the map is zoomed
+// out, and pulling their badges apart there would just scatter numbers away
+// from the streets they belong to for no gain — at that zoom the driver is
+// reading the shape of the route, not picking out a door.
+const FAN_MIN_ZOOM = 15;
+
+// Fans out every group of badges that would otherwise sit on top of each
+// other *at the current zoom*.
+//
+// Grouping by identical coordinates (which is what this used to do) only
+// caught two orders at one address. It did nothing for the case that
+// actually hides a stop just as thoroughly: two doors a few metres apart —
+// neighbouring houses, or two Stiegen of one Gemeindebau, 30 m and therefore
+// a couple of pixels apart on an overview. Clustering in projected screen
+// space catches both, and re-running on zoom means a fan opens up as the
+// driver zooms in rather than being decided once at whatever zoom the route
+// happened to be drawn at.
+//
+// The dots never move: each stays on its own registered point, so the
+// precise locations stay readable underneath whatever the badges do.
+function relayoutStopMarkers(map) {
+  const badges = map._earBadges || [];
+  if (!badges.length) return;
+  const radius = map.getZoom() >= FAN_MIN_ZOOM ? FAN_CLUSTER_PX : 0.5;
+  const pts = badges.map((b) => {
+    const p = map.project(b.lngLat);
+    return { b, x: p.x, y: p.y, taken: false };
+  });
+  for (const seed of pts) {
+    if (seed.taken) continue;
+    // `seed` is still untaken here, so it heads its own cluster.
+    const cluster = pts.filter((q) => !q.taken && Math.hypot(q.x - seed.x, q.y - seed.y) <= radius);
+    for (const q of cluster) q.taken = true;
+    const cx = cluster.reduce((sum, q) => sum + q.x, 0) / cluster.length;
+    const cy = cluster.reduce((sum, q) => sum + q.y, 0) / cluster.length;
+    cluster.forEach((q, idx) => {
+      const [fx, fy] = badgeOffset(idx, cluster.length);
+      // Offsets are relative to each marker's *own* coordinate, so the fan
+      // is built around the cluster's centre by first cancelling out how far
+      // this marker sits from it.
+      // Rounded: these end up as CSS translate values, and a whole pixel
+      // renders a 26px badge crisply where 25.9999 makes the browser
+      // resample it.
+      const off = [Math.round(cx - q.x + fx), Math.round(cy - q.y + fy)];
+      q.b.marker.setOffset(off);
+      // The popup follows its badge — anchored to the bare coordinate it
+      // would point at the dot, which for a fanned group is not the badge
+      // the driver just tapped.
+      q.b.popup.setOffset([off[0], off[1] + (off[1] < 0 ? -14 : 14)]);
+    });
+  }
+}
+
 function drawRouteOnMap(map, r, { fit = true } = {}) {
-  if (map.getLayer('route-line')) map.removeLayer('route-line');
+  for (const id of ['route-line', 'route-line-casing']) {
+    if (map.getLayer(id)) map.removeLayer(id);
+  }
   if (map.getSource('route-line')) map.removeSource('route-line');
   // Scoped to this map's own container. A document-wide query would also
   // rip the markers out of any *other* map that happens to be open — the
@@ -3031,30 +3615,59 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
   // two maps are on screen at once rather than a hypothetical.
   (map._earMarkers || []).forEach((m) => m.remove());
   map._earMarkers = [];
+  map._earBadges = [];
 
   map.addSource('route-line', {
     type: 'geojson',
     data: {
       type: 'Feature',
       properties: {},
-      geometry: { type: 'LineString', coordinates: (r.geometry || []).map(([lat, lon]) => [lon, lat]) },
+      geometry: {
+        type: 'LineString',
+        coordinates: (Array.isArray(r.geometry) ? r.geometry : [])
+          .filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+          .map(([lat, lon]) => [lon, lat]),
+      },
     },
+  });
+  // A white casing under the red line. On the vector basemap it's a subtle
+  // outline; on the aerial one it's what keeps the route visible at all,
+  // since red-on-dark-asphalt at 4px is nearly invisible from arm's length
+  // in daylight.
+  map.addLayer({
+    id: 'route-line-casing',
+    type: 'line',
+    source: 'route-line',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': '#fff', 'line-width': 8, 'line-opacity': 0.75 },
   });
   map.addLayer({
     id: 'route-line',
     type: 'line',
     source: 'route-line',
     layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': '#ED1639', 'line-width': 4, 'line-opacity': 0.9 },
+    paint: { 'line-color': '#ED1639', 'line-width': 4, 'line-opacity': 0.95 },
   });
 
   const bounds = new maplibregl.LngLatBounds();
-  if (r.geometry && r.geometry.length > 1) {
-    for (const [lat, lon] of r.geometry) bounds.extend([lon, lat]);
+  if (Array.isArray(r.geometry) && r.geometry.length > 1) {
+    for (const point of r.geometry) {
+      // Same reasoning as the per-stop check below, for the route line's
+      // own polyline: it comes from OSRM rather than from this app, and one
+      // malformed pair must not be able to break the camera.
+      if (!Array.isArray(point)) continue;
+      const [lat, lon] = point;
+      if (Number.isFinite(lat) && Number.isFinite(lon)) bounds.extend([lon, lat]);
+    }
   }
 
   const firstOpenIdx = r.stops.findIndex(s => s.kind === 'customer' && !s.delivered);
   let customerNum = 0;
+
+  // One dot per distinct registered point, and every badge collected for
+  // `relayoutStopMarkers` to fan out once they're all placed.
+  const dotsPlaced = new Set();
+  map._earBadges = [];
 
   r.stops.forEach((s, i) => {
     // A skipped fixed stop isn't on this tour at all: the line doesn't go
@@ -3062,6 +3675,12 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
     // pin the driver has to work out isn't a destination — and letting it
     // into `bounds` would zoom the map out to frame a place nobody visits.
     if (s.excluded) return;
+    // A coordinate that isn't a real number would be drawn as a marker at
+    // an undefined place and, worse, poison `bounds` — one NaN there and
+    // `fitBounds` throws, taking the whole map render down with it rather
+    // than losing one pin. The stop is still in the list, where the driver
+    // can see and fix it; it just isn't on the map.
+    if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) return;
     const meta = stopKindMeta(s);
     let el;
     if (meta) {
@@ -3076,11 +3695,32 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
     el.classList.add('ear-route-marker');
     const precisionNote = s.location_precision === 'street' ? '<br><i>≈ nächstgelegene bekannte Hausnummer</i>'
       : s.location_precision === 'district' ? '<br><i>≈ nur Bezirksmitte, Adresse unbekannt</i>' : '';
-    const popup = new maplibregl.Popup({ offset: 16, closeButton: false }).setHTML(
+    // One dot per address, drawn once for the whole group and marking the
+    // registered position of the door itself. The badge is 26px wide and
+    // would otherwise sit *on* the building it's pointing at, hiding the
+    // one thing the driver zoomed in to look at; offsetting the badge and
+    // leaving a 9px dot behind is what makes "exactly this house, this
+    // entrance" readable on the aerial imagery. `pointer-events: none` (see
+    // the CSS) keeps the dot from swallowing taps meant for the badge.
+    const key = pointKey(s);
+    if (!dotsPlaced.has(key)) {
+      dotsPlaced.add(key);
+      const dot = new maplibregl.Marker({ element: elFromHtml('<div class="marker-dot"></div>'), anchor: 'center' })
+        .setLngLat([s.lon, s.lat])
+        .addTo(map);
+      map._earMarkers.push(dot);
+    }
+
+    const popup = new maplibregl.Popup({ offset: [0, -36], closeButton: false }).setHTML(
       `<b>${escapeHtml(meta ? meta.title : s.kunde)}</b><br>${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien${precisionNote}`
     );
-    const marker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([s.lon, s.lat]).setPopup(popup).addTo(map);
+
+    const marker = new maplibregl.Marker({ element: el, anchor: 'center', offset: [0, -22] })
+      .setLngLat([s.lon, s.lat])
+      .setPopup(popup)
+      .addTo(map);
     map._earMarkers.push(marker);
+    map._earBadges.push({ marker, popup, lngLat: [s.lon, s.lat] });
     bounds.extend([s.lon, s.lat]);
   });
 
@@ -3089,12 +3729,17 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
   // update) must leave the camera exactly where the driver put it —
   // re-fitting on every redraw would silently undo their zoom/pan each
   // time, which is maddening while actually using the map to navigate.
-  if (!fit) return;
-  if (!bounds.isEmpty()) {
-    map.fitBounds(bounds, { padding: 48, maxZoom: 16, duration: 0 });
-  } else {
-    map.jumpTo({ center: VIENNA_CENTER, zoom: 12 });
+  if (fit) {
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, { padding: 48, maxZoom: 16, duration: 0 });
+    } else {
+      map.jumpTo({ center: VIENNA_CENTER, zoom: 12 });
+    }
   }
+  // Last, after any camera move: which badges collide is a function of the
+  // zoom this ends on, not the one the map happened to be at when the
+  // redraw started.
+  relayoutStopMarkers(map);
 }
 
 // ---------------------------------------------------------------------
@@ -3160,7 +3805,10 @@ function initMapTabMap() {
     const resizeObserver = new ResizeObserver(() => map.resize());
     resizeObserver.observe(mapTabEl);
     map.once('remove', () => resizeObserver.disconnect());
-    map.on('load', () => { if (mapTabMap === map) syncMapTabRoute(); });
+    // No 'load' handler for the first draw: `mountBasemapRedraw`'s
+    // `style.load` covers it, earlier (layers only need a parsed style, not
+    // loaded tiles) and on exactly the same path as every later basemap
+    // swap — one code path, not two that can disagree.
     return;
   }
 
@@ -3171,37 +3819,19 @@ function initMapTabMap() {
   syncMapTabRoute();
 }
 
-// One outstanding "try again once more of the style has landed" listener at
-// a time. render() can call syncMapTabRoute() many times while the map is
-// still coming up, and without this each of those would arm its own
-// `styledata` handler — every one of which fires on the same event and arms
-// another.
-let mapTabSyncPending = false;
-
 function syncMapTabRoute() {
   const map = mapTabMap;
   const r = state.currentRoute;
   if (!map || !r) return;
-  // Before the style has finished loading there are no sources or layers to
-  // add to. The map's own 'load' handler calls back here — but `load` is not
-  // a guarantee that `isStyleLoaded()` is true: it also requires every
-  // *source* to have its tiles, which on a van's connection can still be in
-  // flight when `load` fires. Simply returning there left the Karte tab
-  // showing a bare basemap with no route line and no stop markers, and
-  // nothing scheduled to fix it — it only came right if some unrelated
-  // re-render happened to call back in. `styledata` fires again each time
-  // more of the style and its sources arrive, so re-arming on it turns that
-  // dead end into a short wait.
-  if (!map.isStyleLoaded()) {
-    if (!mapTabSyncPending) {
-      mapTabSyncPending = true;
-      map.once('styledata', () => {
-        mapTabSyncPending = false;
-        if (mapTabMap === map) syncMapTabRoute();
-      });
-    }
-    return;
-  }
+  // Nothing to add sources or layers to until the style is parsed. Waiting
+  // on `isStyleLoaded()` here (which is what this used to do) waits for far
+  // more than that — it also wants every *source* to have its tiles, which
+  // on a van's connection can be in flight for a long time, and re-arming
+  // on `styledata` to find out was both racy and easy to dead-end. The
+  // `style.load` handler in `mountBasemapRedraw` sets this flag at exactly
+  // the moment layers can be added, and calls back here itself, so a plain
+  // early return is now the whole of the waiting logic.
+  if (!map._earStyleReady) return;
   // Skip the teardown/rebuild entirely when nothing that's actually drawn
   // has changed since the last time this map was synced — `render()` calls
   // this on every single re-render while the Karte tab is showing (see its
@@ -3239,7 +3869,7 @@ function renderRouteDetail() {
   const stops = r.stops;
   const firstOpenIdx = stops.findIndex(s => s.kind === 'customer' && !s.delivered);
   const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
-  const dupCounts = duplicateAddressCounts(stops);
+  const doors = sameDoorGroups(stops);
 
   const stopRow = (s, i) => {
     const isNext = i === firstOpenIdx;
@@ -3247,7 +3877,7 @@ function renderRouteDetail() {
 
     if (meta) return renderFixedRow(s, meta, suppressRowAnim ? null : i);
 
-    return renderCustomerRow(s, isNext, suppressRowAnim ? null : i, dupCounts.get(addrKey(s.strasse, s.plz)));
+    return renderCustomerRow(s, isNext, suppressRowAnim ? null : i, doors.get(s.id)?.length);
   };
 
   return `
@@ -3439,6 +4069,37 @@ function reloadForUpdateIfPending() {
 // already-visited page load instantly from cache and still work with no
 // connection at all. See /sw.js (served straight off disk the same way as
 // this file — src/main.rs).
+// ---------------------------------------------------------------------
+// Last-resort reporting.
+//
+// Everything this app does deliberately has its own error path — `api()`
+// turns network failures into sentences, every action's `catch` toasts, and
+// `render()` has a fallback screen. What's left is what nobody planned for:
+// a listener that throws, a promise nobody awaited, a browser API behaving
+// differently than expected. Those used to be entirely silent, which for a
+// driver means "I tapped it and nothing happened" with nothing to report to
+// anyone afterwards.
+//
+// Deliberately quiet about detail (a stack trace helps no one in a van) and
+// rate-limited, because the failure mode that matters here is a loop: one
+// broken thing firing every frame must not paper the screen in toasts.
+let lastUnexpectedErrorAt = 0;
+function reportUnexpectedError(what, detail) {
+  console.error(what, detail);
+  const now = Date.now();
+  if (now - lastUnexpectedErrorAt < 10000) return;
+  lastUnexpectedErrorAt = now;
+  toast('Unerwarteter Fehler. Wenn etwas fehlt, bitte die App neu laden.', 'error');
+}
+window.addEventListener('error', (e) => reportUnexpectedError('uncaught error', e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => {
+  // An aborted request is not a fault: `api()` aborts in-flight fetches on
+  // timeout and on deliberate cancel, and both are already reported by
+  // whoever started them.
+  if (e.reason?.code === 'aborted' || e.reason?.name === 'AbortError') return;
+  reportUnexpectedError('unhandled rejection', e.reason);
+});
+
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
