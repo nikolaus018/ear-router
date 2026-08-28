@@ -366,6 +366,7 @@ const ICONS = {
   note: icon('<path d="M5 4h14v13.2l-3.8 2.8H5Z"/><path d="M8.5 9h7"/><path d="M8.5 13h7"/>'),
   archive: icon('<path d="M4 5h16v4H4Z"/><path d="M5 9v10h14V9"/><path d="M10 13h4"/>'),
   person: icon('<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7"/>'),
+  copy: icon('<path d="M9 9h9.5v11.5H9Z"/><path d="M15.5 6H5.5v11"/>'),
 };
 
 // A stalled mobile connection never rejects a `fetch` on its own — the
@@ -717,6 +718,51 @@ function setMapsProvider(id) {
 
 function mapsUrl(address) {
   return MAPS_PROVIDERS[getMapsProvider()].url(address || '');
+}
+
+// The one place the human-readable form of a stop's address is assembled,
+// so the maps deep-link, the copy button and any future consumer can never
+// drift apart. Vienna-only app, hence the constant city.
+function stopAddress(s) {
+  return `${s.strasse}, ${s.plz} Wien`;
+}
+
+// Copy a stop's address so the driver can paste it into whatever else the
+// day needs it in — a dispatcher chat, a doorbell-code note, a form in
+// another app. Looks the stop up by id rather than taking the text as an
+// inline handler argument: the address is free text, and passing it through
+// an onclick attribute would mean escaping it for HTML *and* for JS.
+//
+// `execCommand('copy')` is kept as a fallback, unlike the JSON sheet's
+// copy button: the async Clipboard API needs a secure context and is
+// missing on older in-app/Android WebViews, and here there's no visible
+// text field the driver could fall back to selecting by hand.
+async function copyStopAddress(stopId) {
+  const stop = state.currentRoute?.stops.find((s) => s.id === stopId);
+  if (!stop) return;
+  const address = stopAddress(stop);
+  try {
+    await navigator.clipboard.writeText(address);
+    toast('Adresse kopiert ✓', 'success');
+    return;
+  } catch (_) { /* no clipboard permission / insecure context — try below */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = address;
+    // Off-screen but still focusable/selectable — `display:none` or
+    // `hidden` would make the selection (and the copy) a no-op.
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, address.length);
+    const ok = document.execCommand('copy');
+    ta.remove();
+    if (!ok) throw new Error('execCommand copy refused');
+    toast('Adresse kopiert ✓', 'success');
+  } catch (_) {
+    toast('Kopieren nicht möglich — Adresse bitte manuell übernehmen.', 'error');
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -2695,7 +2741,7 @@ function duplicateAddressCounts(stops) {
 // A skipped stop is dimmed and labelled rather than hidden: the row is the
 // only way back to the switch that skipped it.
 function renderFixedRow(s, meta, animIndex = null) {
-  const url = mapsUrl(`${s.strasse}, ${s.plz} Wien`);
+  const url = mapsUrl(stopAddress(s));
   const skipped = !!s.excluded;
   const animClass = animIndex === null ? '' : 'row-enter ';
   const animStyle = animIndex === null ? '' : ` style="animation-delay:${animIndex * 25}ms"`;
@@ -2723,6 +2769,7 @@ function renderFixedRow(s, meta, animIndex = null) {
         <p class="text-[13px] ${skipped ? 'text-black/35' : 'text-black/50'}">${escapeHtml(meta.subtitle)}</p>
         ${skipped ? '' : legLabel(s)}
       </div>
+      <button onclick="copyStopAddress(${s.id})" aria-label="Adresse kopieren" title="Adresse kopieren" class="press-95 shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/50'}">${ICONS.copy}</button>
       <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/50'}">${ICONS.mapPin}</a>
     </div>
   `;
@@ -2737,8 +2784,7 @@ function renderFixedRow(s, meta, animIndex = null) {
 // replaying it would be the "list just reloaded" flicker this whole patch
 // path exists to avoid.
 function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
-  const address = `${s.strasse}, ${s.plz} Wien`;
-  const url = mapsUrl(address);
+  const url = mapsUrl(stopAddress(s));
   const delivered = s.delivered;
   const precisionBadge = s.location_precision === 'street'
     ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Genaue Hausnummer nicht gefunden — nächstgelegene bekannte Adresse auf der Straße verwendet.">≈ Straße</span>`
@@ -2790,11 +2836,14 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
         ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
         ${legLabel(s, 'mt-1.5')}
       </div>
-      <div class="flex flex-col gap-2 shrink-0 mt-0.5">
+      <div class="flex flex-col items-end gap-2 shrink-0 mt-0.5">
         <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" title="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" class="press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${delivered ? 'bg-success text-white' : 'bg-white border-2 border-black/15 text-black/30'}">
           ${delivered ? ICONS.checkCircleFill : ICONS.circle}
         </button>
-        <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
+        <div class="flex gap-2">
+          <button onclick="copyStopAddress(${s.id})" aria-label="Adresse kopieren" title="Adresse kopieren" class="press-95 w-10 h-10 rounded-full bg-black/5 text-black/45 flex items-center justify-center text-[17px]">${ICONS.copy}</button>
+          <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
+        </div>
       </div>
     </div>
   `;
