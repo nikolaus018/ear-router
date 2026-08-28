@@ -772,10 +772,26 @@ function promptSheet({ title, message, placeholder = '', initial = '', confirmLa
 // instead of just centering the map on the address.
 // ---------------------------------------------------------------------
 const MAPS_PROVIDER_KEY = 'ear_maps_provider';
+
+// Each provider takes a destination two ways, because this app has two
+// genuinely different kinds of destination to hand it (see `navUrl`):
+// a point, or a string to look up.
 const MAPS_PROVIDERS = {
-  waze: { label: 'Waze', url: (addr) => `https://waze.com/ul?q=${encodeURIComponent(addr)}&navigate=yes` },
-  apple: { label: 'Apple Maps', url: (addr) => `https://maps.apple.com/?daddr=${encodeURIComponent(addr)}&dirflg=d` },
-  google: { label: 'Google Maps', url: (addr) => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}&travelmode=driving` },
+  waze: {
+    label: 'Waze',
+    address: (addr) => `https://waze.com/ul?q=${encodeURIComponent(addr)}&navigate=yes`,
+    point: (lat, lon) => `https://waze.com/ul?ll=${lat}%2C${lon}&navigate=yes`,
+  },
+  apple: {
+    label: 'Apple Maps',
+    address: (addr) => `https://maps.apple.com/?daddr=${encodeURIComponent(addr)}&dirflg=d`,
+    point: (lat, lon) => `https://maps.apple.com/?daddr=${lat}%2C${lon}&dirflg=d`,
+  },
+  google: {
+    label: 'Google Maps',
+    address: (addr) => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}&travelmode=driving`,
+    point: (lat, lon) => `https://www.google.com/maps/dir/?api=1&destination=${lat}%2C${lon}&travelmode=driving`,
+  },
 };
 
 function getMapsProvider() {
@@ -793,8 +809,37 @@ function setMapsProvider(id) {
   try { localStorage.setItem(MAPS_PROVIDER_KEY, id); } catch (_) { /* private-browsing storage lockout */ }
 }
 
-function mapsUrl(address) {
-  return MAPS_PROVIDERS[getMapsProvider()].url(address || '');
+// How precisely we know a point before it's worth sending instead of the
+// address text. Six decimal places is ~10 cm — far past what any navigation
+// app resolves, and short enough to keep the URL readable.
+const NAV_COORD_DECIMALS = 6;
+
+// The "In Maps öffnen" link for one stop.
+//
+// This used to always hand over the address text and let the navigation app
+// geocode it. That made sense while this app's own coordinates came from
+// generic geocoding — but they don't any more. A stop resolved against
+// Vienna's address register is pinned to the registered position of *that*
+// door, including the ones no navigation app can find: Waze has no
+// Kleingarten-Parzellen and no Stiegen, so handing it
+// "Großfeldstraße 9/Parz.68" gets the driver dropped at the colony gate,
+// 130 m and a walk from the plot. There's precedent for the text failing
+// outright, too — the warehouse was once stored as "Oberlaa Straße 298",
+// which this app displayed happily and the phone's Maps app searched for in
+// vain.
+//
+// So an exactly-known stop is sent as a point, which is the whole value of
+// having resolved it. An approximate one (the "≈" badge — nearest known
+// housenumber, or district centre) is sent as text on purpose: our point is
+// an admitted guess there, and driving someone confidently to a guess is
+// worse than letting their navigation app take its own shot at the address.
+function navUrl(stop) {
+  const provider = MAPS_PROVIDERS[getMapsProvider()];
+  const exact = !stop.location_precision && Number.isFinite(stop.lat) && Number.isFinite(stop.lon);
+  if (exact) {
+    return provider.point(stop.lat.toFixed(NAV_COORD_DECIMALS), stop.lon.toFixed(NAV_COORD_DECIMALS));
+  }
+  return provider.address(stopAddress(stop));
 }
 
 // The one place the human-readable form of a stop's address is assembled,
@@ -3008,7 +3053,7 @@ function sameDoorGroups(stops) {
 // A skipped stop is dimmed and labelled rather than hidden: the row is the
 // only way back to the switch that skipped it.
 function renderFixedRow(s, meta, animIndex = null) {
-  const url = mapsUrl(stopAddress(s));
+  const url = navUrl(s);
   const skipped = !!s.excluded;
   const animClass = animIndex === null ? '' : 'row-enter ';
   const animStyle = animIndex === null ? '' : ` style="animation-delay:${animIndex * 25}ms"`;
@@ -3050,7 +3095,7 @@ function renderFixedRow(s, meta, animIndex = null) {
 // replaying it would be the "list just reloaded" flicker this whole patch
 // path exists to avoid.
 function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
-  const url = mapsUrl(stopAddress(s));
+  const url = navUrl(s);
   const delivered = s.delivered;
   const precisionBadge = s.location_precision === 'street'
     ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Genaue Hausnummer nicht gefunden — nächstgelegene bekannte Adresse auf der Straße verwendet.">≈ Straße</span>`
@@ -3154,64 +3199,120 @@ const VIENNA_CENTER = [16.3738, 48.2082]; // [lon, lat]
 const AERIAL_ATTRIB_WIEN = '© <a href="https://data.wien.gv.at" target="_blank" rel="noopener">Stadt Wien</a>';
 const AERIAL_ATTRIB_AT = '© <a href="https://basemap.at" target="_blank" rel="noopener">basemap.at</a>';
 
-// The WMTS serves 256px tiles and has no `@2x` variant, so on the phones
-// this app actually runs on (devicePixelRatio 2–3) a tile drawn at its
-// nominal size is upscaled and the imagery — house numbers worst of all —
-// goes soft and blocky. Declaring the tiles as *half* their real size makes
+// The WMTS serves 256px tiles and has no `@2x` variant, so on a phone
+// (devicePixelRatio 2–3) a tile drawn at its nominal size is upscaled and
+// goes soft. Declaring a source's tiles as *half* their real size makes
 // MapLibre fetch one zoom level deeper for the same ground area and draw it
-// into the same box: same apparent scale, twice the detail, which is exactly
-// what a `@2x` endpoint would have given us. Costs 4× the tile requests, so
-// it's spent only on a retina screen and only on the two layers the driver
-// reads (imagery and labels) — never on the coarse nationwide fallback.
-const RETINA_TILE_SIZE = (typeof devicePixelRatio === 'number' && devicePixelRatio > 1.5) ? 128 : 256;
+// into the same box: same apparent scale, twice the detail — what a `@2x`
+// endpoint would have given us.
+//
+// It also costs FOUR TIMES the tiles, and that bill is only worth paying
+// where the tiles are small. Applied to the imagery it made the Luftbild
+// crawl in over a mobile connection, one square at a time, because those
+// are 8–20 KB JPEGs and a screenful of them is megabytes. Applied to the
+// label overlay it costs almost nothing — those are mostly-transparent PNGs
+// of a few hundred bytes to a few KB — and the labels were the part that
+// actually looked pixelated, since text shows upscaling far more than an
+// aerial photo does.
+//
+// So: labels get the retina treatment, imagery stays native. See the
+// sources in `aerialStyle`.
+const RETINA_LABEL_TILE_SIZE = (typeof devicePixelRatio === 'number' && devicePixelRatio > 1.5) ? 128 : 256;
 
-function aerialStyle() {
-  return {
-    version: 8,
-    sources: {
-      'at-ortho': {
-        type: 'raster',
-        tiles: ['https://maps.wien.gv.at/basemap/bmaporthofoto30cm/normal/google3857/{z}/{y}/{x}.jpeg'],
-        // Only ever seen stretched behind a gap in the Vienna imagery, so
-        // it stays at the native 256 the WMTS actually serves.
-        tileSize: 256,
-        maxzoom: 16,
-        attribution: AERIAL_ATTRIB_AT,
-      },
-      'wien-lb': {
-        type: 'raster',
-        tiles: ['https://maps.wien.gv.at/wmts/lb/farbe/google3857/{z}/{y}/{x}.jpeg'],
-        tileSize: RETINA_TILE_SIZE,
-        maxzoom: 21,
-        attribution: AERIAL_ATTRIB_WIEN,
-      },
-      'wien-labels': {
-        type: 'raster',
-        tiles: ['https://maps.wien.gv.at/wmts/beschriftung/normal/google3857/{z}/{y}/{x}.png'],
-        tileSize: RETINA_TILE_SIZE,
-        // The label overlay stops at 19 where the imagery goes to 21 — above
-        // that MapLibre stretches the deepest tiles it has, which is the
-        // right trade: by then the driver is looking at one roof and needs
-        // the picture, not the lettering.
-        maxzoom: 19,
-        attribution: AERIAL_ATTRIB_WIEN,
-      },
+// The aerial layers, added *on top of* the vector basemap rather than
+// swapped in as a style of their own.
+//
+// This started out as two styles and a `setStyle` between them, and that is
+// what produced the blank map: `setStyle` with a style *object* parses it
+// inside an animation frame, so anything that stalls frames — a
+// backgrounded tab, a phone throttling a busy page — leaves the map holding
+// neither style, with no error to catch. Diffing made it worse, a lost
+// WebGL context made it worse again, and every swap also threw away the
+// route line and every tile already on screen.
+//
+// Adding layers to the live style instead has none of those failure modes.
+// Switching basemap is three `setLayoutProperty` calls: instant, no
+// reload, no re-fetch of tiles already in memory, and the route line and
+// markers are never touched because the style they live in never changes.
+//
+// The vector map is deliberately left *visible underneath* the imagery
+// rather than hidden. Aerial JPEGs are opaque, so it costs nothing to look
+// at — and it means that if the imagery can't load at all (no signal, the
+// city's tile server down, a Vienna gap), the driver sees the street map
+// through the hole instead of an empty grey screen. There is no state this
+// map can get into where nothing is drawn.
+function mountAerialLayers(map) {
+  if (map.getSource('wien-lb')) return true;
+  const sources = {
+    'at-ortho': {
+      type: 'raster',
+      tiles: ['https://maps.wien.gv.at/basemap/bmaporthofoto30cm/normal/google3857/{z}/{y}/{x}.jpeg'],
+      tileSize: 256,
+      // Deliberately shallow. This exists only so panning past the city
+      // limits shows ground rather than a void; every zoom level it can
+      // serve is one where it loads a full screenful of tiles underneath
+      // the Vienna imagery that completely covers it — paying twice for one
+      // view. Capped here, the whole city is a handful of stretched tiles.
+      maxzoom: 12,
+      attribution: AERIAL_ATTRIB_AT,
     },
-    layers: [
-      // Not white: an unloaded tile reads as "imagery still coming" on a
-      // dark ground and as "nothing here" on a light one.
-      { id: 'aerial-bg', type: 'background', paint: { 'background-color': '#3a3a3c' } },
-      { id: 'at-ortho', type: 'raster', source: 'at-ortho' },
-      { id: 'wien-lb', type: 'raster', source: 'wien-lb' },
-      { id: 'wien-labels', type: 'raster', source: 'wien-labels', paint: { 'raster-opacity': 0.95 } },
-    ],
+    'wien-lb': {
+      type: 'raster',
+      tiles: ['https://maps.wien.gv.at/wmts/lb/farbe/google3857/{z}/{y}/{x}.jpeg'],
+      // Native size — see `RETINA_LABEL_TILE_SIZE`. Runs to zoom 21
+      // (~10 cm/px), so a driver who wants more detail pinches in and gets
+      // it natively instead of every screen paying for four times the tiles.
+      tileSize: 256,
+      maxzoom: 21,
+      attribution: AERIAL_ATTRIB_WIEN,
+    },
+    'wien-labels': {
+      type: 'raster',
+      tiles: ['https://maps.wien.gv.at/wmts/beschriftung/normal/google3857/{z}/{y}/{x}.png'],
+      tileSize: RETINA_LABEL_TILE_SIZE,
+      // The label overlay stops at 19 where the imagery goes to 21 — above
+      // that MapLibre stretches the deepest tiles it has, which is the right
+      // trade: by then the driver is looking at one roof and needs the
+      // picture, not the lettering.
+      maxzoom: 19,
+      attribution: AERIAL_ATTRIB_WIEN,
+    },
   };
+  try {
+    for (const [id, source] of Object.entries(sources)) {
+      if (!map.getSource(id)) map.addSource(id, source);
+    }
+    // Under the route line if it's already drawn, so switching to the
+    // Luftbild can never bury the route under the imagery.
+    const before = map.getLayer('route-line-casing') ? 'route-line-casing' : undefined;
+    const visibility = map._earBasemap === 'aerial' ? 'visible' : 'none';
+    for (const id of AERIAL_LAYER_IDS) {
+      if (map.getLayer(id)) continue;
+      map.addLayer({
+        id,
+        type: 'raster',
+        source: id,
+        layout: { visibility },
+        ...(id === 'wien-labels' ? { paint: { 'raster-opacity': 0.95 } } : {}),
+      }, before);
+    }
+    return true;
+  } catch (err) {
+    // A failure here costs the Luftbild, not the map: the vector basemap,
+    // the route and the markers are all still there.
+    console.warn('aerial layers could not be added', err);
+    return false;
+  }
 }
 
-// Which basemap every map in the app opens with, persisted like the maps-app
-// choice (see `MAPS_PROVIDER_KEY`) — a driver who works off the Luftbild
-// wants it to still be the Luftbild after a reload, not a preference to
-// re-set on every route.
+// Bottom-to-top: the nationwide fallback, Vienna's imagery over it, labels
+// on top of both.
+const AERIAL_LAYER_IDS = ['at-ortho', 'wien-lb', 'wien-labels'];
+
+// Which basemap every map in the app opens with, persisted like the
+// maps-app choice (see `MAPS_PROVIDER_KEY`) — a driver who works off the
+// Luftbild wants it to still be the Luftbild after a reload, not a
+// preference to re-set on every route.
 const BASEMAP_KEY = 'ear_basemap';
 
 function getBasemap() {
@@ -3224,102 +3325,76 @@ function setBasemap(mode) {
   try { localStorage.setItem(BASEMAP_KEY, mode); } catch (_) { /* private-browsing storage lockout */ }
 }
 
-function basemapStyle(mode) {
-  return mode === 'aerial' ? aerialStyle() : MAP_STYLE_URL;
-}
-
-// Swaps one map's basemap in place. `setStyle` throws away every source and
-// layer the app added on top of the old style — the route line and its
-// casing — while DOM markers survive, so the route has to be put back once
-// the new style is actually the active one. `redrawWhenStyleActive` is what
-// works out when that is.
+// Switching basemap: three visibility flags. Nothing is fetched, no style is
+// replaced, the route line and markers are not touched, and tiles already in
+// memory stay there — so switching back is instant rather than a reload.
 function applyBasemap(map, mode) {
   map._earBasemap = mode;
+  // Late-mounted if the style wasn't ready when the map was built.
+  if (!mountAerialLayers(map)) return;
+  const visibility = mode === 'aerial' ? 'visible' : 'none';
+  for (const id of AERIAL_LAYER_IDS) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility);
+  }
+}
+
+// Runs whenever the map's style changes state. There is only ever one style
+// now (the vector basemap; the aerial layers live inside it), so this has
+// two jobs: put the aerial layers in as soon as there is a style to put them
+// in, and draw the route once.
+//
+// `styledata` rather than `style.load`: the latter fires only for a map's
+// first style and MapLibre gives no other reliable "ready" signal. Readiness
+// is "the style is parsed" (it has layers) rather than `isStyleLoaded()`,
+// which additionally waits for every source's tiles — on a van's connection
+// that can be a long time, and the route line has no reason to wait for
+// imagery.
+function mountBasemapRedraw(map) {
   map._earStyleReady = false;
-  map._earLastSignature = null;
-  map.setStyle(basemapStyle(mode));
-  redrawWhenStyleActive(map);
-}
-
-// Is the style MapLibre currently reports the one this map was last asked
-// for? Returns its layer ids when it is, `null` while a swap is still in
-// flight. The aerial style's background layer is the marker: it exists in
-// that style and in no other.
-//
-// Read from a single `getStyle()` snapshot rather than from `map.getLayer`,
-// because during a swap those two disagree — the serialized style can still
-// be the outgoing one while `getLayer` already answers about the incoming
-// one, and a check that mixed them declared the route "already drawn" on a
-// style it had never been drawn on.
-function activeStyleLayerIds(map) {
-  let ids;
-  // getStyle() throws rather than returning undefined at some points mid-swap.
-  try { ids = (map.getStyle()?.layers || []).map((l) => l.id); } catch (_) { return null; }
-  if (!ids.length) return null;
-  if (ids.includes('aerial-bg') !== (map._earBasemap === 'aerial')) return null;
-  return ids;
-}
-
-// Redraws the route as soon as the requested style is live, then stops.
-//
-// MapLibre offers no reliable "the style you just set is now active" signal,
-// and both obvious candidates were tried and both left the route line
-// missing after a Karte/Luftbild switch:
-//   - `style.load` fires for a map's *first* style only, never again after
-//     `setStyle`.
-//   - `styledata` fires for a swap exactly once, too early — while
-//     `getStyle()` still describes the outgoing style — and then not again
-//     until the new style's sources settle, which on a stalled connection,
-//     offline, or over an area the imagery doesn't cover may be a long time
-//     or never.
-// So this watches for the style itself, on animation frames — which also
-// means it costs nothing while the app is backgrounded (no frames, no
-// polling) and resumes on its own when the driver comes back. It gives up
-// after ~3 s of frames rather than spinning for the life of the page; a
-// later `styledata` or re-render will call back in anyway.
-function redrawWhenStyleActive(map, framesLeft = 180) {
-  // One watcher at a time per map: a driver toggling back and forth would
-  // otherwise leave a chain running per tap, all racing to draw the same
-  // thing.
-  const token = (map._earStyleWatch || 0) + 1;
-  map._earStyleWatch = token;
-  const step = (left) => {
-    if (map._earStyleWatch !== token) return;
-    const ids = activeStyleLayerIds(map);
-    if (!ids) {
-      if (left > 0) requestAnimationFrame(() => step(left - 1));
-      return;
-    }
+  const onStyleData = () => {
+    let layers;
+    // getStyle() throws rather than returning undefined at some points
+    // during a style's life.
+    try { layers = map.getStyle()?.layers; } catch (_) { return; }
+    if (!layers?.length) return;
     map._earStyleReady = true;
-    // Already drawn on this style — the common case, since every tile that
-    // lands fires `styledata` and calls back in here.
-    if (ids.includes('route-line')) return;
-    // The route counts as "not yet drawn" whatever the stops look like:
-    // `syncMapTabRoute` skips a redraw when the signature is unchanged, and
-    // from its point of view nothing changed when the basemap did.
+    mountAerialLayers(map);
+    // Already drawn. `styledata` also fires as a *result* of adding the
+    // route's own layers, and again for every tile that arrives, so without
+    // this the handler would answer its own work and rebuild every marker
+    // on the map dozens of times while a basemap loads.
+    if (map.getLayer('route-line')) return;
     map._earLastSignature = null;
     if (mapTabMap === map) syncMapTabRoute();
   };
-  step(framesLeft);
+  map.on('styledata', onStyleData);
+  onStyleData();
 }
 
-// Installed once per map at creation. `styledata` is unreliable as *the*
-// swap signal (see above) but it is a perfectly good nudge: it fires on the
-// map's first style and again as sources arrive, and `redrawWhenStyleActive`
-// is idempotent, so handing every tick to it costs nothing and covers any
-// style change that didn't come through `applyBasemap`.
-function mountBasemapRedraw(map) {
-  map._earStyleReady = false;
-  map.on('styledata', () => redrawWhenStyleActive(map));
-  redrawWhenStyleActive(map);
+// Rebuilding the Karte tab's map from scratch — the recovery of last resort,
+// for the one thing that leaves a live map permanently blank with no error
+// anyone can catch: a lost WebGL context. Rate-limited, because a rebuild
+// that fails the same way immediately would loop, and a phone stuck in a
+// rebuild loop is worse than a phone showing a stale map.
+let lastMapRebuildAt = 0;
+function rebuildMapTabMap(reason) {
+  const now = Date.now();
+  if (now - lastMapRebuildAt < 15000) {
+    console.warn('map rebuild suppressed (too soon):', reason);
+    return false;
+  }
+  lastMapRebuildAt = now;
+  console.warn('rebuilding map:', reason);
+  try { mapTabMap?.remove(); } catch (_) { /* already torn down */ }
+  mapTabMap = null;
+  mapTabRouteId = null;
+  // `remove()` empties the container, but the element itself is reused —
+  // it's the node `render()` re-parents between screens (see `mapTabEl`).
+  if (mapTabEl) mapTabEl.innerHTML = '';
+  if (state.tab === 'map' && !isDetailShowing()) initMapTabMap();
+  return true;
 }
 
-// The in-map basemap switch, added to every map this app creates (see
-// `newMap`) so the pin-drop sheet — where a driver is manually placing a
-// point on a specific roof, and the imagery matters most — gets it on the
-// same terms as the Karte tab. A plain object, not a class: MapLibre's
-// IControl is structural, and `maplibregl` isn't even defined until
-// `ensureMapLibre()` has run.
 function basemapControl() {
   return {
     onAdd(map) {
@@ -3440,7 +3515,9 @@ function newMap(container, opts) {
   const basemap = getBasemap();
   const map = new maplibregl.Map({
     container,
-    style: basemapStyle(basemap),
+    // One style for the life of the map. The Luftbild is layers inside it,
+    // not a style of its own — see `mountAerialLayers`.
+    style: MAP_STYLE_URL,
     center: opts.center || VIENNA_CENTER,
     zoom: opts.zoom || 12,
     // The aerial imagery stops at zoom 21 but is worth overzooming a
@@ -3454,6 +3531,15 @@ function newMap(container, opts) {
   });
   map._earBasemap = basemap;
   mountBasemapRedraw(map);
+  // A phone under memory pressure can have its WebGL context taken away by
+  // the browser. MapLibre does not recover from that on its own: the canvas
+  // simply stays blank for the rest of the session, with no error and
+  // nothing to tap. Caught here and rebuilt, it costs a second of reloading
+  // instead of a dead map tab.
+  map.on('webglcontextlost', () => console.warn('map WebGL context lost'));
+  map.on('webglcontextrestored', () => {
+    if (mapTabMap === map) rebuildMapTabMap('WebGL context restored');
+  });
   // Whether two badges collide depends on the zoom, so the fan is recomputed
   // whenever it changes. `zoomend` rather than `zoom`: this walks every
   // marker, and doing that on each frame of a pinch is work nobody sees.
@@ -3805,10 +3891,9 @@ function initMapTabMap() {
     const resizeObserver = new ResizeObserver(() => map.resize());
     resizeObserver.observe(mapTabEl);
     map.once('remove', () => resizeObserver.disconnect());
-    // No 'load' handler for the first draw: `mountBasemapRedraw`'s
-    // `style.load` covers it, earlier (layers only need a parsed style, not
-    // loaded tiles) and on exactly the same path as every later basemap
-    // swap — one code path, not two that can disagree.
+    // No 'load' handler for the first draw: `mountBasemapRedraw` covers it,
+    // earlier (layers only need a parsed style, not loaded tiles) and on
+    // one code path rather than two that can disagree.
     return;
   }
 
@@ -3828,7 +3913,7 @@ function syncMapTabRoute() {
   // more than that — it also wants every *source* to have its tiles, which
   // on a van's connection can be in flight for a long time, and re-arming
   // on `styledata` to find out was both racy and easy to dead-end. The
-  // `style.load` handler in `mountBasemapRedraw` sets this flag at exactly
+  // `styledata` handler in `mountBasemapRedraw` sets this flag at exactly
   // the moment layers can be added, and calls back here itself, so a plain
   // early return is now the whole of the waiting logic.
   if (!map._earStyleReady) return;

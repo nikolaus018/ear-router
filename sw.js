@@ -182,8 +182,8 @@ self.addEventListener('fetch', (event) => {
   }
 
   // Third-party assets (Tailwind CDN runtime, MapLibre GL JS/CSS,
-  // OpenFreeMap style JSON/glyphs/sprites/vector tiles): stale-while-
-  // revalidate. Serving the cached copy immediately is what lets an
+  // OpenFreeMap style JSON/glyphs/sprites): stale-while-revalidate.
+  // Tiles are handled separately just below — they get a stricter policy. Serving the cached copy immediately is what lets an
   // already-panned-into-view map area keep rendering with zero connection,
   // and it's why this is cache-first rather than network-first. Unlike the
   // app shell above, there's no "deploy this app just made" freshness
@@ -192,12 +192,40 @@ self.addEventListener('fetch', (event) => {
   // broken code silently running forever, so plain stale-while-revalidate
   // (not raced against a timeout) is the right trade.
   const isTile = TILE_HOSTS.includes(url.hostname);
-  const cacheName = isTile ? TILE_CACHE : CACHE_NAME;
-  event.respondWith(
-    caches.open(cacheName).then((cache) =>
-      staleWhileRevalidate(event, cache, request, {
-        onPut: isTile ? () => trimCache(TILE_CACHE, TILE_CACHE_MAX_ENTRIES) : undefined,
+  if (isTile) {
+    // Map tiles are cache-first with NO background revalidation, which is
+    // the one place this worker deviates from stale-while-revalidate above.
+    //
+    // A tile is immutable in every way that matters: aerial imagery is
+    // reflown once a year, vector tiles change on their own slow schedule,
+    // and the URL encodes the exact square being asked for. Revalidating
+    // one therefore spends a request and a round-trip on a mobile
+    // connection to be told what we already had — and it does that for
+    // *every tile on screen*, so panning back over ground already visited,
+    // or flipping between Karte and Luftbild, silently re-hit the network
+    // for a screenful of tiles that were sitting in the cache the whole
+    // time. On a van's connection that is the difference between the
+    // imagery snapping in and watching it fill in square by square.
+    event.respondWith(
+      caches.open(TILE_CACHE).then(async (cache) => {
+        const cached = await cache.match(request);
+        if (cached) return cached;
+        const res = await fetch(request);
+        if (res.ok) {
+          // `waitUntil`, so the response goes to the map immediately rather
+          // than waiting on the cache write.
+          event.waitUntil(
+            cache.put(request, res.clone())
+              .then(() => trimCache(TILE_CACHE, TILE_CACHE_MAX_ENTRIES))
+              .catch(() => {})
+          );
+        }
+        return res;
       })
-    )
+    );
+    return;
+  }
+  event.respondWith(
+    caches.open(CACHE_NAME).then((cache) => staleWhileRevalidate(event, cache, request))
   );
 });
