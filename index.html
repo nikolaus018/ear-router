@@ -733,6 +733,12 @@ function stopAddress(s) {
 // inline handler argument: the address is free text, and passing it through
 // an onclick attribute would mean escaping it for HTML *and* for JS.
 //
+// Street and house number only ("Teststraße 3/1/5"), deliberately *not*
+// the `stopAddress` form the maps link uses: the district and "Wien" are
+// the same for every stop this app will ever have, so pasting them into a
+// chat message is noise the driver would just delete again. A geocoder
+// needs the full string; a human on the other end of the paste doesn't.
+//
 // `execCommand('copy')` is kept as a fallback, unlike the JSON sheet's
 // copy button: the async Clipboard API needs a secure context and is
 // missing on older in-app/Android WebViews, and here there's no visible
@@ -740,7 +746,7 @@ function stopAddress(s) {
 async function copyStopAddress(stopId) {
   const stop = state.currentRoute?.stops.find((s) => s.id === stopId);
   if (!stop) return;
-  const address = stopAddress(stop);
+  const address = stop.strasse;
   try {
     await navigator.clipboard.writeText(address);
     toast('Adresse kopiert ✓', 'success');
