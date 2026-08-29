@@ -1,7 +1,11 @@
 //! EAR Routing (Essen auf Rädern Routing) — delivery route planner.
 //!
-//! Serves a single self-contained `index.html` at `/` (Tailwind CDN +
-//! MapLibre GL JS, ASBÖ-branded, PWA-ready — no separate JS/CSS build; the
+//! Serves a single self-contained `index.html` at `/` (inlined CSS +
+//! MapLibre GL JS, ASBÖ-branded, PWA-ready — no JS/CSS build step at
+//! request time; the Tailwind utilities are compiled ahead of time and
+//! pasted into the file's own `<style>` block, so there is nothing to
+//! build here and no CSS compiler shipped to the phone — see that block's
+//! comment for how to regenerate it; the
 //! map draws either OpenFreeMap's vector tiles or Stadt Wien's aerial
 //! imagery, which is why `CONTENT_SECURITY_POLICY` allows both hosts) and a
 //! matching `/sw.js` service worker for offline app-shell
@@ -763,8 +767,6 @@ async fn rate_limit_mw(
 ///   - `'unsafe-inline'` for scripts: index.html is deliberately a single
 ///     self-contained file with inline `<script>` blocks (no build step),
 ///     so a nonce would have to be injected into the file on every request.
-///   - `'unsafe-eval'`: the Tailwind Play CDN compiles utility classes in
-///     the browser at runtime.
 ///   - `blob:` in `worker-src`/`child-src`: MapLibre GL runs its tile
 ///     parsing in a worker created from a blob URL.
 ///   - `data:` in `manifest-src`: the PWA manifest is an inline data: URI
@@ -775,11 +777,11 @@ async fn rate_limit_mw(
 ///     rather than as plain `<img>` elements — listing only `img-src` left
 ///     every aerial tile failing as an opaque "Failed to fetch".
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
-script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; \
+script-src 'self' 'unsafe-inline' https://unpkg.com; \
 style-src 'self' 'unsafe-inline' https://unpkg.com; \
 img-src 'self' data: blob: https://tiles.openfreemap.org https://maps.wien.gv.at; \
 font-src 'self' data:; \
-connect-src 'self' https://tiles.openfreemap.org https://maps.wien.gv.at https://unpkg.com https://cdn.tailwindcss.com; \
+connect-src 'self' https://tiles.openfreemap.org https://maps.wien.gv.at https://unpkg.com; \
 worker-src 'self' blob:; \
 child-src 'self' blob:; \
 manifest-src 'self' data:; \

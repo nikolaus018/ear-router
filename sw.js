@@ -9,7 +9,7 @@
 // those responses are never cached here on purpose — a stale geocode or
 // route would be actively wrong, not just outdated. What this cache DOES
 // buy: the app shell (this origin's "/") and every third-party asset it
-// needs to render (Tailwind's CDN runtime, MapLibre GL JS/CSS, the
+// needs to render (MapLibre GL JS/CSS, the
 // OpenFreeMap style/glyphs/sprites/vector tiles and the Wien-Luftbild
 // aerial tiles already panned into view)
 // survive a dropped connection instead of a blank white tab — a driver
@@ -183,13 +183,13 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Third-party assets (Tailwind CDN runtime, MapLibre GL JS/CSS,
+  // Third-party assets (MapLibre GL JS/CSS,
   // OpenFreeMap style JSON/glyphs/sprites): stale-while-revalidate.
   // Tiles are handled separately just below — they get a stricter policy. Serving the cached copy immediately is what lets an
   // already-panned-into-view map area keep rendering with zero connection,
   // and it's why this is cache-first rather than network-first. Unlike the
   // app shell above, there's no "deploy this app just made" freshness
-  // guarantee to protect here — a pinned MapLibre/Tailwind build or a
+  // guarantee to protect here — a pinned MapLibre build or a
   // slightly-stale map tile is a cosmetic staleness, not this app's own
   // broken code silently running forever, so plain stale-while-revalidate
   // (not raced against a timeout) is the right trade.
