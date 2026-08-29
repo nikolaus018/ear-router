@@ -475,7 +475,14 @@ enum AppError {
     NotFound(String),
     BadRequest(String),
     Forbidden(String),
-    Geocode { status: u16, code: String, message: String },
+    /// A geocoding outcome the frontend has a designed response for, keyed
+    /// by `code` rather than by parsing `message`. `plz` carries the
+    /// district the register actually files the address under, for the one
+    /// code (`wrong_district`) that has one -- the app pre-selects it in the
+    /// form so the fix is a single tap. It is a field rather than something
+    /// to scrape back out of the German sentence: a reworded message must
+    /// never be able to break the correction.
+    Geocode { status: u16, code: String, message: String, plz: Option<String> },
     Internal(String),
 }
 
@@ -485,10 +492,18 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, json!({ "detail": msg })),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, json!({ "detail": msg })),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, json!({ "detail": msg })),
-            AppError::Geocode { status, code, message } => (
-                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                json!({ "detail": { "message": message, "code": code } }),
-            ),
+            AppError::Geocode { status, code, message, plz } => {
+                let mut detail = json!({ "message": message, "code": code });
+                // Only present on the codes that have one, so the frontend can
+                // treat "no plz" and "not this kind of error" identically.
+                if let Some(plz) = plz {
+                    detail["plz"] = Value::String(plz);
+                }
+                (
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    json!({ "detail": detail }),
+                )
+            }
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, json!({ "detail": msg })),
         };
         (status, Json(body)).into_response()
@@ -1052,6 +1067,11 @@ CREATE TABLE IF NOT EXISTS stops (
     -- be switched back on) but is left out of the OSRM optimization entirely
     -- and carries no leg distance -- see `reoptimize_route`.
     excluded INTEGER NOT NULL DEFAULT 0,
+    -- 1 when the driver placed this stop's pin by hand (the pin-drop sheet).
+    -- A hand-placed pin outranks anything a geocoder has to say about the
+    -- address, so `recheck_addresses` leaves it alone: the driver stood in
+    -- front of the building and told us where it is.
+    pinned INTEGER NOT NULL DEFAULT 0,
     -- NULL = exact match (or a human placed the pin). 'street'/'district'
     -- mean geocoding only found an approximate fallback location — see
     -- `Precision` and `geocode_address`. Surfaced in the UI so a driver knows
@@ -1113,6 +1133,9 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     }
     if !stop_cols.contains("excluded") {
         conn.execute("ALTER TABLE stops ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0", [])?;
+    }
+    if !stop_cols.contains("pinned") {
+        conn.execute("ALTER TABLE stops ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0", [])?;
     }
     let cache_cols: HashSet<String> = conn
         .prepare("PRAGMA table_info(geocode_cache)")?
@@ -1221,7 +1244,33 @@ fn geocode_error_not_found(query: &str) -> AppError {
     AppError::Geocode {
         status: 422,
         code: "address_not_found".into(),
+        plz: None,
         message: format!("Adresse nicht automatisch gefunden: {}.", query),
+    }
+}
+
+/// The register knows this address, but under a different district than the
+/// one the stop was entered with.
+///
+/// This is the most common way a stop ends up somewhere wrong, and it is a
+/// data-entry slip rather than a geocoding failure: Favoritenstraße runs
+/// through the 4th, 5th and 10th, several districts have a Hauptstraße, and
+/// the district is a dropdown that is easy to leave on whatever the previous
+/// stop used. Every lookup strategy then correctly refuses to place the
+/// address — it genuinely isn't in the district it was filed under — and
+/// without this the driver just gets a vague district-centre pin and no idea
+/// why. Naming the right district turns that into a one-tap fix.
+fn geocode_error_wrong_district(query: &str, actual_plz: &str) -> AppError {
+    let bezirk = actual_plz
+        .get(1..3)
+        .and_then(|d| d.parse::<u32>().ok())
+        .map(|n| format!("{n}. Bezirk"))
+        .unwrap_or_else(|| actual_plz.to_string());
+    AppError::Geocode {
+        status: 422,
+        code: "wrong_district".into(),
+        plz: Some(actual_plz.to_string()),
+        message: format!("„{query}\" liegt laut Adressregister im {bezirk} ({actual_plz}), nicht im gewählten Bezirk. Bitte Bezirk prüfen."),
     }
 }
 
@@ -1235,6 +1284,7 @@ fn geocode_error_unavailable() -> AppError {
     AppError::Geocode {
         status: 503,
         code: "geocode_unavailable".into(),
+        plz: None,
         message: "Geocoding-Dienst nicht erreichbar. Standort bitte manuell setzen.".into(),
     }
 }
@@ -1489,16 +1539,18 @@ fn pick_ogd_feature(
 /// a first attempt rather than a hard dependency — a Wien-OGD outage the
 /// night before a route is due degrades to the existing Nominatim
 /// pipeline, not a failure.
-async fn wien_ogd_search_one(
-    state: &AppState,
-    query: &str,
-    plz: &str,
-    sub: SubCheck<'_>,
-) -> Option<(f64, f64, String, Precision)> {
+/// One raw Wien-OGD lookup: the request, and the parse. Returns the features
+/// it came back with, or `None` for every flavour of "no usable answer".
+///
+/// Split out from `wien_ogd_search_one` so the *filtering* — which feature
+/// counts as the address we asked for — can be done more than one way
+/// against the same response shape (see `wien_ogd_district_hint`, which asks
+/// the same question with the postcode filter deliberately removed).
+async fn wien_ogd_fetch(state: &AppState, query: &str) -> Option<Vec<OgdFeature>> {
     // Only genuine failure modes (network error, a non-2xx status, a body
-    // that doesn't even parse) are logged here — a "no match" (empty body,
-    // or a body with no feature surviving `pick_ogd_feature`'s filter) is
-    // the ordinary, expected outcome for most queries and would just be log
+    // that doesn't even parse) are logged here — a "no match" (an empty
+    // body, or a body with no feature surviving the callers' filters) is the
+    // ordinary, expected outcome for most queries and would just be log
     // spam. Without this distinction, none of the real failure modes were
     // logged at all: a broken/misconfigured Wien-OGD endpoint degraded the
     // app to Nominatim-only geocoding silently, indistinguishable in the
@@ -1521,9 +1573,9 @@ async fn wien_ogd_search_one(
         tracing::warn!(status = %resp.status(), query, "wien ogd returned an error status, falling back to nominatim");
         return None;
     }
-    // A query with zero matches comes back as an HTTP 200 with a
-    // completely empty body (not `{"features":[]}`) — has to be checked
-    // before handing an empty string to the JSON parser.
+    // A query with zero matches comes back as an HTTP 200 with a completely
+    // empty body (not `{"features":[]}`) — has to be checked before handing
+    // an empty string to the JSON parser.
     let body = match resp.text().await {
         Ok(b) => b,
         Err(e) => {
@@ -1534,16 +1586,24 @@ async fn wien_ogd_search_one(
     if body.trim().is_empty() {
         return None;
     }
-    let parsed: OgdFeatureCollection = match serde_json::from_str(&body) {
-        Ok(p) => p,
+    match serde_json::from_str::<OgdFeatureCollection>(&body) {
+        Ok(parsed) => Some(parsed.features),
         Err(e) => {
             tracing::warn!(error = %e, query, "wien ogd response did not parse, falling back to nominatim");
-            return None;
+            None
         }
-    };
+    }
+}
 
+async fn wien_ogd_search_one(
+    state: &AppState,
+    query: &str,
+    plz: &str,
+    sub: SubCheck<'_>,
+) -> Option<(f64, f64, String, Precision)> {
+    let features = wien_ogd_fetch(state, query).await?;
     let our_street = text::street_name_only(query).to_lowercase();
-    let best = pick_ogd_feature(parsed.features, plz, &our_street, sub.required())?;
+    let best = pick_ogd_feature(features, plz, &our_street, sub.required())?;
     let props = best.properties;
 
     let ranking = props.ranking.unwrap_or(f64::MAX);
@@ -1617,6 +1677,41 @@ async fn wien_ogd_geocode(state: &AppState, strasse: &str, plz: &str) -> Option<
         }
     }
     None
+}
+
+/// Which Vienna district the register actually files this street+number
+/// under, when the answer is unambiguous.
+///
+/// Deliberately narrow: it asks the same question `wien_ogd_geocode` just
+/// asked, minus the postcode filter, and speaks up only when *every*
+/// candidate for the requested street agrees on one postcode that isn't the
+/// one the stop was entered with. A street that genuinely runs through
+/// several districts yields several postcodes and no hint at all — guessing
+/// between them would be worse than the honest approximate pin the caller
+/// otherwise falls back to.
+async fn wien_ogd_district_hint(state: &AppState, normalized: &str, plz: &str) -> Option<String> {
+    let simplified = simplify_housenumber(normalized);
+    let our_street = text::address_match_key(&text::street_name_only(&simplified));
+    let features = wien_ogd_fetch(state, &simplified).await?;
+    let mut postcodes: HashSet<String> = HashSet::new();
+    for f in features {
+        let same_street = f
+            .properties
+            .street_name
+            .as_deref()
+            .is_some_and(|s| text::address_match_key(s) == our_street);
+        if !same_street {
+            continue;
+        }
+        if let Some(code) = f.properties.postal_code {
+            postcodes.insert(code);
+        }
+    }
+    if postcodes.len() != 1 {
+        return None;
+    }
+    let only = postcodes.into_iter().next()?;
+    (only != plz).then_some(only)
 }
 
 // Nominatim's usage policy: max ~1 request/second from a single client,
@@ -1696,10 +1791,61 @@ async fn nominatim_raw_search(state: &AppState, query: &str) -> Result<Option<No
     Ok(hits.into_iter().next())
 }
 
-async fn nominatim_search_one(state: &AppState, query: &str) -> Result<Option<(f64, f64, String, Precision)>, AppError> {
+/// Does a Nominatim hit actually describe the address we asked for?
+///
+/// The Wien-OGD path has always cross-checked the postcode and the street
+/// name before trusting a result (see `pick_ogd_feature`), for a reason that
+/// applies at least as strongly here: Nominatim's free-text search always
+/// returns *something* plausible-looking. Without the same checks, the
+/// fallback could — and did — accept:
+///   - the right street name in the wrong district. Vienna has a
+///     "Hauptstraße" in several of them, and the postcode in the query text
+///     is a hint to Nominatim, not a filter, so asking for 1190 and being
+///     handed the one in 1140 is a normal outcome. The stop then sits a
+///     borough away from the customer, tagged `exact`.
+///   - a different street entirely, matched by string similarity —
+///     "Gentzstraße" for "Gentzgasse" — which is exactly the confident,
+///     precise, wrong answer the OGD check exists to reject.
+///
+/// A hit that fails either check is treated as *no* hit, so the caller falls
+/// through to its next strategy and ultimately to the district centroid,
+/// which is honest about being an approximation and shows the driver a "≈"
+/// badge rather than a wrong door.
+///
+/// Absent fields are not failures: a hit with no `road` at all cannot be
+/// verified against a street, and is only ever accepted as
+/// `Precision::District` anyway.
+fn nominatim_hit_matches(hit: &NominatimHit, wanted_street_lower: &str, plz: &str) -> bool {
+    if let Some(address) = &hit.address {
+        if let Some(postcode) = address.postcode.as_deref() {
+            if postcode.trim() != plz {
+                tracing::debug!(postcode, plz, "nominatim hit is in a different district, ignoring");
+                return false;
+            }
+        }
+        if let Some(road) = address.road.as_deref() {
+            let road_key = text::address_match_key(road);
+            if road_key != wanted_street_lower {
+                tracing::debug!(road, wanted = wanted_street_lower, "nominatim hit is a different street, ignoring");
+                return false;
+            }
+        }
+    }
+    true
+}
+
+async fn nominatim_search_one(
+    state: &AppState,
+    query: &str,
+    wanted_street_lower: &str,
+    plz: &str,
+) -> Result<Option<(f64, f64, String, Precision)>, AppError> {
     let Some(top) = nominatim_raw_search(state, query).await? else {
         return Ok(None);
     };
+    if !nominatim_hit_matches(&top, wanted_street_lower, plz) {
+        return Ok(None);
+    }
     let (Ok(lat), Ok(lon)) = (top.lat.parse::<f64>(), top.lon.parse::<f64>()) else {
         return Err(AppError::Internal("Geocoding-Dienst: ungültige Koordinaten in der Antwort".into()));
     };
@@ -1736,11 +1882,27 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
     // ways and all resolve identically, so keying on the raw text would pay
     // a throttled round-trip again for each spelling.
     let key = format!("{}, {} wien, österreich", normalize_strasse_text(strasse).to_lowercase(), plz);
+    let cached = {
+        let conn = state.db()?;
+        cache_lookup(&conn, &key)?
+    };
+    if let Some(hit) = cached {
+        // A cached *district centroid* is the app admitting it never found
+        // this address — and by far the likeliest reason is that the
+        // district it was filed under is wrong. Worth one unthrottled
+        // register call to say so, because otherwise the cache keeps that
+        // vague pin (and the mystery behind it) alive for the whole TTL.
+        // Exact and street-level hits are served straight from the cache as
+        // before; this costs nothing on the common path.
+        if hit.3 == Precision::District {
+            if let Some(actual_plz) = wien_ogd_district_hint(state, &normalize_strasse_text(strasse), plz).await {
+                return Err(geocode_error_wrong_district(strasse.trim(), &actual_plz));
+            }
+        }
+        return Ok(hit);
+    }
     {
         let conn = state.db()?;
-        if let Some(hit) = cache_lookup(&conn, &key)? {
-            return Ok(hit);
-        }
         // A recent, definitive "no geocoder has this address" — skip
         // straight to the same error the full lookup would have produced
         // several seconds and four throttled round trips from now.
@@ -1758,6 +1920,18 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
     }
 
     let normalized = normalize_strasse_text(strasse);
+
+    // The register didn't have this address in the district it was filed
+    // under. Before spending throttled Nominatim calls — and before ending
+    // up at a district-centre pin the driver can't explain — ask the
+    // register the same question without the district, because by far the
+    // likeliest reason it just said no is that the district dropdown is
+    // wrong. Naming the right one turns a vague pin into a one-tap fix.
+    if let Some(actual_plz) = wien_ogd_district_hint(state, &normalized, plz).await {
+        tracing::info!(strasse = %normalized, given = plz, actual = %actual_plz, "address exists in a different district");
+        return Err(geocode_error_wrong_district(strasse.trim(), &actual_plz));
+    }
+
     // Try the "{street} {housenumber}" form first — Viennese addresses are
     // routinely written with a Stiege/Tür/Stock suffix ("Gentzgasse
     // 129/1/2/23") that Nominatim doesn't index and will otherwise just
@@ -1766,11 +1940,16 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
     // e.g. for a place name that was never "street + number" to begin
     // with, where simplifying would have mangled it for no reason.
     let simplified = simplify_housenumber(&normalized);
+    // The street this lookup is *for*, in the same normalized form the hit's
+    // own `road` field gets reduced to — what `nominatim_hit_matches` checks
+    // the answer against, so a fuzzy match onto a different street (or the
+    // same street in another district) is refused rather than pinned.
+    let wanted_street = text::address_match_key(&text::street_name_only(&normalized));
     let query = format!("{}, {} Wien, Österreich", simplified, plz);
-    let mut result = nominatim_search_one(state, &query).await?;
+    let mut result = nominatim_search_one(state, &query, &wanted_street, plz).await?;
     if result.is_none() && simplified != normalized {
         let fallback_query = format!("{}, {} Wien, Österreich", normalized, plz);
-        result = nominatim_search_one(state, &fallback_query).await?;
+        result = nominatim_search_one(state, &fallback_query, &wanted_street, plz).await?;
     }
 
     // Last resort: the street itself wasn't found at all (typo, or a
@@ -2106,6 +2285,7 @@ struct StopRow {
     next_leg_min: Option<f64>,
     location_precision: Option<String>,
     excluded: bool,
+    pinned: bool,
 }
 
 impl StopRow {
@@ -2126,6 +2306,7 @@ impl StopRow {
             next_leg_min: r.get("next_leg_min")?,
             location_precision: r.get("location_precision")?,
             excluded: r.get::<_, i64>("excluded")? != 0,
+            pinned: r.get::<_, i64>("pinned")? != 0,
         })
     }
 }
@@ -2152,6 +2333,10 @@ struct StopOut {
     /// `true` when this fixed stop was switched off for this route -- see the
     /// `excluded` column in `SCHEMA`. Always `false` for a customer stop.
     excluded: bool,
+    /// `true` when the driver placed this pin by hand. Surfaced so the app
+    /// can say so, and so a re-check of the route's addresses can leave it
+    /// alone -- see `recheck_addresses`.
+    pinned: bool,
 }
 
 /// Geometric centre of Vienna — the last-resort position for a stop whose
@@ -2207,6 +2392,7 @@ fn to_stop_out(r: StopRow) -> StopOut {
         next_leg_min: finite_or_none(r.next_leg_min),
         location_precision: precision,
         excluded: r.excluded,
+        pinned: r.pinned,
     }
 }
 
@@ -2799,6 +2985,194 @@ async fn optimize_route(State(state): State<Arc<AppState>>, AxPath(route_id): Ax
     Ok(Json(get_route_detail(&conn, route_id)?))
 }
 
+/// What a re-check did, so the app can tell the driver rather than silently
+/// moving pins under them.
+#[derive(Serialize, Default)]
+struct RecheckReport {
+    /// Stops whose coordinates actually changed.
+    moved: i64,
+    /// Stops that came back approximate — the "≈" badge — and are worth a
+    /// look before the tour.
+    approximate: i64,
+    /// Stops the geocoders could not resolve at all, or that are filed under
+    /// the wrong district. Left exactly as they were.
+    unresolved: Vec<String>,
+    /// Hand-placed pins, skipped on purpose.
+    skipped_pinned: i64,
+}
+
+/// How far a re-resolved point has to land from the stored one before
+/// `recheck_addresses` counts the stop as having actually moved: ~1 m,
+/// expressed in degrees. Below that the difference is float noise from
+/// re-resolving the very same register entry, and reporting it to the driver
+/// as a moved pin would cry wolf.
+const RECHECK_MOVED_EPSILON_DEG: f64 = 1e-5;
+
+/// What a re-resolve of one stop actually changed, as the two separate
+/// questions `recheck_addresses` has to answer about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecheckChange {
+    /// The point moved far enough to matter. This is the only kind of change
+    /// that invalidates the route's stop order and geometry, so it alone
+    /// drives `needs_optimize` and the follow-up optimization.
+    moved: bool,
+    /// Something is worth writing back -- a moved point, or a stale
+    /// approximation badge, which is a one-column update that must not cost
+    /// an OSRM round trip.
+    write: bool,
+}
+
+/// Compares a stored stop against what the geocoders say about it today.
+///
+/// The badge comparison is the half that is easy to leave out, and leaving it
+/// out is what pinned a stale "~" on a row forever: a stop entered before the
+/// resolver could place it exactly carries a stored 'street'/'district' tag,
+/// and when the register later answers exactly at the same point there is no
+/// coordinate change to notice. It matters in the other direction too -- a
+/// stop that used to resolve exactly and now only resolves to the street has
+/// to stop claiming to be exact.
+fn recheck_change(
+    stored: (f64, f64, Option<&str>),
+    resolved: (f64, f64, Option<&str>),
+) -> RecheckChange {
+    let (stored_lat, stored_lon, stored_tag) = stored;
+    let (lat, lon, tag) = resolved;
+    let moved = (lat - stored_lat).abs() > RECHECK_MOVED_EPSILON_DEG
+        || (lon - stored_lon).abs() > RECHECK_MOVED_EPSILON_DEG;
+    RecheckChange { moved, write: moved || tag != stored_tag }
+}
+
+/// Re-resolves every customer address on a route against the geocoders as
+/// they are *today*, and reports what changed.
+///
+/// This exists because the resolver improves: it learned Stiegen and
+/// Kleingarten-Parzellen, and it learned to refuse a confident answer for
+/// the wrong street or the wrong district. None of that reaches a stop that
+/// was entered before the change — its coordinates were written once and
+/// nothing re-examines them — so without this, a route already in the
+/// database keeps whatever it was given, including the wrong pins the newer
+/// checks exist to prevent.
+///
+/// Two things it deliberately does not touch:
+///   - a stop whose pin the driver placed by hand (`pinned`). They stood in
+///     front of the building; no geocoder outranks that.
+///   - a stop the geocoders now refuse. Refusing is not the same as knowing
+///     better, and replacing a real position with a district centroid would
+///     be a downgrade. Those come back in `unresolved` for the driver to
+///     look at.
+async fn recheck_addresses(
+    State(state): State<Arc<AppState>>,
+    AxPath(route_id): AxPath<i64>,
+) -> Result<Json<Value>, AppError> {
+    /// One customer stop as stored, ahead of re-resolving it: what to ask the
+    /// geocoders with, and what their answer has to be compared against.
+    struct StopBefore {
+        id: i64,
+        kunde: String,
+        strasse: String,
+        plz: String,
+        lat: f64,
+        lon: f64,
+        /// The stored `location_precision`, so a stop whose badge has become
+        /// wrong in *either* direction gets corrected -- see the write-back
+        /// decision below.
+        precision: Option<String>,
+    }
+
+    let stops: Vec<StopBefore> = {
+        let conn = state.db()?;
+        require_route_exists(&conn, route_id)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, kunde, strasse, plz, lat, lon, location_precision FROM stops \
+             WHERE route_id = ?1 AND kind = 'customer' AND pinned = 0 ORDER BY order_index",
+        )?;
+        let rows = stmt.query_map(params![route_id], |r| {
+            Ok(StopBefore {
+                id: r.get(0)?,
+                kunde: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                strasse: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                plz: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                lat: r.get(4)?,
+                lon: r.get(5)?,
+                precision: r.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let skipped_pinned: i64 = {
+        let conn = state.db()?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM stops WHERE route_id = ?1 AND kind = 'customer' AND pinned = 1",
+            params![route_id],
+            |r| r.get(0),
+        )?
+    };
+
+    let mut report = RecheckReport { skipped_pinned, ..Default::default() };
+    let mut updates: Vec<(i64, f64, f64, Option<&'static str>)> = Vec::new();
+    for before in stops {
+        // Sequential rather than the bulk import's parallel fan-out: this
+        // runs on a route that already exists, nobody is waiting on a form,
+        // and being gentle with the register and Nominatim matters more than
+        // shaving seconds off a button a driver presses once.
+        match geocode_address(&state, &before.strasse, &before.plz).await {
+            Ok((lat, lon, _, precision)) => {
+                let tag = precision.tag();
+                if precision != Precision::Exact {
+                    report.approximate += 1;
+                }
+                let change = recheck_change(
+                    (before.lat, before.lon, before.precision.as_deref()),
+                    (lat, lon, tag),
+                );
+                if change.moved {
+                    report.moved += 1;
+                }
+                if change.write {
+                    updates.push((before.id, lat, lon, tag));
+                }
+            }
+            // The reason matters more than the fact: "exists in the 18th
+            // district" is a fix the driver can make in ten seconds, while
+            // "not found" means looking the address up themselves. Both end
+            // up in front of them either way.
+            Err(AppError::Geocode { code, message, .. }) if code == "wrong_district" => {
+                report.unresolved.push(format!("{}: {message}", before.kunde))
+            }
+            Err(_) => report
+                .unresolved
+                .push(format!("{} ({})", before.kunde, before.strasse)),
+        }
+    }
+
+    // Only a stop that actually *moved* changes the shape of the tour. A
+    // badge-only correction rewrites one column and nothing else, so it must
+    // not flag the route stale or spend an OSRM round trip arriving back at
+    // exactly the order and geometry already stored.
+    let any_moved = report.moved > 0;
+    if !updates.is_empty() {
+        let mut conn = state.db()?;
+        let tx = conn.transaction()?;
+        for (id, lat, lon, precision) in updates {
+            tx.execute(
+                "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3 WHERE id = ?4",
+                params![lat, lon, precision, id],
+            )?;
+        }
+        if any_moved {
+            tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        }
+        tx.commit()?;
+    }
+    if any_moved {
+        reoptimize_best_effort(&state, route_id).await;
+    }
+
+    let conn = state.db()?;
+    let route = get_route_detail(&conn, route_id)?;
+    Ok(Json(json!({ "route": route, "report": report })))
+}
+
 async fn reset_delivered(State(state): State<Arc<AppState>>, AxPath(route_id): AxPath<i64>) -> Result<Json<RouteDetail>, AppError> {
     let conn = state.db()?;
     require_route_exists(&conn, route_id)?;
@@ -2862,6 +3236,7 @@ async fn add_stop(
         }
     }
 
+    let manual_pin = payload.lat.is_some() && payload.lon.is_some();
     let (lat, lon, precision) = if let (Some(lat), Some(lon)) = (payload.lat, payload.lon) {
         check_latlon(lat, lon)?;
         (lat, lon, None) // a human placed this pin — that's exact by definition
@@ -2893,9 +3268,9 @@ async fn add_stop(
             |r| r.get(0),
         )?;
         tx.execute(
-            "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, location_precision, created_at) \
-             VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order + 1, precision, now_iso()],
+            "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, location_precision, pinned, created_at) \
+             VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order + 1, precision, manual_pin as i64, now_iso()],
         )?;
         // Set *before* attempting the reoptimize below, not just on
         // failure: if OSRM is briefly unreachable, the stop is still
@@ -3092,9 +3467,13 @@ async fn update_stop(
             )?;
         }
         if let Some((lat, lon, precision)) = new_coords {
+            // `pinned` tracks where these coordinates came from, so a later
+            // re-check of the route's addresses knows to leave a
+            // hand-placed pin alone — and to stop leaving one alone once the
+            // driver edits the address and a geocoder answers instead.
             tx.execute(
-                "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3 WHERE id = ?4",
-                params![lat, lon, precision, stop_id],
+                "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3, pinned = ?4 WHERE id = ?5",
+                params![lat, lon, precision, manual_pin as i64, stop_id],
             )?;
         }
         if new_coords.is_some() {
@@ -3555,9 +3934,18 @@ async fn update_route_from_json(
         // different route.
         if !to_move.is_empty() {
             for ((kunde, strasse, plz, paket, notiz), id, lat, lon, precision) in &to_move {
+                // `pinned = 0` matters as much as the new coordinates do: these
+                // came from a geocoder, not from the driver's finger on the
+                // map. A stop that had been hand-pinned and has since moved to
+                // a different address would otherwise keep the very flag that
+                // tells `recheck_addresses` to leave it alone -- so the one stop
+                // on the route whose position is now purely a guess would be the
+                // one stop no re-check is ever allowed to correct. Same reasoning
+                // `update_stop` already applies when an address edit replaces a
+                // hand-placed pin.
                 tx.execute(
                     "UPDATE stops SET kunde = ?1, strasse = ?2, plz = ?3, paket = ?4, notiz = ?5, \
-                     lat = ?6, lon = ?7, location_precision = ?8 WHERE id = ?9",
+                     lat = ?6, lon = ?7, location_precision = ?8, pinned = 0 WHERE id = ?9",
                     params![kunde, strasse, plz, paket, notiz, lat, lon, precision, id],
                 )?;
             }
@@ -3801,6 +4189,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/routes/:id/optimize", post(optimize_route))
         .route("/api/routes/:id/json", put(update_route_from_json))
         .route("/api/routes/:id/reset-delivered", post(reset_delivered))
+        .route("/api/routes/:id/recheck-addresses", post(recheck_addresses))
         .route("/api/routes/:id/stops", post(add_stop))
         .route("/api/stops/:id", patch(update_stop).delete(delete_stop))
         // Ordering matters here, and it reads bottom-up: the rate limiter
@@ -4054,7 +4443,7 @@ mod tests {
 
     #[test]
     fn sub_address_query_is_only_built_when_there_is_one() {
-        let sub = |s: &str| text::housenumber_with_sub(s).map(|(q, k)| (q, k));
+        let sub = text::housenumber_with_sub;
         // Stiege, with Tür/Stock past it discarded.
         assert_eq!(
             sub("Gentzgasse 129/1/2/23"),
@@ -4099,7 +4488,46 @@ mod tests {
             next_leg_min: km,
             location_precision: None,
             excluded: false,
+            pinned: false,
         }
+    }
+
+    fn nominatim_hit(road: Option<&str>, postcode: Option<&str>, house_number: Option<&str>) -> NominatimHit {
+        NominatimHit {
+            lat: "48.2082".into(),
+            lon: "16.3738".into(),
+            display_name: "irgendwo".into(),
+            address: Some(NominatimAddress {
+                house_number: house_number.map(str::to_string),
+                road: road.map(str::to_string),
+                postcode: postcode.map(str::to_string),
+            }),
+        }
+    }
+
+    #[test]
+    fn nominatim_hits_must_be_the_street_and_district_that_was_asked_for() {
+        let wanted = text::address_match_key("Gentzgasse");
+        // The answer we want.
+        assert!(nominatim_hit_matches(&nominatim_hit(Some("Gentzgasse"), Some("1180"), Some("129")), &wanted, "1180"));
+        // Right street, wrong district — Vienna has streets of the same name
+        // in several, and the postcode in the query is only a hint to
+        // Nominatim. This is the one that put stops a borough away.
+        assert!(!nominatim_hit_matches(&nominatim_hit(Some("Gentzgasse"), Some("1140"), Some("129")), &wanted, "1180"));
+        // A different street that merely looks similar.
+        assert!(!nominatim_hit_matches(&nominatim_hit(Some("Gentzstraße"), Some("1180"), Some("129")), &wanted, "1180"));
+        // Spelling differences that are not real differences.
+        let wanted_str = text::address_match_key("Hauptstraße");
+        assert!(nominatim_hit_matches(&nominatim_hit(Some("Hauptstrasse"), Some("1140"), None), &wanted_str, "1140"));
+        assert!(nominatim_hit_matches(&nominatim_hit(Some("  Hauptstraße  "), Some("1140"), None), &wanted_str, "1140"));
+        // Nothing to check against: a hit with no structured address at all,
+        // or no road, is only ever accepted as a district-level guess
+        // elsewhere — it must not be rejected here.
+        assert!(nominatim_hit_matches(&nominatim_hit(None, Some("1180"), None), &wanted, "1180"));
+        assert!(nominatim_hit_matches(&NominatimHit { lat: "48.2".into(), lon: "16.3".into(), display_name: "x".into(), address: None }, &wanted, "1180"));
+        // A hit with no postcode is judged on its street alone.
+        assert!(nominatim_hit_matches(&nominatim_hit(Some("Gentzgasse"), None, Some("129")), &wanted, "1180"));
+        assert!(!nominatim_hit_matches(&nominatim_hit(Some("Anderegasse"), None, Some("129")), &wanted, "1180"));
     }
 
     #[test]
@@ -4239,6 +4667,75 @@ mod tests {
         // Unparseable: fall back to the one address that can't be forged.
         headers.insert("x-forwarded-for", HeaderValue::from_static("not-an-ip"));
         assert_eq!(client_ip(&headers, peer, true), peer.ip());
+    }
+
+    #[test]
+    fn a_recheck_writes_back_a_stale_badge_even_when_nothing_moved() {
+        let here = (48.230569, 16.330485);
+        // The regression this guards: the register now knows the exact
+        // housenumber and answers at the same point the coarse fallback had.
+        // Nothing moved, so the old code wrote nothing -- and the row wore a
+        // "~ Strasse" warning for an address the app knew precisely, and kept
+        // handing navigation the address text instead of the point.
+        let c = recheck_change((here.0, here.1, Some("street")), (here.0, here.1, None));
+        assert_eq!(c, RecheckChange { moved: false, write: true });
+
+        // The other direction: an address that used to resolve exactly and
+        // now only resolves to the street has to stop claiming to be exact.
+        let c = recheck_change((here.0, here.1, None), (here.0, here.1, Some("street")));
+        assert_eq!(c, RecheckChange { moved: false, write: true });
+
+        // Nothing changed at all -- no write, and above all no optimization.
+        let c = recheck_change((here.0, here.1, Some("district")), (here.0, here.1, Some("district")));
+        assert_eq!(c, RecheckChange { moved: false, write: false });
+
+        // Float noise from re-resolving the same register entry is not a
+        // moved pin, and must not be reported to the driver as one.
+        let c = recheck_change((here.0, here.1, None), (here.0 + 1e-9, here.1 - 1e-9, None));
+        assert_eq!(c, RecheckChange { moved: false, write: false });
+
+        // A genuine correction: moved, written back, and the only case that
+        // may re-solve the route.
+        let c = recheck_change((here.0, here.1, Some("district")), (48.21, 16.37, None));
+        assert_eq!(c, RecheckChange { moved: true, write: true });
+    }
+
+    /// The body of an `AppError`, as the frontend's `api()` helper sees it.
+    async fn error_body(err: AppError) -> (StatusCode, Value) {
+        let res = err.into_response();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.expect("body");
+        (status, serde_json::from_slice(&bytes).expect("json body"))
+    }
+
+    #[tokio::test]
+    async fn a_wrong_district_error_names_the_district_as_data_not_only_as_prose() {
+        // The frontend pre-selects this district in the form so the fix is one
+        // tap (see `sendStop` in index.html). It used to recover the postcode
+        // by running a regex over the German sentence, which quietly made the
+        // wording of a user-facing message load-bearing.
+        let (status, body) = error_body(geocode_error_wrong_district("Hauptstrasse 5", "1140")).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["detail"]["code"], "wrong_district");
+        assert_eq!(body["detail"]["plz"], "1140");
+        assert!(body["detail"]["message"].as_str().unwrap().contains("14. Bezirk"));
+
+        // The codes that have no district carry no field at all, so the app
+        // can treat "absent" and "not this error" the same way.
+        let (status, body) = error_body(geocode_error_not_found("Nirgendgasse 1, 1010 Wien")).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["detail"]["code"], "address_not_found");
+        assert!(body["detail"].get("plz").is_none());
+
+        let (status, body) = error_body(geocode_error_unavailable()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["detail"]["code"], "geocode_unavailable");
+        assert!(body["detail"].get("plz").is_none());
+
+        // A postcode this app would never produce must not become a panic or
+        // a nonsense "0. Bezirk" -- it falls back to naming the code itself.
+        let (_, body) = error_body(geocode_error_wrong_district("Irgendwo 1", "AT")).await;
+        assert!(body["detail"]["message"].as_str().unwrap().contains("AT"));
     }
 
     #[test]

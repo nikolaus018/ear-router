@@ -24,14 +24,16 @@
 const CACHE_NAME = 'ear-routing-v2';
 const TILE_CACHE = 'ear-routing-tiles-v1';
 // Raised from 600 when the aerial basemap landed (see `TILE_HOSTS`). A
-// driver zoomed into a building on the Luftbild pulls the aerial tiles AND
-// the label overlay for the same view, and both are requested at retina
-// density (see `RETINA_TILE_SIZE` in index.html — half-size tiles, so four
-// per nominal tile), which puts one aerial screenful an order of magnitude
-// above what a vector-only screenful cost. Entries, not bytes: these are
-// 8–20 KB JPEG/PNG tiles, so this is roughly 20 MB — enough to hold a
-// morning's route area, small enough that a browser won't evict the whole
-// origin (app shell included) over it.
+// driver zoomed into a building on the Luftbild pulls the aerial imagery
+// AND the label overlay for the same view, and the labels are fetched at
+// retina density — four half-size tiles per nominal one (see
+// `RETINA_LABEL_TILE_SIZE` in index.html; the imagery itself is
+// deliberately left native, for exactly the reason that multiplier is
+// expensive). One aerial screenful is therefore several times the tile
+// count a vector-only screenful cost. Entries, not bytes: these are 8–20 KB
+// JPEG/PNG tiles, so this is roughly 20 MB — enough to hold a morning's
+// route area, small enough that a browser won't evict the whole origin
+// (app shell included) over it.
 const TILE_CACHE_MAX_ENTRIES = 1400;
 
 // Hosts whose responses are map tiles — trimmed to `TILE_CACHE_MAX_ENTRIES`

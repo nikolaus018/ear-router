@@ -166,6 +166,15 @@
   }
   .momentum { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 
+  /* `type="search"` is what gives the field its searchbox role for assistive
+     technology, but WebKit also decorates it with a clear button of its own
+     that shows only while the field has focus — landing on top of the
+     always-visible one this app draws (see `stopSearchBar`). Suppressing the
+     native one leaves a single clear affordance, present whether or not the
+     field is focused, which on a phone it usually is not. */
+  input[type="search"]::-webkit-search-cancel-button,
+  input[type="search"]::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
+
   .sheet-backdrop { animation: fadeIn .18s ease-out; }
   .sheet-panel { animation: slideUp .26s cubic-bezier(.32,.72,0,1); }
   .alert-panel { animation: popIn .18s cubic-bezier(.32,.72,0,1); }
@@ -269,7 +278,7 @@
      JSON bulk-import's "don't close" warning). -->
 <div id="progress-bar" class="fixed top-0 left-0 right-0 z-[80] h-[3px] bg-brand-600 origin-left scale-x-0 opacity-0 pointer-events-none" style="transition: transform .5s cubic-bezier(.4,0,.2,1), opacity .2s;"></div>
 <div id="progress-pill-wrap" class="fixed top-0 inset-x-0 z-[75] flex justify-center px-6 pointer-events-none hidden" style="padding-top: calc(env(safe-area-inset-top) + 0.6rem);">
-  <div id="progress-pill" class="pointer-events-auto flex items-center gap-2 bg-white/95 backdrop-blur-xl border border-black/5 rounded-full pl-2.5 pr-4 py-1.5 shadow-xl max-w-full">
+  <div id="progress-pill" role="status" aria-live="polite" class="pointer-events-auto flex items-center gap-2 bg-white/95 backdrop-blur-xl border border-black/5 rounded-full pl-2.5 pr-4 py-1.5 shadow-xl max-w-full">
     <span class="spinner-sm shrink-0 text-brand-600"></span>
     <span id="progress-pill-text" class="text-[12px] font-medium text-black/80 truncate"></span>
   </div>
@@ -308,7 +317,7 @@ const GROUP = 'bg-white rounded-2xl overflow-hidden divide-y divide-black/10 sha
 // draws a stray divider line between *those* children instead.
 const CARD = 'bg-white rounded-2xl shadow-sm';
 const ROW = 'w-full flex items-center gap-3 px-4 py-3 text-left press-fade';
-const SECTION_LABEL = 'text-[13px] font-medium text-black/50 uppercase tracking-wide px-4 pb-1.5 pt-6 first:pt-2';
+const SECTION_LABEL = 'text-[13px] font-medium text-black/55 uppercase tracking-wide px-4 pb-1.5 pt-6 first:pt-2';
 
 const VIENNA_DISTRICTS = [
   { bezirk: 1, plz: '1010', name: 'Innere Stadt', center: [48.2082, 16.3738] },
@@ -377,7 +386,15 @@ const ICONS = {
   mapPin: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
   checkCircle: icon('<circle cx="12" cy="12" r="9"/><path d="M8 12.4l2.5 2.5L16 9.4"/>'),
   circle: icon('<circle cx="12" cy="12" r="9"/>'),
-  checkCircleFill: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9.5"/><path d="M8.3 12.4l2.4 2.4 5-5" stroke="white" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  // The tick is stroked in the success green, not in white. Both places
+  // this icon is used draw it as `text-white` on a `bg-success` fill (the
+  // delivered toggle and the Ladeliste's tick) — so a white tick sat on the
+  // white disc it is punched out of and was simply not there. What the
+  // driver saw was a plain white circle: still readable as "on" next to an
+  // empty one, but the checkmark this icon exists to draw was invisible.
+  // Hardcoded rather than `currentColor` because `currentColor` is exactly
+  // what fills the disc underneath it.
+  checkCircleFill: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9.5"/><path d="M8.3 12.4l2.4 2.4 5-5" stroke="#34C759" stroke-width="2.1" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   box: icon('<path d="M3.5 8 12 4l8.5 4-8.5 4-8.5-4Z"/><path d="M3.5 8v8l8.5 4 8.5-4V8"/><path d="M12 12v8"/>'),
   house: icon('<path d="M4 11.5 12 4l8 7.5"/><path d="M6 10v9h12v-9"/><path d="M10 19v-5h4v5"/>'),
   flag: icon('<path d="M6 3v18"/><path d="M6 4.5h11l-3 3.75 3 3.75H6"/>'),
@@ -390,6 +407,8 @@ const ICONS = {
   note: icon('<path d="M5 4h14v13.2l-3.8 2.8H5Z"/><path d="M8.5 9h7"/><path d="M8.5 13h7"/>'),
   archive: icon('<path d="M4 5h16v4H4Z"/><path d="M5 9v10h14V9"/><path d="M10 13h4"/>'),
   person: icon('<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7"/>'),
+  search: icon('<circle cx="11" cy="11" r="6.5"/><line x1="15.8" y1="15.8" x2="20.5" y2="20.5"/>'),
+  close: icon('<line x1="6.5" y1="6.5" x2="17.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="6.5" y2="17.5"/>', 'stroke-width="2"'),
 };
 
 // A stalled mobile connection never rejects a `fetch` on its own — the
@@ -416,9 +435,16 @@ async function api(path, options = {}) {
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
 
-  let res;
+  // The whole exchange — headers AND body — lives inside the one try, and
+  // the deadline is only cleared in the `finally` underneath it. Reading
+  // the body used to happen after `clearTimeout`, which meant a server that
+  // sent its headers and then stalled (a connection dying mid-response on a
+  // mobile network, a proxy holding a half-written body) hung the app
+  // forever: no timeout left armed to abort it, the progress bar crawling,
+  // and — during a JSON import — every control in the sheet locked behind
+  // a promise that was never going to settle.
   try {
-    res = await fetch('/api' + path, {
+    const res = await fetch('/api' + path, {
       // Only declare a JSON body when there actually is one — a
       // Content-Type on a bodyless GET/DELETE is meaningless and is exactly
       // the kind of header that turns a same-origin request into a
@@ -427,7 +453,57 @@ async function api(path, options = {}) {
       ...fetchOptions,
       signal: controller.signal,
     });
+
+    if (!res.ok) {
+      let msg = 'Ein Fehler ist aufgetreten.';
+      let code = null;
+      let detail = null;
+      try {
+        const data = await res.json();
+        if (data.detail && typeof data.detail === 'object') {
+          msg = data.detail.message || msg;
+          code = data.detail.code || null;
+          detail = data.detail;
+        } else if (data.detail) {
+          msg = data.detail;
+        }
+      } catch (_) {
+        // Not JSON, or the body never arrived. The status alone still says
+        // enough to pick a sentence below.
+      }
+      // A 429 carries no `detail` the driver can act on beyond "wait" — and
+      // it's the one status where the app itself is the likely cause (a
+      // retry loop), so it gets its own sentence rather than the generic one.
+      if (res.status === 429 && msg === 'Ein Fehler ist aufgetreten.') {
+        msg = 'Zu viele Anfragen. Bitte kurz warten und erneut versuchen.';
+      }
+      const err = apiError(msg, code || `http_${res.status}`);
+      // Structured fields the server attached next to the sentence — today
+      // only `plz`, the district a wrong-district address is actually filed
+      // under. Carried as data so no caller has to pick a postcode back out
+      // of a German message, which would quietly make that message's exact
+      // wording load-bearing. See `geocode_error_wrong_district` in
+      // src/main.rs.
+      if (detail && typeof detail.plz === 'string') err.plz = detail.plz;
+      throw err;
+    }
+
+    // A 204 (or any empty body) would make `res.json()` throw a parse error
+    // that reads to the caller like the request failed, when it succeeded.
+    const text = await res.text();
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      throw apiError('Unerwartete Antwort vom Server.', 'bad_response');
+    }
   } catch (err) {
+    // Anything this function built itself is already a sentence a driver can
+    // read — pass it straight through rather than relabelling it as a
+    // network failure. Checked with an own flag rather than `err.code`,
+    // because a DOMException (an AbortError, say) carries a numeric `code`
+    // of its own and would otherwise look like one of ours.
+    if (err?.isApiError) throw err;
     // `fetch` rejects with an opaque TypeError ("Failed to fetch" /
     // "Load failed") for every network-level problem, and with an
     // AbortError for both our timeout and a deliberate cancel. None of
@@ -441,41 +517,14 @@ async function api(path, options = {}) {
     clearTimeout(timer);
     if (callerSignal) callerSignal.removeEventListener('abort', onCallerAbort);
   }
-
-  if (!res.ok) {
-    let msg = 'Ein Fehler ist aufgetreten.';
-    let code = null;
-    try {
-      const data = await res.json();
-      if (data.detail && typeof data.detail === 'object') {
-        msg = data.detail.message || msg;
-        code = data.detail.code || null;
-      } else if (data.detail) {
-        msg = data.detail;
-      }
-    } catch (_) {}
-    // A 429 carries no `detail` the driver can act on beyond "wait" — and
-    // it's the one status where the app itself is the likely cause (a
-    // retry loop), so it gets its own sentence rather than the generic one.
-    if (res.status === 429 && msg === 'Ein Fehler ist aufgetreten.') {
-      msg = 'Zu viele Anfragen. Bitte kurz warten und erneut versuchen.';
-    }
-    throw apiError(msg, code || `http_${res.status}`);
-  }
-  // A 204 (or any empty body) would make `res.json()` throw a parse error
-  // that reads to the caller like the request failed, when it succeeded.
-  const text = await res.text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch (_) {
-    throw apiError('Unerwartete Antwort vom Server.', 'bad_response');
-  }
 }
 
 function apiError(message, code) {
   const err = new Error(message);
   err.code = code;
+  // Marks this as one of ours, so `api()`'s own catch can tell an error it
+  // already worded apart from a raw network/abort failure it still has to.
+  err.isApiError = true;
   return err;
 }
 
@@ -667,8 +716,30 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     const menu = document.getElementById('route-menu');
     if (menu && !menu.classList.contains('hidden')) { closeRouteMenu(); return; }
-    if (onModalEscape) onModalEscape();
+    if (onModalEscape) { onModalEscape(); return; }
+    // Escape empties the stop filter, the way it does in a browser's own find
+    // bar — otherwise the only way out is selecting the text and deleting it,
+    // which one-handed is a genuine nuisance.
+    if (document.activeElement?.id === 'stop-search' && stopFilter.query) clearStopFilter();
     return;
+  }
+  // Arrow keys inside the "..." menu. It declares `role="menu"`, and that
+  // is a promise: assistive technology puts a menu into an interaction mode
+  // where the arrow keys — not Tab — are how you reach the next item, so
+  // without this the later actions ("Löschen" among them) were announced as
+  // a menu and then simply could not be reached the way the announcement
+  // said to reach them.
+  const openMenu = document.getElementById('route-menu');
+  if (openMenu && !openMenu.classList.contains('hidden') && openMenu.contains(document.activeElement)) {
+    const items = Array.from(openMenu.querySelectorAll('[role="menuitem"]'));
+    const at = items.indexOf(document.activeElement);
+    const target =
+      e.key === 'ArrowDown' ? items[(at + 1) % items.length]
+      : e.key === 'ArrowUp' ? items[(at - 1 + items.length) % items.length]
+      : e.key === 'Home' ? items[0]
+      : e.key === 'End' ? items[items.length - 1]
+      : null;
+    if (target) { e.preventDefault(); target.focus(); return; }
   }
   if (e.key !== 'Tab') return;
   // Focus trap: keep Tab inside the open dialog by wrapping at its ends.
@@ -1016,6 +1087,10 @@ let latestRouteRequestId = null;
 // was active when the request started, not when it actually completed,
 // which matters if the driver switches tabs while it's in flight.
 async function loadRouteIntoFocus(id, computeDetailOrigin) {
+  // Cleared up front, not on arrival: the driver has already left the old
+  // route's list behind, and a filter that outlived it would narrow the new
+  // one by a word typed for the old.
+  resetStopFilter();
   latestRouteRequestId = id;
   const seq = nextSeq();
   showProgress();
@@ -1039,6 +1114,7 @@ async function openRoute(id) {
 function closeDetail() {
   state.currentRoute = null;
   state.detailOrigin = null;
+  resetStopFilter();
   // Predictions belong to the route that was on screen; carrying them to
   // the next one would stamp its stops with another route's ids.
   pendingDelivered.clear();
@@ -1083,7 +1159,7 @@ async function loadRoutes() {
     toast(err.message || 'Routen konnten nicht geladen werden.', 'error');
     const app = document.getElementById('app');
     app.innerHTML = `
-      <div class="px-6 pt-28 text-center text-black/50">
+      <div class="px-6 pt-28 text-center text-black/55">
         <p class="text-sm mb-4">Verbindung zum Server fehlgeschlagen.</p>
         <button onclick="loadRoutes()" class="press-98 px-5 py-3 rounded-xl bg-brand-600 font-semibold text-white text-sm">Erneut versuchen</button>
       </div>
@@ -1192,31 +1268,38 @@ async function createRoute() {
   }
 }
 
+// The form text is compared in when deciding whether two pieces of it mean
+// the same thing — by the duplicate-address check (`addrKey`) and by the
+// stop filter (`stopMatches`). Mirrors `address_match_key` in src/main.rs.
+//
+// Folds the three spellings of "Straße" together, then collapses punctuation
+// to a single space. One door gets written "Großfeldstraße 9/Parz.68",
+// "Großfeldstraße 9 Parz. 68" or "Gentzgasse 129 / 1" depending on which
+// list it was copied out of, and treating those as different addresses is
+// what let a second package for the same door slip past every duplicate
+// warning in the app — and what would make a driver's search for
+// "gentzgasse 129 1" come back empty.
+//
+// Collapsed to a space rather than removed outright: deleting the separators
+// would make "Gentzgasse 129/1" and "Gentzgasse 12/91" the same text. Digits
+// and letters are otherwise untouched, so "9" and "9a" stay the different
+// houses they are.
+function normalizeMatchText(str) {
+  return String(str || '')
+    .trim().toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/str\.(\s|$|\d)/g, 'straße$1')
+    .replace(/strasse\b/g, 'straße')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
 // Mirrors `addr_key` in src/main.rs closely enough to catch the case that
 // matters here: the same address typed twice with different spellings of
 // "Straße". Only used to decide whether to ask a question — the server
 // remains the authority on what actually matches what.
 function addrKey(strasse, plz) {
-  const s = String(strasse || '')
-    .trim().toLowerCase()
-    .replace(/\s+/g, ' ')
-    .replace(/str\.(\s|$|\d)/g, 'straße$1')
-    .replace(/strasse\b/g, 'straße')
-    // Punctuation collapses to a single space. One door gets written
-    // "Großfeldstraße 9/Parz.68", "Großfeldstraße 9 Parz. 68" or
-    // "Gentzgasse 129 / 1" depending on which list it was copied out of,
-    // and treating those as different addresses is what let a second
-    // package for the same door slip past every duplicate warning in the
-    // app.
-    //
-    // Collapsed to a space rather than removed outright: deleting the
-    // separators would make "Gentzgasse 129/1" and "Gentzgasse 12/91"
-    // the same key. Digits and letters are otherwise untouched, so "9"
-    // and "9a" stay the different houses they are. Mirrors
-    // `address_match_key` on the server.
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim();
-  return `${s}|${String(plz || '').trim()}`;
+  return `${normalizeMatchText(strasse)}|${String(plz || '').trim()}`;
 }
 
 async function submitStop(form, stopId) {
@@ -1274,7 +1357,22 @@ async function sendStop(data, coords) {
     const updated = data.stopId
       ? await api(`/stops/${data.stopId}`, { method: 'PATCH', body })
       : await api(`/routes/${routeId}/stops`, { method: 'POST', body });
-    if (!applyRouteUpdate(seq, routeId, updated)) return;
+    if (!applyRouteUpdate(seq, routeId, updated)) {
+      // Saved, but there is nothing on screen to redraw it into: the driver
+      // moved to a different route while this was in flight, or a newer
+      // reply already landed. Confirm it anyway — a form that was submitted
+      // and then answered with complete silence reads as "that didn't work",
+      // and the obvious response to that is to enter the same stop again.
+      toast(data.stopId ? 'Stopp aktualisiert ✓' : 'Stopp hinzugefügt ✓', 'success');
+      return;
+    }
+    // A stop that was just *added* almost never matches whatever the list
+    // happens to be filtered by, so leaving the filter on would answer
+    // "Stopp hinzugefügt ✓" with a list the new stop is nowhere in — and the
+    // obvious response to that is to add it a second time. An *edit* keeps
+    // the filter: that stop was found through it, and the driver is working
+    // their way down a narrowed list.
+    if (!data.stopId) resetStopFilter();
     // Skips the staggered row-enter replay across the whole list for what
     // is, from the driver's point of view, a one-row add/edit — the same
     // reasoning `toggleDelivered` already applies below.
@@ -1283,6 +1381,19 @@ async function sendStop(data, coords) {
     if (coords) toast('Standort manuell gesetzt ✓', 'success');
     else toast(data.stopId ? 'Stopp aktualisiert ✓' : 'Stopp hinzugefügt ✓', 'success');
   } catch (err) {
+    // The register knows this address, just in another district — the
+    // dropdown was left on the wrong one (see `geocode_error_wrong_district`
+    // on the server). The form comes back with the right district already
+    // selected, so the fix is one tap on "Speichern" rather than a hunt
+    // through 23 entries. The message still says what happened; nothing is
+    // corrected silently.
+    if (!coords && err.code === 'wrong_district' && state.currentRoute?.id === routeId) {
+      const suggested = err.plz;
+      toast(err.message, 'warning', 8000);
+      const corrected = suggested && DISTRICT_BY_PLZ[suggested] ? { ...data, plz: suggested } : data;
+      openAddSheet(corrected.stopId ? { ...corrected, id: corrected.stopId } : corrected);
+      return;
+    }
     if (!coords && (err.code === 'address_not_found' || err.code === 'geocode_unavailable') && state.currentRoute?.id === routeId) {
       openPinDropSheet(data);
       return;
@@ -1330,7 +1441,20 @@ function applyDeliveredDomPatch(stopId) {
     const el = document.querySelector(`[data-stop-row="${id}"]`);
     const stop = stops.find(s => s.id === id);
     if (!el || !stop) return false;
+    // Replacing a row destroys its elements, and with them the focus of
+    // anyone driving this app from a keyboard or a screen reader: pressing
+    // Enter on a stop's delivered toggle dropped the caret to the top of the
+    // document every single time, on the app's most-used control. The
+    // equivalent element in the rebuilt row is found by its position among
+    // the row's focusables, which is stable — a customer row always renders
+    // the same three, in the same order (the row itself, the toggle, the
+    // maps link).
+    const focusedIndex = Array.from(el.querySelectorAll(FOCUSABLE)).indexOf(document.activeElement);
     el.outerHTML = renderCustomerRow(stop, id === newNextId, null, doors.get(id)?.length);
+    if (focusedIndex >= 0) {
+      const rebuilt = document.querySelector(`[data-stop-row="${id}"]`);
+      rebuilt?.querySelectorAll(FOCUSABLE)[focusedIndex]?.focus({ preventScroll: true });
+    }
     return true;
   };
 
@@ -1347,7 +1471,7 @@ function applyDeliveredDomPatch(stopId) {
   }
 
   const barSlot = document.querySelector('[data-next-stop-bar-slot]');
-  if (barSlot) barSlot.innerHTML = nextStopBar(stops, firstOpenIdx);
+  if (barSlot) barSlot.innerHTML = nextStopBarHtml();
 
   const countEl = document.querySelector('[data-delivered-count-text]');
   if (countEl) countEl.textContent = `${r.delivered_count} / ${r.customer_count} zugestellt`;
@@ -1566,6 +1690,50 @@ async function deleteRoute() {
     forgetScrollMemory(`detail:${routeId}`);
     await loadRoutes();
     toast('Route gelöscht ✓', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    hideProgress();
+  }
+}
+
+// Re-resolves every address on the route against the geocoders as they are
+// today, and says what changed.
+//
+// Worth its own action because a stop's coordinates are worked out once,
+// when it is entered, and never looked at again — so a route that was built
+// before the resolver learned something (Stiegen, Kleingarten-Parzellen,
+// refusing a confident answer for the wrong district) keeps the pins it was
+// given, including the wrong ones. This is how a driver gets those fixed
+// without re-typing the route.
+//
+// Hand-placed pins are left alone by the server; the summary says how many.
+async function recheckAddresses() {
+  const routeId = state.currentRoute?.id;
+  if (routeId == null) return;
+  const ok = await confirmSheet({
+    title: 'Adressen neu prüfen?',
+    message: 'Jede Kundenadresse dieser Route wird noch einmal im Adressregister nachgeschlagen. Selbst gesetzte Pins bleiben unverändert. Das kann eine Minute dauern.',
+    confirmLabel: 'Prüfen',
+  });
+  if (!ok) return;
+  const seq = nextSeq();
+  showProgress('Adressen werden geprüft — bitte nicht schließen …');
+  try {
+    const data = await api(`/routes/${routeId}/recheck-addresses`, { method: 'POST', timeoutMs: API_TIMEOUT_LONG_MS });
+    const report = data?.report || {};
+    if (!applyRouteUpdate(seq, routeId, data?.route)) return;
+    render();
+    // Spelled out rather than a bare "done": the whole point is that the
+    // driver knows which stops moved and which still need a human look.
+    const parts = [];
+    parts.push(report.moved ? `${report.moved} Stopp(s) korrigiert` : 'Keine Änderungen');
+    if (report.approximate) parts.push(`${report.approximate} weiterhin nur ungefähr (≈)`);
+    if (report.skipped_pinned) parts.push(`${report.skipped_pinned} selbst gesetzte(r) Pin unverändert`);
+    toast(`${parts.join(' · ')}`, report.moved ? 'success' : 'info', 7000);
+    if (report.unresolved?.length) {
+      toast(`Nicht gefunden, bitte prüfen: ${report.unresolved.slice(0, 4).join(', ')}${report.unresolved.length > 4 ? ' …' : ''}`, 'warning', 12000);
+    }
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -1808,12 +1976,12 @@ function openFixedStopSheet(stop) {
           class="mt-0.5 w-6 h-6 shrink-0 accent-brand-600" />
         <span class="flex-1 min-w-0">
           <span class="block text-[15px] font-medium">In dieser Tour überspringen</span>
-          <span class="block text-[13px] text-black/50 leading-snug mt-0.5">Wird nicht angefahren und nicht in Strecke und Fahrzeit eingerechnet.</span>
+          <span class="block text-[13px] text-black/55 leading-snug mt-0.5">Wird nicht angefahren und nicht in Strecke und Fahrzeit eingerechnet.</span>
         </span>
       </label>
     </div>
 
-    <p class="text-[12px] text-black/45 leading-snug mb-4 px-1">Gilt nur für diese Route. Adresse und Position von „${escapeHtml(meta.title)}" sind fix und können nicht geändert werden.</p>
+    <p class="text-[12px] text-black/55 leading-snug mb-4 px-1">Gilt nur für diese Route. Adresse und Position von „${escapeHtml(meta.title)}" sind fix und können nicht geändert werden.</p>
 
     <div class="flex gap-3 pb-2">
       <button type="button" onclick="closeSheet()" class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold">Abbrechen</button>
@@ -1841,7 +2009,7 @@ async function saveFixedStopExclusion(stopId) {
 }
 
 const FIELD = 'mt-1 w-full bg-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-600';
-const LABEL = 'text-[13px] font-medium text-black/50';
+const LABEL = 'text-[13px] font-medium text-black/55';
 
 function renderManualForm(stop) {
   const isEdit = !!stop?.id;
@@ -1885,7 +2053,7 @@ function renderManualForm(stop) {
           <span class="flex shrink-0 text-[17px]">${ICONS.mapPin}</span>
           <span class="flex-1 min-w-0">
             <span class="block text-[15px] font-medium">Standort auf der Karte setzen</span>
-            <span class="block text-[12px] leading-snug ${stop.location_precision ? '' : 'text-black/50'}">${
+            <span class="block text-[12px] leading-snug ${stop.location_precision ? '' : 'text-black/55'}">${
               stop.location_precision === 'district'
                 ? 'Adresse nicht gefunden — der Pin steht nur in der Bezirksmitte.'
                 : stop.location_precision === 'street'
@@ -1981,12 +2149,18 @@ function autoFillDistrictFromText(strasseInput, plzSelect) {
 // ---------------------------------------------------------------------
 function renderJsonForm() {
   const r = state.currentRoute;
+  // Reachable only from a route's own "..." menu, so this is all but
+  // guaranteed — but it reads `r.stops` on the very next line, and a route
+  // closed out from under an open menu (a resume refresh finding it deleted
+  // elsewhere) would take the whole screen down with a TypeError instead of
+  // doing nothing.
+  if (!r || !Array.isArray(r.stops)) { toast('Keine Route ausgewählt.', 'error'); return; }
   const customers = r.stops.filter((s) => s.kind === 'customer').map(stopToCustomerJson);
   const editorInitial = JSON.stringify(customers.length ? customers : [EXAMPLE_CUSTOMER_STOP], null, 2);
 
   renderSheetShell(`
     <h2 class="text-[22px] font-bold mb-1">Als JSON bearbeiten</h2>
-    <p class="text-[12px] text-black/50 mb-2 leading-snug">Nur Kunde, Straße &amp; Hausnummer, Bezirk, Paket, Notiz. Start/Lager/Ziel sind fix und stehen hier nicht drin. Einen Stopp entfernst du, indem du sein Objekt aus der Liste löschst; neue fügst du als zusätzliche Objekte hinzu.</p>
+    <p class="text-[12px] text-black/55 mb-2 leading-snug">Nur Kunde, Straße &amp; Hausnummer, Bezirk, Paket, Notiz. Start/Lager/Ziel sind fix und stehen hier nicht drin. Einen Stopp entfernst du, indem du sein Objekt aus der Liste löschst; neue fügst du als zusätzliche Objekte hinzu.</p>
     ${!customers.length ? `<p class="text-[12px] text-warnText mb-2">Noch keine Kundenstopps – unten steht ein Beispiel-Objekt. Bearbeite es zu einem echten Stopp oder lösche es, bevor du speicherst.</p>` : ''}
     <div class="flex gap-2 mb-2">
       <button type="button" onclick="pasteIntoJsonEditor()" class="press-98 flex-1 py-2 rounded-lg bg-white text-black/70 text-xs font-semibold disabled:opacity-50">Einfügen</button>
@@ -2121,6 +2295,10 @@ async function saveJsonEdits() {
     // another route, whose screen must not be replaced by this one's result.
     if (!applyRouteUpdate(seq, routeId, data)) { closeSheet(); return; }
     closeSheet();
+    // This rewrites the route's customer list wholesale — stops added,
+    // removed and moved — so a filter typed against the old one is stale by
+    // definition and would hide most of what just landed.
+    resetStopFilter();
     render();
     // Independent counts, not mutually exclusive: a batch can have invalid
     // entries, unresolvable addresses, AND separate ones that only
@@ -2268,9 +2446,9 @@ function ladelisteItems(route) {
 // Shared by the initial render and the in-place repaint below, so a ticked
 // row can never drift into looking different depending on which of the two
 // last touched it.
-const ladeQtyClass = (on) => `shrink-0 w-12 text-[17px] font-bold tabular-nums ${on ? 'text-black/30' : 'text-brand-600'}`;
+const ladeQtyClass = (on) => `shrink-0 w-12 text-[17px] font-bold tabular-nums ${on ? 'text-black/55' : 'text-brand-600'}`;
 const ladeLabelClass = (on) => `flex-1 min-w-0 text-[15px] font-medium ${on ? 'text-black/40 line-through' : ''}`;
-const ladeMarkClass = (on) => `shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-[20px] shadow-sm ${on ? 'bg-success text-white' : 'bg-white border-2 border-black/15 text-black/30'}`;
+const ladeMarkClass = (on) => `shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-[20px] shadow-sm ${on ? 'bg-success text-white' : 'bg-white border-2 border-black/45 text-black/40'}`;
 
 function ladelisteProgress(items, checked) {
   // Counted from the items actually on screen, not from `checked.size` —
@@ -2316,9 +2494,9 @@ function renderLadeliste() {
     <h2 class="text-[22px] font-bold mb-1">Ladeliste</h2>
     <p class="text-[13px] text-black/55 mb-4 leading-snug">Alle Pakete dieser Route zusammengezählt. Vor der Abfahrt abhaken, was tatsächlich im Auto liegt.</p>
     ${items.length ? `
-      <p id="lade-progress" aria-live="polite" class="text-[13px] font-medium text-black/50 px-1 pb-1.5">${ladelisteProgress(items, checked)}</p>
+      <p id="lade-progress" aria-live="polite" class="text-[13px] font-medium text-black/55 px-1 pb-1.5">${ladelisteProgress(items, checked)}</p>
       <div class="${GROUP}">${items.map(row).join('')}</div>
-      ${withoutPaket ? `<p class="text-[12px] text-black/45 mt-3 px-1 leading-snug">${withoutPaket} Kundenstopp(e) ohne Paketangabe – die stehen hier nicht drin.</p>` : ''}
+      ${withoutPaket ? `<p class="text-[12px] text-black/55 mt-3 px-1 leading-snug">${withoutPaket} Kundenstopp(e) ohne Paketangabe – die stehen hier nicht drin.</p>` : ''}
       <div class="flex gap-3 mt-4 pb-2">
         <button type="button" onclick="resetLadeliste()" class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold text-sm">Zurücksetzen</button>
         <button type="button" onclick="closeSheet()" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">Fertig</button>
@@ -2326,7 +2504,7 @@ function renderLadeliste() {
     ` : `
       <div class="${CARD} px-4 py-6 text-center">
         <p class="text-[15px] font-medium text-black/70">Keine Paketangaben</p>
-        <p class="text-[13px] text-black/50 mt-1 leading-snug">Kein Stopp dieser Route hat etwas im Feld „Paket" stehen. Trag es beim Stopp ein (z.B. „2x TGM7"), dann wird hier automatisch zusammengezählt.</p>
+        <p class="text-[13px] text-black/55 mt-1 leading-snug">Kein Stopp dieser Route hat etwas im Feld „Paket" stehen. Trag es beim Stopp ein (z.B. „2x TGM7"), dann wird hier automatisch zusammengezählt.</p>
       </div>
       <div class="mt-4 pb-2">
         <button type="button" onclick="closeSheet()" class="press-98 w-full py-3 rounded-xl bg-brand-600 font-semibold text-white">Schließen</button>
@@ -2571,7 +2749,7 @@ function renderTabBar() {
     <nav class="fixed bottom-0 inset-x-0 z-40 bg-white border-t border-black/10" style="padding-bottom: env(safe-area-inset-bottom, 0px)">
       <div class="max-w-md mx-auto grid grid-cols-4">
         ${tabs.map(t => `
-          <button onclick="switchTab('${t.id}')" ${state.tab === t.id ? 'aria-current="page"' : ''} aria-label="${t.label}" class="press-fade flex flex-col items-center justify-center gap-0.5 pt-2 pb-1.5 ${state.tab === t.id ? 'text-brand-600' : 'text-black/50'}">
+          <button onclick="switchTab('${t.id}')" ${state.tab === t.id ? 'aria-current="page"' : ''} aria-label="${t.label}" class="press-fade flex flex-col items-center justify-center gap-0.5 pt-2 pb-1.5 ${state.tab === t.id ? 'text-brand-600' : 'text-black/55'}">
             <span class="text-[22px] flex">${t.icon}</span>
             <span class="text-[10px] font-medium">${t.label}</span>
           </button>
@@ -2586,9 +2764,9 @@ function renderTabBar() {
 // ---------------------------------------------------------------------
 // Set true right before a render() that only refreshes already-visible
 // content in place (e.g. the delivered-toggle's optimistic + confirm
-// re-renders) — stopRow reads this to skip re-triggering every row's
-// entrance animation, which otherwise makes the whole list look like it
-// "reloads" on every single tap.
+// re-renders) — `renderRouteDetail` passes it on to `stopListHtml`, which
+// skips re-triggering every row's entrance animation; otherwise the whole
+// list looks like it "reloads" on every single tap.
 let suppressRowAnim = false;
 
 /// Which screen the current state resolves to. Used as the key for scroll
@@ -2634,7 +2812,7 @@ function renderCrashScreen(err) {
   try {
     const app = document.getElementById('app');
     app.innerHTML = `
-      <div class="flex-1 min-h-0 flex flex-col items-center justify-center px-8 text-center">
+      <div role="main" class="flex-1 min-h-0 flex flex-col items-center justify-center px-8 text-center">
         <span class="text-4xl flex justify-center mb-3 text-warnText">${ICONS.warning}</span>
         <p class="text-[15px] font-semibold mb-1">Anzeige konnte nicht aufgebaut werden</p>
         <p class="text-[13px] text-black/55 leading-snug mb-5">Die Daten dieser Ansicht sind unerwartet. Deine Zustellungen sind gespeichert — nichts ist verloren.</p>
@@ -2662,6 +2840,7 @@ function recoverToOverview() {
   state.currentRoute = null;
   state.detailOrigin = null;
   state.tab = 'routes';
+  resetStopFilter();
   pendingDelivered.clear();
   pendingDeliveredGen.clear();
   loadRoutes();
@@ -2675,6 +2854,17 @@ function renderScreen(skipRowAnim) {
   if (prevScroller && renderedScreenKey) {
     scrollMemory.set(renderedScreenKey, prevScroller.scrollTop);
   }
+
+  // #app's innerHTML is replaced wholesale below, which destroys the stop
+  // filter's field. Its *text* survives on its own — `stopSearchBar` reads it
+  // back out of `stopFilter.query` — but the focus and the caret do not, and
+  // a render the driver never asked for (a resume refresh, most
+  // realistically) can land mid-word. Carried across by hand, and only when
+  // the field genuinely had focus, so this can never steal it.
+  const prevFilterInput = document.getElementById('stop-search');
+  const filterCaret = prevFilterInput && document.activeElement === prevFilterInput
+    ? { start: prevFilterInput.selectionStart, end: prevFilterInput.selectionEnd }
+    : null;
 
   const showingDetail = isDetailShowing();
   const screenKey = currentScreenKey();
@@ -2695,6 +2885,17 @@ function renderScreen(skipRowAnim) {
   const nextScroller = document.querySelector('[data-scroll]');
   if (nextScroller) nextScroller.scrollTop = scrollMemory.get(screenKey) || 0;
   renderedScreenKey = screenKey;
+
+  if (filterCaret) {
+    const input = document.getElementById('stop-search');
+    if (input) {
+      input.focus({ preventScroll: true });
+      // Not every browser exposes a selection range on every input type; a
+      // caret that lands at the end is a great deal better than an exception
+      // taking the whole render down with it.
+      try { input.setSelectionRange(filterCaret.start, filterCaret.end); } catch (_) { /* caret stays where it defaulted */ }
+    }
+  }
 
   mountLargeTitle();
 
@@ -2752,7 +2953,7 @@ function renderRoutesTab() {
           ${escapeHtml(r.name)}
           ${r.needs_optimize ? `<span class="w-1.5 h-1.5 rounded-full bg-warn shrink-0" title="Route nicht aktuell"></span>` : ''}
         </p>
-        <p class="text-[13px] text-black/50 mt-0.5">${fmtDate(r.created_at)} · ${r.delivered_count}/${r.customer_count} zugestellt</p>
+        <p class="text-[13px] text-black/55 mt-0.5">${fmtDate(r.created_at)} · ${r.delivered_count}/${r.customer_count} zugestellt</p>
         ${r.customer_count ? `<div class="h-1 bg-black/10 rounded-full overflow-hidden mt-1.5"><div class="h-full bg-success" style="width:${progress}%"></div></div>` : ''}
       </div>
       <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
@@ -2761,7 +2962,7 @@ function renderRoutesTab() {
   };
 
   return `
-    <div data-scroll class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
+    <div data-scroll role="main" class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
       <div class="sticky top-0 z-20 bg-[#F2F2F7]/85 backdrop-blur-xl border-b border-black/10" style="padding-top: calc(env(safe-area-inset-top) + 0.5rem)">
         <div class="flex items-center justify-between px-4 pb-2.5">
           <span class="w-8"></span>
@@ -2810,7 +3011,7 @@ function renderMapTab() {
 
   if (!pickable.length) {
     return `
-      <div class="flex-1 min-h-0 flex flex-col items-center justify-center px-8 text-center text-black/55">
+      <div role="main" class="flex-1 min-h-0 flex flex-col items-center justify-center px-8 text-center text-black/55">
         <span class="text-4xl flex justify-center mb-3 opacity-40">${ICONS.tabMap}</span>
         <p class="text-[15px]">Noch keine aktive Route.<br/>Lege zuerst eine Route an.</p>
       </div>
@@ -2821,7 +3022,7 @@ function renderMapTab() {
   const progress = r && r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
 
   return `
-    <div class="flex-1 min-h-0 relative">
+    <div role="main" class="flex-1 min-h-0 relative">
       <div id="route-map" class="absolute inset-0"></div>
 
       <div class="absolute top-0 inset-x-0 z-10 momentum overflow-x-auto flex gap-2 px-4" style="padding-top: calc(env(safe-area-inset-top) + 0.75rem); padding-bottom: 0.75rem;">
@@ -2835,7 +3036,7 @@ function renderMapTab() {
           <button data-bottom-dock onclick="openCurrentRouteDetail()" class="press-98 w-full text-left bg-white/90 backdrop-blur-xl rounded-2xl p-4 shadow-lg flex items-center gap-3">
             <div class="flex-1 min-w-0">
               <p class="font-semibold truncate">${escapeHtml(r.name)}</p>
-              <p class="text-[13px] text-black/50 mt-0.5">${r.delivered_count}/${r.customer_count} zugestellt · ≈ ${r.total_km} km · ${r.total_min} min</p>
+              <p class="text-[13px] text-black/55 mt-0.5">${r.delivered_count}/${r.customer_count} zugestellt · ≈ ${r.total_km} km · ${r.total_min} min</p>
               <div class="h-1 bg-black/10 rounded-full overflow-hidden mt-1.5"><div class="h-full bg-success" style="width:${progress}%"></div></div>
             </div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
@@ -2859,14 +3060,14 @@ function renderVerlaufTab() {
       <span class="w-9 h-9 shrink-0 rounded-full bg-success/10 text-success flex items-center justify-center text-lg">${ICONS.checkCircle}</span>
       <div class="flex-1 min-w-0">
         <p class="font-medium truncate">${escapeHtml(r.name)}</p>
-        <p class="text-[13px] text-black/50 mt-0.5">${fmtDate(r.completed_at || r.created_at)} · ${r.customer_count} Kunden</p>
+        <p class="text-[13px] text-black/55 mt-0.5">${fmtDate(r.completed_at || r.created_at)} · ${r.customer_count} Kunden</p>
       </div>
       <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
     </button>
   `;
 
   return `
-    <div data-scroll class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
+    <div data-scroll role="main" class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
       <div class="sticky top-0 z-20 bg-[#F2F2F7]/85 backdrop-blur-xl compact-title" data-compact-title style="opacity:0; padding-top: calc(env(safe-area-inset-top) + 0.5rem)">
         <p class="text-[17px] font-semibold text-center pb-2.5 border-b border-black/10">Verlauf</p>
       </div>
@@ -2893,7 +3094,7 @@ function renderVerlaufTab() {
 // ---------------------------------------------------------------------
 function renderMoreTab() {
   return `
-    <div data-scroll class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
+    <div data-scroll role="main" class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
       <div class="sticky top-0 z-20 bg-[#F2F2F7]/85 backdrop-blur-xl compact-title" data-compact-title style="opacity:0; padding-top: calc(env(safe-area-inset-top) + 0.5rem)">
         <p class="text-[17px] font-semibold text-center pb-2.5 border-b border-black/10">Mehr</p>
       </div>
@@ -2909,15 +3110,15 @@ function renderMoreTab() {
             <img data-logo-src alt="ASBÖ" class="w-10 h-10 rounded-xl shrink-0" />
             <div class="min-w-0">
               <p class="font-medium">EAR Routing</p>
-              <p class="text-[13px] text-black/50">Ein Service des Arbeiter-Samariter-Bundes Österreichs</p>
+              <p class="text-[13px] text-black/55">Ein Service des Arbeiter-Samariter-Bundes Österreichs</p>
             </div>
           </div>
           <div class="flex items-center gap-3 px-4 py-3">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.mapPin}</span>
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.mapPin}</span>
             <p class="text-[14px] text-black/60 leading-snug">Kartendaten: OpenFreeMap &amp; OpenStreetMap-Mitwirkende. Geocoding: Stadt Wien &amp; Nominatim. Routing: OSRM.</p>
           </div>
           <button onclick="clearOfflineCache()" class="${ROW}">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.refresh}</span>
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.refresh}</span>
             <p class="flex-1 text-[15px]">Offline-Daten leeren</p>
           </button>
         </div>
@@ -2925,9 +3126,9 @@ function renderMoreTab() {
         <p class="${SECTION_LABEL}">Einstellungen</p>
         <div class="${GROUP}">
           <label class="flex items-center gap-3 px-4 py-3">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.compass}</span>
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.compass}</span>
             <span class="flex-1 text-[15px]">Navigations-App</span>
-            <select onchange="setMapsProvider(this.value)" aria-label="Navigations-App für „In Maps öffnen“-Links" class="text-[15px] text-black/50 bg-transparent text-right focus:outline-none">
+            <select onchange="setMapsProvider(this.value)" aria-label="Navigations-App für „In Maps öffnen“-Links" class="text-[15px] text-black/55 bg-transparent text-right focus:outline-none">
               ${Object.entries(MAPS_PROVIDERS).map(([id, p]) => `<option value="${id}" ${getMapsProvider() === id ? 'selected' : ''}>${p.label}</option>`).join('')}
             </select>
           </label>
@@ -2936,10 +3137,10 @@ function renderMoreTab() {
         <p class="${SECTION_LABEL}">Entwickelt von</p>
         <div class="${GROUP}">
           <a href="mailto:nikolaus.marek@outlook.com" class="${ROW}">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/50 flex items-center justify-center">${ICONS.person}</span>
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.person}</span>
             <div class="flex-1 min-w-0">
               <p class="text-[15px] font-medium">Nikolaus Marek</p>
-              <p class="text-[13px] text-black/50">Entwickler · Kontakt aufnehmen</p>
+              <p class="text-[13px] text-black/55">Entwickler · Kontakt aufnehmen</p>
             </div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </a>
@@ -3076,12 +3277,12 @@ function renderFixedRow(s, meta, animIndex = null) {
         oncontextmenu="stopLongPressContext(event, ${s.id})">
         <div class="flex items-center gap-1.5 flex-wrap">
           <p class="font-medium ${skipped ? 'text-black/40 line-through' : ''}">${meta.title}</p>
-          ${skipped ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-black/45 bg-black/[0.07] px-1.5 py-0.5 rounded">Übersprungen</span>` : ''}
+          ${skipped ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-black/55 bg-black/[0.07] px-1.5 py-0.5 rounded">Übersprungen</span>` : ''}
         </div>
-        <p class="text-[13px] ${skipped ? 'text-black/35' : 'text-black/50'}">${escapeHtml(meta.subtitle)}</p>
+        <p class="text-[13px] ${skipped ? 'text-black/35' : 'text-black/55'}">${escapeHtml(meta.subtitle)}</p>
         ${skipped ? '' : legLabel(s)}
       </div>
-      <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/50'}">${ICONS.mapPin}</a>
+      <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/55'}">${ICONS.mapPin}</a>
     </div>
   `;
 }
@@ -3090,10 +3291,10 @@ function renderFixedRow(s, meta, animIndex = null) {
 // `applyDeliveredDomPatch` can rebuild exactly one row (or the two rows a
 // "next stop" handoff touches) without going through a full list render.
 // `animIndex` is only ever non-null from the full-list render path
-// (`renderRouteDetail`'s own `stopRow`); a DOM-patched row never plays the
-// staggered entrance animation — it's already on screen, mid-session, and
-// replaying it would be the "list just reloaded" flicker this whole patch
-// path exists to avoid.
+// (`stopListHtml`); a DOM-patched row never plays the staggered entrance
+// animation — it's already on screen, mid-session, and replaying it would be
+// the "list just reloaded" flicker this whole patch path exists to avoid.
+// Neither does a row in a filtered list, which is rebuilt on every keystroke.
 function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
   const url = navUrl(s);
   const delivered = s.delivered;
@@ -3131,8 +3332,8 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
           ${duplicateBadge}
           ${precisionBadge}
         </div>
-        <p class="font-medium ${delivered ? 'text-black/50 line-through' : ''}">${escapeHtml(s.kunde)}</p>
-        <p class="text-[13px] ${delivered ? 'text-black/50' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien</p>
+        <p class="font-medium ${delivered ? 'text-black/55 line-through' : ''}">${escapeHtml(s.kunde)}</p>
+        <p class="text-[13px] ${delivered ? 'text-black/55' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien</p>
         ${s.paket ? (() => {
           const qty = paketQty(s.paket);
           const multi = qty > 1 && !delivered;
@@ -3148,7 +3349,7 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
         ${legLabel(s, 'mt-1.5')}
       </div>
       <div class="flex flex-col gap-2 shrink-0 mt-0.5">
-        <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" title="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" class="press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${delivered ? 'bg-success text-white' : 'bg-white border-2 border-black/15 text-black/30'}">
+        <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" title="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" class="press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${delivered ? 'bg-success text-white' : 'bg-white border-2 border-black/45 text-black/40'}">
           ${delivered ? ICONS.checkCircleFill : ICONS.circle}
         </button>
         <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
@@ -3244,41 +3445,72 @@ const RETINA_LABEL_TILE_SIZE = (typeof devicePixelRatio === 'number' && devicePi
 function mountAerialLayers(map) {
   if (map.getSource('wien-lb')) return true;
   const sources = {
+    // The two imagery layers are split by zoom so that only ONE of them is
+    // ever loading a full screenful of tiles. Loading both at every zoom is
+    // what made the Luftbild crawl: two complete sets of 8–20 KB JPEGs for
+    // one view, one of them completely hidden behind the other.
+    //
+    // basemap.at's nationwide orthophoto carries the overview. It covers all
+    // of Austria, so there are no holes to fall through at the city limits,
+    // and 30 cm is plenty for anything below street level.
     'at-ortho': {
       type: 'raster',
       tiles: ['https://maps.wien.gv.at/basemap/bmaporthofoto30cm/normal/google3857/{z}/{y}/{x}.jpeg'],
       tileSize: 256,
-      // Deliberately shallow. This exists only so panning past the city
-      // limits shows ground rather than a void; every zoom level it can
-      // serve is one where it loads a full screenful of tiles underneath
-      // the Vienna imagery that completely covers it — paying twice for one
-      // view. Capped here, the whole city is a handful of stretched tiles.
-      maxzoom: 12,
+      // Capped where Vienna's own imagery takes over. Above this it is a
+      // couple of stretched tiles sitting behind sharper ones, there purely
+      // so a gap in the city imagery shows ground rather than nothing.
+      maxzoom: AERIAL_DETAIL_ZOOM,
       attribution: AERIAL_ATTRIB_AT,
     },
+    // Vienna's own 10 cm imagery, from street level up — where the question
+    // stops being "which block" and becomes "which door, and can the van
+    // get to it".
     'wien-lb': {
       type: 'raster',
       tiles: ['https://maps.wien.gv.at/wmts/lb/farbe/google3857/{z}/{y}/{x}.jpeg'],
-      // Native size — see `RETINA_LABEL_TILE_SIZE`. Runs to zoom 21
-      // (~10 cm/px), so a driver who wants more detail pinches in and gets
-      // it natively instead of every screen paying for four times the tiles.
+      // Native size: at four times the tiles this was the single slowest
+      // thing about the Luftbild, and an aerial photo shows upscaling far
+      // less than text does. It runs to zoom 21, so a driver who wants more
+      // detail pinches in and gets it natively.
       tileSize: 256,
+      minzoom: AERIAL_DETAIL_ZOOM,
       maxzoom: 21,
       attribution: AERIAL_ATTRIB_WIEN,
     },
     'wien-labels': {
       type: 'raster',
       tiles: ['https://maps.wien.gv.at/wmts/beschriftung/normal/google3857/{z}/{y}/{x}.png'],
+      // Retina here and nowhere else: these are a few hundred bytes each and
+      // text is what actually looked pixelated. See `RETINA_LABEL_TILE_SIZE`.
       tileSize: RETINA_LABEL_TILE_SIZE,
-      // The label overlay stops at 19 where the imagery goes to 21 — above
-      // that MapLibre stretches the deepest tiles it has, which is the right
-      // trade: by then the driver is looking at one roof and needs the
-      // picture, not the lettering.
+      // No street labels on an overview of the whole route — they would be
+      // unreadable at that scale anyway, and it saves a screenful of
+      // requests every time the driver zooms out to see where the tour goes.
+      minzoom: 13,
+      // The overlay stops at 19 where the imagery goes to 21; above that
+      // MapLibre stretches the deepest tiles it has, which is the right
+      // trade — by then the driver needs the picture, not the lettering.
       maxzoom: 19,
       attribution: AERIAL_ATTRIB_WIEN,
     },
   };
   try {
+    // Everything already in the style is the vector basemap's — recorded
+    // before anything of ours is added, so `applyBasemap` can switch the
+    // whole of it off in one go.
+    if (!map._earVectorLayers) {
+      const existing = map.getStyle().layers;
+      map._earBackgroundLayer = existing.find((l) => l.type === 'background')?.id || null;
+      map._earVectorLayers = existing
+        .filter((l) => l.id !== map._earBackgroundLayer && !AERIAL_LAYER_IDS.includes(l.id))
+        .map((l) => l.id);
+      if (map._earBackgroundLayer) {
+        try {
+          map._earBackgroundColor = map.getPaintProperty(map._earBackgroundLayer, 'background-color');
+        } catch (_) { map._earBackgroundColor = null; }
+      }
+    }
     for (const [id, source] of Object.entries(sources)) {
       if (!map.getSource(id)) map.addSource(id, source);
     }
@@ -3293,7 +3525,21 @@ function mountAerialLayers(map) {
         type: 'raster',
         source: id,
         layout: { visibility },
-        ...(id === 'wien-labels' ? { paint: { 'raster-opacity': 0.95 } } : {}),
+        // The zoom range goes on the LAYER as well as the source, and the
+        // layer is the one that counts: MapLibre decides a source is unused
+        // — and so loads nothing for it — from whether any *layer* using it
+        // is drawn at the current zoom. A range set only on the source
+        // leaves the layer nominally drawn at every zoom, which keeps the
+        // source marked in use.
+        ...(AERIAL_LAYER_ZOOM[id] || {}),
+        paint: {
+          // Raster tiles fade in over 300ms by default. On a screenful of
+          // them arriving one at a time that reads as the map slowly
+          // developing rather than loading — and the driver is waiting on
+          // it. Show each tile the moment it lands.
+          'raster-fade-duration': 0,
+          ...(id === 'wien-labels' ? { 'raster-opacity': 0.95 } : {}),
+        },
       }, before);
     }
     return true;
@@ -3308,6 +3554,23 @@ function mountAerialLayers(map) {
 // Bottom-to-top: the nationwide fallback, Vienna's imagery over it, labels
 // on top of both.
 const AERIAL_LAYER_IDS = ['at-ortho', 'wien-lb', 'wien-labels'];
+
+// Where the nationwide overview imagery hands over to Vienna's own
+// high-resolution imagery. Street level: below this the driver is looking at
+// the shape of the route, above it at a specific building.
+const AERIAL_DETAIL_ZOOM = 16;
+
+// The zoom band each aerial layer is actually drawn in, so that exactly one
+// imagery layer is doing the work at any given zoom.
+//   - `at-ortho` covers everything below street level and then stays on as a
+//     stretched underlay, so a hole in the city imagery shows ground.
+//   - `wien-lb` only exists from street level up, which is the only place its
+//     extra resolution can be seen.
+//   - labels are unreadable on an overview and are simply not fetched there.
+const AERIAL_LAYER_ZOOM = {
+  'wien-lb': { minzoom: AERIAL_DETAIL_ZOOM },
+  'wien-labels': { minzoom: 13 },
+};
 
 // Which basemap every map in the app opens with, persisted like the
 // maps-app choice (see `MAPS_PROVIDER_KEY`) — a driver who works off the
@@ -3332,9 +3595,31 @@ function applyBasemap(map, mode) {
   map._earBasemap = mode;
   // Late-mounted if the style wasn't ready when the map was built.
   if (!mountAerialLayers(map)) return;
-  const visibility = mode === 'aerial' ? 'visible' : 'none';
+  const aerial = mode === 'aerial';
   for (const id of AERIAL_LAYER_IDS) {
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility);
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', aerial ? 'visible' : 'none');
+  }
+  // The vector map is switched off entirely underneath the imagery, and
+  // that is not cosmetic — it is most of why the Luftbild was slow. A hidden
+  // layer's source stops loading, so this is a whole set of vector tiles per
+  // view not downloaded, not decoded, and not re-rendered on a phone CPU
+  // that was already busy fetching imagery.
+  //
+  // It also fixes what it looked like: the imagery covers Vienna and stops,
+  // so at the edges — and anywhere a tile hadn't arrived yet — the street
+  // map showed through beside the photo, two maps at once.
+  for (const id of map._earVectorLayers || []) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', aerial ? 'none' : 'visible');
+  }
+  // The background layer stays on as the ground under both: a neutral dark
+  // grey while the imagery loads (and outside its coverage), the style's own
+  // colour otherwise. Without it, a gap in the photos is the bare canvas.
+  if (map._earBackgroundLayer && map.getLayer(map._earBackgroundLayer)) {
+    map.setPaintProperty(
+      map._earBackgroundLayer,
+      'background-color',
+      aerial ? '#2f3133' : (map._earBackgroundColor || '#f8f4f0')
+    );
   }
 }
 
@@ -3357,8 +3642,10 @@ function mountBasemapRedraw(map) {
     // during a style's life.
     try { layers = map.getStyle()?.layers; } catch (_) { return; }
     if (!layers?.length) return;
-    map._earStyleReady = true;
-    mountAerialLayers(map);
+      map._earStyleReady = true;
+    // Mounts the imagery and, on a map that opens straight into Luftbild,
+    // switches the vector layers off in the same pass.
+    if (mountAerialLayers(map)) applyBasemap(map, map._earBasemap);
     // Already drawn. `styledata` also fires as a *result* of adding the
     // route's own layers, and again for every tile that arrives, so without
     // this the handler would answer its own work and rebuild every marker
@@ -3512,6 +3799,16 @@ function elFromHtml(html) {
 }
 
 function newMap(container, opts) {
+  // Both tile hosts speak HTTP/2, where a request is a stream rather than a
+  // connection — so the default cap of 16 in-flight image requests leaves a
+  // screenful of tiles queueing behind each other for no reason. Raised
+  // once, guarded, because it is a global knob on the library rather than a
+  // map option and its name is not part of the public API contract.
+  try {
+    if (maplibregl.config && typeof maplibregl.config.MAX_PARALLEL_IMAGE_REQUESTS === 'number') {
+      maplibregl.config.MAX_PARALLEL_IMAGE_REQUESTS = 32;
+    }
+  } catch (_) { /* not a knob this build has */ }
   const basemap = getBasemap();
   const map = new maplibregl.Map({
     container,
@@ -3951,22 +4248,14 @@ function scrollActiveChipIntoView() {
 // ---------------------------------------------------------------------
 function renderRouteDetail() {
   const r = state.currentRoute;
-  const stops = r.stops;
-  const firstOpenIdx = stops.findIndex(s => s.kind === 'customer' && !s.delivered);
   const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
-  const doors = sameDoorGroups(stops);
-
-  const stopRow = (s, i) => {
-    const isNext = i === firstOpenIdx;
-    const meta = stopKindMeta(s);
-
-    if (meta) return renderFixedRow(s, meta, suppressRowAnim ? null : i);
-
-    return renderCustomerRow(s, isNext, suppressRowAnim ? null : i, doors.get(s.id)?.length);
-  };
+  // A full render rebuilds the filtered list from `stopFilter` on its own, so
+  // a background refresh mid-search reproduces exactly what was on screen —
+  // `paintStopFilter` exists for keystrokes, not for correctness.
+  const filtering = stopFilterActive();
 
   return `
-    <div data-scroll class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
+    <div data-scroll role="main" class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
       <div class="sticky top-0 z-20 bg-[#F2F2F7]/85 backdrop-blur-xl border-b border-black/10" style="padding-top: calc(env(safe-area-inset-top) + 0.5rem)">
         <div class="flex items-center gap-1 px-2 pb-2.5">
           <button onclick="closeDetail()" aria-label="Zurück zur Übersicht" title="Zurück" class="press-fade w-9 h-9 flex items-center justify-center text-brand-600 text-lg shrink-0">${ICONS.back}</button>
@@ -3981,7 +4270,7 @@ function renderRouteDetail() {
 
       <div class="px-4">
         <h1 data-large-title class="large-title text-[22px] font-bold tracking-tight pt-3 pb-1 truncate">${escapeHtml(r.name)}</h1>
-        <p class="text-[13px] text-black/50 pb-3">${r.status === 'active' ? 'Aktiv' : 'Abgeschlossen'} · ${fmtDate(r.created_at)}</p>
+        <p class="text-[13px] text-black/55 pb-3">${r.status === 'active' ? 'Aktiv' : 'Abgeschlossen'} · ${fmtDate(r.created_at)}</p>
 
         ${r.needs_optimize ? `
           <button onclick="manualOptimize()" class="press-98 w-full flex items-center justify-between gap-2 bg-warn/10 text-warnText text-[13px] font-semibold px-4 py-2.5 rounded-xl mb-3">
@@ -3994,7 +4283,7 @@ function renderRouteDetail() {
           <div class="flex-1 min-w-0">
             <div class="flex justify-between items-baseline mb-1.5">
               <p data-delivered-count-text class="text-[15px] font-semibold">${r.delivered_count} / ${r.customer_count} zugestellt</p>
-              <p class="text-[12px] text-black/50">≈ ${r.total_km} km · ${r.total_min} min</p>
+              <p class="text-[12px] text-black/55">≈ ${r.total_km} km · ${r.total_min} min</p>
             </div>
             <div class="h-1.5 bg-black/10 rounded-full overflow-hidden">
               <div data-progress-bar class="h-full bg-success transition-all duration-500" style="width: ${progress}%"></div>
@@ -4003,11 +4292,13 @@ function renderRouteDetail() {
           <span class="text-brand-600 shrink-0 flex items-center gap-1 text-[13px] font-medium">${ICONS.mapPin} Karte<span class="flex">${ICONS.chevron}</span></span>
         </button>
 
-        <div data-next-stop-bar-slot>${nextStopBar(stops, firstOpenIdx)}</div>
+        <div data-next-stop-bar-slot>${nextStopBarHtml()}</div>
 
-        <div class="${GROUP}">
-          ${stops.map(stopRow).join('')}
-        </div>
+        ${stopSearchBar()}
+        <p data-stop-filter-status role="status" aria-live="polite"
+          class="${filtering ? '' : 'hidden'} text-[13px] font-medium text-black/55 px-1 pb-1.5">${escapeHtml(stopFilterStatusText())}</p>
+
+        <div data-stop-list>${stopListHtml({ animate: !suppressRowAnim })}</div>
       </div>
     </div>
   `;
@@ -4027,9 +4318,9 @@ function nextStopBar(stops, firstOpenIdx) {
     <button onclick="scrollToNextStop()" class="press-98 w-full flex items-center gap-3 bg-brand-600 text-white rounded-2xl px-4 py-3 mb-4 shadow-sm text-left">
       <span class="w-8 h-8 shrink-0 rounded-full bg-white/20 flex items-center justify-center">${ICONS.mapPin}</span>
       <span class="flex-1 min-w-0">
-        <span class="block text-[11px] font-semibold uppercase tracking-wide text-white/75">Nächster Stopp</span>
+        <span class="block text-[11px] font-semibold uppercase tracking-wide text-white">Nächster Stopp</span>
         <span class="block text-[15px] font-semibold truncate">${escapeHtml(next.kunde)}</span>
-        <span class="block text-[12px] text-white/80 truncate">${escapeHtml(next.strasse)}, ${escapeHtml(next.plz)} Wien</span>
+        <span class="block text-[12px] text-white truncate">${escapeHtml(next.strasse)}, ${escapeHtml(next.plz)} Wien</span>
       </span>
       <span class="shrink-0 text-white/70 flex">${ICONS.chevron}</span>
     </button>
@@ -4048,9 +4339,202 @@ function scrollToNextStop() {
   );
 }
 
+// ---------------------------------------------------------------------
+// Stop filter — finding one customer inside the open route.
+//
+// A route is 20–30 stops in driving order, which is the right order to
+// drive and the wrong one to look something up in. A driver holding a name
+// or half an address ("who was the Gentzgasse one?", "did I already do
+// Novak?") has to scroll the whole list and read every row. This narrows it
+// to what they typed.
+//
+// Entirely local: `state.currentRoute.stops` is already in memory, so
+// filtering costs nothing, needs no network, and works with no signal —
+// which is most of the point, since the list is consulted standing next to
+// a van rather than at a desk.
+// ---------------------------------------------------------------------
+
+/// Belongs to whichever route is open, and is cleared whenever a different
+/// one is loaded (see `loadRouteIntoFocus`/`closeDetail`) — a filter left
+/// over from the last route would silently hide most of the new one.
+const stopFilter = { query: '' };
+
+/// The tokens the filter matches on, or `null` when there is nothing to
+/// filter by (an empty field, or one holding only punctuation — which
+/// normalizes away to nothing and must not be treated as a filter that
+/// matches everything *or* nothing).
+///
+/// Every token has to appear somewhere in the stop's text, in any order, so
+/// "gruber gentzgasse" and "gentzgasse gruber" are the same search. Deliberately
+/// substring rather than whole-word: one-handed in a van, people stop typing
+/// at "gentz".
+function stopFilterTokens() {
+  const key = normalizeMatchText(stopFilter.query);
+  return key ? key.split(' ').filter(Boolean) : null;
+}
+
+function stopFilterActive() {
+  return stopFilterTokens() !== null;
+}
+
+/// Customer, street and postcode together, through the same normalization
+/// the duplicate check uses — so "hauptstr 5" finds the stop stored as
+/// "Hauptstraße 5", "gentzgasse 129 1" finds "Gentzgasse 129/1", and no
+/// match is ever decided by a slash or a full stop.
+function stopMatches(s, tokens) {
+  const hay = `${normalizeMatchText(s.kunde)} ${normalizeMatchText(s.strasse)} ${String(s.plz || '').trim()}`;
+  return tokens.every((t) => hay.includes(t));
+}
+
+/// No debounce and no minimum length: this is a synchronous pass over at
+/// most a hundred objects already in memory, so the list can simply keep up
+/// with the keyboard. A single letter is a legitimate narrowing here in a
+/// way it would not be against a whole database.
+function onStopFilterInput(value) {
+  stopFilter.query = value;
+  paintStopFilter();
+}
+
+function clearStopFilter() {
+  stopFilter.query = '';
+  const input = document.getElementById('stop-search');
+  if (input) {
+    input.value = '';
+    // Focus stays in the field: clearing is usually the first half of
+    // "search for something else", and dropping the caret would make that
+    // two taps instead of one.
+    input.focus({ preventScroll: true });
+  }
+  paintStopFilter();
+}
+
+/// Called when the route in focus is replaced. Without it, opening a second
+/// route while a filter is set would show that route already narrowed by a
+/// word the driver typed for a different one — most likely as an empty list
+/// with no obvious cause.
+function resetStopFilter() {
+  stopFilter.query = '';
+}
+
+function stopSearchBar() {
+  return `
+    <div role="search" class="pb-2">
+      <label for="stop-search" class="sr-only">Kunde oder Adresse in dieser Route suchen</label>
+      <div class="relative">
+        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-black/55 text-[17px] flex pointer-events-none">${ICONS.search}</span>
+        <input id="stop-search" type="search" value="${escapeAttr(stopFilter.query)}"
+          placeholder="Kunde oder Adresse suchen"
+          autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+          enterkeyhint="search" maxlength="${LIMITS.strasse}"
+          oninput="onStopFilterInput(this.value)"
+          class="w-full bg-black/[0.06] rounded-xl pl-10 pr-11 py-2.5 text-base placeholder:text-black/55 focus:outline-none focus:ring-2 focus:ring-brand-600" />
+        <button data-stop-filter-clear type="button" onclick="clearStopFilter()" aria-label="Suche löschen" title="Suche löschen"
+          class="${stopFilter.query ? '' : 'hidden'} press-95 absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center text-[13px] text-black/55 bg-black/[0.08]">${ICONS.close}</button>
+      </div>
+    </div>
+  `;
+}
+
+/// "3 von 27 Stopps". Lives in its own persistent `role="status"` element
+/// rather than inside the list, so a screen reader hears the count change
+/// instead of having every matching row read back on each keystroke.
+function stopFilterStatusText() {
+  const tokens = stopFilterTokens();
+  const r = state.currentRoute;
+  if (!tokens || !r) return '';
+  const customers = r.stops.filter((s) => s.kind === 'customer');
+  const shown = customers.filter((s) => stopMatches(s, tokens)).length;
+  return `${shown} von ${customers.length} ${customers.length === 1 ? 'Stopp' : 'Stopps'}`;
+}
+
+/// The stop list, filtered or not.
+///
+/// Reads the route out of `state` rather than taking it as an argument so
+/// `paintStopFilter` can rebuild this one block on a keystroke without going
+/// anywhere near `render()`.
+function stopListHtml({ animate = false } = {}) {
+  const r = state.currentRoute;
+  if (!r) return '';
+  const stops = r.stops;
+  const doors = sameDoorGroups(stops);
+  const firstOpenIdx = stops.findIndex((s) => s.kind === 'customer' && !s.delivered);
+  // Identified by id, not by position in the list being rendered: a filtered
+  // list has its own indices, and "next stop" is a fact about the route
+  // rather than about what happens to be on screen.
+  const nextId = firstOpenIdx >= 0 ? stops[firstOpenIdx].id : null;
+  const tokens = stopFilterTokens();
+
+  const row = (s, i) => {
+    // Never staggered while filtering: the list is rebuilt on every
+    // keystroke, and replaying the entrance animation each time makes it
+    // flicker rather than narrow.
+    const animIndex = animate && !tokens ? i : null;
+    const meta = stopKindMeta(s);
+    if (meta) return renderFixedRow(s, meta, animIndex);
+    return renderCustomerRow(s, s.id === nextId, animIndex, doors.get(s.id)?.length);
+  };
+
+  if (!tokens) return `<div class="${GROUP}">${stops.map(row).join('')}</div>`;
+
+  // Start/Lager/Ziel are dropped while filtering: they are not customers,
+  // and leaving them above a single matching row reads as though they had
+  // matched it.
+  const matches = stops.filter((s) => s.kind === 'customer' && stopMatches(s, tokens));
+  if (!matches.length) {
+    return `
+      <div class="${CARD} px-4 py-7 text-center">
+        <span class="text-3xl flex justify-center mb-2 opacity-40">${ICONS.search}</span>
+        <p class="text-[15px] font-medium text-black/70">Kein Stopp gefunden</p>
+        <p class="text-[13px] text-black/55 mt-1 leading-snug">In dieser Route passt kein Kundenstopp zu „${escapeHtml(stopFilter.query.trim())}".</p>
+      </div>`;
+  }
+  return `<div class="${GROUP}">${matches.map(row).join('')}</div>`;
+}
+
+/// Repaints exactly what the filter owns, and nothing else.
+///
+/// Deliberately not `render()`: that replaces all of #app's innerHTML, which
+/// would tear out the field the driver is typing into and take the caret
+/// with it — on every keystroke.
+function paintStopFilter() {
+  const filtering = stopFilterActive();
+  document.querySelector('[data-stop-filter-clear]')?.classList.toggle('hidden', !stopFilter.query);
+  const status = document.querySelector('[data-stop-filter-status]');
+  if (status) {
+    status.textContent = stopFilterStatusText();
+    status.classList.toggle('hidden', !filtering);
+  }
+  const list = document.querySelector('[data-stop-list]');
+  if (list) list.innerHTML = stopListHtml();
+  const barSlot = document.querySelector('[data-next-stop-bar-slot]');
+  if (barSlot) barSlot.innerHTML = nextStopBarHtml();
+}
+
+/// The "Nächster Stopp" banner, or nothing while the list is filtered.
+///
+/// It is a claim about the whole route and it scrolls to a row a narrowed
+/// list may not be showing at all — so it stands down rather than offering a
+/// jump that lands nowhere. Shared by the full render, the filter repaint and
+/// `applyDeliveredDomPatch`, so those three can't disagree about when it is
+/// there.
+function nextStopBarHtml() {
+  if (stopFilterActive()) return '';
+  const stops = state.currentRoute?.stops || [];
+  return nextStopBar(stops, stops.findIndex((s) => s.kind === 'customer' && !s.delivered));
+}
+
 function closeRouteMenu() {
-  document.getElementById('route-menu')?.classList.add('hidden');
-  document.getElementById('route-menu-btn')?.setAttribute('aria-expanded', 'false');
+  const menu = document.getElementById('route-menu');
+  if (!menu || menu.classList.contains('hidden')) return;
+  const btn = document.getElementById('route-menu-btn');
+  // Read before hiding: once the menu is `hidden` its buttons are no longer
+  // focusable, and the browser has already dropped focus to <body>. Without
+  // putting it back, dismissing the menu with Escape leaves a keyboard user
+  // at the top of the document with no indication of where they were.
+  const hadFocus = menu.contains(document.activeElement);
+  menu.classList.add('hidden');
+  btn?.setAttribute('aria-expanded', 'false');
+  if (hadFocus) btn?.focus({ preventScroll: true });
 }
 
 function toggleRouteMenu() {
@@ -4060,7 +4544,8 @@ function toggleRouteMenu() {
   document.getElementById('route-menu-btn')?.setAttribute('aria-expanded', String(open));
   // Move into the menu when it opens so a keyboard user lands on the first
   // action rather than having to tab through the rest of the header.
-  if (open) menu.querySelector('button')?.focus();
+  if (open) menu.querySelector('[role="menuitem"]')?.focus();
+  else document.getElementById('route-menu-btn')?.focus({ preventScroll: true });
 }
 
 function renderRouteMenu() {
@@ -4070,13 +4555,14 @@ function renderRouteMenu() {
   // open a confirm sheet first do not, so cancelling out of "Route
   // löschen?" used to leave the menu still hanging open over the route.
   const item = (onclick, iconSvg, label, danger) => `<button onclick="closeRouteMenu(); ${onclick}" role="menuitem" class="w-full flex items-center gap-3 text-left px-4 py-3 text-[15px] ${danger ? 'text-red-600' : ''} active:bg-black/5">
-    <span class="w-5 flex shrink-0 ${danger ? 'text-red-600' : 'text-black/50'}">${iconSvg}</span>${label}
+    <span class="w-5 flex shrink-0 ${danger ? 'text-red-600' : 'text-black/55'}">${iconSvg}</span>${label}
   </button>`;
   return `
     <div id="route-menu" role="menu" aria-label="Weitere Aktionen" class="hidden absolute right-0 top-10 w-56 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden z-30 divide-y divide-black/10">
       ${item("renderLadeliste()", ICONS.box, "Ladeliste")}
       ${item("renameRoute()", ICONS.pencil, "Umbenennen")}
       ${item("manualOptimize()", ICONS.compass, "Neu optimieren")}
+      ${item("recheckAddresses()", ICONS.mapPin, "Adressen neu prüfen")}
       ${item("renderJsonForm();", ICONS.doc, "Als JSON bearbeiten")}
       ${item("resetDelivered()", ICONS.refresh, "Zustellungen zurücksetzen")}
       ${item("toggleRouteStatus()", ICONS.checkCircle, r.status === 'completed' ? 'Wieder aktivieren' : 'Route abschließen')}
