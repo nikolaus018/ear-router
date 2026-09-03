@@ -5924,29 +5924,84 @@ function stopAerialHandover(map) {
 // looking at a moment ago.
 function startAerialHandover(map) {
   stopAerialHandover(map);
-  // `idle`, and specifically not `sourcedata` + `areTilesLoaded()`.
+  // Waiting for `idle` alone is what put a blank map in front of the driver.
   //
-  // Those two look equivalent and are not, in the one way that matters
-  // here: at the moment the aerial layers are switched on, MapLibre has not
-  // yet queued a single tile for them — it does that during the render pass
-  // the visibility change schedules. Ask `areTilesLoaded()` before that
-  // pass and it truthfully answers "yes, everything I know about is
-  // loaded", the vector map is switched off immediately, and the blank
-  // rectangle this function exists to prevent is back.
+  // `idle` means "nothing left to draw or load". The trap is that a map
+  // sitting still — which is exactly what it is doing when a thumb reaches
+  // for the Luftbild button — is *already* idle, and switching a layer's
+  // visibility does not queue its tiles until the next render pass. So the
+  // first `idle` after the switch could arrive before MapLibre had requested
+  // a single aerial tile, and handing over on it hid the street map with
+  // nothing yet in its place: dark grey, no imagery, no street map. Waiting
+  // on `sourcedata` instead had the mirror of the same problem, which is why
+  // this was written against `idle` in the first place.
   //
-  // `idle` cannot fire early: it means the map has finished rendering AND
-  // has nothing left in flight, so by definition the tile requests have
-  // been made and answered. When the imagery is already cached that is the
-  // very next frame, so a toggle back and forth is still instant.
-  const onIdle = () => {
-    stopAerialHandover(map);
+  // The fix is to stop inferring readiness from an event at all and require
+  // evidence instead: one `sourcedata` event, from one of the imagery
+  // sources, reporting itself loaded. That cannot be true before the tiles
+  // for this view have actually arrived, whatever order the events come in.
+  // `areTilesLoaded()` on top of it covers the rest of the screen.
+  let sawImagery = false;
+  const onData = (e) => {
     // Switched back to the street map while waiting — nothing to hand over.
-    if (map._earBasemap !== 'aerial') return;
+    if (map._earBasemap !== 'aerial') { stopAerialHandover(map); return; }
+    if (e.sourceId && AERIAL_IMAGERY_SOURCES.includes(e.sourceId) && e.isSourceLoaded) {
+      sawImagery = true;
+    }
+    if (!sawImagery || !map.areTilesLoaded()) return;
+    stopAerialHandover(map);
     setVectorLayersVisible(map, false);
+    // The street map going down must never take the route with it. It does
+    // not — the route's layers are deliberately excluded from
+    // `_earVectorLayers` (see `mountAerialLayers`) — but this is the exact
+    // moment a driver reported losing the line, so the invariant is asserted
+    // here rather than trusted.
+    ensureRouteVisible(map);
   };
-  map._earHandover = onIdle;
-  map.on('idle', onIdle);
+  map._earHandover = onData;
+  map.on('sourcedata', onData);
+  // Imagery that never arrives leaves the street map up, which is the right
+  // answer for a driver with no signal — see `AERIAL_HANDOVER_TIMEOUT_MS`.
   map._earHandoverTimer = setTimeout(() => stopAerialHandover(map), AERIAL_HANDOVER_TIMEOUT_MS);
+}
+
+// The two sources that actually carry imagery. The label overlay is left out
+// on purpose: it is transparent, it does not cover the street map, and above
+// zoom 19 it stops loading entirely — waiting on it would strand the
+// handover at exactly the zoom a driver uses to look at a door.
+const AERIAL_IMAGERY_SOURCES = ['at-ortho', 'wien-lb'];
+
+// Re-asserts the one thing about this map that must always be true: the
+// route the driver is following is on screen, and on top.
+//
+// Two ways a route line goes missing, and this covers both because from the
+// driver's seat they are the same event — the red line is not there any more:
+//
+//   - hidden, if a basemap switch ever caught the route's layers in the set
+//     it switches off. They are deliberately excluded (see
+//     `mountAerialLayers`), so this should not fire.
+//   - buried, which does not need anything to go wrong at all. The imagery
+//     is inserted beneath `route-line-casing` when the aerial layers are
+//     first mounted — but only if the route's layers already exist at that
+//     moment. Tap Luftbild during the second or two before the style has
+//     parsed, and the imagery is appended to the top of the style instead,
+//     with three opaque raster layers now sitting over the route. Nothing
+//     errors. The line is simply underneath the photograph.
+//
+// Moving the two layers back to the top is idempotent and costs a pair of
+// style reorders on an action the driver takes by hand, which is nothing
+// next to a driver following a route they cannot see. `moveLayer` with no
+// target means "to the top"; casing first so the red line lands above its
+// own outline.
+function ensureRouteVisible(map) {
+  for (const id of ROUTE_LAYER_IDS) {
+    if (!map.getLayer(id)) continue;
+    if ((map.getLayoutProperty(id, 'visibility') || 'visible') !== 'visible') {
+      console.warn('route layer was hidden by a basemap change — restoring', id);
+      map.setLayoutProperty(id, 'visibility', 'visible');
+    }
+    try { map.moveLayer(id); } catch (_) { /* not in the style yet */ }
+  }
 }
 
 // Switching basemap: visibility flags, no style replacement. Nothing is
@@ -5978,6 +6033,8 @@ function applyBasemap(map, mode) {
       aerial ? '#2f3133' : (map._earBackgroundColor || '#f8f4f0')
     );
   }
+  // Whatever this switch did to the basemap, the route stays visible.
+  ensureRouteVisible(map);
 }
 
 // Runs whenever the map's style changes state. There is only ever one style
