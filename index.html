@@ -6366,21 +6366,65 @@ function mountHeadingIndicator(map, geolocate) {
     });
   };
 
-  // iOS Safari exposes `webkitCompassHeading` directly — already degrees
-  // clockwise from true north, no correction needed, and the most reliable
-  // source on the platform this app mostly runs on (see the zoom-lock
-  // comment in <head>). Elsewhere, `deviceorientationabsolute` gives
-  // `alpha` as degrees counter-clockwise from the device's compass-zero,
-  // so the compass heading is `360 - alpha`. A plain, non-absolute
-  // `deviceorientation` has no fixed relationship to north at all — it's
-  // relative to wherever the device happened to be pointed when the
-  // listener attached — so it's read the same way only because an
-  // approximate, slowly-drifting heading beats no cone at all.
+  // Reading a compass bearing off a DeviceOrientationEvent, or refusing to.
+  //
+  // Refusing matters as much as reading. A cone is a claim about which way
+  // the driver is facing, and a confidently wrong one is worse than none at
+  // all: it is read at a glance, at a door, to decide which way to walk.
+  // Every path below either produces a true bearing or gives up.
+  const readCompassHeading = (e) => {
+    // iOS: already degrees clockwise from true north, and the most reliable
+    // source on the platform this app mostly runs on. `webkitCompassAccuracy`
+    // goes negative when the magnetometer is uncalibrated (the "wave your
+    // phone in a figure of eight" state) — the heading is meaningless then
+    // and iOS says so, so it is dropped rather than drawn.
+    if (typeof e.webkitCompassHeading === 'number' && !Number.isNaN(e.webkitCompassHeading)) {
+      if (typeof e.webkitCompassAccuracy === 'number' && e.webkitCompassAccuracy < 0) return null;
+      return e.webkitCompassHeading;
+    }
+    // Everywhere else, `absolute` is the whole question. An absolute reading
+    // is referenced to the Earth, so `360 - alpha` is a real compass bearing.
+    // A non-absolute one is referenced to wherever the device happened to be
+    // pointing when the listener attached — an arbitrary zero that drifts.
+    //
+    // This used to accept it anyway, reasoning that a rough heading beats no
+    // arrow. That reasoning was wrong. It is not a rough heading, it is an
+    // unrelated number, and it produced a cone that pointed somewhere the
+    // driver was definitively not facing.
+    if (e.absolute !== true) return null;
+    if (typeof e.alpha !== 'number' || Number.isNaN(e.alpha)) return null;
+    return (360 - e.alpha) % 360;
+  };
+
+  // Both readings above describe the *device*; the map is drawn in the
+  // *screen's* frame, and the two differ by however far the UI has been
+  // rotated. Zero in portrait, which is the only orientation this app is
+  // ever in (the manifest declares `orientation: portrait`), so this is a
+  // no-op in practice — it is here so that a landscape browser tab shows a
+  // cone that is merely rotated rather than one that is wrong.
+  const screenAngle = () => {
+    const a = screen?.orientation?.angle;
+    if (typeof a === 'number') return a;
+    return typeof window.orientation === 'number' ? window.orientation : 0;
+  };
+
+  // Which event to believe.
+  //
+  // Chrome fires BOTH `deviceorientationabsolute` and `deviceorientation`,
+  // and only the first is compass-referenced. Feeding both into one handler
+  // — which is what this did — interleaved two different zeroes at 60 Hz, so
+  // the cone flickered between a true bearing and an arbitrary one. Once the
+  // absolute event has been seen even once, the relative one is ignored for
+  // the life of the map.
+  let absoluteSeen = false;
   const onOrientation = (e) => {
-    let h = null;
-    if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;
-    else if (typeof e.alpha === 'number') h = (360 - e.alpha) % 360;
-    if (h == null || Number.isNaN(h)) return;
+    if (e.type === 'deviceorientationabsolute') absoluteSeen = true;
+    else if (absoluteSeen) return;
+    const raw = readCompassHeading(e);
+    // No trustworthy bearing: leave the cone showing the last good one if
+    // there is one, and draw nothing at all if there never was.
+    if (raw == null) return;
+    const h = (raw + screenAngle() + 360) % 360;
     // The very first reading is taken whole — smoothing towards it from an
     // arbitrary starting point would swing the cone across the compass on
     // the way to the truth.
@@ -6392,6 +6436,12 @@ function mountHeadingIndicator(map, geolocate) {
 
   geolocate.on('geolocate', (e) => {
     marker.setLngLat([e.coords.longitude, e.coords.latitude]);
+    // No compass bearing yet — no cone. A cone parked at its default
+    // rotation points north and looks exactly as authoritative as a real
+    // one, so it would tell the driver they are facing north when the app
+    // has no idea which way they are facing. The location dot alone is the
+    // honest drawing of "here, direction unknown".
+    if (heading == null) { if (onMap) hide(); return; }
     if (!onMap) {
       marker.addTo(map);
       onMap = true;
