@@ -2074,6 +2074,24 @@ fn geojson_to_polyline(geom: OsrmGeometry) -> Vec<[f64; 2]> {
 /// being held down by a stale verdict.
 const OSRM_PRIMARY_RETRY_AFTER: Duration = Duration::from_secs(60);
 
+/// How long the primary OSRM gets to answer before the public fallback is
+/// tried instead.
+///
+/// `connect_timeout` on the shared client (see `main`) already caps the
+/// common failure — a primary that isn't there at all. This caps the other
+/// one: a primary that *accepts* the connection and then stalls (an OSRM
+/// container still loading its graph, a half-open connection a sleeping
+/// laptop left behind, a captive portal that swallows the request). Without
+/// it those cost the client's full 20s before anything else is tried, which
+/// is the same "first tap times out, second tap is instant" the connect
+/// timeout exists to kill — just reached a different way.
+///
+/// Generous relative to what a healthy self-hosted OSRM takes for these
+/// queries (single-digit to low tens of milliseconds on a LAN, and this is
+/// a whole-request budget including the JSON decode), so it never cuts off
+/// a primary that is merely busy.
+const OSRM_PRIMARY_DEADLINE: Duration = Duration::from_secs(4);
+
 /// One GET+JSON-decode attempt against a single OSRM base — no fallback
 /// logic, just the HTTP mechanics `osrm_get` needs to try twice.
 async fn osrm_try<T: DeserializeOwned>(client: &reqwest::Client, base: &str, path_and_query: &str) -> Result<T, reqwest::Error> {
@@ -2113,7 +2131,22 @@ async fn osrm_get<T: DeserializeOwned>(state: &AppState, path_and_query: &str) -
         && down_since.is_some_and(|since| since.elapsed() < OSRM_PRIMARY_RETRY_AFTER);
 
     if !skip_primary {
-        match osrm_try::<T>(&state.http, primary, path_and_query).await {
+        // Flattened to `Result<T, String>` so the deadline elapsing and a
+        // transport error take the same path below: `reqwest::Error` can't
+        // be constructed by hand, and every consumer here only ever displays
+        // it. Both are "the primary didn't answer", and both must record the
+        // cooldown and fall through to the public server.
+        let attempt: Result<T, String> = match tokio::time::timeout(
+            OSRM_PRIMARY_DEADLINE,
+            osrm_try::<T>(&state.http, primary, path_and_query),
+        )
+        .await
+        {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err(format!("no response within {OSRM_PRIMARY_DEADLINE:?}")),
+        };
+        match attempt {
             Ok(v) => {
                 // Recovered (or never down) — clear any earlier verdict so
                 // the next failure gets a fresh cooldown, not a leftover one.
@@ -4262,6 +4295,34 @@ async fn main() {
 
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
+        // The deadline that actually matters for how this app *feels*.
+        //
+        // The default primary OSRM is a self-hosted box on a LAN address
+        // (`OSRM_BASE_DEFAULT`). When that box is off, moved, or simply not
+        // on the network the app is currently attached to, connecting to it
+        // does not fail — it hangs until the OS gives up on the SYN, which
+        // on Windows is tens of seconds. With only the 20s total `timeout`
+        // above to stop it, the *first* route/stop/optimize action after a
+        // restart burned the whole 20s inside `osrm_get` before falling
+        // back, which is longer than the browser's own 30s budget minus the
+        // rest of the work — so the driver watched the progress bar crawl
+        // and then got "Zeitüberschreitung". The failure was also what
+        // *recorded* the primary as down (`osrm_primary_down_since`), so the
+        // very next tap skipped the primary entirely and answered instantly.
+        // That is the "it fails, I press it again and it works" the app was
+        // reported for, and it is a connect timeout, not a flaky server.
+        //
+        // 2.5s is far longer than a LAN connect (sub-millisecond) or a
+        // public-internet TLS connect (tens of ms) ever legitimately takes,
+        // and short enough that discovering a dead primary costs a pause
+        // rather than a failed request.
+        .connect_timeout(Duration::from_millis(2500))
+        // Keep-alive tuned for the traffic this app actually makes: bursts
+        // of Nominatim/OSRM calls while a driver builds a route, then long
+        // idle stretches. Holding the pool open across those gaps saves a
+        // full TLS handshake on the first call of each burst.
+        .pool_idle_timeout(Duration::from_secs(90))
+        .user_agent(UPSTREAM_USER_AGENT)
         .build()
         .expect("failed to build HTTP client");
     tracing::info!("Geocoding via Wien-OGD with Nominatim fallback, routing via OSRM — all live services, no local dataset.");
@@ -4290,6 +4351,38 @@ async fn main() {
         route_locks: AsyncMutex::new(HashMap::new()),
         osrm_primary_down_since: StdMutex::new(None),
     });
+
+    // Find out whether the self-hosted OSRM is reachable *now*, in the
+    // background, instead of letting the driver's first tap find out.
+    //
+    // Even with `connect_timeout`/`OSRM_PRIMARY_DEADLINE` bounding it, that
+    // discovery is a stall on a request someone is watching — and it lands
+    // on the very first route, stop or optimize after every restart, which
+    // is exactly when the app is being judged. Doing it here means the
+    // cooldown in `osrm_primary_down_since` is already recorded by the time
+    // anything interactive runs, so the first tap goes straight to the
+    // fallback at full speed.
+    //
+    // Spawned rather than awaited: a slow or dead primary must not delay
+    // the port opening. A trivial `/route` between two points a metre apart
+    // in Vienna — cheap for any OSRM, and the answer is thrown away; only
+    // whether it answered matters, and `osrm_get` records that itself.
+    {
+        let probe_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            if probe_state.upstreams.osrm_base == OSRM_PUBLIC_FALLBACK {
+                return;
+            }
+            let path = "/route/v1/driving/16.373800,48.208200;16.373900,48.208300?overview=false";
+            match osrm_get::<serde_json::Value>(&probe_state, path).await {
+                Ok(_) => tracing::info!(base = %probe_state.upstreams.osrm_base, "primary OSRM reachable"),
+                Err(_) => tracing::warn!(
+                    base = %probe_state.upstreams.osrm_base,
+                    "primary OSRM not reachable at startup — routing will use the public server until it recovers"
+                ),
+            }
+        });
+    }
 
     let app = build_router(state);
 

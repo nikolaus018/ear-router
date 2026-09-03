@@ -2198,6 +2198,8 @@ const ICONS = {
   note: icon('<path d="M5 4h14v13.2l-3.8 2.8H5Z"/><path d="M8.5 9h7"/><path d="M8.5 13h7"/>'),
   archive: icon('<path d="M4 5h16v4H4Z"/><path d="M5 9v10h14V9"/><path d="M10 13h4"/>'),
   person: icon('<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7"/>'),
+  key: icon('<circle cx="7.5" cy="15.5" r="3.3"/><path d="M9.8 13.2 18.5 4.5"/><path d="M15 8.5 17.5 6"/><path d="M17 6.5 19.5 4"/>'),
+  external: icon('<path d="M14 5h5v5"/><path d="M19 5 10 14"/><path d="M18 13v6H5V6h6"/>'),
   search: icon('<circle cx="11" cy="11" r="6.5"/><line x1="15.8" y1="15.8" x2="20.5" y2="20.5"/>'),
   close: icon('<line x1="6.5" y1="6.5" x2="17.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="6.5" y2="17.5"/>', 'stroke-width="2"'),
 };
@@ -2212,7 +2214,103 @@ const ICONS = {
 const API_TIMEOUT_MS = 30000;
 const API_TIMEOUT_LONG_MS = 6 * 60 * 1000;
 
+// How many times a *safe* request is attempted, and how long to wait
+// between attempts.
+//
+// A driver's phone is on a mobile connection in a moving van: cell
+// handovers, courtyards, underground garages. A single dropped TCP
+// connection there is not an error worth showing anyone — it is a thing
+// that happens several times an hour and that resolves itself in under a
+// second. The app's own bug reports were mostly this: "I press it, it loads
+// and fails, I press it again and it works immediately." The second press
+// worked because the first one had already paid for whatever was slow —
+// warming a connection, filling the server's geocode cache, discovering a
+// dead upstream. Retrying turns that into one press that takes a moment.
+//
+// Deliberately short and few. This is not a queue and not an offline
+// buffer: three attempts inside about a second of added delay covers the
+// transient case, and anything that survives it is a real failure the
+// driver needs to be told about rather than have hidden behind a spinner.
+const API_RETRY_ATTEMPTS = 3;
+const API_RETRY_BASE_MS = 400;
+
+// Only requests that are safe to send twice — which here means GET and
+// nothing else.
+//
+// POST and PATCH change things, and this app's POSTs create them: a retried
+// "add stop", after a reply the server sent and the phone never received,
+// silently adds the stop twice. That is worse than the error it was
+// avoiding, because the driver has to notice and undo it.
+//
+// DELETE is left out too, despite being idempotent on the server. The
+// second attempt after a *successful* first one gets a 404, and the caller
+// turns that into "Stopp konnte nicht entfernt werden" for a stop that is
+// gone — an error message about something that worked, which is exactly the
+// kind of thing that makes an app feel unreliable. Callers that know a
+// particular request is safe can still opt in with `retry: true`.
+const RETRY_SAFE_METHODS = ['GET'];
+
+// Which failures are worth another attempt. Everything here is "the request
+// never reached a working server, or reached one that was momentarily
+// unable to answer" — never "the server considered it and said no", which
+// would produce the same answer however many times it is asked.
+const RETRYABLE_CODES = ['network', 'timeout', 'http_502', 'http_503', 'http_504'];
+
+function isRetryable(err) {
+  return !!err && RETRYABLE_CODES.includes(err.code);
+}
+
 async function api(path, options = {}) {
+  const { retry, timeoutMs = API_TIMEOUT_MS, ...rest } = options;
+  const method = (rest.method || 'GET').toUpperCase();
+  const retryable = retry === undefined ? RETRY_SAFE_METHODS.includes(method) : !!retry;
+  const attempts = retryable ? API_RETRY_ATTEMPTS : 1;
+
+  // The retries share the caller's deadline rather than each getting a
+  // fresh copy of it. Three 30-second attempts would be a minute and a half
+  // of a driver holding a phone at a van door, which is not a better
+  // outcome than one honest failure — so the budget is the same as it ever
+  // was and gets divided, giving three chances inside the wait the caller
+  // already accepted. The last attempt takes whatever is left over so a
+  // slow-but-alive server still gets its full remaining time.
+  const deadline = Date.now() + timeoutMs;
+  const slice = Math.ceil(timeoutMs / attempts);
+
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) {
+      // Linear, not exponential: the whole budget is about a second, and
+      // the failures this covers (a cell handover, a cold upstream) clear
+      // on that timescale. Backing off to several seconds would just make
+      // the driver wait longer for the same answer.
+      await new Promise((resolve) => setTimeout(resolve, API_RETRY_BASE_MS * attempt));
+      // A caller who cancelled while we were waiting (they closed the sheet,
+      // they opened a different route) must not have a fresh request fired
+      // on their behalf.
+      if (rest.signal?.aborted) throw apiError('Abgebrochen.', 'aborted');
+      if (navigator.onLine === false) throw apiError('Keine Internetverbindung.', 'offline');
+    }
+    const remaining = deadline - Date.now();
+    // Out of budget — report the failure that used it up rather than firing
+    // a request that is already past its deadline.
+    if (remaining <= 0) break;
+    const attemptTimeout = attempt === attempts - 1 ? remaining : Math.min(slice, remaining);
+    try {
+      return await apiAttempt(path, { ...rest, timeoutMs: attemptTimeout });
+    } catch (err) {
+      // A deliberate cancel, an offline device, and every 4xx the server
+      // meant are all final answers — only genuinely transient failures go
+      // round again.
+      if (!isRetryable(err)) throw err;
+      lastError = err;
+    }
+  }
+  throw lastError || apiError('Zeitüberschreitung – der Server hat nicht rechtzeitig geantwortet.', 'timeout');
+}
+
+// A single request attempt. `api()` wraps this with the retry policy — see
+// there for why one exists at all.
+async function apiAttempt(path, options = {}) {
   const { timeoutMs = API_TIMEOUT_MS, signal: callerSignal, ...fetchOptions } = options;
 
   // AbortSignal.any() would be tidier but isn't in older mobile WebKit,
@@ -2634,6 +2732,50 @@ function promptSheet({ title, message, placeholder = '', initial = '', confirmLa
 // instead of just centering the map on the address.
 // ---------------------------------------------------------------------
 const MAPS_PROVIDER_KEY = 'ear_maps_provider';
+
+// ---------------------------------------------------------------------
+// Türcode decoder — a manual tool for the office's own cipher sheet
+// (digit → letter), reachable from Mehr. A driver types the letters a
+// Notiz gives them (e.g. "ENVV") and gets the digits back live. No
+// auto-detection: a Notiz can also carry a code that's already the literal
+// digits/characters to use (nothing to decode), and the two look identical
+// from the text alone — so this is a tool the driver reaches for on
+// purpose, not a guess the app makes for them.
+// ---------------------------------------------------------------------
+const SAFE_CODE_LETTER_TO_DIGIT = { C:'0', E:'1', Z:'2', D:'3', V:'4', F:'5', S:'6', A:'8', N:'9' };
+
+// A character with no entry in the table (an X, a hyphen, a space) is
+// passed through unchanged rather than dropped or flagged — the driver said
+// that's exactly what those already are: not encoded, just written straight
+// into the result as-is.
+function decodeSafeLetters(letters) {
+  return letters.toUpperCase().split('').map((ch) => SAFE_CODE_LETTER_TO_DIGIT[ch] ?? ch).join('');
+}
+
+function onTurcodeInput(value) {
+  const out = document.getElementById('turcode-output');
+  if (!out) return;
+  const trimmed = value.trim();
+  out.textContent = trimmed ? decodeSafeLetters(trimmed) : '—';
+}
+
+function renderTurcodeSheet() {
+  renderSheetShell(`
+    <h2 class="text-[22px] font-bold mb-1">Türcode entschlüsseln</h2>
+    <p class="text-[13px] text-black/55 mb-4 leading-snug">Buchstaben aus der Notiz eingeben. Zeichen, die keine Ziffer haben (z. B. X oder ein Bindestrich), bleiben unverändert — die gehören dann schon direkt zum Code.</p>
+    <input id="turcode-input" type="text" inputmode="text" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false"
+      oninput="onTurcodeInput(this.value)" placeholder="z.B. ENVV" enterkeyhint="done"
+      class="w-full bg-white rounded-xl px-4 py-3 text-[20px] font-mono tracking-wide text-center uppercase focus:outline-none focus:ring-2 focus:ring-brand-600" />
+    <div class="${CARD} mt-3 p-4 text-center">
+      <p class="text-[11px] font-semibold uppercase tracking-wide text-black/55 mb-1">Code</p>
+      <p id="turcode-output" class="text-4xl font-bold tracking-wide text-brand-600 font-mono">—</p>
+    </div>
+    <div class="mt-4 pb-2">
+      <button type="button" onclick="closeSheet()" class="press-98 w-full py-3 rounded-xl bg-brand-600 font-semibold text-white">Fertig</button>
+    </div>
+  `, { label: 'Türcode entschlüsseln' });
+  setTimeout(() => document.getElementById('turcode-input')?.focus(), 80);
+}
 
 // Each provider takes a destination two ways, because this app has two
 // genuinely different kinds of destination to hand it (see `navUrl`):
@@ -3583,6 +3725,17 @@ document.getElementById('modal-root').addEventListener('focusin', (e) => {
 function renderSheetShell(bodyHtml, { scrollable = true, label = '' } = {}) {
   rememberFocusBeforeModal();
   const root = document.getElementById('modal-root');
+  // Whatever sheet was up is about to be replaced wholesale by the
+  // innerHTML below. If it was the pin-drop sheet, its map goes with it —
+  // and a MapLibre instance whose element is torn out from under it is not
+  // garbage: it keeps its WebGL context, its GPU buffers and its event
+  // listeners. Browsers cap live WebGL contexts (around 16), and losing the
+  // *oldest* one is how they enforce that — which on this app is the Karte
+  // tab's own map, the one thing kept alive for the whole session. Enough
+  // pin drops in a shift and the driver's map goes permanently blank with
+  // no error. `closeSheet` already does this on the paths that go through
+  // it; this covers a sheet replaced directly by another sheet.
+  if (pinDropMap) { try { pinDropMap.remove(); } catch (_) { /* already gone */ } pinDropMap = null; pinDropMarker = null; }
   root.innerHTML = `
     <div class="fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true" ${label ? `aria-label="${escapeAttr(label)}"` : ''}>
       <div id="sheet-backdrop" class="sheet-backdrop absolute inset-0 bg-black/30" onclick="closeSheet()"></div>
@@ -4794,6 +4947,38 @@ let mapAutoSelectPending = false;
 // is shown; the map itself owns the rest of the screen down to the tab
 // bar instead of being boxed into a small preview.
 // ---------------------------------------------------------------------
+// Whether the Karte tab's map has painted at least once. Until it has, the
+// tab shows a placeholder instead of an unexplained empty rectangle: on a
+// cold start the driver is waiting on MapLibre's script, a style, a sprite,
+// a glyph set and a screenful of tiles, and a blank grey box for a couple
+// of seconds reads as "the app is broken", not as "this is loading".
+// Sticky once true — the map is kept alive across tab switches, so coming
+// back must not flash a loading state at a map that is already drawn.
+let mapTabReady = false;
+
+// The longest the loading placeholder may cover the map — see where it is
+// armed, in `initMapTabMap`.
+const MAP_PLACEHOLDER_MAX_MS = 6000;
+
+function mapLoadingOverlay() {
+  return `
+    <div data-map-loading role="status" aria-live="polite"
+      class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#F2F2F7] pointer-events-none">
+      <span class="spinner"></span>
+      <p class="text-[13px] text-black/55">Karte wird geladen …</p>
+    </div>
+  `;
+}
+
+// Called once the map has actually rendered a frame. Removes the
+// placeholder in place rather than waiting for the next `render()`, so the
+// map appears the moment it is ready instead of on the next state change.
+function markMapTabReady() {
+  if (mapTabReady) return;
+  mapTabReady = true;
+  document.querySelector('[data-map-loading]')?.remove();
+}
+
 function renderMapTab() {
   const pickable = state.routes.filter(r => r.status === 'active');
   if (!state.currentRoute && pickable.length && !mapAutoSelectPending) {
@@ -4823,6 +5008,7 @@ function renderMapTab() {
   return `
     <div role="main" class="flex-1 min-h-0 relative">
       <div id="route-map" class="absolute inset-0"></div>
+      ${mapTabReady ? '' : mapLoadingOverlay()}
 
       <div class="absolute top-0 inset-x-0 z-10 momentum overflow-x-auto flex gap-2 px-4" style="padding-top: calc(env(safe-area-inset-top) + 0.75rem); padding-bottom: 0.75rem;">
         ${pickable.map(p => `
@@ -4919,6 +5105,20 @@ function renderMoreTab() {
           <button onclick="clearOfflineCache()" class="${ROW}">
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.refresh}</span>
             <p class="flex-1 text-[15px]">Offline-Daten leeren</p>
+          </button>
+        </div>
+
+        <p class="${SECTION_LABEL}">Zusteller-Tools</p>
+        <div class="${GROUP}">
+          <a href="https://zusteller.gourmet-daheim.at/#/login" target="_blank" rel="noopener" class="${ROW}">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.external}</span>
+            <p class="flex-1 text-[15px]">Gourmet</p>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </a>
+          <button onclick="renderTurcodeSheet()" class="${ROW}">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.key}</span>
+            <p class="flex-1 text-[15px]">Türcode entschlüsseln</p>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </button>
         </div>
 
@@ -5238,7 +5438,28 @@ const AERIAL_ATTRIB_AT = '© <a href="https://basemap.at" target="_blank" rel="n
 //
 // So: labels get the retina treatment, imagery stays native. See the
 // sources in `aerialStyle`.
-const RETINA_LABEL_TILE_SIZE = (typeof devicePixelRatio === 'number' && devicePixelRatio > 1.5) ? 128 : 256;
+//
+// One more condition than "is this a retina screen", because a screen this
+// sharp is nearly always attached to a phone on a mobile connection, and
+// four times the requests is a very different bargain at the roadside than
+// it is on wifi. `Save-Data` is the driver (or their OS) explicitly asking
+// for less; `effectiveType` of 2g/3g is the browser reporting that the
+// connection cannot carry it. In either case the labels drop to native
+// size — slightly softer text, a quarter of the requests — instead of the
+// overlay being the thing that makes the Luftbild crawl.
+//
+// Read once at load rather than per tile: `navigator.connection` is absent
+// on the platform this app mostly runs on (Safari), which is why every
+// access is optional and the default is the retina path.
+function preferRetinaLabels() {
+  if (!(typeof devicePixelRatio === 'number' && devicePixelRatio > 1.5)) return false;
+  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!conn) return true;
+  if (conn.saveData) return false;
+  return !['slow-2g', '2g', '3g'].includes(conn.effectiveType);
+}
+
+const RETINA_LABEL_TILE_SIZE = preferRetinaLabels() ? 128 : 256;
 
 // The aerial layers, added *on top of* the vector basemap rather than
 // swapped in as a style of their own.
@@ -5323,7 +5544,20 @@ function mountAerialLayers(map) {
       const existing = map.getStyle().layers;
       map._earBackgroundLayer = existing.find((l) => l.type === 'background')?.id || null;
       map._earVectorLayers = existing
-        .filter((l) => l.id !== map._earBackgroundLayer && !AERIAL_LAYER_IDS.includes(l.id))
+        .filter((l) => l.id !== map._earBackgroundLayer
+          && !AERIAL_LAYER_IDS.includes(l.id)
+          // The route's own layers are NOT part of the basemap and must
+          // never be switched off with it. They are in the style by the
+          // time this runs (see `ensureRouteLayers`, called first from the
+          // `styledata` handler), so without this line they were captured
+          // here as "vector basemap" and `applyBasemap` hid the route every
+          // single time the driver switched to Luftbild — which is the
+          // Luftbild's whole purpose, so the route vanished exactly when it
+          // was needed most. This was reachable before those layers were
+          // created eagerly too, just intermittently: whether the route was
+          // hidden depended on whether `drawRouteOnMap` happened to have run
+          // before the first `mountAerialLayers` on that particular load.
+          && !ROUTE_LAYER_IDS.includes(l.id))
         .map((l) => l.id);
       if (map._earBackgroundLayer) {
         try {
@@ -5375,6 +5609,11 @@ function mountAerialLayers(map) {
 // on top of both.
 const AERIAL_LAYER_IDS = ['at-ortho', 'wien-lb', 'wien-labels'];
 
+// The route's own layers, in draw order (casing under line). Everything the
+// app adds to the style that is neither basemap nor imagery — so switching
+// basemaps has to leave both alone. See `mountAerialLayers`.
+const ROUTE_LAYER_IDS = ['route-line-casing', 'route-line'];
+
 // Where the nationwide overview imagery hands over to Vienna's own
 // high-resolution imagery. Street level: below this the driver is looking at
 // the shape of the route, above it at a specific building.
@@ -5408,9 +5647,82 @@ function setBasemap(mode) {
   try { localStorage.setItem(BASEMAP_KEY, mode); } catch (_) { /* private-browsing storage lockout */ }
 }
 
-// Switching basemap: three visibility flags. Nothing is fetched, no style is
-// replaced, the route line and markers are not touched, and tiles already in
-// memory stay there — so switching back is instant rather than a reload.
+// How long the street map is left underneath the imagery before the app
+// gives up waiting for tiles that are evidently not coming.
+//
+// Reaching this ceiling is not a failure mode — it is the *good* outcome
+// for a driver with no signal: the street map simply stays up instead of
+// being swapped for a dark void, which is what "there is no state this map
+// can get into where nothing is drawn" means in practice. All the timeout
+// does is stop listening.
+const AERIAL_HANDOVER_TIMEOUT_MS = 8000;
+
+function setVectorLayersVisible(map, visible) {
+  const value = visible ? 'visible' : 'none';
+  for (const id of map._earVectorLayers || []) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', value);
+  }
+}
+
+function stopAerialHandover(map) {
+  if (map._earHandover) {
+    map.off('idle', map._earHandover);
+    map._earHandover = null;
+  }
+  if (map._earHandoverTimer) {
+    clearTimeout(map._earHandoverTimer);
+    map._earHandoverTimer = null;
+  }
+}
+
+// Switches the vector basemap off — but only once the imagery that is
+// meant to replace it is actually on screen.
+//
+// Hiding it in the same breath as showing the aerial layers (which is what
+// this used to do) is why the Luftbild "loads so slowly": the switch is
+// instant, the tiles are not, so the driver's first second or more is a
+// blank rectangle. Nothing about that is faster — it is the same tiles over
+// the same connection — it just removes everything that was on screen while
+// they arrive, which is the difference between "the photo is coming in" and
+// "the map broke".
+//
+// The reason for hiding it at all is real and is kept: a hidden layer's
+// source stops loading, so this is a whole set of vector tiles per view not
+// downloaded, not decoded, and not re-rendered on a phone CPU that is
+// already busy with imagery. Deferring the switch by a second or two costs
+// one screenful of vector tiles that were, in the overwhelming majority of
+// cases, already in the browser's cache from the street view the driver was
+// looking at a moment ago.
+function startAerialHandover(map) {
+  stopAerialHandover(map);
+  // `idle`, and specifically not `sourcedata` + `areTilesLoaded()`.
+  //
+  // Those two look equivalent and are not, in the one way that matters
+  // here: at the moment the aerial layers are switched on, MapLibre has not
+  // yet queued a single tile for them — it does that during the render pass
+  // the visibility change schedules. Ask `areTilesLoaded()` before that
+  // pass and it truthfully answers "yes, everything I know about is
+  // loaded", the vector map is switched off immediately, and the blank
+  // rectangle this function exists to prevent is back.
+  //
+  // `idle` cannot fire early: it means the map has finished rendering AND
+  // has nothing left in flight, so by definition the tile requests have
+  // been made and answered. When the imagery is already cached that is the
+  // very next frame, so a toggle back and forth is still instant.
+  const onIdle = () => {
+    stopAerialHandover(map);
+    // Switched back to the street map while waiting — nothing to hand over.
+    if (map._earBasemap !== 'aerial') return;
+    setVectorLayersVisible(map, false);
+  };
+  map._earHandover = onIdle;
+  map.on('idle', onIdle);
+  map._earHandoverTimer = setTimeout(() => stopAerialHandover(map), AERIAL_HANDOVER_TIMEOUT_MS);
+}
+
+// Switching basemap: visibility flags, no style replacement. Nothing is
+// re-fetched, the route line and markers are not touched, and tiles already
+// in memory stay there — so switching back is instant rather than a reload.
 function applyBasemap(map, mode) {
   map._earBasemap = mode;
   // Late-mounted if the style wasn't ready when the map was built.
@@ -5419,20 +5731,16 @@ function applyBasemap(map, mode) {
   for (const id of AERIAL_LAYER_IDS) {
     if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', aerial ? 'visible' : 'none');
   }
-  // The vector map is switched off entirely underneath the imagery, and
-  // that is not cosmetic — it is most of why the Luftbild was slow. A hidden
-  // layer's source stops loading, so this is a whole set of vector tiles per
-  // view not downloaded, not decoded, and not re-rendered on a phone CPU
-  // that was already busy fetching imagery.
-  //
-  // It also fixes what it looked like: the imagery covers Vienna and stops,
-  // so at the edges — and anywhere a tile hadn't arrived yet — the street
-  // map showed through beside the photo, two maps at once.
-  for (const id of map._earVectorLayers || []) {
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', aerial ? 'none' : 'visible');
+  if (aerial) {
+    // Up now, down once the photos cover it — see `startAerialHandover`.
+    setVectorLayersVisible(map, true);
+    startAerialHandover(map);
+  } else {
+    stopAerialHandover(map);
+    setVectorLayersVisible(map, true);
   }
-  // The background layer stays on as the ground under both: a neutral dark
-  // grey while the imagery loads (and outside its coverage), the style's own
+  // The background layer is the ground under both: a neutral dark grey
+  // while the imagery loads (and outside its coverage), the style's own
   // colour otherwise. Without it, a gap in the photos is the bare canvas.
   if (map._earBackgroundLayer && map.getLayer(map._earBackgroundLayer)) {
     map.setPaintProperty(
@@ -5457,22 +5765,65 @@ function applyBasemap(map, mode) {
 function mountBasemapRedraw(map) {
   map._earStyleReady = false;
   const onStyleData = () => {
-    let layers;
-    // getStyle() throws rather than returning undefined at some points
-    // during a style's life.
-    try { layers = map.getStyle()?.layers; } catch (_) { return; }
-    if (!layers?.length) return;
+    // `styledata` fires for the life of the map — once per tile that
+    // arrives, across every source, plus once for each of the dozen-plus
+    // layer property writes `applyBasemap` makes. Everything below has to
+    // stay cheap at that rate, which is why the one genuinely expensive
+    // call is behind a one-shot flag.
+    //
+    // `getStyle()` deep-clones the entire style JSON on every call.
+    // Running it per event is what made the map feel like it had ground to
+    // a halt when panning into fresh area (dozens of tiles landing at once,
+    // dozens of full-style clones a second). It only ever answers one
+    // question — "is the style parsed yet" — and that answer never goes
+    // back to false, so it is asked exactly once.
+    if (!map._earStyleReady) {
+      let layers;
+      // getStyle() throws rather than returning undefined at some points
+      // during a style's life.
+      try { layers = map.getStyle()?.layers; } catch (_) { return; }
+      if (!layers?.length) return;
       map._earStyleReady = true;
+    }
+
+    // The route's own source and layers go in FIRST, empty — before the
+    // imagery, so `mountAerialLayers` finds `route-line-casing` to insert
+    // itself beneath and the Luftbild can never be painted over the route.
+    // They are also what `drawRouteOnMap` now updates rather than rebuilds
+    // (see `ensureRouteLayers`), so they exist from the moment the style is
+    // parsed — before a route has even been chosen.
+    try { ensureRouteLayers(map); } catch (err) { console.warn('route layers not ready', err); }
+
     // Mounts the imagery and, on a map that opens straight into Luftbild,
-    // switches the vector layers off in the same pass.
-    if (mountAerialLayers(map)) applyBasemap(map, map._earBasemap);
-    // Already drawn. `styledata` also fires as a *result* of adding the
-    // route's own layers, and again for every tile that arrives, so without
-    // this the handler would answer its own work and rebuild every marker
-    // on the map dozens of times while a basemap loads.
-    if (map.getLayer('route-line')) return;
-    map._earLastSignature = null;
-    if (mapTabMap === map) syncMapTabRoute();
+    // switches the vector layers off in the same pass — but only once.
+    // `applyBasemap` calls setLayoutProperty/setPaintProperty on every
+    // aerial + vector layer, and each of those calls fires ANOTHER
+    // `styledata` event of its own — so calling it unconditionally here
+    // (as this used to) fed straight back into this same handler: tile
+    // arrives -> styledata -> applyBasemap touches a dozen+ layers ->
+    // each touch fires styledata -> repeat, for as long as tiles kept
+    // streaming in. That self-sustaining loop is what made the Luftbild
+    // feel laggy. Explicit switches (the basemap button) still call
+    // `applyBasemap` directly — this guard only stops it from being an
+    // implicit side effect of every tile that happens to load.
+    if (!map._earBasemapMounted) {
+      if (mountAerialLayers(map)) {
+        applyBasemap(map, map._earBasemap);
+        map._earBasemapMounted = true;
+      }
+      // If mounting failed (a transient error inside mountAerialLayers),
+      // `_earBasemapMounted` stays false on purpose — the next `styledata`
+      // event retries. Only a *successful* mount is one-shot.
+    }
+
+    // Draws the route the first time there is a style to draw it into, and
+    // puts it back if it ever goes missing afterwards. Both conditions are
+    // hash lookups on a flag and a layer id, so this stays cheap at
+    // per-tile rates; `syncMapTabRoute` itself only runs when there is
+    // genuinely something to do.
+    if (mapTabMap === map && (!map._earRouteDrawn || !map.getLayer('route-line'))) {
+      syncMapTabRoute();
+    }
   };
   map.on('styledata', onStyleData);
   onStyleData();
@@ -5495,6 +5846,9 @@ function rebuildMapTabMap(reason) {
   try { mapTabMap?.remove(); } catch (_) { /* already torn down */ }
   mapTabMap = null;
   mapTabRouteId = null;
+  // A rebuild is a fresh map with nothing on it — the placeholder belongs
+  // back up until this one has drawn, exactly as on a cold start.
+  mapTabReady = false;
   // `remove()` empties the container, but the element itself is reused —
   // it's the node `render()` re-parents between screens (see `mapTabEl`).
   if (mapTabEl) mapTabEl.innerHTML = '';
@@ -5618,6 +5972,67 @@ function elFromHtml(html) {
   return t.content.firstElementChild;
 }
 
+// MapLibre GL JS's GeolocateControl has never actually implemented
+// `showUserHeading` — see the comment where this is called, in `newMap()`.
+// This is the hand-built replacement: a small arrow marker kept on the
+// same coordinate as the control's own location dot, rotated from raw
+// device-orientation events instead of anything the control provides.
+function mountHeadingIndicator(map, geolocate) {
+  const el = elFromHtml(
+    '<div style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;">' +
+    '<svg viewBox="0 0 24 24" width="22" height="22" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))">' +
+    '<path d="M12 1.5 L19.5 20 L12 15.5 L4.5 20 Z" fill="#1E88E5" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>' +
+    '</svg></div>'
+  );
+  // `rotationAlignment: 'map'` is what makes the rotation value below mean
+  // "degrees from true north" rather than "degrees from the top of the
+  // screen" — the two only coincide because this map's own bearing is
+  // permanently locked to 0 (see `dragRotate: false` and friends above).
+  const marker = new maplibregl.Marker({ element: el, anchor: 'center', rotationAlignment: 'map', pitchAlignment: 'map' });
+  let heading = null;
+  let onMap = false;
+
+  const applyRotation = () => { if (heading != null) marker.setRotation(heading); };
+
+  // iOS Safari exposes `webkitCompassHeading` directly — already degrees
+  // clockwise from true north, no correction needed, and the most reliable
+  // source on the platform this app mostly runs on (see the zoom-lock
+  // comment in <head>). Elsewhere, `deviceorientationabsolute` gives
+  // `alpha` as degrees counter-clockwise from the device's compass-zero,
+  // so the compass heading is `360 - alpha`. A plain, non-absolute
+  // `deviceorientation` has no fixed relationship to north at all — it's
+  // relative to wherever the device happened to be pointed when the
+  // listener attached — so it's read the same way only because an
+  // approximate, slowly-drifting heading beats no arrow at all.
+  const onOrientation = (e) => {
+    let h = null;
+    if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;
+    else if (typeof e.alpha === 'number') h = (360 - e.alpha) % 360;
+    if (h == null || Number.isNaN(h)) return;
+    heading = h;
+    if (onMap) applyRotation();
+  };
+  window.addEventListener('deviceorientationabsolute', onOrientation);
+  window.addEventListener('deviceorientation', onOrientation);
+
+  geolocate.on('geolocate', (e) => {
+    marker.setLngLat([e.coords.longitude, e.coords.latitude]);
+    if (!onMap) { marker.addTo(map); onMap = true; }
+    applyRotation();
+  });
+  // Tracking stopped (paused, turned off, or a geolocation error) — the
+  // arrow shouldn't linger pointing at a position that's no longer updating.
+  const hide = () => { if (onMap) { marker.remove(); onMap = false; } };
+  geolocate.on('trackuserlocationend', hide);
+  geolocate.on('error', hide);
+
+  map.once('remove', () => {
+    window.removeEventListener('deviceorientationabsolute', onOrientation);
+    window.removeEventListener('deviceorientation', onOrientation);
+    hide();
+  });
+}
+
 function newMap(container, opts) {
   // Both tile hosts speak HTTP/2, where a request is a stream rather than a
   // connection — so the default cap of 16 in-flight image requests leaves a
@@ -5644,6 +6059,34 @@ function newMap(container, opts) {
     dragRotate: false,
     touchPitch: false,
     pitchWithRotate: false,
+    // Every tile this app draws is immutable in the ways that matter: the
+    // Luftbild is reflown once a year, basemap.at's orthophoto on its own
+    // multi-year cycle, OpenFreeMap's vector tiles on theirs — and all of
+    // them ship a two-week `Cache-Control: max-age`. MapLibre's default is
+    // to re-request a tile the moment that max-age expires, *for every tile
+    // on screen*, which on a van's connection is a screenful of round-trips
+    // to be told nothing changed. The service worker already serves tiles
+    // cache-first for the same reason (see `TILE_HOSTS` in sw.js); this
+    // stops the library from asking in the first place.
+    refreshExpiredTiles: false,
+    // Tiles fade in over 300ms by default. On a mobile connection, where
+    // they arrive one at a time rather than all at once, that reads as the
+    // map slowly developing rather than loading — and the driver is waiting
+    // on it. This is the vector basemap's equivalent of the
+    // `raster-fade-duration: 0` already set on the aerial layers.
+    fadeDuration: 0,
+    // Roughly a phone screen's worth of tiles at three zoom levels. The
+    // default is derived from the viewport and is smaller than a driver's
+    // actual working set — zooming out to check the route and back in to
+    // the next house evicted the tiles for the house, so coming back
+    // re-fetched them. Holding them costs memory this app has (a few MB of
+    // decoded raster) and saves the one thing it doesn't have, which is
+    // bandwidth on a moving van.
+    maxTileCacheSize: 400,
+    // A tap on a marker should not also be a tap on the map underneath it.
+    // MapLibre's default 3px slop is tuned for a mouse; a thumb on a phone
+    // moves further than that while pressing.
+    clickTolerance: 5,
     ...opts.extra,
   });
   map._earBasemap = basemap;
@@ -5654,6 +6097,10 @@ function newMap(container, opts) {
   // nothing to tap. Caught here and rebuilt, it costs a second of reloading
   // instead of a dead map tab.
   map.on('webglcontextlost', () => console.warn('map WebGL context lost'));
+  // The pending basemap handover holds a timer and a `sourcedata` listener;
+  // a map that is torn down mid-handover (the pin-drop sheet closing, a
+  // rebuild after a lost WebGL context) must not leave either behind.
+  map.once('remove', () => stopAerialHandover(map));
   map.on('webglcontextrestored', () => {
     if (mapTabMap === map) rebuildMapTabMap('WebGL context restored');
   });
@@ -5664,8 +6111,15 @@ function newMap(container, opts) {
   map.touchZoomRotate.disableRotation();
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
   map.addControl(basemapControl(), 'top-right');
-  const geolocate = new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true, showUserHeading: true });
+  // MapLibre GL JS's GeolocateControl has never actually implemented
+  // `showUserHeading` — that option exists on Mapbox GL JS, was requested
+  // for MapLibre, and is still an open, unmerged issue there
+  // (maplibre/maplibre-gl-js#2426). Passing it here is a silent no-op, not
+  // a bug in how it's configured — the feature simply isn't in this
+  // library. `mountHeadingIndicator` below builds the arrow by hand.
+  const geolocate = new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true });
   map.addControl(geolocate, 'top-right');
+  mountHeadingIndicator(map, geolocate);
 
   // `_earPauseGeolocate`/`_earResumeGeolocate` exist so the Karte tab's
   // persistent map (see the section below — it's built once and kept
@@ -5807,11 +6261,75 @@ function relayoutStopMarkers(map) {
   }
 }
 
-function drawRouteOnMap(map, r, { fit = true } = {}) {
-  for (const id of ['route-line', 'route-line-casing']) {
-    if (map.getLayer(id)) map.removeLayer(id);
+// An empty LineString — what the route source holds before a route is
+// loaded, and what it falls back to for a route with no drivable geometry.
+// A source always has *some* data so the line's layers can be created once
+// and then left alone; see `ensureRouteLayers`.
+const EMPTY_LINE = { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } };
+
+function routeLineGeoJson(r) {
+  return {
+    type: 'Feature',
+    properties: {},
+    geometry: {
+      type: 'LineString',
+      // OSRM's polyline comes in as [lat, lon]; GeoJSON wants [lon, lat].
+      // One malformed pair must not be able to break the whole line, so
+      // anything that isn't a finite pair is dropped rather than passed on.
+      coordinates: (Array.isArray(r?.geometry) ? r.geometry : [])
+        .filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+        .map(([lat, lon]) => [lon, lat]),
+    },
+  };
+}
+
+// Creates the route line's source and its two layers once, empty, and
+// leaves them in the style for the life of the map.
+//
+// This used to be part of `drawRouteOnMap`, which tore all three down and
+// rebuilt them on every redraw — and that teardown is what made the route
+// line "disappear sometimes". Between the `removeLayer` calls and the
+// `addLayer` calls the map genuinely has no route on it, and anything that
+// threw in between (an `addSource` against a style MapLibre was in the
+// middle of mutating, a `styledata` re-entry, a redraw racing the basemap
+// mount) left it that way permanently: the caller had already recorded the
+// new signature as drawn, so no later sync ever tried again. There was no
+// gesture that fixed it short of a reload.
+//
+// Created once and updated with `setData`, there is no such window. A
+// redraw is one buffer swap on a source that never stops existing, which is
+// also markedly cheaper — no layer re-validation, no style re-index — on
+// exactly the redraws that happen most (a stop ticked off mid-route).
+function ensureRouteLayers(map) {
+  if (!map.getSource('route-line')) {
+    map.addSource('route-line', { type: 'geojson', data: EMPTY_LINE });
   }
-  if (map.getSource('route-line')) map.removeSource('route-line');
+  // A white casing under the red line. On the vector basemap it's a subtle
+  // outline; on the aerial one it's what keeps the route visible at all,
+  // since red-on-dark-asphalt at 4px is nearly invisible from arm's length
+  // in daylight.
+  if (!map.getLayer('route-line-casing')) {
+    map.addLayer({
+      id: 'route-line-casing',
+      type: 'line',
+      source: 'route-line',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#fff', 'line-width': 8, 'line-opacity': 0.75 },
+    });
+  }
+  if (!map.getLayer('route-line')) {
+    map.addLayer({
+      id: 'route-line',
+      type: 'line',
+      source: 'route-line',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#ED1639', 'line-width': 4, 'line-opacity': 0.95 },
+    });
+  }
+}
+
+function drawRouteOnMap(map, r, { fit = true } = {}) {
+  ensureRouteLayers(map);
   // Scoped to this map's own container. A document-wide query would also
   // rip the markers out of any *other* map that happens to be open — the
   // pin-drop sheet's, most obviously — which is a bug waiting for the day
@@ -5820,37 +6338,7 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
   map._earMarkers = [];
   map._earBadges = [];
 
-  map.addSource('route-line', {
-    type: 'geojson',
-    data: {
-      type: 'Feature',
-      properties: {},
-      geometry: {
-        type: 'LineString',
-        coordinates: (Array.isArray(r.geometry) ? r.geometry : [])
-          .filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
-          .map(([lat, lon]) => [lon, lat]),
-      },
-    },
-  });
-  // A white casing under the red line. On the vector basemap it's a subtle
-  // outline; on the aerial one it's what keeps the route visible at all,
-  // since red-on-dark-asphalt at 4px is nearly invisible from arm's length
-  // in daylight.
-  map.addLayer({
-    id: 'route-line-casing',
-    type: 'line',
-    source: 'route-line',
-    layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': '#fff', 'line-width': 8, 'line-opacity': 0.75 },
-  });
-  map.addLayer({
-    id: 'route-line',
-    type: 'line',
-    source: 'route-line',
-    layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': '#ED1639', 'line-width': 4, 'line-opacity': 0.95 },
-  });
+  map.getSource('route-line').setData(routeLineGeoJson(r));
 
   const bounds = new maplibregl.LngLatBounds();
   if (Array.isArray(r.geometry) && r.geometry.length > 1) {
@@ -5974,7 +6462,20 @@ let mapTabWasVisible = false;
 
 function initMapTabMap() {
   const slot = document.getElementById('route-map');
-  if (!slot || !state.currentRoute) return;
+  // Deliberately NOT gated on `state.currentRoute`.
+  //
+  // It used to be, and that turned two independent waits into one queue:
+  // opening the Karte tab fires a `GET /routes/:id` for the auto-selected
+  // route (see `renderMapTab`), and the map — the style JSON, the sprite,
+  // the glyphs, the first screenful of tiles, the WebGL context — did not
+  // even *begin* loading until that request came back. On a van's
+  // connection that is a grey rectangle for as long as the route fetch
+  // takes, and only then the map starting from nothing.
+  //
+  // The map needs no route to exist. Built immediately, it loads in
+  // parallel with the fetch, and by the time the route lands the basemap is
+  // usually already on screen and drawing the line is instant.
+  if (!slot) return;
   if (typeof maplibregl === 'undefined') {
     // Not loaded yet (the idle-time speculative fetch may still be in
     // flight, or this is the very first thing the driver did after a cold
@@ -6007,6 +6508,19 @@ function initMapTabMap() {
     const resizeObserver = new ResizeObserver(() => map.resize());
     resizeObserver.observe(mapTabEl);
     map.once('remove', () => resizeObserver.disconnect());
+    // `idle` fires when everything currently requested has been drawn;
+    // `load` is the belt-and-braces path for a map whose first view needs
+    // no tiles at all. Whichever comes first retires the placeholder.
+    map.once('idle', markMapTabReady);
+    map.once('load', markMapTabReady);
+    // And a ceiling under both, because the failure this guards is worse
+    // than the thing it is guarding. A source that never finishes — one
+    // tile host unreachable while the rest of the map draws perfectly —
+    // means no `idle`, ever. Without a deadline the placeholder would then
+    // sit opaquely over a map that works, which is strictly worse than no
+    // placeholder at all. After this it comes down regardless and the
+    // driver gets whatever has drawn, plus the street map underneath.
+    setTimeout(markMapTabReady, MAP_PLACEHOLDER_MAX_MS);
     // No 'load' handler for the first draw: `mountBasemapRedraw` covers it,
     // earlier (layers only need a parsed style, not loaded tiles) and on
     // one code path rather than two that can disagree.
@@ -6041,9 +6555,29 @@ function syncMapTabRoute() {
   // this, every one of those visits tore down and recreated every marker
   // and popup from scratch.
   const signature = routeMarkerSignature(r);
-  if (map._earLastSignature === signature) return;
+  // Two conditions, not one. The signature says "the data hasn't changed";
+  // the layer check says "and what was drawn from it is still on the map".
+  // Only the first used to be tested, which meant any redraw that didn't
+  // finish left the map permanently blank: the signature had already been
+  // recorded, so every later sync agreed there was nothing to do. The layer
+  // lookup is a cheap hash lookup, not a style clone, so paying it on every
+  // sync costs nothing and makes a missing line self-heal on the very next
+  // render instead of needing a reload.
+  if (map._earLastSignature === signature && map.getLayer('route-line')) return;
+  // Recorded only after the draw actually completes, and cleared if it
+  // throws, so a failed draw is retried rather than remembered as done.
+  map._earLastSignature = null;
+  try {
+    drawRouteOnMap(map, r, { fit: mapTabRouteId !== r.id });
+  } catch (err) {
+    // The map keeps its basemap and whatever was already drawn; only this
+    // redraw is lost, and the next render (or the `styledata` handler)
+    // tries again because the signature was never recorded.
+    console.warn('route redraw failed', err);
+    return;
+  }
   map._earLastSignature = signature;
-  drawRouteOnMap(map, r, { fit: mapTabRouteId !== r.id });
+  map._earRouteDrawn = true;
   mapTabRouteId = r.id;
 }
 
@@ -6503,6 +7037,33 @@ for (const gestureType of ['gesturestart', 'gesturechange', 'gestureend']) {
 // set — the desktop equivalent of the above. MapLibre's own scroll zoom is
 // plain-wheel and is unaffected either way.
 document.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+
+// ---------------------------------------------------------------------
+// Heading permission for MapLibre's GeolocateControl — every `newMap()`
+// call turns on `showUserHeading`, but on iOS Safari (13+) that alone
+// draws nothing: the browser refuses to fire `deviceorientation` at all
+// until the page has explicitly asked via
+// `DeviceOrientationEvent.requestPermission()`, and iOS only grants that
+// request when it's called synchronously inside a real tap — not from a
+// promise callback, not from GeolocateControl's own async geolocation
+// success handler, which fires too late to count. MapLibre's control does
+// not make this call for you, so without this, the driver gets the blue
+// location dot but never the heading cone, on exactly the platform this
+// app mostly runs on.
+//
+// Bound once, on `document`, in the capture phase — capture runs before
+// the button's own click handler (added by MapLibre in the bubble phase
+// when the control mounts), so the permission prompt fires on the same
+// tap that (re)starts tracking. One listener covers every map's geolocate
+// button for the app's whole lifetime, including the pin-drop sheet's
+// short-lived map, rather than needing to rebind it per map instance.
+if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('.maplibregl-ctrl-geolocate')) {
+      DeviceOrientationEvent.requestPermission().catch(() => {});
+    }
+  }, true);
+}
 
 window.addEventListener('online', () => { toast('Wieder online', 'success'); refreshOnResume(); });
 window.addEventListener('offline', () => toast('Keine Internetverbindung – Änderungen können nicht gespeichert werden.', 'error'));

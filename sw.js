@@ -114,6 +114,61 @@ function staleWhileRevalidate(event, cache, request, { onPut } = {}) {
   });
 }
 
+// How many times a tile is fetched before the map is told it failed, and
+// how long to wait between attempts.
+//
+// This is the single biggest reason the Luftbild looked like it "doesn't
+// load everywhere". MapLibre does not retry a tile that errored: the
+// request fails once, that square stays empty, and it stays empty until
+// the driver pans far enough away for the tile to be unloaded and then
+// comes back. On a moving van — handovers between cells, a tunnel, a dead
+// spot in a courtyard — a handful of tiles per screenful fail that way, and
+// what the driver sees is permanent holes in the imagery over exactly the
+// area they are standing in. Panning back and forth to fill them in is what
+// "sometimes it works the second time" looks like on the map.
+//
+// Retried here rather than in the app because this is the only layer that
+// sees the individual tile request. Two extra attempts with a short backoff
+// covers a cell handover (typically under a second) without turning a
+// genuinely offline map into a long stall: three quick failures still
+// resolve in well under a second and a half, and the map falls through to
+// the street map underneath (see the comment on `mountAerialLayers` in
+// index.html) rather than showing nothing.
+const TILE_FETCH_ATTEMPTS = 3;
+const TILE_RETRY_BASE_MS = 250;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A 5xx counts as a failure worth retrying, the same as a dropped
+// connection — Vienna's WMTS answers 502/503 under load, and that is
+// transient by definition. A 404 is not: those are the real edges of the
+// imagery's coverage (outside the city, above its top zoom), they will
+// never become a tile, and retrying them would spend three requests per
+// square on every pan past the city limits.
+async function fetchTileWithRetry(request) {
+  let lastError = null;
+  let lastResponse = null;
+  for (let attempt = 0; attempt < TILE_FETCH_ATTEMPTS; attempt++) {
+    if (attempt > 0) await sleep(TILE_RETRY_BASE_MS * attempt);
+    try {
+      const res = await fetch(request);
+      if (res.ok || res.status < 500) return res;
+      lastResponse = res;
+      lastError = null;
+    } catch (err) {
+      lastError = err;
+      lastResponse = null;
+    }
+  }
+  // Out of attempts. A server that kept answering 5xx gets its own last
+  // response passed through, so the failure the map reports is the one that
+  // actually happened rather than a synthetic stand-in. A connection that
+  // never completed rethrows, which is indistinguishable from a plain
+  // network failure — exactly how MapLibre has always seen it.
+  if (lastResponse) return lastResponse;
+  throw lastError || new Error('tile fetch failed');
+}
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
@@ -212,7 +267,7 @@ self.addEventListener('fetch', (event) => {
       caches.open(TILE_CACHE).then(async (cache) => {
         const cached = await cache.match(request);
         if (cached) return cached;
-        const res = await fetch(request);
+        const res = await fetchTileWithRetry(request);
         if (res.ok) {
           // `waitUntil`, so the response goes to the map immediately rather
           // than waiting on the cache write.
