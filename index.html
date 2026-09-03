@@ -234,14 +234,11 @@
      control is used mid-delivery with one hand. */
   .basemap-toggle { width: auto !important; height: auto !important; padding: 6px 9px; font-size: 11px; font-weight: 700; letter-spacing: .02em; color: #1c1c1e; }
 
-  /* MapLibre's own location dot, brought onto the same blue as the heading
-     cone that radiates out from under it (see `headingConeSvg`). Left on the
-     library's default #1da1f2 the two were nearly-but-not-quite the same
-     colour, which reads as two unrelated things sitting on top of each other
-     rather than as one indicator. #007AFF is the system blue every iOS map
-     uses for "you are here", which is the association worth borrowing.
-     The white ring and the pulse are MapLibre's own ::after/::before and are
-     left alone apart from their colour.
+  /* MapLibre's own location dot, on #007AFF — the system blue every iOS map
+     uses for "you are here", which is the association worth borrowing, and
+     a clearer read at arm's length in daylight than the library's default
+     #1da1f2. The white ring and the pulse are MapLibre's own ::after and
+     ::before and are left alone apart from their colour.
 
      Qualified with `.maplibregl-map` purely to outrank the library's own
      rule, for exactly the reason documented on `#route-map .maplibregl-map`
@@ -6263,224 +6260,6 @@ function elFromHtml(html) {
 // This is the hand-built replacement: a small arrow marker kept on the
 // same coordinate as the control's own location dot, rotated from raw
 // device-orientation events instead of anything the control provides.
-// How wide the heading cone is, and how far it reaches, in the marker's own
-// SVG units (a 100x100 box centred on the dot).
-//
-// A cone, not the arrow this used to draw. The arrow was a 22px glyph sat on
-// the exact coordinate MapLibre puts its own location dot on — so the dot,
-// which is drawn on top, covered most of it, and what was left read as a
-// smudge under the blue circle rather than as a direction. Widening or
-// moving the arrow does not fix that; it is the wrong shape for the job.
-//
-// Apple Maps (and every other native map that shows heading) solves it the
-// other way round: the indicator is a translucent beam that radiates *out
-// from behind* the dot and fades as it goes. Being behind the dot is then
-// correct rather than a bug — the beam starts where the dot is, and the part
-// you read is the part outside it, so nothing can occlude the signal. It
-// also degrades honestly: a soft-edged cone says "roughly this way", which
-// is exactly as much as a phone compass knows.
-const HEADING_CONE_RADIUS = 46;
-const HEADING_CONE_HALF_ANGLE_DEG = 30;
-
-// How much of each new compass reading to believe, per event.
-//
-// `deviceorientation` fires at up to 60 Hz and a phone compass is noisy at
-// that rate — fed straight through, the cone visibly twitches while the
-// driver holds the phone still. Averaging towards each new reading instead
-// of snapping to it settles that without adding lag anyone notices: at 60 Hz
-// this converges on a genuine turn in well under a tenth of a second.
-const HEADING_SMOOTHING = 0.2;
-
-// Interpolates between two compass bearings the short way around.
-//
-// The naive average is wrong exactly once per rotation, and wrong
-// spectacularly: between 350 and 10 it takes the 340-degree path through
-// south, so a driver turning through north watches the cone spin all the way
-// round the compass. Normalizing the difference into -180..180 first is what
-// makes "10 is 20 degrees clockwise of 350" true.
-function smoothHeading(from, to, factor) {
-  const delta = ((to - from + 540) % 360) - 180;
-  return (from + delta * factor + 360) % 360;
-}
-
-// The gradient needs an id to be referenced by `fill`, and an id has to be
-// unique in the document — the Karte tab's map and the pin-drop sheet's map
-// can both be alive at once, each with a cone of its own. Identical
-// definitions made the duplicate harmless in practice (every reference
-// resolved to the first one, which looked the same), but it is invalid
-// markup and it would break silently the day the two ever differ.
-let headingConeSeq = 0;
-
-function headingConeSvg() {
-  const gradientId = `ear-heading-cone-${++headingConeSeq}`;
-  const rad = (HEADING_CONE_HALF_ANGLE_DEG * Math.PI) / 180;
-  // The cone points straight up at rotation 0, because that is what
-  // `Marker.setRotation` measures from.
-  const dx = HEADING_CONE_RADIUS * Math.sin(rad);
-  const dy = HEADING_CONE_RADIUS * Math.cos(rad);
-  const left = `${(50 - dx).toFixed(2)} ${(50 - dy).toFixed(2)}`;
-  const right = `${(50 + dx).toFixed(2)} ${(50 - dy).toFixed(2)}`;
-  return `
-    <div style="width:100px;height:100px;pointer-events:none">
-      <svg viewBox="0 0 100 100" width="100" height="100" aria-hidden="true" focusable="false">
-        <defs>
-          <radialGradient id="${gradientId}" cx="50" cy="50" r="${HEADING_CONE_RADIUS}" gradientUnits="userSpaceOnUse">
-            <!-- The first stop is under the dot and is never actually
-                 seen; what the driver reads is the band from roughly the
-                 dot's edge outwards, so that is what these are tuned for.
-                 Pitched to stay legible on a bright phone held at arm's
-                 length in daylight, which is the condition this whole app
-                 is designed around — a subtler fade looked right indoors
-                 and vanished outside. -->
-            <stop offset="0" stop-color="#007AFF" stop-opacity="0.7"/>
-            <stop offset="0.5" stop-color="#007AFF" stop-opacity="0.38"/>
-            <stop offset="1" stop-color="#007AFF" stop-opacity="0"/>
-          </radialGradient>
-        </defs>
-        <path d="M50 50 L${left} A${HEADING_CONE_RADIUS} ${HEADING_CONE_RADIUS} 0 0 1 ${right} Z" fill="url(#${gradientId})"/>
-      </svg>
-    </div>`;
-}
-
-function mountHeadingIndicator(map, geolocate) {
-  const el = elFromHtml(headingConeSvg());
-  // `rotationAlignment: 'map'` is what makes the rotation value below mean
-  // "degrees from true north" rather than "degrees from the top of the
-  // screen". The two happen to coincide while this map's bearing is locked
-  // to 0 (see `dragRotate: false` and friends above), but saying it
-  // explicitly is what keeps the cone honest if that ever changes.
-  const marker = new maplibregl.Marker({ element: el, anchor: 'center', rotationAlignment: 'map', pitchAlignment: 'map' });
-  let heading = null;
-  let onMap = false;
-  let rotationFrame = null;
-
-  // Coalesced to one write per frame. The orientation events arrive far
-  // faster than the screen refreshes, and `setRotation` is a real DOM write
-  // plus a marker reposition — doing it 60 times a second for a shape that
-  // can only be drawn 60 times a second is work nobody sees.
-  const applyRotation = () => {
-    if (heading == null || !onMap || rotationFrame != null) return;
-    rotationFrame = requestAnimationFrame(() => {
-      rotationFrame = null;
-      if (heading != null && onMap) marker.setRotation(heading);
-    });
-  };
-
-  // Reading a compass bearing off a DeviceOrientationEvent, or refusing to.
-  //
-  // Refusing matters as much as reading. A cone is a claim about which way
-  // the driver is facing, and a confidently wrong one is worse than none at
-  // all: it is read at a glance, at a door, to decide which way to walk.
-  // Every path below either produces a true bearing or gives up.
-  const readCompassHeading = (e) => {
-    // iOS: already degrees clockwise from true north, and the most reliable
-    // source on the platform this app mostly runs on. `webkitCompassAccuracy`
-    // goes negative when the magnetometer is uncalibrated (the "wave your
-    // phone in a figure of eight" state) — the heading is meaningless then
-    // and iOS says so, so it is dropped rather than drawn.
-    if (typeof e.webkitCompassHeading === 'number' && !Number.isNaN(e.webkitCompassHeading)) {
-      if (typeof e.webkitCompassAccuracy === 'number' && e.webkitCompassAccuracy < 0) return null;
-      return e.webkitCompassHeading;
-    }
-    // Everywhere else, `absolute` is the whole question. An absolute reading
-    // is referenced to the Earth, so `360 - alpha` is a real compass bearing.
-    // A non-absolute one is referenced to wherever the device happened to be
-    // pointing when the listener attached — an arbitrary zero that drifts.
-    //
-    // This used to accept it anyway, reasoning that a rough heading beats no
-    // arrow. That reasoning was wrong. It is not a rough heading, it is an
-    // unrelated number, and it produced a cone that pointed somewhere the
-    // driver was definitively not facing.
-    if (e.absolute !== true) return null;
-    if (typeof e.alpha !== 'number' || Number.isNaN(e.alpha)) return null;
-    return (360 - e.alpha) % 360;
-  };
-
-  // Both readings above describe the *device*; the map is drawn in the
-  // *screen's* frame, and the two differ by however far the UI has been
-  // rotated. Zero in portrait, which is the only orientation this app is
-  // ever in (the manifest declares `orientation: portrait`), so this is a
-  // no-op in practice — it is here so that a landscape browser tab shows a
-  // cone that is merely rotated rather than one that is wrong.
-  const screenAngle = () => {
-    const a = screen?.orientation?.angle;
-    if (typeof a === 'number') return a;
-    return typeof window.orientation === 'number' ? window.orientation : 0;
-  };
-
-  // Which event to believe.
-  //
-  // Chrome fires BOTH `deviceorientationabsolute` and `deviceorientation`,
-  // and only the first is compass-referenced. Feeding both into one handler
-  // — which is what this did — interleaved two different zeroes at 60 Hz, so
-  // the cone flickered between a true bearing and an arbitrary one. Once the
-  // absolute event has been seen even once, the relative one is ignored for
-  // the life of the map.
-  let absoluteSeen = false;
-  const onOrientation = (e) => {
-    if (e.type === 'deviceorientationabsolute') absoluteSeen = true;
-    else if (absoluteSeen) return;
-    const raw = readCompassHeading(e);
-    // No trustworthy bearing: leave the cone showing the last good one if
-    // there is one, and draw nothing at all if there never was.
-    if (raw == null) return;
-    const h = (raw + screenAngle() + 360) % 360;
-    // The very first reading is taken whole — smoothing towards it from an
-    // arbitrary starting point would swing the cone across the compass on
-    // the way to the truth.
-    heading = heading == null ? h : smoothHeading(heading, h, HEADING_SMOOTHING);
-    applyRotation();
-  };
-  window.addEventListener('deviceorientationabsolute', onOrientation);
-  window.addEventListener('deviceorientation', onOrientation);
-
-  geolocate.on('geolocate', (e) => {
-    marker.setLngLat([e.coords.longitude, e.coords.latitude]);
-    // No compass bearing yet — no cone. A cone parked at its default
-    // rotation points north and looks exactly as authoritative as a real
-    // one, so it would tell the driver they are facing north when the app
-    // has no idea which way they are facing. The location dot alone is the
-    // honest drawing of "here, direction unknown".
-    if (heading == null) { if (onMap) hide(); return; }
-    if (!onMap) {
-      marker.addTo(map);
-      onMap = true;
-      // Behind MapLibre's own location dot, deliberately and explicitly.
-      // Markers share one container and paint in DOM order, and the dot is
-      // added by the GeolocateControl on its own schedule — so which of the
-      // two ends up on top is otherwise down to which event fired first.
-      // The cone belongs underneath: it radiates out from the dot, and the
-      // dot is the precise thing it is radiating from.
-      //
-      // Placed immediately after the canvas, NOT as the container's first
-      // child. That container's first child is the map canvas itself, so
-      // "move it to the front" put the cone *behind the map* — present in
-      // the DOM, correctly sized, correctly rotated, and completely
-      // invisible under an opaque canvas. Sitting directly after the canvas
-      // is above the map and below every marker added later, which is
-      // exactly the layer this belongs in.
-      const parent = el.parentElement;
-      const canvas = parent && parent.querySelector('canvas');
-      if (canvas && canvas.nextSibling !== el) parent.insertBefore(el, canvas.nextSibling);
-    }
-    applyRotation();
-  });
-  // Tracking stopped (paused, turned off, or a geolocation error) — the cone
-  // shouldn't linger pointing out of a position that's no longer updating.
-  const hide = () => {
-    if (rotationFrame != null) { cancelAnimationFrame(rotationFrame); rotationFrame = null; }
-    if (onMap) { marker.remove(); onMap = false; }
-  };
-  geolocate.on('trackuserlocationend', hide);
-  geolocate.on('error', hide);
-
-  map.once('remove', () => {
-    window.removeEventListener('deviceorientationabsolute', onOrientation);
-    window.removeEventListener('deviceorientation', onOrientation);
-    hide();
-  });
-}
-
 function newMap(container, opts) {
   // Both tile hosts speak HTTP/2, where a request is a stream rather than a
   // connection — so the default cap of 16 in-flight image requests leaves a
@@ -6563,15 +6342,25 @@ function newMap(container, opts) {
   try { map.getCanvas().setAttribute('aria-label', 'Karte der Route'); } catch (_) { /* no canvas yet */ }
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
   map.addControl(basemapControl(), 'top-right');
-  // MapLibre GL JS's GeolocateControl has never actually implemented
-  // `showUserHeading` — that option exists on Mapbox GL JS, was requested
-  // for MapLibre, and is still an open, unmerged issue there
-  // (maplibre/maplibre-gl-js#2426). Passing it here is a silent no-op, not
-  // a bug in how it's configured — the feature simply isn't in this
-  // library. `mountHeadingIndicator` below draws the heading cone by hand.
+  // No heading indicator, deliberately, and this is the note that stops it
+  // being "added back" as an oversight.
+  //
+  // MapLibre's `showUserHeading` has never been implemented (it exists on
+  // Mapbox GL JS; maplibre/maplibre-gl-js#2426 is still open), so the only
+  // way to draw one is by hand off `deviceorientation`. That was tried, as
+  // an arrow and then as an Apple-Maps-style cone, and on the iPhone this
+  // app runs on it pointed somewhere the driver was not facing. The web
+  // compass on iOS is a single number with no tilt compensation and no way
+  // to tell a good reading from a bad one beyond a coarse accuracy field;
+  // what it gave was not close enough to be useful.
+  //
+  // A direction indicator is read at a glance, at a door, to decide which
+  // way to walk. One that is wrong is worse than none at all, because the
+  // driver has no way to know it is wrong. The blue location dot alone is
+  // the honest drawing of "you are here" — which is the part that was
+  // always working.
   const geolocate = new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true });
   map.addControl(geolocate, 'top-right');
-  mountHeadingIndicator(map, geolocate);
 
   // `_earPauseGeolocate`/`_earResumeGeolocate` exist so the Karte tab's
   // persistent map (see the section below — it's built once and kept
@@ -7532,33 +7321,6 @@ for (const gestureType of ['gesturestart', 'gesturechange', 'gestureend']) {
 // set — the desktop equivalent of the above. MapLibre's own scroll zoom is
 // plain-wheel and is unaffected either way.
 document.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
-
-// ---------------------------------------------------------------------
-// Heading permission for the hand-built heading arrow — see
-// `mountHeadingIndicator`, which reads `deviceorientation` directly
-// because MapLibre's own `showUserHeading` has never been implemented.
-// On iOS Safari (13+) those events do not fire at all until the page has
-// explicitly asked via
-// `DeviceOrientationEvent.requestPermission()`, and iOS only grants that
-// request when it's called synchronously inside a real tap — not from a
-// promise callback, not from GeolocateControl's own async geolocation
-// success handler, which fires too late to count. So without this, the
-// driver gets the blue location dot but never the arrow showing which way
-// they are pointing, on exactly the platform this app mostly runs on.
-//
-// Bound once, on `document`, in the capture phase — capture runs before
-// the button's own click handler (added by MapLibre in the bubble phase
-// when the control mounts), so the permission prompt fires on the same
-// tap that (re)starts tracking. One listener covers every map's geolocate
-// button for the app's whole lifetime, including the pin-drop sheet's
-// short-lived map, rather than needing to rebind it per map instance.
-if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-  document.addEventListener('click', (e) => {
-    if (e.target.closest('.maplibregl-ctrl-geolocate')) {
-      DeviceOrientationEvent.requestPermission().catch(() => {});
-    }
-  }, true);
-}
 
 window.addEventListener('online', () => { toast('Wieder online', 'success'); refreshOnResume(); });
 window.addEventListener('offline', () => toast('Keine Internetverbindung – Änderungen können nicht gespeichert werden.', 'error'));
