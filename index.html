@@ -234,6 +234,26 @@
      control is used mid-delivery with one hand. */
   .basemap-toggle { width: auto !important; height: auto !important; padding: 6px 9px; font-size: 11px; font-weight: 700; letter-spacing: .02em; color: #1c1c1e; }
 
+  /* MapLibre's own location dot, brought onto the same blue as the heading
+     cone that radiates out from under it (see `headingConeSvg`). Left on the
+     library's default #1da1f2 the two were nearly-but-not-quite the same
+     colour, which reads as two unrelated things sitting on top of each other
+     rather than as one indicator. #007AFF is the system blue every iOS map
+     uses for "you are here", which is the association worth borrowing.
+     The white ring and the pulse are MapLibre's own ::after/::before and are
+     left alone apart from their colour.
+
+     Qualified with `.maplibregl-map` purely to outrank the library's own
+     rule, for exactly the reason documented on `#route-map .maplibregl-map`
+     above: maplibre-gl.css is appended to <head> lazily on first map use
+     (see `ensureMapLibre`), so it lands *after* this stylesheet and wins
+     every tie at equal specificity. Two classes beat one regardless of
+     order. Written against `.maplibregl-map` rather than a container id so
+     it covers the pin-drop sheet's map as well as the Karte tab's. */
+  .maplibregl-map .maplibregl-user-location-dot,
+  .maplibregl-map .maplibregl-user-location-dot::before { background-color: #007AFF; }
+  .maplibregl-map .maplibregl-user-location-accuracy-circle { background-color: rgba(0, 122, 255, .16); }
+
   .large-title { transition: opacity .15s, transform .15s; }
   .compact-title { transition: opacity .15s; }
 
@@ -6186,22 +6206,108 @@ function elFromHtml(html) {
 // This is the hand-built replacement: a small arrow marker kept on the
 // same coordinate as the control's own location dot, rotated from raw
 // device-orientation events instead of anything the control provides.
+// How wide the heading cone is, and how far it reaches, in the marker's own
+// SVG units (a 100x100 box centred on the dot).
+//
+// A cone, not the arrow this used to draw. The arrow was a 22px glyph sat on
+// the exact coordinate MapLibre puts its own location dot on — so the dot,
+// which is drawn on top, covered most of it, and what was left read as a
+// smudge under the blue circle rather than as a direction. Widening or
+// moving the arrow does not fix that; it is the wrong shape for the job.
+//
+// Apple Maps (and every other native map that shows heading) solves it the
+// other way round: the indicator is a translucent beam that radiates *out
+// from behind* the dot and fades as it goes. Being behind the dot is then
+// correct rather than a bug — the beam starts where the dot is, and the part
+// you read is the part outside it, so nothing can occlude the signal. It
+// also degrades honestly: a soft-edged cone says "roughly this way", which
+// is exactly as much as a phone compass knows.
+const HEADING_CONE_RADIUS = 46;
+const HEADING_CONE_HALF_ANGLE_DEG = 30;
+
+// How much of each new compass reading to believe, per event.
+//
+// `deviceorientation` fires at up to 60 Hz and a phone compass is noisy at
+// that rate — fed straight through, the cone visibly twitches while the
+// driver holds the phone still. Averaging towards each new reading instead
+// of snapping to it settles that without adding lag anyone notices: at 60 Hz
+// this converges on a genuine turn in well under a tenth of a second.
+const HEADING_SMOOTHING = 0.2;
+
+// Interpolates between two compass bearings the short way around.
+//
+// The naive average is wrong exactly once per rotation, and wrong
+// spectacularly: between 350 and 10 it takes the 340-degree path through
+// south, so a driver turning through north watches the cone spin all the way
+// round the compass. Normalizing the difference into -180..180 first is what
+// makes "10 is 20 degrees clockwise of 350" true.
+function smoothHeading(from, to, factor) {
+  const delta = ((to - from + 540) % 360) - 180;
+  return (from + delta * factor + 360) % 360;
+}
+
+// The gradient needs an id to be referenced by `fill`, and an id has to be
+// unique in the document — the Karte tab's map and the pin-drop sheet's map
+// can both be alive at once, each with a cone of its own. Identical
+// definitions made the duplicate harmless in practice (every reference
+// resolved to the first one, which looked the same), but it is invalid
+// markup and it would break silently the day the two ever differ.
+let headingConeSeq = 0;
+
+function headingConeSvg() {
+  const gradientId = `ear-heading-cone-${++headingConeSeq}`;
+  const rad = (HEADING_CONE_HALF_ANGLE_DEG * Math.PI) / 180;
+  // The cone points straight up at rotation 0, because that is what
+  // `Marker.setRotation` measures from.
+  const dx = HEADING_CONE_RADIUS * Math.sin(rad);
+  const dy = HEADING_CONE_RADIUS * Math.cos(rad);
+  const left = `${(50 - dx).toFixed(2)} ${(50 - dy).toFixed(2)}`;
+  const right = `${(50 + dx).toFixed(2)} ${(50 - dy).toFixed(2)}`;
+  return `
+    <div style="width:100px;height:100px;pointer-events:none">
+      <svg viewBox="0 0 100 100" width="100" height="100" aria-hidden="true" focusable="false">
+        <defs>
+          <radialGradient id="${gradientId}" cx="50" cy="50" r="${HEADING_CONE_RADIUS}" gradientUnits="userSpaceOnUse">
+            <!-- The first stop is under the dot and is never actually
+                 seen; what the driver reads is the band from roughly the
+                 dot's edge outwards, so that is what these are tuned for.
+                 Pitched to stay legible on a bright phone held at arm's
+                 length in daylight, which is the condition this whole app
+                 is designed around — a subtler fade looked right indoors
+                 and vanished outside. -->
+            <stop offset="0" stop-color="#007AFF" stop-opacity="0.7"/>
+            <stop offset="0.5" stop-color="#007AFF" stop-opacity="0.38"/>
+            <stop offset="1" stop-color="#007AFF" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <path d="M50 50 L${left} A${HEADING_CONE_RADIUS} ${HEADING_CONE_RADIUS} 0 0 1 ${right} Z" fill="url(#${gradientId})"/>
+      </svg>
+    </div>`;
+}
+
 function mountHeadingIndicator(map, geolocate) {
-  const el = elFromHtml(
-    '<div style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;">' +
-    '<svg viewBox="0 0 24 24" width="22" height="22" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))">' +
-    '<path d="M12 1.5 L19.5 20 L12 15.5 L4.5 20 Z" fill="#1E88E5" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>' +
-    '</svg></div>'
-  );
+  const el = elFromHtml(headingConeSvg());
   // `rotationAlignment: 'map'` is what makes the rotation value below mean
   // "degrees from true north" rather than "degrees from the top of the
-  // screen" — the two only coincide because this map's own bearing is
-  // permanently locked to 0 (see `dragRotate: false` and friends above).
+  // screen". The two happen to coincide while this map's bearing is locked
+  // to 0 (see `dragRotate: false` and friends above), but saying it
+  // explicitly is what keeps the cone honest if that ever changes.
   const marker = new maplibregl.Marker({ element: el, anchor: 'center', rotationAlignment: 'map', pitchAlignment: 'map' });
   let heading = null;
   let onMap = false;
+  let rotationFrame = null;
 
-  const applyRotation = () => { if (heading != null) marker.setRotation(heading); };
+  // Coalesced to one write per frame. The orientation events arrive far
+  // faster than the screen refreshes, and `setRotation` is a real DOM write
+  // plus a marker reposition — doing it 60 times a second for a shape that
+  // can only be drawn 60 times a second is work nobody sees.
+  const applyRotation = () => {
+    if (heading == null || !onMap || rotationFrame != null) return;
+    rotationFrame = requestAnimationFrame(() => {
+      rotationFrame = null;
+      if (heading != null && onMap) marker.setRotation(heading);
+    });
+  };
 
   // iOS Safari exposes `webkitCompassHeading` directly — already degrees
   // clockwise from true north, no correction needed, and the most reliable
@@ -6212,26 +6318,52 @@ function mountHeadingIndicator(map, geolocate) {
   // `deviceorientation` has no fixed relationship to north at all — it's
   // relative to wherever the device happened to be pointed when the
   // listener attached — so it's read the same way only because an
-  // approximate, slowly-drifting heading beats no arrow at all.
+  // approximate, slowly-drifting heading beats no cone at all.
   const onOrientation = (e) => {
     let h = null;
     if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;
     else if (typeof e.alpha === 'number') h = (360 - e.alpha) % 360;
     if (h == null || Number.isNaN(h)) return;
-    heading = h;
-    if (onMap) applyRotation();
+    // The very first reading is taken whole — smoothing towards it from an
+    // arbitrary starting point would swing the cone across the compass on
+    // the way to the truth.
+    heading = heading == null ? h : smoothHeading(heading, h, HEADING_SMOOTHING);
+    applyRotation();
   };
   window.addEventListener('deviceorientationabsolute', onOrientation);
   window.addEventListener('deviceorientation', onOrientation);
 
   geolocate.on('geolocate', (e) => {
     marker.setLngLat([e.coords.longitude, e.coords.latitude]);
-    if (!onMap) { marker.addTo(map); onMap = true; }
+    if (!onMap) {
+      marker.addTo(map);
+      onMap = true;
+      // Behind MapLibre's own location dot, deliberately and explicitly.
+      // Markers share one container and paint in DOM order, and the dot is
+      // added by the GeolocateControl on its own schedule — so which of the
+      // two ends up on top is otherwise down to which event fired first.
+      // The cone belongs underneath: it radiates out from the dot, and the
+      // dot is the precise thing it is radiating from.
+      //
+      // Placed immediately after the canvas, NOT as the container's first
+      // child. That container's first child is the map canvas itself, so
+      // "move it to the front" put the cone *behind the map* — present in
+      // the DOM, correctly sized, correctly rotated, and completely
+      // invisible under an opaque canvas. Sitting directly after the canvas
+      // is above the map and below every marker added later, which is
+      // exactly the layer this belongs in.
+      const parent = el.parentElement;
+      const canvas = parent && parent.querySelector('canvas');
+      if (canvas && canvas.nextSibling !== el) parent.insertBefore(el, canvas.nextSibling);
+    }
     applyRotation();
   });
-  // Tracking stopped (paused, turned off, or a geolocation error) — the
-  // arrow shouldn't linger pointing at a position that's no longer updating.
-  const hide = () => { if (onMap) { marker.remove(); onMap = false; } };
+  // Tracking stopped (paused, turned off, or a geolocation error) — the cone
+  // shouldn't linger pointing out of a position that's no longer updating.
+  const hide = () => {
+    if (rotationFrame != null) { cancelAnimationFrame(rotationFrame); rotationFrame = null; }
+    if (onMap) { marker.remove(); onMap = false; }
+  };
   geolocate.on('trackuserlocationend', hide);
   geolocate.on('error', hide);
 
@@ -6329,7 +6461,7 @@ function newMap(container, opts) {
   // for MapLibre, and is still an open, unmerged issue there
   // (maplibre/maplibre-gl-js#2426). Passing it here is a silent no-op, not
   // a bug in how it's configured — the feature simply isn't in this
-  // library. `mountHeadingIndicator` below builds the arrow by hand.
+  // library. `mountHeadingIndicator` below draws the heading cone by hand.
   const geolocate = new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true });
   map.addControl(geolocate, 'top-right');
   mountHeadingIndicator(map, geolocate);
