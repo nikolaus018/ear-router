@@ -28,10 +28,25 @@
 <meta name="description" content="Essen auf Rädern – Routenplanung für Zusteller des Arbeiter-Samariter-Bundes Österreichs" />
 <meta name="color-scheme" content="light" />
 
-<!-- PWA / "add to home screen". Light mode only, intentionally — see the
-     module doc comment. theme-color matches the app's actual grouped
-     background; apple-mobile-web-app-status-bar-style is "default" (dark
-     status-bar icons), which reads correctly against that light background. -->
+<!-- PWA / "add to home screen".
+
+     Light mode only, and deliberately so rather than by omission: this is a
+     daylight tool. It is read at arm's length through a windscreen and in a
+     van doorway, where a light ground at full brightness is the legible
+     one, and its whole visual language — the ASBÖ red on white, the grouped
+     iOS-settings lists — is built for that. `color-scheme: light` above is
+     what makes the choice real: without it a phone in dark mode renders the
+     form controls, the select's popup and the scrollbars dark against this
+     app's light surfaces, which is the worst of both.
+
+     Recorded here because it is a decision, not an oversight. Adding a dark
+     palette is a real piece of work (every colour in the app is a literal,
+     and the map's own basemap style and marker colours would need a dark
+     variant too), not a flag to flip.
+
+     theme-color matches the app's actual grouped background;
+     apple-mobile-web-app-status-bar-style is "default" (dark status-bar
+     icons), which reads correctly against that light background. -->
 <meta name="theme-color" content="#F2F2F7" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
@@ -221,6 +236,55 @@
 
   .large-title { transition: opacity .15s, transform .15s; }
   .compact-title { transition: opacity .15s; }
+
+  /* Every interactive element the app draws is at least a 44x44pt target,
+     which is Apple's own minimum and the one this app was quietly missing:
+     the header's back/add/menu buttons were 36pt, the delivered toggle and
+     its Maps link 40pt, the search-clear 32pt. That is small for a thumb at
+     the best of times and this app is used one-handed, standing at a van,
+     often in gloves.
+
+     Done with a centred pseudo-element rather than by growing the elements
+     themselves, because their *drawn* size is right — a 44pt red circle
+     next to every stop would dominate the row it belongs to. This grows
+     only what the finger has to hit. `min-width/height: 100%` so an element
+     already larger than 44pt keeps its own hit area rather than having it
+     shrunk to 44. */
+  .tap-target { position: relative; }
+  .tap-target::after {
+    content: ''; position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 44px; height: 44px; min-width: 100%; min-height: 100%;
+  }
+
+  /* Reduce Motion.
+     A system setting on iOS (Settings > Accessibility > Motion), and one
+     this app ignored entirely: sheets slid, alerts popped, every list
+     staggered its rows in, toasts flew, and buttons scaled under the
+     thumb. For someone with vestibular sensitivity that is not decoration,
+     it is nausea — and the OS already asked on their behalf.
+
+     Not `animation: none`: an animation with `both`/forwards fill (the row
+     entrance sets its start state in a keyframe) needs to still *run* and
+     land on its end state, or the rows stay at `opacity: 0` and the list is
+     invisible. Collapsing the duration to nothing runs it instantly, which
+     is the right meaning of "no motion" rather than "no result".
+
+     The spinners deliberately keep turning. Reduce Motion asks for no
+     large-scale or parallax movement; a progress indicator is neither, and
+     iOS's own activity indicator goes on spinning under the same setting.
+     Removing it would leave a driver with no sign the app is doing
+     anything, which is a worse outcome than the thing being avoided. */
+  @media (prefers-reduced-motion: reduce) {
+    .sheet-backdrop, .sheet-panel, .alert-panel,
+    .row-enter, .toast-enter, .toast-enter-up {
+      animation-duration: .01ms !important;
+      animation-delay: 0ms !important;
+    }
+    .large-title, .compact-title { transition-duration: .01ms !important; }
+    .press-98:active, .press-95:active { transform: none; }
+    html { scroll-behavior: auto !important; }
+  }
 </style>
 
 <!-- Tailwind utilities, compiled ahead of time from the classes actually
@@ -2864,8 +2928,52 @@ function stopAddress(s) {
 // pushed detail for it".
 // ---------------------------------------------------------------------
 function switchTab(tab) {
+  // Tapping the tab you are already on scrolls that screen back to the top,
+  // which is what every tab bar on iOS does and what a driver halfway down
+  // a thirty-stop list reaches for without thinking. Without it the tap was
+  // simply inert — the one gesture in the app that looked like it should do
+  // something and didn't.
+  //
+  // Pop first, then scroll — the two-stage behaviour iOS actually has: the
+  // first tap on the active tab dismisses the pushed screen, and once you
+  // are already at the root the tap scrolls it to the top.
+  //
+  // Popping here is NOT `closeDetail()`. That clears `currentRoute`, and
+  // this app's route in focus is shared with the Karte tab — so a tap on
+  // "Routen" would also blank the map the driver may be navigating by.
+  // Clearing `detailOrigin` alone is exactly "no tab has a pushed detail
+  // for this route any more" (see the `state` doc comment), which dismisses
+  // the screen and leaves the map showing what it was showing.
+  if (tab === state.tab) {
+    if (isDetailShowing()) {
+      state.detailOrigin = null;
+      // The filter belonged to the screen being dismissed; leaving it set
+      // would silently narrow the list again the next time this route's
+      // detail is opened from the Karte tab, which does not reload the
+      // route and so never clears it.
+      resetStopFilter();
+      render();
+      return;
+    }
+    scrollCurrentScreenToTop();
+    return;
+  }
   state.tab = tab;
   render();
+}
+
+// The scroll container of whatever screen is showing. Every screen marks it
+// with `data-scroll` (it is the same element `renderScreen` saves and
+// restores scroll offsets against), and the Karte tab deliberately has
+// none — a map is panned, not scrolled, and there is no "top" to return to.
+function scrollCurrentScreenToTop() {
+  const scroller = document.querySelector('[data-scroll]');
+  if (!scroller || scroller.scrollTop === 0) return;
+  scroller.scrollTo({ top: 0, behavior: scrollBehavior() });
+  // Remembered too, so the position this just discarded isn't restored by
+  // the next render — which would undo the scroll a moment after it
+  // finished, in front of the driver.
+  scrollMemory.set(currentScreenKey(), 0);
 }
 
 // Every route-list screen (Routen/Verlauf) reads from `state.routes`, a
@@ -3490,7 +3598,15 @@ async function toggleDelivered(stopId, delivered) {
 
   const seq = nextSeq();
   try {
-    const updated = await api(`/stops/${stopId}`, { method: 'PATCH', body: JSON.stringify({ delivered }) });
+    // `retry: true`: this PATCH is a pure "set this flag to this value"
+    // (see `update_stop` in src/main.rs) — sending it twice lands on the
+    // same row in the same state, so it is safe to resend in a way the
+    // app's creating POSTs are not. Opted in because this is the single
+    // most-tapped action in the app AND the one taken in the worst possible
+    // conditions: standing between buildings, phone handing over between
+    // cells. Without it a dropped packet flips the tick back and shows an
+    // error for something that was about to work.
+    const updated = await api(`/stops/${stopId}`, { method: 'PATCH', retry: true, body: JSON.stringify({ delivered }) });
     // Confirmed: this stop's own request has been answered, so the
     // prediction for it is no longer needed to hold the screen steady —
     // unless a newer tap for the same stop has since started, in which
@@ -3549,7 +3665,7 @@ async function renameRoute() {
   const seq = nextSeq();
   showProgress();
   try {
-    const updated = await api(`/routes/${routeId}`, { method: 'PATCH', body: JSON.stringify({ name: name.trim() }) });
+    const updated = await api(`/routes/${routeId}`, { method: 'PATCH', retry: true, body: JSON.stringify({ name: name.trim() }) });
     // Renaming touches only the header text, never the stop list — a full
     // staggered row-enter replay across every stop for a header-only edit
     // reads as "the list just reloaded" when nothing in it did.
@@ -3569,7 +3685,11 @@ async function resetDelivered() {
   const seq = nextSeq();
   showProgress();
   try {
-    const updated = await api(`/routes/${routeId}/reset-delivered`, { method: 'POST' });
+    // A POST, but one that sets every stop on the route to not-delivered —
+    // running it twice is the same as running it once, which is what makes
+    // opting in safe here where the app's other POSTs (which create things)
+    // could not.
+    const updated = await api(`/routes/${routeId}/reset-delivered`, { method: 'POST', retry: true });
     if (!applyRouteUpdate(seq, routeId, updated)) return;
     patchRouteDetail({ animate: true }) || render();
     toast('Zustellungen zurückgesetzt ✓', 'success');
@@ -3593,7 +3713,7 @@ async function toggleRouteStatus() {
   const seq = nextSeq();
   showProgress();
   try {
-    const updated = await api(`/routes/${routeId}`, { method: 'PATCH', body: JSON.stringify({ status: newStatus }) });
+    const updated = await api(`/routes/${routeId}`, { method: 'PATCH', retry: true, body: JSON.stringify({ status: newStatus }) });
     if (!applyRouteUpdate(seq, routeId, updated)) return;
     // A completed route belongs in Verlauf and an active one in Routen, so
     // the detail screen follows it across rather than being left in a tab
@@ -3620,6 +3740,7 @@ async function deleteRoute() {
     // Ladeliste ticks for a route that no longer exists describe a van
     // loaded for a job that isn't happening.
     ladelisteChecked.delete(routeId);
+    saveLadelisteChecked();
     // Close the detail screen *before* reloading the list: closeDetail()
     // renders, and rendering a detail screen for a route that no longer
     // exists would read its stops off an object the server has forgotten.
@@ -3719,7 +3840,7 @@ document.getElementById('modal-root').addEventListener('focusin', (e) => {
   // driver cannot see while typing into it. Scrolling the focused field to
   // the middle of the sheet is what keeps it visible.
   if (!e.target.matches('input, textarea, select')) return;
-  setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 250);
+  setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: scrollBehavior() }), 250);
 });
 
 function renderSheetShell(bodyHtml, { scrollable = true, label = '' } = {}) {
@@ -3955,7 +4076,8 @@ async function saveFixedStopExclusion(stopId) {
   // is treated as the cancel it is.
   if (!stop || !!stop.excluded === excluded) return;
   await refreshCurrentRoute(
-    () => api(`/stops/${stopId}`, { method: 'PATCH', body: JSON.stringify({ excluded }) }),
+    // Idempotent field set, same as the delivered toggle — see there.
+    () => api(`/stops/${stopId}`, { method: 'PATCH', retry: true, body: JSON.stringify({ excluded }) }),
     excluded ? 'Stopp wird übersprungen …' : 'Stopp wird wieder eingeplant …',
   );
 }
@@ -3975,7 +4097,7 @@ function renderManualForm(stop) {
 
   renderSheetShell(`
     <h2 class="text-[22px] font-bold mb-4">${isEdit ? 'Stopp bearbeiten' : 'Neuer Stopp'}</h2>
-    <form id="stop-form" class="space-y-3 pb-2">
+    <form id="stop-form" novalidate class="space-y-3 pb-2">
       <div>
         <label class="${LABEL}" for="${uid('kunde')}">Kunde</label>
         <input id="${uid('kunde')}" name="kunde" required autocomplete="off" maxlength="${LIMITS.kunde}" enterkeyhint="next" value="${escapeAttr(stop?.kunde || '')}" placeholder="z.B. Fam. Gruber" class="${FIELD}" />
@@ -4027,6 +4149,33 @@ function renderManualForm(stop) {
     e.preventDefault();
     submitStop(e.target, stop?.id);
   });
+
+  // `enterkeyhint="next"` puts "Weiter" on the iOS return key — and until
+  // now that was a lie. In a form with a submit button, Enter in a text
+  // input submits the form, so the key labelled "next field" saved the
+  // stop: mid-way through typing, from the Kunde field, before the district
+  // had been chosen. Wiring it to actually advance is what makes the
+  // keyboard's own promise true.
+  //
+  // `required` stays on the fields (assistive technology announces it) but
+  // the form is `novalidate`: the browser's native "Please fill out this
+  // field" bubble is unstyleable OS chrome of exactly the kind this app
+  // replaced `alert`/`confirm` to avoid, and `submitStop` already says the
+  // same thing in the app's own voice.
+  const advanceable = Array.from(form.querySelectorAll('[enterkeyhint="next"]'));
+  for (const field of advanceable) {
+    field.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      // The next control in DOM order that a driver can actually type in or
+      // choose from — never a button, which is what "next" would otherwise
+      // land on from the last field.
+      const controls = Array.from(form.querySelectorAll('input, select, textarea'));
+      const next = controls[controls.indexOf(field) + 1];
+      if (next) next.focus();
+      else form.requestSubmit?.();
+    });
+  }
 
   // Paste a full address ("Clementinengasse 11, 1150 Wien") straight from a
   // chat/SMS into the Straße field: pull the district PLZ out of it and
@@ -4329,7 +4478,61 @@ async function saveJsonEdits() {
 // already ticked tomorrow morning would be worse than no checklist at all.
 // Kept across sheet opens (closing it to glance at a stop has not unloaded
 // the van), gone on reload.
-const ladelisteChecked = new Map();
+//
+// Persisted, because the moment this list is used is the moment it is most
+// likely to be destroyed. A driver ticks it off at the depot with the van
+// door open, one package at a time, over several minutes — and in that
+// window this app will happily reload itself out from under them: a deploy
+// landing mid-load triggers the `controllerchange` reload at the bottom of
+// this file, and iOS is free to evict a backgrounded PWA whenever it wants
+// the memory. An in-memory Map loses every tick to either, silently, with
+// the van half loaded and no way to tell which half.
+const LADELISTE_KEY = 'ear_ladeliste';
+
+// How many routes' worth of ticks are kept. Ticks belong to a shift, not to
+// a permanent record, and a driver only ever has one or two routes in play
+// — this is purely a bound on a store that would otherwise grow for the
+// life of the installation. Trimmed oldest-first by insertion order, which
+// for this is the same as least-recently-used: a route is re-inserted at
+// the end every time its ticks are written.
+const LADELISTE_MAX_ROUTES = 20;
+
+function loadLadelisteChecked() {
+  const map = new Map();
+  let raw;
+  try { raw = localStorage.getItem(LADELISTE_KEY); } catch (_) { return map; }
+  if (!raw) return map;
+  try {
+    const parsed = JSON.parse(raw);
+    // Anything that isn't the shape this writes is treated as absent rather
+    // than allowed to throw: the alternative is a corrupt storage value
+    // taking down the whole module's evaluation, and with it the app.
+    if (!parsed || typeof parsed !== 'object') return map;
+    for (const [id, keys] of Object.entries(parsed)) {
+      const routeId = Number(id);
+      if (!Number.isInteger(routeId) || !Array.isArray(keys)) continue;
+      map.set(routeId, new Set(keys.filter((k) => typeof k === 'string')));
+    }
+  } catch (_) { /* unparseable — start clean rather than fail */ }
+  return map;
+}
+
+function saveLadelisteChecked() {
+  // Trim before writing, so the stored object and the in-memory one never
+  // disagree about what exists.
+  while (ladelisteChecked.size > LADELISTE_MAX_ROUTES) {
+    ladelisteChecked.delete(ladelisteChecked.keys().next().value);
+  }
+  const out = {};
+  for (const [routeId, keys] of ladelisteChecked) {
+    // An empty set is "nothing ticked", which is the default — no reason to
+    // store it, and dropping it keeps the entry count meaningful.
+    if (keys.size) out[routeId] = Array.from(keys);
+  }
+  try { localStorage.setItem(LADELISTE_KEY, JSON.stringify(out)); } catch (_) { /* private-browsing storage lockout, or quota */ }
+}
+
+const ladelisteChecked = loadLadelisteChecked();
 
 // The exact `items` array `renderLadeliste` last built the sheet's rows
 // from. `toggleLadelisteItem` reads from *this*, not a freshly recomputed
@@ -4478,6 +4681,11 @@ function toggleLadelisteItem(index) {
   if (!checked) { checked = new Set(); ladelisteChecked.set(r.id, checked); }
   const on = !checked.has(it.key);
   if (on) checked.add(it.key); else checked.delete(it.key);
+  // Re-inserted so this route counts as the most recently used one for the
+  // trim in `saveLadelisteChecked`.
+  ladelisteChecked.delete(r.id);
+  ladelisteChecked.set(r.id, checked);
+  saveLadelisteChecked();
 
   // Repainting the one row in place rather than re-rendering the sheet: a
   // rebuild would throw away the scroll position halfway down a long list
@@ -4501,6 +4709,7 @@ function resetLadeliste() {
   const r = state.currentRoute;
   if (!r) return;
   ladelisteChecked.delete(r.id);
+  saveLadelisteChecked();
   // Every row changes at once here, so a full re-render is the honest way
   // to do it — unlike a single tick, there is no scroll position worth
   // preserving through a "start over".
@@ -4701,7 +4910,7 @@ function renderTabBar() {
     <nav class="fixed bottom-0 inset-x-0 z-40 bg-white border-t border-black/10" style="padding-bottom: env(safe-area-inset-bottom, 0px)">
       <div class="max-w-md mx-auto grid grid-cols-4">
         ${tabs.map(t => `
-          <button onclick="switchTab('${t.id}')" ${state.tab === t.id ? 'aria-current="page"' : ''} aria-label="${t.label}" class="press-fade flex flex-col items-center justify-center gap-0.5 pt-2 pb-1.5 ${state.tab === t.id ? 'text-brand-600' : 'text-black/55'}">
+          <button onclick="switchTab('${t.id}')" ${state.tab === t.id ? 'aria-current="page"' : ''} aria-label="${t.label}" class="press-fade flex flex-col items-center justify-center gap-0.5 pt-2 pb-1.5 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 ${state.tab === t.id ? 'text-brand-600' : 'text-black/55'}">
             <span class="text-[22px] flex">${t.icon}</span>
             <span class="text-[10px] font-medium">${t.label}</span>
           </button>
@@ -4919,7 +5128,7 @@ function renderRoutesTab() {
         <div class="flex items-center justify-between px-4 pb-2.5">
           <span class="w-8"></span>
           <p data-compact-title class="compact-title text-[17px] font-semibold" style="opacity:0">Routen</p>
-          <button onclick="createRoute()" aria-label="Neue Route anlegen" title="Neue Route anlegen" class="press-fade w-8 h-8 flex items-center justify-center text-brand-600 text-lg">${ICONS.plus}</button>
+          <button onclick="createRoute()" aria-label="Neue Route anlegen" title="Neue Route anlegen" class="tap-target press-fade w-8 h-8 flex items-center justify-center text-brand-600 text-lg">${ICONS.plus}</button>
         </div>
       </div>
 
@@ -5110,7 +5319,7 @@ function renderMoreTab() {
 
         <p class="${SECTION_LABEL}">Zusteller-Tools</p>
         <div class="${GROUP}">
-          <a href="https://zusteller.gourmet-daheim.at/#/login" target="_blank" rel="noopener" class="${ROW}">
+          <a href="https://zusteller.gourmet-daheim.at/#/customers" target="_blank" rel="noopener" class="${ROW}">
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.external}</span>
             <p class="flex-1 text-[15px]">Gourmet</p>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
@@ -5127,7 +5336,7 @@ function renderMoreTab() {
           <label class="flex items-center gap-3 px-4 py-3">
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.compass}</span>
             <span class="flex-1 text-[15px]">Navigations-App</span>
-            <select onchange="setMapsProvider(this.value)" aria-label="Navigations-App für „In Maps öffnen“-Links" class="text-[15px] text-black/55 bg-transparent text-right focus:outline-none">
+            <select onchange="setMapsProvider(this.value)" aria-label="Navigations-App für „In Maps öffnen“-Links" class="text-[15px] text-black/55 bg-transparent text-right rounded-lg px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600">
               ${Object.entries(MAPS_PROVIDERS).map(([id, p]) => `<option value="${id}" ${getMapsProvider() === id ? 'selected' : ''}>${p.label}</option>`).join('')}
             </select>
           </label>
@@ -5303,7 +5512,7 @@ function renderFixedRow(s, meta, animIndex = null) {
         <p class="text-[13px] ${skipped ? 'text-black/35' : 'text-black/55'}">${escapeHtml(meta.subtitle)}</p>
         ${skipped ? '' : legLabel(s)}
       </div>
-      <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/55'}">${ICONS.mapPin}</a>
+      <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="tap-target press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/55'}">${ICONS.mapPin}</a>
     </div>
   `;
 }
@@ -5369,10 +5578,10 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
         ${legLabel(s, 'mt-1.5')}
       </div>
       <div class="flex flex-col gap-2 shrink-0 mt-0.5">
-        <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" title="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" class="press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${delivered ? 'bg-success text-white' : 'bg-white border-2 border-black/45 text-black/40'}">
+        <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" title="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" class="tap-target press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${delivered ? 'bg-success text-white' : 'bg-white border-2 border-black/45 text-black/40'}">
           ${delivered ? ICONS.checkCircleFill : ICONS.circle}
         </button>
-        <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
+        <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="tap-target press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
       </div>
     </div>
   `;
@@ -6109,6 +6318,10 @@ function newMap(container, opts) {
   // marker, and doing that on each frame of a pinch is work nobody sees.
   map.on('zoomend', () => relayoutStopMarkers(map));
   map.touchZoomRotate.disableRotation();
+  // MapLibre labels its canvas "Map" in English. This app is German
+  // throughout, and a screen reader switching language mid-screen for one
+  // word is exactly the seam that gives a web app away.
+  try { map.getCanvas().setAttribute('aria-label', 'Karte der Route'); } catch (_) { /* no canvas yet */ }
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
   map.addControl(basemapControl(), 'top-right');
   // MapLibre GL JS's GeolocateControl has never actually implemented
@@ -6374,14 +6587,27 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
     if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) return;
     const meta = stopKindMeta(s);
     let el;
+    // Each marker is announced as what it is, not as the bare number or
+    // tick inside it. Without this the Karte tab is a blank spot for
+    // VoiceOver: a canvas with nothing readable on it, surrounded by
+    // unlabelled `div`s. `role="button"` because tapping one does something
+    // (it opens the popup), and the marker element is already focusable —
+    // MapLibre makes a marker with a popup keyboard-reachable, so this is
+    // the label that reachability was missing.
+    let label;
     if (meta) {
       el = elFromHtml(`<div class="marker-fixed">${meta.icon}</div>`);
+      label = `${meta.title}: ${meta.subtitle}`;
     } else {
       customerNum++;
       const isNext = i === firstOpenIdx;
       const bg = s.delivered ? '#34C759' : isNext ? '#ED1639' : '#8E8E93';
       const ring = s.location_precision ? 'box-shadow:0 0 0 3px #FF9500,0 1px 4px rgba(0,0,0,.4);' : '';
       el = elFromHtml(`<div class="marker-badge" style="background:${bg};${ring}">${s.delivered ? '✓' : customerNum}</div>`);
+      // Position in the tour, who it is, and its state — the three things
+      // the marker's colour and number convey to someone who can see it.
+      const status = s.delivered ? 'zugestellt' : isNext ? 'nächster Stopp' : 'offen';
+      label = `Stopp ${customerNum}: ${s.kunde}, ${s.strasse}, ${s.plz} Wien — ${status}`;
     }
     el.classList.add('ear-route-marker');
     const precisionNote = s.location_precision === 'street' ? '<br><i>≈ nächstgelegene bekannte Hausnummer</i>'
@@ -6410,6 +6636,12 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
       .setLngLat([s.lon, s.lat])
       .setPopup(popup)
       .addTo(map);
+    // After the Marker is constructed, not before: MapLibre stamps its own
+    // `aria-label` of "Map marker" onto the element it is handed, so a
+    // label set on `el` earlier is silently overwritten — every pin on the
+    // route announced identically, in English, in a German app.
+    el.setAttribute('role', 'button');
+    el.setAttribute('aria-label', label);
     map._earMarkers.push(marker);
     map._earBadges.push({ marker, popup, lngLat: [s.lon, s.lat] });
     bounds.extend([s.lon, s.lat]);
@@ -6591,7 +6823,7 @@ function scrollActiveChipIntoView() {
   if (!chip) return;
   // The very first paint has nowhere to animate *from*, and a smooth scroll
   // there just looks like the row drifting on arrival.
-  chip.scrollIntoView({ inline: 'center', block: 'nearest', behavior: chipScrolledOnce ? 'smooth' : 'auto' });
+  chip.scrollIntoView({ inline: 'center', block: 'nearest', behavior: chipScrolledOnce ? scrollBehavior() : 'auto' });
   chipScrolledOnce = true;
 }
 
@@ -6599,6 +6831,13 @@ function scrollActiveChipIntoView() {
 // Route detail — pushed screen (stops only; the map lives in its own
 // Karte tab now). Large-title collapse, back chevron, "..." overflow menu.
 // ---------------------------------------------------------------------
+// The header row uses `gap-2`, not `gap-1`, and that is load-bearing: its
+// three buttons are 36pt of drawn icon inside a 44pt hit area (see
+// `.tap-target` in the stylesheet), so at a 4pt gap two neighbouring hit
+// areas overlapped by 4pt — a sliver where "Stopp hinzufügen" and "Weitere
+// Aktionen" both claimed the same pixels. An 8pt gap puts the 44pt targets
+// exactly edge to edge, which is what makes them unambiguous as well as
+// reachable.
 function renderRouteDetail() {
   const r = state.currentRoute;
   const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
@@ -6610,12 +6849,12 @@ function renderRouteDetail() {
   return `
     <div data-scroll role="main" class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
       <div class="sticky top-0 z-20 bg-[#F2F2F7]/85 backdrop-blur-xl border-b border-black/10" style="padding-top: calc(env(safe-area-inset-top) + 0.5rem)">
-        <div class="flex items-center gap-1 px-2 pb-2.5">
-          <button onclick="closeDetail()" aria-label="Zurück zur Übersicht" title="Zurück" class="press-fade w-9 h-9 flex items-center justify-center text-brand-600 text-lg shrink-0">${ICONS.back}</button>
+        <div class="flex items-center gap-2 px-2 pb-2.5">
+          <button onclick="closeDetail()" aria-label="Zurück zur Übersicht" title="Zurück" class="tap-target press-fade w-9 h-9 flex items-center justify-center text-brand-600 text-lg shrink-0">${ICONS.back}</button>
           <p data-compact-title class="compact-title flex-1 min-w-0 text-[15px] font-semibold text-center truncate px-1" style="opacity:0">${escapeHtml(r.name)}</p>
-          <button onclick="openAddSheet()" aria-label="Stopp hinzufügen" title="Stopp hinzufügen" class="press-fade w-9 h-9 flex items-center justify-center text-brand-600 text-lg shrink-0">${ICONS.plus}</button>
+          <button onclick="openAddSheet()" aria-label="Stopp hinzufügen" title="Stopp hinzufügen" class="tap-target press-fade w-9 h-9 flex items-center justify-center text-brand-600 text-lg shrink-0">${ICONS.plus}</button>
           <div class="relative shrink-0">
-            <button id="route-menu-btn" onclick="toggleRouteMenu()" aria-label="Weitere Aktionen" title="Weitere Aktionen" aria-haspopup="menu" aria-expanded="false" aria-controls="route-menu" class="press-fade w-9 h-9 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>
+            <button id="route-menu-btn" onclick="toggleRouteMenu()" aria-label="Weitere Aktionen" title="Weitere Aktionen" aria-haspopup="menu" aria-expanded="false" aria-controls="route-menu" class="tap-target press-fade w-9 h-9 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>
             ${renderRouteMenu()}
           </div>
         </div>
@@ -6675,10 +6914,27 @@ function nextStopBar(stops, firstOpenIdx) {
   `;
 }
 
+// Whether the driver has asked the OS for less motion. Read live rather
+// than cached: iOS lets it be toggled from Control Center, and this app
+// stays open for days at a time, so a value read once at load would be the
+// wrong one for most of that.
+//
+// The CSS side is handled by the `prefers-reduced-motion` block in the
+// stylesheet; this is for the handful of places the decision is made in
+// JavaScript instead — `scrollIntoView`, mostly, whose behaviour is an
+// argument rather than a property and so is not reachable from CSS at all.
+function prefersReducedMotion() {
+  return !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+}
+
+function scrollBehavior() {
+  return prefersReducedMotion() ? 'auto' : 'smooth';
+}
+
 function scrollToNextStop() {
   const row = document.querySelector('[data-next-stop]');
   if (!row) return;
-  row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  row.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
   // A brief highlight so the eye lands on the right row rather than on
   // wherever the scroll happened to stop.
   row.animate(
@@ -6777,7 +7033,7 @@ function stopSearchBar() {
           oninput="onStopFilterInput(this.value)"
           class="w-full bg-black/[0.06] rounded-xl pl-10 pr-11 py-2.5 text-base placeholder:text-black/55 focus:outline-none focus:ring-2 focus:ring-brand-600" />
         <button data-stop-filter-clear type="button" onclick="clearStopFilter()" aria-label="Suche löschen" title="Suche löschen"
-          class="${stopFilter.query ? '' : 'hidden'} press-95 absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center text-[13px] text-black/55 bg-black/[0.08]">${ICONS.close}</button>
+          class="${stopFilter.query ? '' : 'hidden'} tap-target press-95 absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center text-[13px] text-black/55 bg-black/[0.08]">${ICONS.close}</button>
       </div>
     </div>
   `;
@@ -7039,17 +7295,17 @@ for (const gestureType of ['gesturestart', 'gesturechange', 'gestureend']) {
 document.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
 
 // ---------------------------------------------------------------------
-// Heading permission for MapLibre's GeolocateControl — every `newMap()`
-// call turns on `showUserHeading`, but on iOS Safari (13+) that alone
-// draws nothing: the browser refuses to fire `deviceorientation` at all
-// until the page has explicitly asked via
+// Heading permission for the hand-built heading arrow — see
+// `mountHeadingIndicator`, which reads `deviceorientation` directly
+// because MapLibre's own `showUserHeading` has never been implemented.
+// On iOS Safari (13+) those events do not fire at all until the page has
+// explicitly asked via
 // `DeviceOrientationEvent.requestPermission()`, and iOS only grants that
 // request when it's called synchronously inside a real tap — not from a
 // promise callback, not from GeolocateControl's own async geolocation
-// success handler, which fires too late to count. MapLibre's control does
-// not make this call for you, so without this, the driver gets the blue
-// location dot but never the heading cone, on exactly the platform this
-// app mostly runs on.
+// success handler, which fires too late to count. So without this, the
+// driver gets the blue location dot but never the arrow showing which way
+// they are pointing, on exactly the platform this app mostly runs on.
 //
 // Bound once, on `document`, in the capture phase — capture runs before
 // the button's own click handler (added by MapLibre in the bubble phase
