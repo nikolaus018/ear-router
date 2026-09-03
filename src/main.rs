@@ -2657,6 +2657,10 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
     let lock = state.route_lock(route_id).await;
     let _guard = lock.lock().await;
 
+    // What this solution was planned from, checked again at write time —
+    // see `planning_fingerprint`.
+    let planned_from: Vec<(i64, f64, f64, bool)>;
+
     let nodes = {
         let conn = state.db()?;
         // Only id/kind/lat/lon/excluded, not `SELECT *`: this runs on every
@@ -2672,6 +2676,7 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
             })?
             .collect::<Result<_, _>>()?;
         drop(stmt);
+        planned_from = planning_fingerprint(&stops);
 
         let mut nodes =
             RouteNodes { start: None, via: None, end: None, customers: Vec::new() };
@@ -2777,6 +2782,46 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
     // and so `needs_optimize` is only ever cleared once all of it landed.
     let mut conn = state.db()?;
     let tx = conn.transaction()?;
+
+    // Did the route change while this solution was being computed?
+    //
+    // The mutating handlers commit their change and *then* call
+    // `reoptimize_best_effort`, which queues on this same per-route lock —
+    // so two edits in quick succession produce two optimizations, and the
+    // first of them planned from a route that no longer exists by the time
+    // it writes. Its stop order and geometry are simply stale, which the
+    // second run corrects. What is not self-correcting is
+    // `needs_optimize = 0`: the first run clears the flag the second edit
+    // had set, and if that second optimization then fails (OSRM
+    // unreachable, which is the whole reason `reoptimize_best_effort`
+    // exists), the route is left claiming to be current while its geometry
+    // is missing a stop. No banner, no retry offered, wrong distances all
+    // day.
+    //
+    // Comparing what was planned from against what is there now, inside the
+    // write transaction, is what makes clearing the flag honest. The order
+    // and geometry are still written either way — a fresher-than-nothing
+    // solution beats leaving the old one — but the flag only clears when
+    // this solution actually describes the route on disk.
+    let current = planning_fingerprint(&{
+        let mut stmt =
+            tx.prepare("SELECT id, kind, lat, lon, excluded FROM stops WHERE route_id = ?1 ORDER BY id")?;
+        let rows: Vec<(i64, String, f64, f64, bool)> = stmt
+            .query_map(params![route_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? != 0))
+            })?
+            .collect::<Result<_, _>>()?;
+        drop(stmt);
+        rows
+    });
+    let still_current = current == planned_from;
+    if !still_current {
+        tracing::info!(
+            route_id,
+            "route changed while it was being optimized — writing this solution but leaving it flagged for another pass"
+        );
+    }
+
     for (pos, node) in display_order(&nodes, &routed).iter().enumerate() {
         let (leg_km, leg_min) = match leg_for.get(&node.id) {
             Some(&(dist, dur)) => (Some(dist / 1000.0), Some(dur / 60.0)),
@@ -2788,11 +2833,22 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         )?;
     }
     tx.execute(
-        "UPDATE routes SET geometry = ?1, needs_optimize = 0 WHERE id = ?2",
-        params![geometry_json, route_id],
+        "UPDATE routes SET geometry = ?1, needs_optimize = ?2 WHERE id = ?3",
+        params![geometry_json, i64::from(!still_current), route_id],
     )?;
     tx.commit()?;
     Ok(())
+}
+
+/// Everything `reoptimize_route` actually plans from, in a form two runs can
+/// be compared by: which stops exist, where they are, and which are skipped.
+///
+/// Deliberately not the whole row — a customer's name or note changing
+/// between the read and the write does not make the computed order or
+/// geometry wrong, and treating it as if it did would leave routes
+/// perpetually flagged for re-optimization over an edited Notiz.
+fn planning_fingerprint(stops: &[(i64, String, f64, f64, bool)]) -> Vec<(i64, f64, f64, bool)> {
+    stops.iter().map(|(id, _, lat, lon, excluded)| (*id, *lat, *lon, *excluded)).collect()
 }
 
 /// `reoptimize_route` for the callers that have *already committed* their
@@ -3144,7 +3200,19 @@ async fn recheck_addresses(
     };
 
     let mut report = RecheckReport { skipped_pinned, ..Default::default() };
-    let mut updates: Vec<(i64, f64, f64, Option<&'static str>)> = Vec::new();
+    /// One pending write-back: which stop, where to, the new badge, whether
+    /// this counts as a move, and the address it was resolved *from* — see
+    /// the guarded UPDATE below for why that last part is carried this far.
+    struct Update {
+        id: i64,
+        lat: f64,
+        lon: f64,
+        precision: Option<&'static str>,
+        moved: bool,
+        from_strasse: String,
+        from_plz: String,
+    }
+    let mut updates: Vec<Update> = Vec::new();
     for before in stops {
         // Sequential rather than the bulk import's parallel fan-out: this
         // runs on a route that already exists, nobody is waiting on a form,
@@ -3160,11 +3228,16 @@ async fn recheck_addresses(
                     (before.lat, before.lon, before.precision.as_deref()),
                     (lat, lon, tag),
                 );
-                if change.moved {
-                    report.moved += 1;
-                }
                 if change.write {
-                    updates.push((before.id, lat, lon, tag));
+                    updates.push(Update {
+                        id: before.id,
+                        lat,
+                        lon,
+                        precision: tag,
+                        moved: change.moved,
+                        from_strasse: before.strasse.clone(),
+                        from_plz: before.plz.clone(),
+                    });
                 }
             }
             // The reason matters more than the fact: "exists in the 18th
@@ -3184,15 +3257,46 @@ async fn recheck_addresses(
     // badge-only correction rewrites one column and nothing else, so it must
     // not flag the route stale or spend an OSRM round trip arriving back at
     // exactly the order and geometry already stored.
-    let any_moved = report.moved > 0;
+    let mut any_moved = false;
     if !updates.is_empty() {
         let mut conn = state.db()?;
         let tx = conn.transaction()?;
-        for (id, lat, lon, precision) in updates {
-            tx.execute(
-                "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3 WHERE id = ?4",
-                params![lat, lon, precision, id],
+        for u in updates {
+            // Guarded on the address it was resolved from, and on the pin
+            // still being the geocoder's to move.
+            //
+            // This handler reads every stop, then spends a throttled second
+            // per uncached address against the register — half a minute or
+            // more on a full route — and only then writes back. The app
+            // stays interactive throughout, by design, so the driver is free
+            // to edit a stop or drop a pin in that window, and an
+            // `UPDATE ... WHERE id = ?` would happily land the *old*
+            // address's coordinates on the row afterwards. That gives a stop
+            // whose text says one address and whose pin is at another, with
+            // nothing to show for it; land it on a stop the driver has just
+            // hand-pinned and it is worse, because `pinned` stays 1 and
+            // every future re-check skips the row it just corrupted.
+            //
+            // Matching the address in the WHERE clause makes the newer
+            // action win, which is the right resolution: the driver was
+            // looking at the stop more recently than the geocoder was.
+            let applied = tx.execute(
+                "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3 \
+                 WHERE id = ?4 AND pinned = 0 AND strasse = ?5 AND plz = ?6",
+                params![u.lat, u.lon, u.precision, u.id, u.from_strasse, u.from_plz],
             )?;
+            // The report counts what actually landed, not what was intended
+            // — telling a driver three pins moved when one of their own
+            // edits quietly won the race would send them looking for a
+            // change that never happened.
+            if applied > 0 {
+                if u.moved {
+                    report.moved += 1;
+                    any_moved = true;
+                }
+            } else {
+                tracing::debug!(stop_id = u.id, "re-check skipped: the stop changed while it was being re-resolved");
+            }
         }
         if any_moved {
             tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
@@ -3771,9 +3875,26 @@ async fn update_route_from_json(
     // The common case, and the cheap one — an unchanged address means an
     // unchanged location, so there's nothing to geocode and nothing to
     // re-route.
-    let mut by_key: HashMap<(String, String), Vec<i64>> = HashMap::new();
+    // Each address bucket carries the stop's name alongside its id, because
+    // an address is not on its own enough to say *which* stop an entry is.
+    //
+    // Two customers at one door is a case this app goes out of its way to
+    // support (see `sameDoorGroups` in index.html) — one building, two
+    // households, two meals. Matching a bucket positionally, which is what
+    // this did, silently assumed the paste lists them in the same order the
+    // database happens to hold them. Re-paste the same two customers with
+    // the rows swapped and each one claimed the *other's* stop id: the names
+    // were written over each other, and `delivered` — which lives on the id
+    // and is deliberately not in the paste — stayed where it was. A customer
+    // who had already had their meal showed as outstanding, and one who had
+    // not showed as delivered. Reproduced end to end before this fix.
+    //
+    // That is the exact failure pass 2 below exists to prevent for a moved
+    // customer; it just never got the chance, because pass 1 had already
+    // claimed both stops.
+    let mut by_key: HashMap<(String, String), Vec<(i64, String)>> = HashMap::new();
     for s in &existing_customers {
-        by_key.entry(addr_key(&s.strasse, &s.plz)).or_default().push(s.id);
+        by_key.entry(addr_key(&s.strasse, &s.plz)).or_default().push((s.id, name_key(&s.kunde)));
     }
 
     // Entries that pass 1 didn't claim, each with the id of the stop it
@@ -3782,7 +3903,20 @@ async fn update_route_from_json(
 
     for entry in normalized {
         let key = addr_key(&entry.1, &entry.2);
-        let existing_id = by_key.get_mut(&key).and_then(|v| if v.is_empty() { None } else { Some(v.remove(0)) });
+        let existing_id = by_key.get_mut(&key).and_then(|v| {
+            if v.is_empty() {
+                return None;
+            }
+            // The same name at the same address is the same stop, whatever
+            // order either side lists them in. Falling back to the first
+            // unclaimed one when no name matches keeps the previous
+            // behaviour for the case it was right about — a customer
+            // renamed in place at an address that did not change, which is
+            // an edit of that stop and not a new one.
+            let wanted = name_key(&entry.0);
+            let pos = v.iter().position(|(_, name)| *name == wanted).unwrap_or(0);
+            Some(v.remove(pos).0)
+        });
         match existing_id {
             Some(id) => {
                 matched_ids.insert(id);
