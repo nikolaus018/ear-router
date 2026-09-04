@@ -50,7 +50,7 @@ struct StopRow: View {
         // whatever that particular row happens to lead with — otherwise a fixed
         // stop's icon and a customer's number badge, being different widths,
         // gave the same list two different separator insets.
-        .alignmentGuide(.listRowSeparatorLeading) { _ in badgeSize + 12 }
+        .alignmentGuide(.listRowSeparatorLeading) { [badgeSize] _ in badgeSize + 12 }
         .accessibilityElement(children: .contain)
     }
 
