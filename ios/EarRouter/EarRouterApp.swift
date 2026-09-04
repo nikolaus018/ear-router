@@ -111,11 +111,37 @@ struct StoreFailureView: View {
 @Observable
 @MainActor
 final class RouteFocus {
+    enum Tab: Hashable { case routes, map, history, more }
+
+    var tab: Tab = .routes
     var currentRouteID: UUID?
     var routesPath = NavigationPath()
     var historyPath = NavigationPath()
 
+    /// A stop the list should scroll to and flash as soon as it appears.
+    /// Cleared by whoever consumes it, so it fires once rather than on every
+    /// redraw of the list.
+    var revealStopID: UUID?
+
     func focus(_ route: Route) {
         currentRouteID = route.id
+    }
+
+    /// Opens the route's stop list and scrolls to one stop — what the map's
+    /// preview card does when you want to see a pin in context.
+    ///
+    /// A completed route lives in Verlauf rather than Routen, so the push goes
+    /// onto that tab's stack; pushing it onto Routen would land the driver on a
+    /// detail screen inside a list the route is not in.
+    func reveal(stop: Stop, of route: Route) {
+        currentRouteID = route.id
+        revealStopID = stop.id
+        if route.status == .completed {
+            historyPath = NavigationPath([route.id])
+            tab = .history
+        } else {
+            routesPath = NavigationPath([route.id])
+            tab = .routes
+        }
     }
 }

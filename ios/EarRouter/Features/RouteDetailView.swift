@@ -16,8 +16,30 @@ struct RouteDetailView: View {
     @State private var busy: String?
     @State private var error: AppError?
     @State private var recheckSummary: String?
+    /// Briefly tinted after arriving from a map pin, so the driver's eye
+    /// lands on the row that was tapped rather than on the middle of a list.
+    @State private var highlighted: UUID?
 
     var body: some View {
+        ScrollViewReader { proxy in
+            list
+                .onChange(of: focus.revealStopID, initial: true) { _, id in
+                    guard let id else { return }
+                    // Cleared immediately so this fires once, not on every
+                    // redraw of the list.
+                    focus.revealStopID = nil
+                    search = ""
+                    highlighted = id
+                    withAnimation { proxy.scrollTo(id, anchor: .center) }
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.6))
+                        withAnimation { highlighted = nil }
+                    }
+                }
+        }
+    }
+
+    private var list: some View {
         List {
             if route.needsOptimize {
                 Section {
@@ -40,14 +62,7 @@ struct RouteDetailView: View {
 
             Section {
                 ForEach(visibleStops) { stop in
-                    StopListRow(
-                        stop: stop,
-                        sameDoorCount: doorGroups[stop.id]?.count ?? 1,
-                        number: customerNumbers[stop.id],
-                        onTap: { tapped(stop) },
-                        onToggleDelivered: { setDelivered(stop, !stop.delivered) },
-                        onDelete: { Task { await delete(stop) } },
-                        onNavigate: { open(stop) })
+                    row(for: stop)
                 }
             } header: {
                 Text(listHeader)
@@ -93,6 +108,23 @@ struct RouteDetailView: View {
     }
 
     // MARK: - Pieces
+
+    /// Extracted for the same reason `StopListRow` was: adding one more
+    /// modifier inside the `ForEach` pushed the enclosing `List` past what the
+    /// type checker will solve in reasonable time.
+    private func row(for stop: Stop) -> some View {
+        StopListRow(
+            stop: stop,
+            sameDoorCount: doorGroups[stop.id]?.count ?? 1,
+            number: customerNumbers[stop.id],
+            onTap: { tapped(stop) },
+            onToggleDelivered: { setDelivered(stop, !stop.delivered) },
+            onDelete: { Task { await delete(stop) } },
+            onNavigate: { open(stop) })
+            // The id is the scroll target `reveal` aims at.
+            .id(stop.id)
+            .listRowBackground(highlighted == stop.id ? Color.brand.opacity(0.12) : nil)
+    }
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {

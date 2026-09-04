@@ -17,23 +17,23 @@ struct RootView: View {
     var body: some View {
         @Bindable var focus = focus
 
-        TabView {
-            Tab("Routen", systemImage: "list.bullet") {
+        TabView(selection: $focus.tab) {
+            Tab("Routen", systemImage: "list.bullet", value: RouteFocus.Tab.routes) {
                 NavigationStack(path: $focus.routesPath) {
                     RoutesTab()
                 }
             }
-            Tab("Karte", systemImage: "map") {
+            Tab("Karte", systemImage: "map", value: RouteFocus.Tab.map) {
                 NavigationStack {
                     MapTab()
                 }
             }
-            Tab("Verlauf", systemImage: "clock.arrow.circlepath") {
+            Tab("Verlauf", systemImage: "clock.arrow.circlepath", value: RouteFocus.Tab.history) {
                 NavigationStack(path: $focus.historyPath) {
                     HistoryTab()
                 }
             }
-            Tab("Mehr", systemImage: "ellipsis") {
+            Tab("Mehr", systemImage: "ellipsis", value: RouteFocus.Tab.more) {
                 NavigationStack {
                     MoreTab()
                 }

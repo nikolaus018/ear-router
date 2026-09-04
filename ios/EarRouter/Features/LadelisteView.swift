@@ -21,22 +21,34 @@ struct LadelisteView: View {
                             HStack(spacing: 14) {
                                 Text("\(item.qty)")
                                     .font(.title3.bold().monospacedDigit())
-                                    .foregroundStyle(isOn(item) ? .secondary : Color.brand)
+                                    .foregroundStyle(
+                                        isOn(item) ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.brand))
                                     .frame(width: 40, alignment: .leading)
 
                                 Text(item.label)
                                     .font(.body.weight(.medium))
                                     .strikethrough(isOn(item))
-                                    .foregroundStyle(isOn(item) ? .secondary : .primary)
+                                    .foregroundStyle(
+                                        isOn(item) ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
 
-                                Spacer()
+                                Spacer(minLength: 8)
 
                                 Image(
                                     systemName: isOn(item)
                                         ? "checkmark.circle.fill" : "circle")
-                                    .font(.title2)
-                                    .foregroundStyle(isOn(item) ? Color.success : .secondary)
+                                    .font(.system(size: 27))
+                                    .foregroundStyle(isOn(item) ? Color.success : Color.secondary)
+                                    .frame(width: 44, height: 44)
                             }
+                            .padding(.vertical, 4)
+                            // Without this the `Spacer` is a hole: only the two
+                            // text runs and the circle glyph itself were
+                            // hit-testable, so ticking a line off meant aiming
+                            // at a 22pt target with a gap either side of it.
+                            // The whole row is the button now, which is how
+                            // Reminders behaves and what a driver loading a van
+                            // one-handed actually needs.
+                            .contentShape(.rect)
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(isOn(item) ? [.isSelected] : [])

@@ -12,6 +12,8 @@ struct MapTab: View {
     @State private var camera: MapCameraPosition = .automatic
     @State private var style: MapStyleChoice = .standard
     @State private var selected: Stop?
+    /// The measured height of the tapped stop's card — see the sheet below.
+    @State private var previewHeight: CGFloat = 200
 
     private var route: Route? {
         routes.first { $0.id == focus.currentRouteID } ?? routes.first
@@ -65,9 +67,20 @@ struct MapTab: View {
             }
         }
         .sheet(item: $selected) { stop in
-            StopPreviewSheet(stop: stop)
-                .presentationDetents([.height(220), .medium])
+            // Sized to what the stop actually has, not to a fixed guess. A
+            // fixed height gave a customer with no Paket and no Notiz the same
+            // card as one carrying both, leaving a band of empty material under
+            // the button.
+            StopPreviewSheet(stop: stop, onShowInList: {
+                if let route { focus.reveal(stop: stop, of: route) }
+                selected = nil
+            })
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    previewHeight = height
+                }
+                .presentationDetents([.height(previewHeight)])
                 .presentationBackground(.regularMaterial)
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -208,11 +221,11 @@ enum MapStyleChoice: String, CaseIterable, Identifiable {
 }
 
 
-/// What a tapped pin shows: who, where, and the one action worth having on a
-/// map — start navigating there.
+/// What a tapped pin shows: who, where, and a way through to that stop in the
+/// route's list.
 struct StopPreviewSheet: View {
     let stop: Stop
-    @Environment(\.dismiss) private var dismiss
+    let onShowInList: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -229,21 +242,26 @@ struct StopPreviewSheet: View {
             }
             if let p = stop.precision {
                 Label(p.label, systemImage: p.symbol)
-                    .font(.footnote).foregroundStyle(.orange)
+                    .font(.footnote).foregroundStyle(Color.warningText)
             }
 
-            Button("Navigation starten", systemImage: "arrow.triangle.turn.up.right.circle.fill") {
-                if let url = NavigationHandoff.url(for: stop) {
-                    UIApplication.shared.open(url)
-                }
-                dismiss()
-            }
-            .buttonStyle(.borderedProminent)
+            // Not "Navigation starten": every row in the stop list already
+            // carries its own navigate button, so the useful thing a pin can do
+            // that the list cannot is put the driver *at* that stop in the list,
+            // in the context of the stops either side of it.
+            Button("In der Liste anzeigen", systemImage: "list.bullet", action: onShowInList)
+                .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .frame(maxWidth: .infinity)
         }
-        .padding()
+        // Room for the drag indicator above and the home indicator below: the
+        // sheet is exactly as tall as this view now, so the insets have to come
+        // from here rather than from spare height.
+        .padding(.horizontal)
+        .padding(.top, 24)
+        .padding(.bottom, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .safeAreaPadding(.bottom)
     }
 }
 
