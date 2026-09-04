@@ -4,3 +4,9 @@ rerouter.db-wal
 rerouter.db-shm
 
 data/
+
+# Xcode
+ios/build/
+ios/DerivedData/
+**/xcuserdata/
+.DS_Store
