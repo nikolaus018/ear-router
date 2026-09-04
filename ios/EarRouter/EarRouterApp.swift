@@ -23,6 +23,10 @@ struct EarRouterApp: App {
                 }
             }
             .tint(Color.brand)
+            // Rearmed on every launch, which is exactly when the expiry date
+            // can have moved: reinstalling from Xcode is what resets the seven
+            // days, and it always launches the app.
+            .task { await SideloadExpiry.scheduleReminders() }
         }
         .onChange(of: scenePhase) { _, phase in
             // The geocode cache batches its writes, so a force-quit or a

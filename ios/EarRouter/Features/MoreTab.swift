@@ -301,6 +301,22 @@ struct AboutView: View {
                 Text("Nominatim-Daten © OpenStreetMap-Mitwirkende, ODbL.")
             }
 
+            if let expiry = SideloadExpiry.expiresAt {
+                Section {
+                    LabeledContent("Läuft ab") {
+                        Text(expiry.formatted(date: .abbreviated, time: .shortened))
+                            .foregroundStyle(expiresSoon(expiry) ? Color.warning : Color.secondary)
+                    }
+                } header: {
+                    Text("Installation")
+                } footer: {
+                    Text(
+                        "Diese Version wurde über Xcode installiert und gilt sieben Tage. "
+                            + "Am Abend davor erinnert die App von selbst daran, sie neu zu "
+                            + "installieren.")
+                }
+            }
+
             Section {
                 Label("Alles bleibt auf dem Gerät", systemImage: "lock.fill")
                     .font(.footnote.weight(.medium))
@@ -312,6 +328,12 @@ struct AboutView: View {
         }
         .navigationTitle("Über")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// Inside the last day, the date stops being trivia and starts being a
+    /// warning — so it is coloured like one.
+    private func expiresSoon(_ expiry: Date) -> Bool {
+        expiry.timeIntervalSinceNow < 24 * 60 * 60
     }
 
     private var version: String {
