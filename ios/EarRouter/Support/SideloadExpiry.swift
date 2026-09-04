@@ -70,6 +70,51 @@ enum SideloadExpiry {
         return fields["ExpirationDate"] as? Date
     }
 
+    // MARK: - How long is left
+
+    /// What is left of the seven days, at the granularity anyone reads a
+    /// countdown at. Nobody wants "5 Tage, 3 Std., 12 Min." on a settings row.
+    enum Remaining: Equatable {
+        case days(Int)
+        case hours(Int)
+        case minutes(Int)
+        case expired
+
+        /// Urgent inside the last two days — which is the point where
+        /// reinstalling stops being something to do this week and becomes
+        /// tonight's job. It is also the window the evening reminder fires in,
+        /// so the row and the notification agree about when to start worrying.
+        var isUrgent: Bool {
+            if case .days(let count) = self { return count < 2 }
+            return true
+        }
+
+        var label: String {
+            switch self {
+            case .days(let count): "Noch \(count) \(count == 1 ? "Tag" : "Tage")"
+            case .hours(let count): "Noch \(count) \(count == 1 ? "Stunde" : "Stunden")"
+            case .minutes(let count): "Noch \(count) \(count == 1 ? "Minute" : "Minuten")"
+            case .expired: "Abgelaufen"
+            }
+        }
+    }
+
+    /// Rounded down at every step. Six and a half days left reads as "Noch 6
+    /// Tage", which is the harmless direction to be wrong in — a countdown that
+    /// rounded up would spend its final half hour promising an hour.
+    static func remaining(until expiry: Date, now: Date = .now) -> Remaining {
+        let seconds = expiry.timeIntervalSince(now)
+        guard seconds > 0 else { return .expired }
+
+        switch seconds {
+        case 86_400...: return .days(Int(seconds / 86_400))
+        case 3_600...: return .hours(Int(seconds / 3_600))
+        // Never "Noch 0 Minuten": the last minute counts as one, then the row
+        // says Abgelaufen. A zero would read as a bug rather than as a deadline.
+        default: return .minutes(max(1, Int(seconds / 60)))
+        }
+    }
+
     // MARK: - When to warn
 
     enum Reminder: String, CaseIterable {

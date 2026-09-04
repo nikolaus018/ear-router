@@ -62,6 +62,17 @@ struct MoreTab: View {
                     SettingsRow(icon: "info.circle.fill", tint: .secondary, title: "Über EAR Router")
                 }
             }
+
+            if let expiry = SideloadExpiry.expiresAt {
+                Section {
+                    SideloadExpiryRow(expiry: expiry)
+                } footer: {
+                    Text(
+                        "Diese Version wurde über Xcode installiert und gilt sieben Tage. "
+                            + "Am Abend davor meldet sich die App von selbst — danach lässt "
+                            + "sie sich nicht mehr öffnen.")
+                }
+            }
         }
         .navigationTitle("Mehr")
         .sheet(isPresented: $showingTuercode) { TuercodeSheet() }
@@ -100,6 +111,49 @@ struct SettingsRow: View {
                     Text(detail).font(.caption).foregroundStyle(Color.secondary)
                 }
             }
+        }
+    }
+}
+
+/// How long this sideloaded build has left, counting down in place.
+///
+/// It sits at the top level of Mehr rather than inside Über because it is not a
+/// piece of trivia about the build — it is a deadline, and one the driver is the
+/// only person who can act on.
+///
+/// The countdown moves on its own. The Mehr tab is built once and survives every
+/// tab switch after that, so a number rendered on Monday would still say "Noch 6
+/// Tage" on Thursday; a stale deadline is worse than no deadline, because it is
+/// believed.
+private struct SideloadExpiryRow: View {
+    let expiry: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let left = SideloadExpiry.remaining(until: expiry, now: context.date)
+
+            HStack(spacing: 12) {
+                SettingsRow(
+                    icon: left.isUrgent ? "exclamationmark.triangle.fill" : "hourglass",
+                    tint: left.isUrgent ? .warning : .gray,
+                    title: "Läuft ab",
+                    detail: expiry.formatted(date: .abbreviated, time: .shortened))
+
+                Spacer(minLength: 8)
+
+                // `warningText`, not `warning`: the amber that reads as a tinted
+                // icon tile is about 2:1 against a list background, which is not
+                // a colour you put a number in.
+                Text(left.label)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(left.isUrgent ? Color.warningText : Color.secondary)
+            }
+            // Combined, so VoiceOver reads "Läuft ab, 11.09.2026, 16:04, Noch 6
+            // Tage" as one row instead of three unrelated fragments. Written
+            // out rather than overridden, because a hand-written label would
+            // have to special-case "Abgelaufen" to avoid "läuft ab in
+            // abgelaufen".
+            .accessibilityElement(children: .combine)
         }
     }
 }
@@ -301,22 +355,6 @@ struct AboutView: View {
                 Text("Nominatim-Daten © OpenStreetMap-Mitwirkende, ODbL.")
             }
 
-            if let expiry = SideloadExpiry.expiresAt {
-                Section {
-                    LabeledContent("Läuft ab") {
-                        Text(expiry.formatted(date: .abbreviated, time: .shortened))
-                            .foregroundStyle(expiresSoon(expiry) ? Color.warning : Color.secondary)
-                    }
-                } header: {
-                    Text("Installation")
-                } footer: {
-                    Text(
-                        "Diese Version wurde über Xcode installiert und gilt sieben Tage. "
-                            + "Am Abend davor erinnert die App von selbst daran, sie neu zu "
-                            + "installieren.")
-                }
-            }
-
             Section {
                 Label("Alles bleibt auf dem Gerät", systemImage: "lock.fill")
                     .font(.footnote.weight(.medium))
@@ -328,12 +366,6 @@ struct AboutView: View {
         }
         .navigationTitle("Über")
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    /// Inside the last day, the date stops being trivia and starts being a
-    /// warning — so it is coloured like one.
-    private func expiresSoon(_ expiry: Date) -> Bool {
-        expiry.timeIntervalSinceNow < 24 * 60 * 60
     }
 
     private var version: String {

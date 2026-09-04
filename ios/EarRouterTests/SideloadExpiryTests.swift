@@ -107,6 +107,70 @@ struct SideloadExpiryTests {
         #expect(due.first?.fireAt == date("2026-10-24T19:00:00+02:00"))
     }
 
+    // MARK: - The countdown
+
+    @Test func countsWholeDownwardsNeverUpwards() {
+        // Six and a half days left is "6 Tage". Rounding the other way would
+        // promise a day that is not there.
+        let expiry = date("2026-09-11T16:00:00+02:00")
+        let left = SideloadExpiry.remaining(
+            until: expiry, now: date("2026-09-05T04:00:00+02:00"))
+
+        #expect(left == .days(6))
+        #expect(left.label == "Noch 6 Tage")
+    }
+
+    @Test func stepsDownThroughDaysHoursAndMinutes() {
+        let expiry = date("2026-09-11T16:00:00+02:00")
+
+        func left(at now: String) -> SideloadExpiry.Remaining {
+            SideloadExpiry.remaining(until: expiry, now: date(now))
+        }
+
+        #expect(left(at: "2026-09-09T16:00:00+02:00") == .days(2))
+        #expect(left(at: "2026-09-10T15:59:00+02:00") == .days(1))
+        #expect(left(at: "2026-09-10T16:01:00+02:00") == .hours(23))
+        #expect(left(at: "2026-09-11T14:30:00+02:00") == .hours(1))
+        #expect(left(at: "2026-09-11T15:30:00+02:00") == .minutes(30))
+    }
+
+    @Test func spellsTheSingularsCorrectly() {
+        #expect(SideloadExpiry.Remaining.days(1).label == "Noch 1 Tag")
+        #expect(SideloadExpiry.Remaining.hours(1).label == "Noch 1 Stunde")
+        #expect(SideloadExpiry.Remaining.minutes(1).label == "Noch 1 Minute")
+        #expect(SideloadExpiry.Remaining.expired.label == "Abgelaufen")
+    }
+
+    @Test func theFinalMinuteIsAMinuteRatherThanZero() {
+        // Truncation would say "Noch 0 Minuten" for the last 59 seconds, which
+        // reads as a broken row rather than as a deadline.
+        let expiry = date("2026-09-11T16:00:00+02:00")
+        let left = SideloadExpiry.remaining(
+            until: expiry, now: date("2026-09-11T15:59:30+02:00"))
+
+        #expect(left == .minutes(1))
+    }
+
+    @Test func isExpiredOnTheDotAndAfter() {
+        let expiry = date("2026-09-11T16:00:00+02:00")
+
+        #expect(SideloadExpiry.remaining(until: expiry, now: expiry) == .expired)
+        #expect(
+            SideloadExpiry.remaining(until: expiry, now: date("2026-09-11T16:00:01+02:00"))
+                == .expired)
+    }
+
+    @Test func turnsUrgentForTheLastTwoDaysAndStaysCalmBefore() {
+        // The row goes amber exactly when the evening reminder is due, so the
+        // two never disagree about whether tonight is the night.
+        #expect(SideloadExpiry.Remaining.days(6).isUrgent == false)
+        #expect(SideloadExpiry.Remaining.days(2).isUrgent == false)
+        #expect(SideloadExpiry.Remaining.days(1).isUrgent)
+        #expect(SideloadExpiry.Remaining.hours(3).isUrgent)
+        #expect(SideloadExpiry.Remaining.minutes(5).isUrgent)
+        #expect(SideloadExpiry.Remaining.expired.isUrgent)
+    }
+
     // MARK: - Identifiers
 
     @Test func reminderIdentifiersAreDistinctSoRearmingReplacesRatherThanPiles() {
