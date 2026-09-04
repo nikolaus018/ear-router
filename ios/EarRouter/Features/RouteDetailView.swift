@@ -97,8 +97,7 @@ struct RouteDetailView: View {
                     Button {
                         try? RouteStore.toggleStatus(route, in: context)
                     } label: {
-                        Label("Tour abschließen", systemImage: "checkmark.seal.fill")
-                            .frame(maxWidth: .infinity)
+                        WideButtonLabel("Tour abschließen", systemImage: "checkmark.seal.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
@@ -363,16 +362,51 @@ struct EmptyStopsPrompt: View {
             }
 
             VStack(spacing: 8) {
-                Button("Stopp hinzufügen", systemImage: "plus", action: onAdd)
-                    .buttonStyle(.borderedProminent)
-                Button("Liste als JSON einsetzen", systemImage: "curlybraces", action: onPaste)
-                    .buttonStyle(.bordered)
+                Button(action: onAdd) {
+                    WideButtonLabel("Stopp hinzufügen", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button(action: onPaste) {
+                    WideButtonLabel("Liste einsetzen", systemImage: "curlybraces")
+                }
+                .buttonStyle(.bordered)
             }
             .controlSize(.large)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
+        .padding(.horizontal, 8)
         .listRowBackground(Color.clear)
+    }
+}
+
+/// A button label that fills the width it is given and centres its icon and
+/// title inside it.
+///
+/// Two reasons this is not just `Button(_:systemImage:)`. That initializer's
+/// icon is advisory — in a bordered button inside a `List` the system drops it,
+/// so a pair of buttons ended up with one icon between them and looked broken.
+/// And without the explicit `maxWidth`, two buttons stacked under each other
+/// size to their own titles, so they came out different widths with their text
+/// sitting at different places on the screen.
+struct WideButtonLabel: View {
+    private let title: String
+    private let systemImage: String
+
+    init(_ title: String, systemImage: String) {
+        self.title = title
+        self.systemImage = systemImage
+    }
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: systemImage)
+                .imageScale(.medium)
+            Text(title)
+        }
+        .fontWeight(.medium)
+        .frame(maxWidth: .infinity)
     }
 }
 

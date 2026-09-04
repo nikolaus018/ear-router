@@ -11,7 +11,6 @@ struct MapTab: View {
     @Environment(\.openURL) private var openURL
     @Query(sort: \Route.createdAt, order: .reverse) private var routes: [Route]
 
-    @State private var camera: MapCameraPosition = .automatic
     @State private var style: MapStyleChoice = .standard
     @State private var selectedStopID: UUID?
     /// The measured height of the tapped stop's card — see the sheet below.
@@ -26,6 +25,14 @@ struct MapTab: View {
     /// relationship, sixty times a second. That was the lag.
     @State private var line: [CLLocationCoordinate2D] = []
     @State private var pins: [MapPin] = []
+
+    /// True while the driven line is being simplified off the main actor.
+    @State private var buildingLine = false
+    /// Bumped when a line finishes building, so the canvas knows to re-frame.
+    /// The camera itself lives down there — see `RouteMapCanvas`.
+    @State private var fitToken = 0
+    /// Discards the result of a simplification that a newer one has overtaken.
+    @State private var lineGeneration = 0
 
     private var route: Route? {
         routes.first { $0.id == focus.currentRouteID } ?? routes.first
@@ -216,74 +223,47 @@ struct MapTab: View {
 
     @ViewBuilder
     private func map(for route: Route) -> some View {
-        Map(position: $camera, selection: $selectedStopID) {
-            UserAnnotation()
-
-            if line.count >= 2 {
-                // Casing first, then the line itself on top of it.
-                MapPolyline(coordinates: line)
-                    .stroke(
-                        Color.routeCasing,
-                        style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
-                MapPolyline(coordinates: line)
-                    .stroke(
-                        Color.brand,
-                        style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
-            }
-
-            ForEach(pins, id: \.annotationID) { pin in
-                if let monogram = pin.monogram {
-                    Marker(pin.title, monogram: Text(verbatim: monogram), coordinate: pin.coordinate)
-                        .tint(pin.tint)
-                        .tag(pin.id)
+        RouteMapCanvas(
+            line: line,
+            pins: pins,
+            style: style,
+            selection: $selectedStopID,
+            fitToken: fitToken)
+            .onChange(of: shapeKey, initial: true) { rebuildRoute(route) }
+            .onChange(of: styleKey) { rebuildPins(for: route) }
+            // `onChange` only fires if the body was evaluated, and a tab sitting
+            // in the background is not guaranteed to be. Rebuilding on appear is
+            // what makes a delivery ticked off in the Routen tab reliably show
+            // up green here.
+            .onAppear {
+                if line.isEmpty && !buildingLine {
+                    rebuildRoute(route)
                 } else {
-                    Marker(pin.title, systemImage: pin.symbol, coordinate: pin.coordinate)
-                        .tint(pin.tint)
-                        .tag(pin.id)
+                    rebuildPins(for: route)
                 }
             }
-        }
-        .mapStyle(style.mapStyle)
-        .mapControls {
-            MapUserLocationButton()
-            MapCompass()
-            MapScaleView()
-        }
-        .onChange(of: shapeKey, initial: true) { rebuildRoute(route, fitCamera: true) }
-        .onChange(of: styleKey) { rebuildPins(for: route) }
-        // `onChange` only fires if the body was evaluated, and a tab sitting in
-        // the background is not guaranteed to be. Rebuilding on appear is what
-        // makes a delivery ticked off in the Routen tab reliably show up green
-        // here — the camera is left alone unless there is nothing drawn yet.
-        .onAppear {
-            if line.isEmpty {
-                rebuildRoute(route, fitCamera: true)
-            } else {
-                rebuildPins(for: route)
-            }
-        }
-        // Once the driver has panned off to look at one corner of the tour
-        // there was no way back to the whole route short of leaving the tab and
-        // coming back. Bottom-trailing, where Apple Maps keeps its own map
-        // controls and where a thumb on a phone held in one hand can reach.
-        .overlay(alignment: .bottomTrailing) {
+            // The permission prompt the blue dot needs. Nothing else in the app
+            // asks for it, and the map is the one place it means anything.
+            .task { LocationAuthorization.shared.requestIfNeeded() }
+            .overlay(alignment: .top) { statusBanner }
+    }
+
+    /// Says the two things the map would otherwise stay quiet about: that the
+    /// line is still being drawn, and that the location button will never do
+    /// anything because the permission was refused.
+    @ViewBuilder
+    private var statusBanner: some View {
+        if buildingLine && line.isEmpty {
+            MapNotice(text: "Route wird gezeichnet …", busy: true)
+                .padding(.top, 8)
+        } else if LocationAuthorization.shared.isDenied {
             Button {
-                fitCamera()
+                LocationAuthorization.shared.openSettings()
             } label: {
-                // The `contentShape` is the whole 44pt disc, not just the
-                // glyph: a miss over a map is a pan, so a control here has to
-                // be the size it looks.
-                Image(systemName: "arrow.down.left.and.arrow.up.right")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 44, height: 44)
-                    .contentShape(.circle)
+                MapNotice(text: "Standort aus — in Einstellungen erlauben", busy: false)
             }
-            .buttonStyle(.borderless)
-            .glassEffect(.regular, in: .circle)
-            .accessibilityLabel("Ganze Route zeigen")
-            .padding(.trailing, 14)
-            .padding(.bottom, 14)
-            .safeAreaPadding(.bottom)
+            .buttonStyle(.plain)
+            .padding(.top, 8)
         }
     }
 
@@ -294,25 +274,56 @@ struct MapTab: View {
     /// Shape changes are allowed to re-fit the camera. Style-only changes use
     /// `rebuildPins(for:)` so ticking a stop does not re-simplify thousands of
     /// polyline points or move the map underneath the driver.
-    private func rebuildRoute(_ route: Route, fitCamera: Bool) {
+    /// Rebuilds the pins immediately and the driven line in the background.
+    ///
+    /// The simplification is the expensive part — OSRM's full-overview geometry
+    /// is ~600 points per leg, so a thirty-stop tour is several thousand points
+    /// through Ramer–Douglas–Peucker — and it used to run synchronously inside
+    /// the first body evaluation of the map. MapKit's own cold start and this
+    /// then landed on the main thread together, and opening the Karte tab froze
+    /// the app for as long as the two took. The map and its pins appear at once
+    /// now; the line follows a moment later, with a notice while it does.
+    private func rebuildRoute(_ route: Route) {
         rebuildPins(for: route)
-        // Simplified for drawing. OSRM's full-overview geometry is ~600 points
-        // per leg, so a thirty-stop tour is several thousand in one polyline —
-        // and MapKit redraws all of them on every pan and zoom frame. At the
-        // zoom levels a route is ever looked at, the discarded points are well
-        // under a pixel.
-        line = Self.simplified(route.geometry, tolerance: 0.00002)
 
-        if fitCamera { self.fitCamera() }
+        let flat = route.geometryFlat
+        lineGeneration += 1
+        let generation = lineGeneration
+
+        guard flat.count >= 4 else {
+            line = []
+            buildingLine = false
+            fitToken += 1
+            return
+        }
+
+        buildingLine = true
+        Task.detached(priority: .userInitiated) {
+            let simplified = Self.simplifiedLine(flat: flat, tolerance: 0.00002)
+            await MainActor.run {
+                // A newer rebuild has already started; this answer is stale.
+                guard generation == lineGeneration else { return }
+                line = simplified
+                buildingLine = false
+                fitToken += 1
+            }
+        }
     }
 
-    /// Frames the whole tour. Prefers the driven line over the pins, so the
-    /// view covers the road actually taken rather than just the doors on it.
-    ///
-    private func fitCamera() {
-        let points = line.isEmpty ? pins.map(\.coordinate) : line
-        guard let region = MKCoordinateRegion(fitting: points) else { return }
-        withAnimation(.easeInOut) { camera = .region(region) }
+    /// Decodes the flat `[lat, lon, …]` buffer and simplifies it. `nonisolated`,
+    /// and taking plain `Double`s rather than a `Route`, so the whole thing can
+    /// run off the main actor with no SwiftData object anywhere near it.
+    nonisolated static func simplifiedLine(
+        flat: [Double], tolerance: Double
+    ) -> [CLLocationCoordinate2D] {
+        guard flat.count >= 4 else { return [] }
+        var points: [CLLocationCoordinate2D] = []
+        points.reserveCapacity(flat.count / 2)
+        for i in stride(from: 0, to: flat.count - 1, by: 2) {
+            points.append(
+                CLLocationCoordinate2D(latitude: flat[i], longitude: flat[i + 1]))
+        }
+        return simplified(points, tolerance: tolerance)
     }
 
     /// Derives only the annotations. This is intentionally cheap enough to run
@@ -452,6 +463,123 @@ struct MapTab: View {
         case .end: "flag.checkered"
         case .customer: "mappin"
         }
+    }
+}
+
+/// The map itself, and nothing else.
+///
+/// Split out from `MapTab` for one specific reason: `Map(position:)` writes back
+/// to its binding continuously while the driver pans, so whichever view owns the
+/// camera has its body re-evaluated on every frame of every gesture. `MapTab`
+/// owns the SwiftData query and derives its change keys from it — which is
+/// exactly the work that must not run sixty times a second. With the camera down
+/// here, panning re-evaluates only this view, whose inputs are already-derived
+/// plain values.
+private struct RouteMapCanvas: View {
+    let line: [CLLocationCoordinate2D]
+    let pins: [MapPin]
+    let style: MapStyleChoice
+    @Binding var selection: UUID?
+    /// Changes whenever the route's shape has been rebuilt and the view should
+    /// frame the whole thing again.
+    let fitToken: Int
+
+    @State private var camera: MapCameraPosition = .automatic
+
+    var body: some View {
+        Map(position: $camera, selection: $selection) {
+            UserAnnotation()
+
+            if line.count >= 2 {
+                // Casing first, then the line itself on top of it.
+                MapPolyline(coordinates: line)
+                    .stroke(
+                        Color.routeCasing,
+                        style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+                MapPolyline(coordinates: line)
+                    .stroke(
+                        Color.brand,
+                        style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+            }
+
+            ForEach(pins, id: \.annotationID) { pin in
+                if let monogram = pin.monogram {
+                    Marker(pin.title, monogram: Text(verbatim: monogram), coordinate: pin.coordinate)
+                        .tint(pin.tint)
+                        .tag(pin.id)
+                } else {
+                    Marker(pin.title, systemImage: pin.symbol, coordinate: pin.coordinate)
+                        .tint(pin.tint)
+                        .tag(pin.id)
+                }
+            }
+        }
+        .mapStyle(style.mapStyle)
+        // Blue, not the app's brand red. `UserAnnotation` and the location
+        // button inherit the app tint, which made the driver's own position a
+        // red dot on a map whose every other red thing is a stop or the route.
+        // Blue is what a user-location dot is on every map anyone has ever
+        // used, and the markers set their own tint so nothing else moves.
+        .tint(.blue)
+        .mapControls {
+            MapUserLocationButton()
+            MapCompass()
+            MapScaleView()
+        }
+        .onChange(of: fitToken, initial: true) { fit() }
+        // Once the driver has panned off to look at one corner of the tour
+        // there was no way back to the whole route short of leaving the tab and
+        // coming back. Bottom-trailing, where Apple Maps keeps its own map
+        // controls and where a thumb on a phone held in one hand can reach.
+        .overlay(alignment: .bottomTrailing) {
+            Button(action: fit) {
+                // The `contentShape` is the whole 44pt disc, not just the
+                // glyph: a miss over a map is a pan, so a control here has to
+                // be the size it looks.
+                Image(systemName: "arrow.down.left.and.arrow.up.right")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(.circle)
+            }
+            .buttonStyle(.borderless)
+            .glassEffect(.regular, in: .circle)
+            .accessibilityLabel("Ganze Route zeigen")
+            .padding(.trailing, 14)
+            .padding(.bottom, 14)
+            .safeAreaPadding(.bottom)
+        }
+    }
+
+    /// Frames the whole tour. Prefers the driven line over the pins, so the
+    /// view covers the road actually taken rather than just the doors on it.
+    private func fit() {
+        let points = line.isEmpty ? pins.map(\.coordinate) : line
+        guard let region = MKCoordinateRegion(fitting: points) else { return }
+        withAnimation(.easeInOut) { camera = .region(region) }
+    }
+}
+
+/// A small glass pill at the top of the map — the only chrome allowed to
+/// interrupt it, and only for something the driver can act on or is waiting for.
+private struct MapNotice: View {
+    let text: String
+    let busy: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if busy {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: "location.slash.fill")
+                    .foregroundStyle(Color.warning)
+            }
+            Text(text)
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(Color.primary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .glassEffect(.regular, in: .capsule)
     }
 }
 

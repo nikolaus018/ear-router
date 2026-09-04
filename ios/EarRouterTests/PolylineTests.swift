@@ -79,3 +79,42 @@ struct PolylineSimplificationTests {
         #expect(MapTab.simplified(corner, tolerance: 0.00002).count == 3)
     }
 }
+
+/// The decode half of the line build. It runs off the main actor now, on a
+/// plain `[Double]` buffer rather than a `Route`, so nothing touches SwiftData
+/// from a background task.
+struct PolylineDecodeTests {
+
+    @Test func decodesFlatPairsAsLatitudeThenLongitude() {
+        let out = MapTab.simplifiedLine(
+            flat: [48.20, 16.37, 48.25, 16.40], tolerance: 0.00002)
+        #expect(out.count == 2)
+        #expect(out.first?.latitude == 48.20)
+        #expect(out.first?.longitude == 16.37)
+        #expect(out.last?.latitude == 48.25)
+        #expect(out.last?.longitude == 16.40)
+    }
+
+    /// A buffer too short to be a line, and — the case that would crash an
+    /// unguarded stride — one holding an odd number of values.
+    @Test func refusesBuffersThatAreNotWholePairs() {
+        #expect(MapTab.simplifiedLine(flat: [], tolerance: 0.00002).isEmpty)
+        #expect(MapTab.simplifiedLine(flat: [48.2, 16.3], tolerance: 0.00002).isEmpty)
+        let odd = MapTab.simplifiedLine(
+            flat: [48.20, 16.37, 48.25, 16.40, 48.30], tolerance: 0.00002)
+        #expect(odd.count == 2)
+    }
+
+    @Test func simplifiesTheDecodedLine() {
+        // A straight run sampled densely: everything between the ends is
+        // redundant at any zoom a route is looked at.
+        var flat: [Double] = []
+        for i in 0..<500 {
+            flat.append(48.20 + Double(i) * 0.0001)
+            flat.append(16.37)
+        }
+        let out = MapTab.simplifiedLine(flat: flat, tolerance: 0.00002)
+        #expect(out.count == 2)
+        #expect(out.first?.latitude == 48.20)
+    }
+}
