@@ -82,8 +82,13 @@ enum RouteStore {
     }
 
     static func delete(_ route: Route, in context: ModelContext) throws {
+        let id = route.id
         context.delete(route)
         try context.save()
+        // The packing checklist lives in `UserDefaults`, outside the store, so
+        // the cascade delete does not reach it. Without this every deleted tour
+        // leaves its ticks behind in the app's preferences for good.
+        LadelisteState.forget(id)
     }
 
     static func rename(_ route: Route, to name: String, in context: ModelContext) throws {
@@ -168,11 +173,16 @@ enum RouteStore {
     /// Edits a stop. Re-geocodes only when the address actually changed —
     /// an edited name or note is not a reason to spend a throttled round trip,
     /// or to move a pin the driver placed by hand.
+    ///
+    /// `forceGeocode` is the one way back from a hand-placed pin: the address
+    /// has not changed, so nothing here would otherwise look it up again, and
+    /// the pin would quietly outlive the driver's decision to discard it.
     static func updateStop(
         _ stop: Stop,
         kunde: String, strasse: String, plz: String,
         paket: String?, notiz: String?,
         coordinate: (lat: Double, lon: Double)? = nil,
+        forceGeocode: Bool = false,
         in context: ModelContext
     ) async throws {
         try validateCustomerFields(
@@ -195,7 +205,7 @@ enum RouteStore {
             stop.precision = nil
             stop.pinned = true
             moved = true
-        } else if addressChanged {
+        } else if addressChanged || forceGeocode {
             let hit = try await Geocoder.shared.geocode(strasse: strasse, plz: plz)
             stop.lat = hit.lat
             stop.lon = hit.lon
@@ -554,9 +564,11 @@ enum RouteStore {
             }
         }
 
-        route.needsOptimize = true
+        if moved {
+            route.needsOptimize = true
+        }
         try context.save()
-        if moved || result.updated > 0 {
+        if moved {
             await RouteOptimizer.optimizeBestEffort(route, in: context)
         }
         return result

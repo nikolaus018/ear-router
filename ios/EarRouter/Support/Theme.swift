@@ -18,6 +18,20 @@ extension Color {
             : UIColor(red: 0.929, green: 0.086, blue: 0.224, alpha: 1) // #ED1639
     })
 
+    /// Text and glyphs drawn *on top of* a `brand`-filled surface — the stop
+    /// number in its circle, the count in a multi-item Paket badge.
+    ///
+    /// Not simply white. The dark-mode brand above is a light, high-luminance
+    /// pink, and white on it measures about 3:1 — below what small text needs.
+    /// So the label flips to near-black there, which is exactly what a
+    /// `.borderedProminent` button does when its tint is bright, and what makes
+    /// a 13pt bold digit on a coloured circle actually readable in the dark.
+    static let onBrand = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 0.07, alpha: 1)
+            : UIColor.white
+    })
+
     /// Delivered. Matches Apple's system green in each appearance so a tick in
     /// this app looks like a tick everywhere else on the phone.
     static let success = Color(uiColor: UIColor { traits in
@@ -34,6 +48,19 @@ extension Color {
         traits.userInterfaceStyle == .dark
             ? UIColor(red: 1.0, green: 0.75, blue: 0.35, alpha: 1)   // #FFBF59
             : UIColor(red: 0.478, green: 0.294, blue: 0.0, alpha: 1) // #7A4B00
+    })
+
+    /// Drawn under the route line on the map, a few points wider than it.
+    ///
+    /// A 5pt red line alone disappears into a red motorway shield or a brown
+    /// contour on the standard map, and into anything at all on satellite. The
+    /// casing is what Apple's own route lines have: it does not colour the
+    /// route, it gives the route an edge, so the line reads as one continuous
+    /// thing over whatever it happens to cross.
+    static let routeCasing = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 0.0, alpha: 0.55)
+            : UIColor(white: 1.0, alpha: 0.9)
     })
 
     /// An approximate pin — "double check this one before you set off".
@@ -63,7 +90,14 @@ enum Format {
     }
 
     /// The "3,2 km · 8 min" line under a stop row.
+    ///
+    /// Nothing at all for a leg that rounds away to nothing. Two households in
+    /// one Gemeindebau are a routed leg of zero metres, and "→ 0,0 km · 0 min"
+    /// under one of them reads as missing data rather than as "you are already
+    /// there".
     static func leg(km: Double?, minutes minutesValue: Double?) -> String? {
+        let roundsToNothing = (km ?? 0) < 0.05 && (minutesValue ?? 0) < 0.5
+        if roundsToNothing { return nil }
         // `Self.` on both: the parameter names shadow the two functions.
         let parts = [Self.km(km), Self.minutes(minutesValue)].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")

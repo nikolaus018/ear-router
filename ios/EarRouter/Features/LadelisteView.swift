@@ -11,7 +11,13 @@ struct LadelisteView: View {
     private var items: [PaketItem] { PaketParser.items(for: route) }
 
     var body: some View {
-        NavigationStack {
+        // Parsed once per render. Read as a computed property it was re-parsed
+        // for the `ForEach`, again for the progress line, and again for the
+        // piece total — three regex passes over every stop on the route, every
+        // time the driver ticked a box.
+        let items = items
+
+        return NavigationStack {
             List {
                 Section {
                     ForEach(items) { item in
@@ -54,7 +60,7 @@ struct LadelisteView: View {
                         .accessibilityAddTraits(isOn(item) ? [.isSelected] : [])
                     }
                 } header: {
-                    Text(progressLabel)
+                    Text(progressLabel(items))
                 } footer: {
                     Text("Tippen zum Abhaken. Die Haken gelten nur für diese Tour.")
                 }
@@ -98,7 +104,7 @@ struct LadelisteView: View {
     /// the set can still hold a key from a package that has since been edited
     /// away, and "4 von 3 abgehakt" is a great way to lose a driver's trust in
     /// the whole list.
-    private var progressLabel: String {
+    private func progressLabel(_ items: [PaketItem]) -> String {
         let done = items.count { checked.contains($0.key) }
         let pieces = items.reduce(0) { $0 + $1.qty }
         if done >= items.count && !items.isEmpty {
@@ -107,14 +113,37 @@ struct LadelisteView: View {
         return "\(done) von \(items.count) Positionen abgehakt · \(pieces) Stück gesamt"
     }
 
-    private var storageKey: String { "ladeliste.\(route.id.uuidString)" }
-
     private func load() {
-        checked = Set(UserDefaults.standard.stringArray(forKey: storageKey) ?? [])
+        checked = LadelisteState.checked(for: route.id)
     }
 
     private func save() {
-        UserDefaults.standard.set(Array(checked), forKey: storageKey)
+        LadelisteState.store(checked, for: route.id)
+    }
+}
+
+/// Which lines of a route's packing list are ticked off.
+///
+/// In `UserDefaults` rather than on the model: a tick here means "already in the
+/// van this morning", which is about one loading, not about the tour as a
+/// record. It lives outside SwiftData, though, which means nothing cascades it
+/// away — so deleting a route has to say so explicitly, or every tour ever
+/// deleted leaves its checklist behind in the app's preferences for good.
+enum LadelisteState {
+    private static func key(_ routeID: UUID) -> String {
+        "ladeliste.\(routeID.uuidString)"
+    }
+
+    static func checked(for routeID: UUID) -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: key(routeID)) ?? [])
+    }
+
+    static func store(_ checked: Set<String>, for routeID: UUID) {
+        UserDefaults.standard.set(Array(checked), forKey: key(routeID))
+    }
+
+    static func forget(_ routeID: UUID) {
+        UserDefaults.standard.removeObject(forKey: key(routeID))
     }
 }
 

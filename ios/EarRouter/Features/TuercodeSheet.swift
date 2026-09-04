@@ -60,7 +60,14 @@ struct TuercodeSheet: View {
                     Button("Fertig") { dismiss() }
                 }
             }
-            .onAppear { focused = true }
+            // Focused after the sheet has finished presenting rather than in
+            // `onAppear`: asking for the keyboard mid-presentation is a race
+            // the presentation animation regularly wins, and the driver then
+            // has to tap the field themselves.
+            .task {
+                try? await Task.sleep(for: .milliseconds(350))
+                focused = true
+            }
         }
     }
 

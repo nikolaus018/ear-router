@@ -5,6 +5,7 @@ struct RouteDetailView: View {
     @Bindable var route: Route
     @Environment(\.modelContext) private var context
     @Environment(RouteFocus.self) private var focus
+    @Environment(\.openURL) private var openURL
 
     @State private var search = ""
     @State private var editingStop: Stop?
@@ -57,6 +58,11 @@ struct RouteDetailView: View {
                         onNavigate: { open(next) })
                         .contentShape(.rect)
                         .onTapGesture { editingStop = next }
+                        // Faintly tinted. This row is a *repeat* of one further
+                        // down the list, and without something marking it as
+                        // pinned-to-the-top the same customer appearing twice on
+                        // one screen just looks like a bug.
+                        .listRowBackground(Color.brand.opacity(0.07))
                 }
             }
 
@@ -69,8 +75,55 @@ struct RouteDetailView: View {
             } footer: {
                 if let totals = totalsLine { Text(totals) }
             }
+
+            // Nothing to deliver yet. A route always has its three fixed
+            // points, so the list is never actually empty — which is exactly
+            // why a freshly created tour needed something saying what to do
+            // next instead of three grey rows and silence.
+            if route.customerStops.isEmpty && search.isEmpty {
+                Section {
+                    EmptyStopsPrompt(
+                        onAdd: { addingStop = true },
+                        onPaste: { showingJSON = true })
+                }
+            }
+
+            // The tour is done. Finishing it is deliberately still the driver's
+            // call (see `RouteStore.setDelivered`), but the call should not be
+            // buried in an overflow menu at the moment it becomes the only
+            // thing left to do.
+            if route.isComplete && route.status == .active && search.isEmpty {
+                Section {
+                    Button {
+                        try? RouteStore.toggleStatus(route, in: context)
+                    } label: {
+                        Label("Tour abschließen", systemImage: "checkmark.seal.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 6, trailing: 20))
+                    .listRowBackground(Color.clear)
+                }
+            }
         }
         .listStyle(.insetGrouped)
+        // The one place in-flight work is reported. `busy` already carried a
+        // sentence describing what was happening; before this it went nowhere,
+        // and a bare spinner in the toolbar left the driver guessing whether
+        // the app was optimising, geocoding or removing something.
+        // `safeAreaInset`, not an overlay: the list runs underneath the floating
+        // tab bar, so a banner pinned to the bottom of its frame would be drawn
+        // behind it. An inset is placed *inside* the safe area, above the bar,
+        // and takes up no room at all while there is nothing to report.
+        .safeAreaInset(edge: .bottom) {
+            if let busy {
+                BusyBanner(text: busy)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: busy)
         .navigationTitle(route.name)
         .navigationBarTitleDisplayMode(.large)
         .searchable(
@@ -82,7 +135,13 @@ struct RouteDetailView: View {
             StopEditorSheet(route: route, stop: nil)
         }
         .sheet(item: $editingStop) { stop in
-            StopEditorSheet(route: route, stop: stop)
+            StopEditorSheet(route: route, stop: stop) {
+                // Dismissed first, then deleted: the sheet is bound to this
+                // stop, and tearing the object out from under it would leave
+                // the sheet rendering a row that no longer exists.
+                editingStop = nil
+                Task { await delete(stop) }
+            }
         }
         .sheet(isPresented: $showingJSON) {
             JSONEditorSheet(route: route)
@@ -92,6 +151,7 @@ struct RouteDetailView: View {
         }
         .alert("Tour umbenennen", isPresented: $renaming) {
             TextField("Name", text: $newName)
+                .limited(to: FieldLimits.routeName, text: $newName)
             Button("Abbrechen", role: .cancel) {}
             Button("Speichern") { try? RouteStore.rename(route, to: newName, in: context) }
         }
@@ -129,11 +189,11 @@ struct RouteDetailView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
-            if busy != nil {
-                ProgressView()
-            } else {
-                Button("Stopp hinzufügen", systemImage: "plus") { addingStop = true }
-            }
+            // Stays a plus, disabled, while work is in flight. Swapping it for
+            // a spinner moved the button the driver was aiming at and said less
+            // than the banner at the bottom of the screen already says.
+            Button("Stopp hinzufügen", systemImage: "plus") { addingStop = true }
+                .disabled(busy != nil)
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
@@ -204,6 +264,9 @@ struct RouteDetailView: View {
         if !search.isEmpty {
             return "\(visibleStops.count) von \(route.customerStops.count) Stopps"
         }
+        // "0 von 0 geliefert" over a route that has only its three fixed points
+        // is a progress report on nothing.
+        if route.customerStops.isEmpty { return "Fixpunkte" }
         return "\(route.deliveredCount) von \(route.customerStops.count) geliefert"
     }
 
@@ -278,7 +341,58 @@ struct RouteDetailView: View {
 
     private func open(_ stop: Stop) {
         guard let url = NavigationHandoff.url(for: stop) else { return }
-        UIApplication.shared.open(url)
+        openURL(url)
+    }
+}
+
+/// What the list shows a driver who has just created a tour: the two ways
+/// stops get onto it, rather than three grey fixed rows and no next step.
+struct EmptyStopsPrompt: View {
+    let onAdd: () -> Void
+    let onPaste: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            VStack(spacing: 4) {
+                Text("Noch keine Kundenstopps")
+                    .font(.headline)
+                Text("Einzeln hinzufügen, oder die ganze Tagesliste auf einmal einsetzen.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(spacing: 8) {
+                Button("Stopp hinzufügen", systemImage: "plus", action: onAdd)
+                    .buttonStyle(.borderedProminent)
+                Button("Liste als JSON einsetzen", systemImage: "curlybraces", action: onPaste)
+                    .buttonStyle(.bordered)
+            }
+            .controlSize(.large)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .listRowBackground(Color.clear)
+    }
+}
+
+/// The "something is happening" pill. A capsule floating over the list rather
+/// than a scrim across it: the driver can still read and scroll the stops while
+/// an optimization runs, which is a slow network call they have no reason to be
+/// locked out of.
+struct BusyBanner: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text(text)
+                .font(.subheadline.weight(.medium))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+        .glassEffect(.regular, in: .capsule)
+        .accessibilityAddTraits(.updatesFrequently)
     }
 }
 
@@ -289,7 +403,7 @@ struct OptimizeBanner: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color.warning)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Route nicht aktuell").font(.subheadline.weight(.semibold))
                 Text("Reihenfolge und Distanzen stimmen nicht mehr.")

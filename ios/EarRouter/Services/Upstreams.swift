@@ -29,16 +29,30 @@ struct Upstreams: Sendable, Equatable {
     static let `default` = Upstreams(
         wienOGD: defaultWienOGD, nominatim: defaultNominatim, osrm: defaultOSRM)
 
-    /// Reads the OSRM override the user can set in Mehr → Einstellungen;
+    /// Reads the OSRM override the user can set in Mehr → Erweitert;
     /// falls back to the built-in default for anything unparseable.
     static var current: Upstreams {
         var u = Upstreams.default
         if let raw = UserDefaults.standard.string(forKey: Keys.osrmURL),
-           let url = URL(string: raw.trimmed.trimmingSuffix("/")),
-           url.scheme != nil, url.host != nil {
+           let url = overrideURL(raw) {
             u.osrm = url
         }
         return u
+    }
+
+    /// The parsed form of a typed server address, or `nil` when it is not
+    /// something this app can call.
+    static func overrideURL(_ raw: String) -> URL? {
+        guard let url = URL(string: raw.trimmed.trimmingSuffix("/")),
+              url.scheme != nil, url.host != nil
+        else { return nil }
+        return url
+    }
+
+    /// Whether a non-empty typed address would actually be used. The settings
+    /// screen says so out loud, because the fallback is otherwise silent.
+    static func isUsableOverride(_ raw: String) -> Bool {
+        overrideURL(raw) != nil
     }
 
     enum Keys {

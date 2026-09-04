@@ -27,9 +27,18 @@ struct StopRow: View {
     var onNavigate: (() -> Void)?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            leading
-            details
+        HStack(spacing: 12) {
+            // Badge and text are one top-aligned group: the number belongs
+            // beside the customer's *name*, not floating halfway down beside
+            // their note. The buttons are outside that group and centre
+            // themselves in the row — top-aligned they left a visible hole
+            // under themselves on any row taller than they are, and on a short
+            // row they are the tallest thing in it, which is what used to drag
+            // the badge above the name.
+            HStack(alignment: .top, spacing: 12) {
+                leading
+                details
+            }
             Spacer(minLength: 4)
             if stop.kind == .customer {
                 trailingControls
@@ -37,6 +46,12 @@ struct StopRow: View {
         }
         .padding(.vertical, 2)
         .opacity(stop.excluded ? 0.5 : 1)
+        // Every row's separator starts under the text rather than under
+        // whatever that particular row happens to lead with — otherwise a fixed
+        // stop's icon and a customer's number badge, being different widths,
+        // gave the same list two different separator insets.
+        .alignmentGuide(.listRowSeparatorLeading) { _ in badgeSize + 12 }
+        .accessibilityElement(children: .contain)
     }
 
     // MARK: - Leading
@@ -47,7 +62,8 @@ struct StopRow: View {
         case .customer:
             Text(number.map(String.init) ?? "•")
                 .font(.footnote.weight(.semibold).monospacedDigit())
-                .foregroundStyle(stop.delivered ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.white))
+                .foregroundStyle(
+                    stop.delivered ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.onBrand))
                 .frame(width: badgeSize, height: badgeSize)
                 .background(
                     Circle().fill(
@@ -88,8 +104,8 @@ struct StopRow: View {
                 }
             }
 
-            if !stop.fullAddress.isEmpty {
-                Text(stop.fullAddress)
+            if !stop.listAddress.isEmpty {
+                Text(stop.listAddress)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -136,6 +152,11 @@ struct StopRow: View {
                     .foregroundStyle(.tertiary)
             }
         }
+        // One VoiceOver element for the whole stop, read as a sentence, rather
+        // than seven separate stops of the rotor for one row. The two buttons
+        // stay their own elements — they are the things you act on.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
     }
 
     // MARK: - Trailing controls
@@ -162,9 +183,15 @@ struct StopRow: View {
 
             if let onNavigate {
                 Button(action: onNavigate) {
-                    Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
-                        .font(.system(size: 25))
+                    // A soft tinted disc rather than a solid brand-red one.
+                    // Filled, it put a second saturated blob on every single row
+                    // next to the delivered tick, and a list where everything
+                    // shouts tells the driver nothing about what matters.
+                    Image(systemName: "arrow.trianglehead.turn.up.right")
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Color.brand)
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(Color.brand.opacity(0.14)))
                         .frame(width: 46, height: 46)
                         .contentShape(.rect)
                 }
@@ -182,6 +209,28 @@ struct StopRow: View {
 
     private var title: String {
         stop.kind == .customer ? (stop.kunde ?? "Stopp") : stop.fixedTitle
+    }
+
+    /// The row as one spoken sentence, in the order it matters at the van door:
+    /// who and where first, then what to carry up, then anything to watch out
+    /// for.
+    private var accessibilityDescription: String {
+        var parts: [String] = []
+        if let number, stop.kind == .customer { parts.append("Stopp \(number)") }
+        parts.append(title)
+        if !stop.listAddress.isEmpty { parts.append(stop.listAddress) }
+        if stop.kind == .customer {
+            parts.append(stop.delivered ? "zugestellt" : "offen")
+        }
+        if let paket = stop.paket, !paket.isEmpty { parts.append(paket) }
+        if let notiz = stop.notiz, !notiz.isEmpty { parts.append("Notiz: \(notiz)") }
+        if sameDoorCount > 1 { parts.append("\(sameDoorCount) Kunden an dieser Tür") }
+        if let precision = stop.precision { parts.append(precision.label) }
+        if stop.excluded { parts.append("für diese Tour ausgelassen") }
+        if let leg = Format.leg(km: stop.nextLegKm, minutes: stop.nextLegMin) {
+            parts.append("\(leg) bis zum nächsten Stopp")
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -214,6 +263,12 @@ struct StopListRow: View {
             // handle their own taps rather than falling through to this.
             .contentShape(.rect)
             .onTapGesture(perform: onTap)
+            .accessibilityHint(
+                isCustomer
+                    ? "Doppeltippen zum Bearbeiten"
+                    : (stop.excluded
+                        ? "Doppeltippen, um diesen Punkt wieder einzuplanen"
+                        : "Doppeltippen, um diesen Punkt für diese Tour auszulassen"))
             .swipeActions(edge: .leading) {
                 if isCustomer {
                     Button(action: onToggleDelivered) {
@@ -221,7 +276,7 @@ struct StopListRow: View {
                             stop.delivered ? "Offen" : "Geliefert",
                             systemImage: stop.delivered ? "arrow.uturn.backward" : "checkmark")
                     }
-                    .tint(stop.delivered ? Color.orange : Color.success)
+                    .tint(stop.delivered ? Color.warning : Color.success)
                 }
             }
             .swipeActions(edge: .trailing) {
@@ -239,6 +294,10 @@ struct StopListRow: View {
 /// A multi-item drop is a *filled* badge with the count in it, a single item a
 /// tinted one — the difference is deliberately loud, because "two meals here"
 /// is the thing you need to know before you shut the van door and walk up.
+///
+/// Once the stop is delivered the fill goes away entirely rather than turning
+/// grey: a filled grey block is just as heavy on the page as the coloured one
+/// it replaced, so a finished list stayed as busy as an unfinished one.
 struct PaketBadge: View {
     let text: String
     let quantity: Int
@@ -253,7 +312,9 @@ struct PaketBadge: View {
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(dimmed ? Color.secondary : Color.brand)
                     .frame(width: 15, height: 15)
-                    .background(Circle().fill(dimmed ? AnyShapeStyle(.clear) : AnyShapeStyle(.white)))
+                    .background(
+                        Circle().fill(
+                            dimmed ? AnyShapeStyle(.clear) : AnyShapeStyle(Color.onBrand)))
             } else {
                 Image(systemName: "shippingbox.fill").font(.caption2)
             }
@@ -261,19 +322,19 @@ struct PaketBadge: View {
         }
         .font(.caption.weight(multi ? .bold : .medium))
         .foregroundStyle(foreground)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
+        .padding(.horizontal, dimmed ? 0 : 7)
+        .padding(.vertical, dimmed ? 0 : 3)
         .background(background, in: .rect(cornerRadius: 6))
     }
 
     private var foreground: Color {
         if dimmed { return .secondary }
-        return multi ? .white : .brand
+        return multi ? .onBrand : .brand
     }
 
     private var background: AnyShapeStyle {
-        if dimmed { return AnyShapeStyle(.quaternary) }
-        return multi ? AnyShapeStyle(Color.brand) : AnyShapeStyle(Color.brand.opacity(0.13))
+        if dimmed { return AnyShapeStyle(.clear) }
+        return multi ? AnyShapeStyle(Color.brand) : AnyShapeStyle(Color.brand.opacity(0.18))
     }
 }
 
@@ -290,10 +351,10 @@ struct NotizBadge: View {
         }
         .font(.caption.weight(.medium))
         .foregroundStyle(dimmed ? Color.secondary : Color.warningText)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
+        .padding(.horizontal, dimmed ? 0 : 7)
+        .padding(.vertical, dimmed ? 0 : 3)
         .background(
-            dimmed ? AnyShapeStyle(.quaternary) : AnyShapeStyle(Color.warning.opacity(0.16)),
+            dimmed ? AnyShapeStyle(.clear) : AnyShapeStyle(Color.warning.opacity(0.16)),
             in: .rect(cornerRadius: 6))
     }
 }

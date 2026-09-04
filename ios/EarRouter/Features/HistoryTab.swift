@@ -17,34 +17,23 @@ struct HistoryTab: View {
     @Query private var allRoutes: [Route]
 
     var body: some View {
-        List {
+        Group {
             if routes.isEmpty {
                 ContentUnavailableView(
                     "Noch keine erledigten Touren", systemImage: "clock.arrow.circlepath",
-                    description: Text("Eine Tour landet hier, sobald alle Stopps geliefert sind."))
+                    description: Text("Eine Tour landet hier, sobald du sie als erledigt markierst."))
             } else {
-                ForEach(routes) { route in
-                    NavigationLink(value: route.id) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(route.name).font(.headline)
-                            HStack(spacing: 6) {
-                                if let done = route.completedAt {
-                                    Text(Format.date(done))
-                                }
-                                Text("·")
-                                Text(Format.stops(route.customerStops.count))
-                                if let km = Format.km(route.totals.km), route.totals.km > 0 {
-                                    Text("·")
-                                    Text(km)
-                                }
-                            }
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                List {
+                    ForEach(routes) { route in
+                        NavigationLink(value: route.id) {
+                            RouteSummaryRow(
+                                route: route,
+                                completedDate: route.completedAt ?? route.createdAt)
                         }
                     }
-                }
-                .onDelete { offsets in
-                    for i in offsets { try? RouteStore.delete(routes[i], in: context) }
+                    .onDelete { offsets in
+                        for i in offsets { try? RouteStore.delete(routes[i], in: context) }
+                    }
                 }
             }
         }

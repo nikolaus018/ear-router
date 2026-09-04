@@ -10,7 +10,11 @@ struct JSONEditorSheet: View {
 
     @State private var text = ""
     @State private var busy = false
-    @State private var result: ImportResult?
+    /// A full-screen `TextEditor` has no way out of the keyboard of its own —
+    /// no Return to commit, nothing else to tap. Without an explicit Fertig the
+    /// driver was stuck looking at half a JSON list.
+    @FocusState private var editing: Bool
+    @State private var result: ImportReport?
     @State private var error: AppError?
 
     var body: some View {
@@ -23,13 +27,13 @@ struct JSONEditorSheet: View {
                     .scrollContentBackground(.hidden)
                     .padding(.horizontal, 12)
                     .disabled(busy)
+                    .focused($editing)
 
-                if let result {
-                    ImportSummary(result: result)
-                        .frame(maxHeight: 260)
-                }
             }
-            .navigationTitle("Stopps als JSON")
+            // Short enough to survive the two glass toolbar buttons either side
+            // of it: "Stopps als JSON" truncated to "Stopps als…", which is a
+            // title that says nothing.
+            .navigationTitle("JSON")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -43,23 +47,47 @@ struct JSONEditorSheet: View {
                             .disabled(text.trimmed.isEmpty)
                     }
                 }
-                ToolbarItemGroup(placement: .bottomBar) {
-                    Button("Kopieren", systemImage: "doc.on.doc") {
-                        UIPasteboard.general.string = text
-                    }
-                    Button("Einsetzen", systemImage: "doc.on.clipboard") {
-                        if let s = UIPasteboard.general.string { text = s }
-                    }
+                ToolbarItem(placement: .keyboard) {
                     Spacer()
-                    Button("Leeren", systemImage: "trash", role: .destructive) {
-                        text = "[]"
+                }
+                ToolbarItem(placement: .keyboard) {
+                    Button("Fertig") { editing = false }
+                }
+                ToolbarItemGroup(placement: .bottomBar) {
+                    // Text, not glyphs. Rendered icon-only in the bottom bar,
+                    // "copy" and "paste" are two near-identical sheets of paper
+                    // and the driver has to guess which is which.
+                    Button("Kopieren") { UIPasteboard.general.string = text }
+                    // The system paste control rather than reading the
+                    // pasteboard ourselves: touching `UIPasteboard.general`
+                    // raises iOS's "would like to paste from…" alert every
+                    // single time, which is a modal interruption in the middle
+                    // of the one action this whole screen exists for.
+                    PasteButton(payloadType: String.self) { items in
+                        if let first = items.first { text = first }
                     }
+                    .labelStyle(.titleAndIcon)
+                    .buttonBorderShape(.capsule)
+                    Spacer()
+                    Button("Leeren", role: .destructive) { text = "[]" }
                 }
             }
             .errorAlert($error)
             .onAppear { text = RouteStore.exportJSON(route) }
         }
         .interactiveDismissDisabled(busy)
+        // A full screen rather than a 260pt panel wedged under the editor and
+        // behind the bottom bar. What a partly-failed import has to say —
+        // which addresses were rejected, which resolved only approximately —
+        // is the whole reason the driver is still on this screen, and it was
+        // the part with the least room to say it.
+        .sheet(item: $result) { report in
+            ImportSummary(result: report.result)
+                // Half height: this is a short report, and leaving the editor
+                // visible behind it keeps the entries it is complaining about
+                // in view.
+                .presentationDetents([.medium, .large])
+        }
     }
 
     private func save() async {
@@ -69,11 +97,15 @@ struct JSONEditorSheet: View {
         do {
             let entries = try RouteStore.parseImport(text)
             let r = try await RouteStore.importJSON(entries, into: route, in: context)
-            result = r
             // A clean import has nothing left to say — closing is the answer
-            // the driver wants. One with problems stays open so they can see
-            // which addresses need attention.
-            if !r.hasProblems { dismiss() }
+            // the driver wants. One with problems reports itself, and the
+            // editor stays open behind it so the offending entries can be
+            // corrected and submitted again.
+            if r.hasProblems {
+                result = ImportReport(result: r)
+            } else {
+                dismiss()
+            }
         } catch let e as AppError {
             error = e
         } catch {
@@ -82,10 +114,31 @@ struct JSONEditorSheet: View {
     }
 }
 
+/// `ImportResult` is a plain value the store hands back; this is the identity a
+/// `.sheet(item:)` needs to present one.
+struct ImportReport: Identifiable {
+    let id = UUID()
+    let result: ImportResult
+}
+
 struct ImportSummary: View {
     let result: ImportResult
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
+        NavigationStack {
+            summary
+                .navigationTitle("Import")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Fertig") { dismiss() }
+                    }
+                }
+        }
+    }
+
+    private var summary: some View {
         List {
             Section("Übernommen") {
                 LabeledContent("Neu", value: "\(result.inserted)")
@@ -108,7 +161,12 @@ struct ImportSummary: View {
 
             if !result.validationFailures.isEmpty {
                 Section("Nicht übernommen") {
-                    ForEach(result.validationFailures, id: \.label) { f in
+                    // Keyed by position, not by name. Two customers called
+                    // "Fam. Gruber" — or two entries that failed with no name at
+                    // all — are exactly the case this list exists to report, and
+                    // identifying rows by their label made SwiftUI treat them as
+                    // one row and show only the first.
+                    ForEach(Array(result.validationFailures.enumerated()), id: \.offset) { _, f in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(f.label).font(.subheadline.weight(.medium))
                             Text(f.reason).font(.caption).foregroundStyle(.secondary)
@@ -119,7 +177,7 @@ struct ImportSummary: View {
 
             if !result.geocodeFailures.isEmpty {
                 Section("Adresse nicht gefunden") {
-                    ForEach(result.geocodeFailures, id: \.kunde) { f in
+                    ForEach(Array(result.geocodeFailures.enumerated()), id: \.offset) { _, f in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(f.kunde).font(.subheadline.weight(.medium))
                             Text("\(f.strasse), \(f.plz)")
@@ -131,12 +189,12 @@ struct ImportSummary: View {
 
             if !result.approximate.isEmpty {
                 Section("Bitte prüfen") {
-                    ForEach(result.approximate, id: \.kunde) { a in
+                    ForEach(Array(result.approximate.enumerated()), id: \.offset) { _, a in
                         Label(
                             "\(a.kunde) — \(a.precision.shortLabel)",
                             systemImage: "exclamationmark.triangle.fill")
                             .font(.subheadline)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Color.warning)
                     }
                 }
             }

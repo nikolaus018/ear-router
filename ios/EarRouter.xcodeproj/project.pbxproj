@@ -6,6 +6,16 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		E4000300 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E4000100 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E4000060;
+			remoteInfo = EarRouter;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		E4000020 /* EarRouter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EarRouter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E4000220 /* EarRouterTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EarRouterTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -105,24 +115,6 @@
 		};
 /* End PBXNativeTarget section */
 
-/* Begin PBXTargetDependency section */
-		E4000290 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = E4000060 /* EarRouter */;
-			targetProxy = E4000300 /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
-
-/* Begin PBXContainerItemProxy section */
-		E4000300 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = E4000100 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = E4000060;
-			remoteInfo = EarRouter;
-		};
-/* End PBXContainerItemProxy section */
-
 /* Begin PBXProject section */
 		E4000100 /* Project object */ = {
 			isa = PBXProject;
@@ -141,7 +133,7 @@
 				};
 			};
 			buildConfigurationList = E4000110 /* Build configuration list for PBXProject "EarRouter" */;
-			developmentRegion = en;
+			developmentRegion = de;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
@@ -187,6 +179,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E4000290 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E4000060 /* EarRouter */;
+			targetProxy = E4000300 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		E4000120 /* Debug */ = {
@@ -258,6 +258,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "EAR Router";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Zeigt deinen Standort auf der Routenkarte an.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -292,6 +293,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "EAR Router";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Zeigt deinen Standort auf der Routenkarte an.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

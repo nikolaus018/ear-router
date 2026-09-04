@@ -37,7 +37,10 @@ enum NavigationHandoff {
         func point(lat: Double, lon: Double) -> URL? {
             // Six decimal places is ~10 cm — far past what any navigation app
             // resolves, and short enough to keep the URL readable.
-            let ll = String(format: "%.6f,%.6f", lat, lon)
+            let ll = String(
+                format: "%.6f,%.6f",
+                locale: Locale(identifier: "en_US_POSIX"),
+                lat, lon)
             switch self {
             case .apple:
                 return URL(string: "https://maps.apple.com/?daddr=\(ll)&dirflg=d")
@@ -51,9 +54,11 @@ enum NavigationHandoff {
         }
 
         func address(_ addr: String) -> URL? {
-            guard let q = addr.addingPercentEncoding(
-                withAllowedCharacters: .urlQueryAllowed)
-            else { return nil }
+            var allowed = CharacterSet.urlQueryAllowed
+            allowed.remove(charactersIn: "&=?#")
+            guard let q = addr.addingPercentEncoding(withAllowedCharacters: allowed) else {
+                return nil
+            }
             switch self {
             case .apple:
                 return URL(string: "https://maps.apple.com/?daddr=\(q)&dirflg=d")

@@ -74,6 +74,9 @@ enum SameDoor {
     }
 
     private static func pointKey(_ s: Stop) -> String {
-        String(format: "%.\(samePointDecimals)f,%.\(samePointDecimals)f", s.lat, s.lon)
+        String(
+            format: "%.\(samePointDecimals)f,%.\(samePointDecimals)f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            s.lat, s.lon)
     }
 }

@@ -236,7 +236,14 @@ actor OSRMClient {
     /// OSRM takes `lon,lat` pairs, semicolon-separated — the opposite order
     /// from how the rest of this app writes a coordinate.
     private static func coordString(_ coords: [(lat: Double, lon: Double)]) -> String {
-        coords.map { String(format: "%.6f,%.6f", $0.lon, $0.lat) }.joined(separator: ";")
+        coords
+            .map {
+                String(
+                    format: "%.6f,%.6f",
+                    locale: Locale(identifier: "en_US_POSIX"),
+                    $0.lon, $0.lat)
+            }
+            .joined(separator: ";")
     }
 
     /// GeoJSON is `[lon, lat]`; everything downstream of here wants `[lat, lon]`.

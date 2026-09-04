@@ -177,8 +177,25 @@ struct AdvancedSettingsView: View {
                         status = .idle
                     }
                 }
+            } header: {
+                // Without a header this field sat between two titled sections
+                // belonging to neither of them.
+                Text("Eigener Server")
             } footer: {
-                Text("Leer lassen für den Standardserver.")
+                // An address the app cannot parse is silently ignored and the
+                // default used instead — correct behaviour, and completely
+                // invisible. Typing "osrm.example.com" with no scheme, or
+                // fumbling the colon on a phone keyboard, looked exactly like a
+                // setting that had been accepted.
+                if !osrmURL.isEmpty && !Upstreams.isUsableOverride(osrmURL) {
+                    Label(
+                        "Keine gültige Adresse — es wird der Standardserver verwendet. "
+                            + "Erwartet wird etwas wie https://osrm.example.com",
+                        systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Color.warning)
+                } else {
+                    Text("Leer lassen für den Standardserver.")
+                }
             }
 
             Section {

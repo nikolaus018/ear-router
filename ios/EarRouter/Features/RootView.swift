@@ -41,3 +41,10 @@ struct RootView: View {
         }
     }
 }
+
+#Preview {
+    RootView()
+        .environment(RouteFocus())
+        .modelContainer(for: [Route.self, Stop.self], inMemory: true)
+        .tint(Color.brand)
+}

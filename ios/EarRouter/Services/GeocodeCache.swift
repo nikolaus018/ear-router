@@ -165,6 +165,8 @@ actor GeocodeCache {
 
     func save() {
         guard dirty else { return }
+        saveTask?.cancel()
+        saveTask = nil
         let payload = Payload(generation: Self.generation, hits: hits, misses: misses)
         do {
             let data = try JSONEncoder().encode(payload)

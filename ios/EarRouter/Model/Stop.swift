@@ -134,6 +134,19 @@ extension Stop {
         return street.isEmpty ? "\(plz) Wien" : "\(street), \(plz) Wien"
     }
 
+    /// "Straße, PLZ" — the address as the stop list shows it.
+    ///
+    /// The city is dropped on purpose. Every stop on every tour is in Vienna,
+    /// so "Wien" carries no information here, and the six characters it costs
+    /// are exactly what pushed an ordinary address onto a second line beside
+    /// the row's two buttons. `fullAddress` keeps it, because a navigation app
+    /// handed a bare street and postcode is a navigation app guessing.
+    var listAddress: String {
+        let street = strasse?.trimmed ?? ""
+        guard let plz, !plz.isEmpty else { return street }
+        return street.isEmpty ? plz : "\(street), \(plz)"
+    }
+
     /// The label shown in the stop list for a fixed point.
     var fixedTitle: String {
         switch kind {
@@ -157,4 +170,34 @@ struct StopCoord: Sendable, Hashable {
     let id: UUID
     let lat: Double
     let lon: Double
+}
+
+extension UUID {
+    /// A stable total order over ids, compared byte by byte.
+    ///
+    /// `uuidString` would be the obvious way to write this, and it is what the
+    /// map's change keys used to do — but it allocates a fresh 36-character
+    /// `String` for *every* comparison. Sorting a hundred stops is ~700
+    /// comparisons, and those keys are rebuilt on every camera frame while the
+    /// driver pans the map. This compares the 16 bytes directly and allocates
+    /// nothing.
+    static func idOrderedBefore(_ a: UUID, _ b: UUID) -> Bool {
+        let x = a.uuid, y = b.uuid
+        if x.0 != y.0 { return x.0 < y.0 }
+        if x.1 != y.1 { return x.1 < y.1 }
+        if x.2 != y.2 { return x.2 < y.2 }
+        if x.3 != y.3 { return x.3 < y.3 }
+        if x.4 != y.4 { return x.4 < y.4 }
+        if x.5 != y.5 { return x.5 < y.5 }
+        if x.6 != y.6 { return x.6 < y.6 }
+        if x.7 != y.7 { return x.7 < y.7 }
+        if x.8 != y.8 { return x.8 < y.8 }
+        if x.9 != y.9 { return x.9 < y.9 }
+        if x.10 != y.10 { return x.10 < y.10 }
+        if x.11 != y.11 { return x.11 < y.11 }
+        if x.12 != y.12 { return x.12 < y.12 }
+        if x.13 != y.13 { return x.13 < y.13 }
+        if x.14 != y.14 { return x.14 < y.14 }
+        return x.15 < y.15
+    }
 }

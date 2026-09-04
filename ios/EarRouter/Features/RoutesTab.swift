@@ -63,6 +63,7 @@ struct RoutesTab: View {
             // placeholder it still applies when the field is left empty (see
             // `RouteStore.createRoute`) and gets out of the way when it is not.
             TextField(RouteStore.defaultRouteName(), text: $newName)
+                .limited(to: FieldLimits.routeName, text: $newName)
             Button("Abbrechen", role: .cancel) {}
             Button("Anlegen") { create() }
         } message: {
@@ -93,41 +94,59 @@ struct RoutesTab: View {
     }
 }
 
+/// One route in a list — the same row in Routen and in Verlauf, so a tour looks
+/// like the same tour on either side of being finished.
+///
+/// The two differ only in what the subtitle leads with: an active tour's
+/// headline number is how much of it is done, a finished one's is the day it was
+/// driven.
 struct RouteSummaryRow: View {
     let route: Route
+    /// Shown instead of the delivery count once the tour is in Verlauf.
+    var completedDate: Date?
+
+    private var customerCount: Int { route.customerStops.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(route.name)
                 .font(.headline)
 
-            HStack(spacing: 6) {
-                Text(Format.stops(route.customerStops.count))
-                if route.customerStops.count > 0 {
-                    Text("·")
-                    Text("\(route.deliveredCount) geliefert")
-                }
-                if let km = Format.km(route.totals.km), route.totals.km > 0 {
-                    Text("·")
-                    Text(km)
-                }
-            }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
+            Text(subtitle)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
 
             if route.needsOptimize {
                 Label("Route nicht aktuell", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.warning)
             }
 
-            ProgressView(
-                value: Double(route.deliveredCount),
-                total: Double(max(route.customerStops.count, 1))
-            )
-            .tint(.success)
+            // Only where there is progress to show. On a tour with no stops yet
+            // the bar was an empty trough promising something the route cannot
+            // deliver, and on a finished one it is always full and says nothing.
+            if completedDate == nil && customerCount > 0 {
+                ProgressView(value: Double(route.deliveredCount), total: Double(customerCount))
+                    .tint(.success)
+            }
         }
         .padding(.vertical, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            route.needsOptimize
+                ? "\(route.name), \(subtitle), Route nicht aktuell"
+                : "\(route.name), \(subtitle)")
+    }
+
+    private var subtitle: String {
+        var parts: [String] = []
+        if let completedDate { parts.append(Format.date(completedDate)) }
+        parts.append(Format.stops(customerCount))
+        if completedDate == nil && customerCount > 0 {
+            parts.append("\(route.deliveredCount) geliefert")
+        }
+        if let km = Format.km(route.totals.km), route.totals.km > 0 { parts.append(km) }
+        return parts.joined(separator: " · ")
     }
 }
 
