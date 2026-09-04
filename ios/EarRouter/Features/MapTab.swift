@@ -91,10 +91,7 @@ struct MapTab: View {
             }
 
             ForEach(drawnStops(route)) { stop in
-                Annotation(label(for: stop, in: route), coordinate: stop.coordinate) {
-                    StopPin(stop: stop, number: number(of: stop, in: route))
-                }
-                .tag(stop)
+                marker(for: stop, in: route)
             }
         }
         .mapStyle(style.mapStyle)
@@ -105,6 +102,47 @@ struct MapTab: View {
         }
         .onChange(of: route.id, initial: true) { fit(route) }
         .onChange(of: route.geometryFlat.count) { fit(route) }
+    }
+
+    /// MapKit's own balloon marker rather than a custom circle.
+    ///
+    /// A floating circle marks an area; a balloon marks a *point* — its tip is
+    /// the coordinate, so the driver can tell which side of the street and which
+    /// building the stop actually is. It is also the marker every other map on
+    /// the phone uses, which is the whole reason to be on MapKit.
+    ///
+    /// Customers carry their stop number as the monogram, so the badge in the
+    /// list and the pin on the map read as the same thing.
+    @MapContentBuilder
+    private func marker(for stop: Stop, in route: Route) -> some MapContent {
+        let title = label(for: stop, in: route)
+        if stop.kind == .customer, let n = number(of: stop, in: route) {
+            Marker(title, monogram: Text(verbatim: "\(n)"), coordinate: stop.coordinate)
+                .tint(tint(for: stop))
+                .tag(stop)
+        } else {
+            Marker(title, systemImage: symbol(for: stop), coordinate: stop.coordinate)
+                .tint(Color.brand)
+                .tag(stop)
+        }
+    }
+
+    /// Green once delivered, amber while the location is only approximate,
+    /// otherwise the ordinary stop blue. The colour carries the same meaning it
+    /// does in the list.
+    private func tint(for stop: Stop) -> Color {
+        if stop.delivered { return .success }
+        if stop.precision != nil { return .warning }
+        return .blue
+    }
+
+    private func symbol(for stop: Stop) -> String {
+        switch stop.kind {
+        case .start: "house.fill"
+        case .via: "shippingbox.fill"
+        case .end: "flag.checkered"
+        case .customer: "mappin"
+        }
     }
 
     /// Excluded fixed stops are not drawn: the tour does not go there, and a
@@ -169,47 +207,6 @@ enum MapStyleChoice: String, CaseIterable, Identifiable {
     }
 }
 
-struct StopPin: View {
-    let stop: Stop
-    let number: Int?
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(fill)
-                .frame(width: 28, height: 28)
-                .overlay(Circle().stroke(.white, lineWidth: 2))
-                .shadow(radius: 2)
-
-            if let number {
-                Text("\(number)")
-                    .font(.caption2.bold())
-                    .foregroundStyle(.white)
-            } else {
-                Image(systemName: symbol)
-                    .font(.caption.bold())
-                    .foregroundStyle(.white)
-            }
-        }
-        .opacity(stop.delivered ? 0.55 : 1)
-    }
-
-    private var fill: Color {
-        if stop.kind != .customer { return .brand }
-        if stop.delivered { return .success }
-        if stop.precision != nil { return .warning }
-        return .blue
-    }
-
-    private var symbol: String {
-        switch stop.kind {
-        case .start: "house.fill"
-        case .via: "shippingbox.fill"
-        case .end: "flag.checkered"
-        case .customer: "circle.fill"
-        }
-    }
-}
 
 /// What a tapped pin shows: who, where, and the one action worth having on a
 /// map — start navigating there.

@@ -2,12 +2,16 @@ import SwiftUI
 
 /// One stop in the route list.
 ///
-/// Ticking a delivery off is an always-visible 44pt button on the trailing edge,
-/// never a swipe. It is the app's primary interaction, done thirty-odd times a
-/// tour, one-handed, often in the rain: it has to be one tap at a target you can
-/// hit without looking. Navigation gets the same treatment on the "next stop"
-/// card, and a swipe action everywhere else. The swipes remain as the secondary
-/// path iOS users reach for, but nothing is *only* reachable that way.
+/// Both of the things a driver does at a van door — tick the delivery off and
+/// start navigating — are always-visible buttons on every customer row, never a
+/// swipe. They are the app's primary interactions, done thirty-odd times a tour,
+/// one-handed, often in the rain: each has to be one tap at a target you can hit
+/// without looking.
+///
+/// Stacked, not side by side: two 46pt targets on top of each other still come
+/// to less than the height of a row carrying a Paket and a Notiz, and keeping
+/// them in one column leaves the text its full width instead of squeezing a
+/// wrapped address into what is left beside them.
 struct StopRow: View {
     /// The badge grows with the user's text size — at accessibility sizes a
     /// fixed 26pt circle clipped the number it exists to show.
@@ -138,13 +142,13 @@ struct StopRow: View {
 
     @ViewBuilder
     private var trailingControls: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 4) {
             if let onToggleDelivered {
                 Button(action: onToggleDelivered) {
                     Image(systemName: stop.delivered ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 30, weight: .regular))
+                        .font(.system(size: 27, weight: .regular))
                         .foregroundStyle(stop.delivered ? Color.success : Color.secondary)
-                        .frame(width: 54, height: 54)
+                        .frame(width: 46, height: 46)
                         .contentShape(.rect)
                 }
                 // `.borderless` is what makes several buttons in one List row
@@ -156,18 +160,12 @@ struct StopRow: View {
                 .sensoryFeedback(.impact(weight: .medium), trigger: stop.delivered)
             }
 
-            // Only on the "next stop" card. On an ordinary row a second
-            // stacked 44pt button forces the row to ~96pt whatever its content
-            // is, which left every sparse stop with a block of dead space.
-            // Navigation for the other rows lives on the trailing swipe and in
-            // the stop sheet — the one stop a driver actually needs to navigate
-            // to right now is the next one, and that has the big button.
-            if let onNavigate, isNext {
+            if let onNavigate {
                 Button(action: onNavigate) {
                     Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
-                        .font(.system(size: 28))
+                        .font(.system(size: 25))
                         .foregroundStyle(Color.brand)
-                        .frame(width: 54, height: 54)
+                        .frame(width: 46, height: 46)
                         .contentShape(.rect)
                 }
                 .buttonStyle(.borderless)
@@ -231,10 +229,6 @@ struct StopListRow: View {
                     Button(role: .destructive, action: onDelete) {
                         Label("Löschen", systemImage: "trash")
                     }
-                    Button(action: onNavigate) {
-                        Label("Navigation", systemImage: "arrow.triangle.turn.up.right.circle")
-                    }
-                    .tint(.blue)
                 }
             }
     }

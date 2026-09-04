@@ -21,7 +21,9 @@ struct SafariView: UIViewControllerRepresentable {
         config.barCollapsingEnabled = true
 
         let controller = SFSafariViewController(url: url, configuration: config)
-        controller.preferredControlTintColor = UIColor(Color.brand)
+        // No `preferredControlTintColor`: deprecated in iOS 26 because tinting
+        // the controls interferes with the background effects the system draws
+        // behind them. The default tint is the right one here anyway.
         controller.dismissButtonStyle = .done
         return controller
     }

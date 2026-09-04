@@ -58,7 +58,11 @@ struct RoutesTab: View {
             }
         }
         .alert("Neue Tour", isPresented: $creating) {
-            TextField("Name", text: $newName)
+            // The date is the *placeholder*, not prefilled text. Prefilling
+            // meant clearing it before you could type your own name; as a
+            // placeholder it still applies when the field is left empty (see
+            // `RouteStore.createRoute`) and gets out of the way when it is not.
+            TextField(RouteStore.defaultRouteName(), text: $newName)
             Button("Abbrechen", role: .cancel) {}
             Button("Anlegen") { create() }
         } message: {
@@ -68,7 +72,7 @@ struct RoutesTab: View {
     }
 
     private func startCreate() {
-        newName = RouteStore.defaultRouteName()
+        newName = ""
         creating = true
     }
 
