@@ -163,6 +163,35 @@ extension Stop {
     var planningSnapshot: StopCoord {
         StopCoord(id: id, lat: lat, lon: lon)
     }
+
+    /// Display order, with the id breaking ties.
+    ///
+    /// `orderIndex` is meant to be unique across a route and normally is — but
+    /// "normally" is not an ordering. `sorted(by:)` makes no promise about
+    /// equal elements, so two stops that ever did share an index could come
+    /// back in either order, and a list that reshuffles its own rows between
+    /// two draws of the same data is the kind of thing a driver stops trusting.
+    static func displayBefore(_ a: Stop, _ b: Stop) -> Bool {
+        a.orderIndex != b.orderIndex
+            ? a.orderIndex < b.orderIndex
+            : UUID.idOrderedBefore(a.id, b.id)
+    }
+
+    /// Creation order, with the id breaking ties.
+    ///
+    /// The tie is not hypothetical here. A `Date` around now holds about 240 ns
+    /// of resolution, and `RouteStore.createRoute` builds Start, Lager and Ziel
+    /// in three consecutive statements — comfortably inside that. The optimizer
+    /// sorts by this twice, once to plan and once to check afterwards whether
+    /// the route it planned is still the route on disk; two ties ordered
+    /// differently by those two sorts would make a route that nothing had
+    /// touched compare as changed, and leave it flagged "Route nicht aktuell"
+    /// with a retry that can never clear it.
+    static func createdBefore(_ a: Stop, _ b: Stop) -> Bool {
+        a.createdAt != b.createdAt
+            ? a.createdAt < b.createdAt
+            : UUID.idOrderedBefore(a.id, b.id)
+    }
 }
 
 /// One point in the planning problem — id plus position, nothing else.

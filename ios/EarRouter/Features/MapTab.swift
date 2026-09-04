@@ -13,8 +13,14 @@ struct MapTab: View {
 
     @State private var style: MapStyleChoice = .standard
     @State private var selectedStopID: UUID?
+    @State private var error: AppError?
     /// The measured height of the tapped stop's card — see the sheet below.
     @State private var previewHeight: CGFloat = 200
+
+    /// As tall as the preview card is ever allowed to get. Past this it keeps
+    /// its own scroll rather than growing into a sheet that covers the pin it
+    /// is describing.
+    private static let maxPreviewHeight: CGFloat = 460
 
     /// The map's content, built once per change rather than per frame.
     ///
@@ -184,14 +190,18 @@ struct MapTab: View {
                 onShowInList: {
                     if let route { focus.reveal(stop: stop, of: route) }
                     selectedStopID = nil
-                })
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                    previewHeight = height
-                }
-                .presentationDetents([.height(previewHeight)])
+                },
+                onMeasure: { previewHeight = $0 })
+                // Clamped, because "as tall as its content" has no upper bound
+                // of its own: a Notiz can run to a thousand characters, and a
+                // detent taller than a sheet is allowed to be simply clipped
+                // the rest of the card — the two buttons included. Past the cap
+                // the card scrolls instead.
+                .presentationDetents([.height(min(previewHeight, Self.maxPreviewHeight))])
                 .presentationBackground(.regularMaterial)
                 .presentationDragIndicator(.visible)
         }
+        .errorAlert($error)
     }
 
     /// The stop's position among the customers — the number its pin carries, so
@@ -208,7 +218,14 @@ struct MapTab: View {
 
     private func toggleDelivered(_ stop: Stop) {
         guard stop.kind == .customer else { return }
-        try? RouteStore.setDelivered(stop, !stop.delivered, in: context)
+        do {
+            try RouteStore.setDelivered(stop, !stop.delivered, in: context)
+        } catch {
+            // The same tick as in the stop list, and it reports itself the same
+            // way there. Swallowed here, a failed write left the circle
+            // apparently unresponsive.
+            self.error = AppError.message("Konnte den Lieferstatus nicht speichern.")
+        }
     }
 
     private var sheetStop: Binding<Stop?> {
@@ -367,8 +384,7 @@ struct MapTab: View {
                 MapPin(
                     id: stop.id,
                     visualState: Self.visualState(for: stop),
-                    lat: stop.coordinate.latitude,
-                    lon: stop.coordinate.longitude,
+                    coordinate: stop.coordinate,
                     title: title,
                     monogram: number[stop.id].map(String.init),
                     symbol: Self.symbol(for: stop.kind),
@@ -588,22 +604,41 @@ private struct MapNotice: View {
 /// coordinate, so the driver can tell which side of the street a stop is on.
 private struct MapPin: Identifiable, Equatable {
     let id: UUID
-    let visualState: Int
-    let lat: Double
-    let lon: Double
     let title: String
     /// The stop number, for a customer. `nil` on a fixed point, which carries a
     /// symbol instead.
     let monogram: String?
     let symbol: String
     let tint: Color
+    let latitude: Double
+    let longitude: Double
+
+    /// The `ForEach` identity, folding in the pin's visual state so a stop that
+    /// changes colour is rebuilt rather than reused with its old tint.
+    ///
+    /// Stored, not computed. `RouteMapCanvas`'s body is re-evaluated on every
+    /// frame of a pan — that is the whole reason it is a separate view — and a
+    /// computed identity meant `uuidString` plus an interpolation *per pin per
+    /// frame*: on a hundred-stop tour, twelve thousand string allocations a
+    /// second, thrown away immediately. Built once, when the pins are.
+    let annotationID: String
 
     var coordinate: CLLocationCoordinate2D {
-        CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
 
-    var annotationID: String {
-        "\(id.uuidString)-\(visualState)"
+    init(
+        id: UUID, visualState: Int, coordinate: CLLocationCoordinate2D,
+        title: String, monogram: String?, symbol: String, tint: Color
+    ) {
+        self.id = id
+        self.title = title
+        self.monogram = monogram
+        self.symbol = symbol
+        self.tint = tint
+        self.latitude = coordinate.latitude
+        self.longitude = coordinate.longitude
+        self.annotationID = "\(id.uuidString)-\(visualState)"
     }
 }
 
@@ -636,22 +671,36 @@ struct StopPreviewSheet: View {
     let onNavigate: () -> Void
     let onToggleDelivered: () -> Void
     let onShowInList: () -> Void
+    /// The card's own content height, which is what the presenting sheet sizes
+    /// its detent to. Reported from inside the scroll view, so it stays the
+    /// height of the *card* rather than of the sheet the card ended up in.
+    let onMeasure: (CGFloat) -> Void
+
+    /// Same rule as the delivery tick in the stop list — this is that control,
+    /// on a different screen.
+    @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
 
     private var isCustomer: Bool { stop.kind == .customer }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            details
-            actions
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                details
+                actions
+            }
+            // Room for the drag indicator above and the home indicator below:
+            // the sheet is exactly as tall as this view, so the insets have to
+            // come from here rather than from spare height.
+            .padding(.horizontal)
+            .padding(.top, 22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .safeAreaPadding(.bottom)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onMeasure($0) }
         }
-        // Room for the drag indicator above and the home indicator below: the
-        // sheet is exactly as tall as this view now, so the insets have to come
-        // from here rather than from spare height.
-        .padding(.horizontal)
-        .padding(.top, 22)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .safeAreaPadding(.bottom)
+        // No rubber-banding on the ordinary card, which fits exactly. The
+        // scroll is only ever there for a stop carrying an unusually long note.
+        .scrollBounceBehavior(.basedOnSize)
     }
 
     private var header: some View {
@@ -680,9 +729,9 @@ struct StopPreviewSheet: View {
             if isCustomer {
                 Button(action: onToggleDelivered) {
                     Image(systemName: stop.delivered ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 30))
+                        .font(.system(size: min(30 * textScale, 40)))
                         .foregroundStyle(stop.delivered ? Color.success : Color.secondary)
-                        .frame(width: 44, height: 44)
+                        .frame(width: min(44 * textScale, 64), height: min(44 * textScale, 64))
                         .contentShape(.rect)
                 }
                 .buttonStyle(.borderless)
@@ -714,15 +763,22 @@ struct StopPreviewSheet: View {
         }
     }
 
+    /// Both buttons share the width evenly. Sized to their own titles they sat
+    /// as a centred pair with a margin either side, which reads as a layout that
+    /// ran out of content rather than as the card's two actions.
     private var actions: some View {
         HStack(spacing: 10) {
-            Button("Navigation", systemImage: "arrow.trianglehead.turn.up.right", action: onNavigate)
-                .buttonStyle(.borderedProminent)
-            Button("In der Liste", systemImage: "list.bullet", action: onShowInList)
-                .buttonStyle(.bordered)
+            Button(action: onNavigate) {
+                WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
+                    .onBrandLabel()
+            }
+            .buttonStyle(.borderedProminent)
+            Button(action: onShowInList) {
+                WideButtonLabel("In der Liste", systemImage: "list.bullet")
+            }
+            .buttonStyle(.bordered)
         }
         .controlSize(.large)
-        .frame(maxWidth: .infinity)
     }
 
     private var hasDetails: Bool {
@@ -734,17 +790,16 @@ extension MKCoordinateRegion {
     /// The smallest region containing every point, with a little padding so
     /// pins are not flush against the edge of the screen.
     init?(fitting coordinates: [CLLocationCoordinate2D]) {
-        let valid = coordinates.filter {
-            $0.latitude.isFinite && $0.longitude.isFinite
-        }
-        guard let first = valid.first else { return nil }
-
-        var minLat = first.latitude, maxLat = first.latitude
-        var minLon = first.longitude, maxLon = first.longitude
-        for c in valid {
+        // One pass, skipping the unusable points in place. Filtering first
+        // copied the whole driven line — several thousand points on a Vienna
+        // tour — to throw the copy away a moment later.
+        var minLat = Double.infinity, maxLat = -Double.infinity
+        var minLon = Double.infinity, maxLon = -Double.infinity
+        for c in coordinates where c.latitude.isFinite && c.longitude.isFinite {
             minLat = min(minLat, c.latitude); maxLat = max(maxLat, c.latitude)
             minLon = min(minLon, c.longitude); maxLon = max(maxLon, c.longitude)
         }
+        guard minLat <= maxLat else { return nil }
 
         self.init(
             center: CLLocationCoordinate2D(

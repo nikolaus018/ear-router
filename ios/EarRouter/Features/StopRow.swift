@@ -17,6 +17,23 @@ struct StopRow: View {
     /// fixed 26pt circle clipped the number it exists to show.
     @ScaledMetric(relativeTo: .footnote) private var badgeSize: CGFloat = 26
 
+    /// How far the body text has been scaled up, as a plain multiplier.
+    ///
+    /// The two controls on the right are the app's most-used targets — thirty
+    /// times a tour, one-handed, in the rain — and they were the only thing in
+    /// the row that did not grow with the text. Beside 28pt type a 46pt circle
+    /// reads as a decoration rather than a button, and a driver who has turned
+    /// the text up is usually the same driver who needs the bigger target.
+    ///
+    /// Clamped, because the scale runs to about 3.1× at the largest setting and
+    /// a 140pt control would leave the address nothing to wrap into. The cap is
+    /// what keeps this a bigger button rather than a different layout.
+    @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
+
+    private func scaled(_ base: CGFloat, max cap: CGFloat) -> CGFloat {
+        min(base * textScale, cap)
+    }
+
     let stop: Stop
     let isNext: Bool
     /// How many customers share this front door, this one included.
@@ -163,13 +180,15 @@ struct StopRow: View {
 
     @ViewBuilder
     private var trailingControls: some View {
+        let target = scaled(46, max: 64)
+
         VStack(spacing: 4) {
             if let onToggleDelivered {
                 Button(action: onToggleDelivered) {
                     Image(systemName: stop.delivered ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 27, weight: .regular))
+                        .font(.system(size: scaled(27, max: 38), weight: .regular))
                         .foregroundStyle(stop.delivered ? Color.success : Color.secondary)
-                        .frame(width: 46, height: 46)
+                        .frame(width: target, height: target)
                         .contentShape(.rect)
                 }
                 // `.borderless` is what makes several buttons in one List row
@@ -188,11 +207,11 @@ struct StopRow: View {
                     // next to the delivered tick, and a list where everything
                     // shouts tells the driver nothing about what matters.
                     Image(systemName: "arrow.trianglehead.turn.up.right")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: scaled(16, max: 22), weight: .semibold))
                         .foregroundStyle(Color.brand)
-                        .frame(width: 38, height: 38)
+                        .frame(width: scaled(38, max: 53), height: scaled(38, max: 53))
                         .background(Circle().fill(Color.brand.opacity(0.14)))
-                        .frame(width: 46, height: 46)
+                        .frame(width: target, height: target)
                         .contentShape(.rect)
                 }
                 .buttonStyle(.borderless)

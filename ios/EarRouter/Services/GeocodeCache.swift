@@ -35,6 +35,13 @@ actor GeocodeCache {
     /// blacklisted for good.
     private static let missTTL: TimeInterval = 6 * 60 * 60
 
+    /// An upper bound on the table, because nothing else is one: every address
+    /// a driver ever enters is remembered forever, the whole file is read into
+    /// memory on first use, and the whole of it is rewritten on every save.
+    /// Well past a career's worth of distinct Viennese doors — this exists so
+    /// the file has a ceiling at all, not to make anybody's cache miss.
+    private static let maxHits = 5_000
+
     /// Bumped whenever the resolver itself learns to place an address better
     /// than a cached answer did. Exact rows never expire on their own —
     /// correctly — but when the *resolver* improves, every one of them is a
@@ -77,8 +84,22 @@ actor GeocodeCache {
         // A successful resolution retires any standing "does not exist"
         // verdict for the same address.
         misses.removeValue(forKey: key)
+        if hits.count > Self.maxHits { evictOldest() }
         dirty = true
         scheduleSave()
+    }
+
+    /// Drops the least recently *written* quarter of the table when it grows
+    /// past its ceiling. A quarter at a time rather than one row at a time, so
+    /// the sort this costs is paid once every thousand-odd new addresses
+    /// instead of on every single one past the limit.
+    private func evictOldest() {
+        let keep = Self.maxHits - Self.maxHits / 4
+        let survivors = hits
+            .sorted { $0.value.cachedAt > $1.value.cachedAt }
+            .prefix(keep)
+        hits = Dictionary(uniqueKeysWithValues: survivors.map { ($0.key, $0.value) })
+        log.info("geocode cache trimmed to \(self.hits.count) entries")
     }
 
     /// True when this exact query was recently confirmed unresolvable. Only

@@ -52,7 +52,7 @@ final class Store {
 
     init() {
         do {
-            container = try ModelContainer(for: Route.self, Stop.self)
+            container = try AppSchema.container()
             return
         } catch {
             log.error("store did not open: \(error.localizedDescription)")
@@ -60,7 +60,7 @@ final class Store {
 
         do {
             try Self.parkExistingStore()
-            container = try ModelContainer(for: Route.self, Stop.self)
+            container = try AppSchema.container()
             log.warning("opened a fresh store; the previous one was moved aside")
         } catch {
             log.fault("store recovery failed: \(error.localizedDescription)")
@@ -94,8 +94,10 @@ struct StoreFailureView: View {
                     + "die App neu installierst."
                     + (error.map { "\n\n\($0)" } ?? ""))
         } actions: {
-            Link("Entwickler kontaktieren", destination: URL(string: "mailto:nikolaus.marek@outlook.com")!)
-                .buttonStyle(.borderedProminent)
+            Link(destination: URL(string: "mailto:nikolaus.marek@outlook.com")!) {
+                Text("Entwickler kontaktieren").onBrandLabel()
+            }
+            .buttonStyle(.borderedProminent)
         }
     }
 }

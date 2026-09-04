@@ -46,10 +46,6 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
     /// available and silently does nothing.
     var isDenied: Bool { status == .denied || status == .restricted }
 
-    var isAuthorized: Bool {
-        status == .authorizedWhenInUse || status == .authorizedAlways
-    }
-
     /// Opens this app's page in Settings, which is the only place a denied
     /// permission can be given back.
     func openSettings() {

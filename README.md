@@ -19,7 +19,7 @@ third-party dependencies.
 
 | | |
 |---|---|
-| `Model/` | `Route` and `Stop` — the whole persistent store |
+| `Model/` | `Route` and `Stop` — the whole persistent store — plus its versioned schema |
 | `Services/AddressText` | Address normalisation, Stiege/Parzelle sub-addresses, match keys |
 | `Services/Geocoder` | Wien OGD → Nominatim cascade, throttled, with wrong-district detection |
 | `Services/GeocodeCache` | Resolved addresses, and the addresses known not to exist |

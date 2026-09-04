@@ -16,6 +16,9 @@ struct HistoryTab: View {
     /// "Als erledigt markieren" menu item does deliberately.
     @Query private var allRoutes: [Route]
 
+    @State private var pendingDeletion = PendingRouteDeletion()
+    @State private var error: AppError?
+
     var body: some View {
         Group {
             if routes.isEmpty {
@@ -31,9 +34,7 @@ struct HistoryTab: View {
                                 completedDate: route.completedAt ?? route.createdAt)
                         }
                     }
-                    .onDelete { offsets in
-                        for i in offsets { try? RouteStore.delete(routes[i], in: context) }
-                    }
+                    .onDelete { pendingDeletion.stage($0, in: routes) }
                 }
             }
         }
@@ -45,5 +46,7 @@ struct HistoryTab: View {
                 ContentUnavailableView("Tour nicht gefunden", systemImage: "questionmark.folder")
             }
         }
+        .errorAlert($error)
+        .confirmRouteDeletion($pendingDeletion, in: context, error: $error)
     }
 }

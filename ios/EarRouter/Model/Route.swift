@@ -1,6 +1,5 @@
 import Foundation
 import SwiftData
-import CoreLocation
 
 enum RouteStatus: String, Codable, Sendable {
     case active
@@ -54,20 +53,32 @@ extension Route {
     /// Stops in the order they are shown, which is not necessarily the order
     /// they are driven in — see `RouteOptimizer.displayOrder`.
     var orderedStops: [Stop] {
-        stops.sorted { $0.orderIndex < $1.orderIndex }
+        stops.sorted(by: Stop.displayBefore)
     }
 
     var customerStops: [Stop] {
         orderedStops.filter { $0.kind == .customer }
     }
 
+    /// Counted straight off `stops` rather than through `customerStops`: the
+    /// answer is a number, and a number does not care what order it was
+    /// arrived at. Going through the ordered list sorted the whole route for
+    /// nothing — and these are read from list rows, several times each.
+    var customerCount: Int {
+        stops.count { $0.kind == .customer }
+    }
+
     var deliveredCount: Int {
-        customerStops.count { $0.delivered }
+        stops.count { $0.kind == .customer && $0.delivered }
     }
 
     var isComplete: Bool {
-        let customers = customerStops
-        return !customers.isEmpty && customers.allSatisfy(\.delivered)
+        var seen = false
+        for s in stops where s.kind == .customer {
+            if !s.delivered { return false }
+            seen = true
+        }
+        return seen
     }
 
     /// The next stop the driver has not yet ticked off.
@@ -75,19 +86,14 @@ extension Route {
         orderedStops.first { $0.kind == .customer && !$0.delivered }
     }
 
-    var geometry: [CLLocationCoordinate2D] {
-        guard geometryFlat.count >= 4 else { return [] }
-        return stride(from: 0, to: geometryFlat.count - 1, by: 2).map {
-            CLLocationCoordinate2D(
-                latitude: geometryFlat[$0], longitude: geometryFlat[$0 + 1])
-        }
-    }
-
-    /// Total distance and time over the legs that are actually driven.
+    /// Total distance and time over the legs that are actually driven. One
+    /// pass — the three it used to take each allocated an intermediate array.
     var totals: (km: Double, minutes: Double) {
-        let driven = stops.filter { !$0.excluded }
-        let km = driven.compactMap(\.nextLegKm).reduce(0, +)
-        let min = driven.compactMap(\.nextLegMin).reduce(0, +)
-        return (km, min)
+        var km = 0.0, minutes = 0.0
+        for s in stops where !s.excluded {
+            km += s.nextLegKm ?? 0
+            minutes += s.nextLegMin ?? 0
+        }
+        return (km, minutes)
     }
 }

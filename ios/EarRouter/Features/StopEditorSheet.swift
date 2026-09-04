@@ -33,6 +33,7 @@ struct StopEditorSheet: View {
     @State private var saving = false
     @State private var confirmingDelete = false
     @State private var error: AppError?
+    @State private var loaded = false
 
     @FocusState private var focusedField: Field?
 
@@ -196,7 +197,15 @@ struct StopEditorSheet: View {
                 // one tap moves it there and the driver can save again.
                 plz = correctedPlz
             }
-            .onAppear(perform: load)
+            // Loaded once. `onAppear` can fire again when a sheet presented
+            // over this one goes away — and the sheet presented over this one is
+            // the pin-drop map, so re-running this would throw away everything
+            // the driver had typed before they went to place the pin.
+            .task {
+                guard !loaded else { return }
+                loaded = true
+                load()
+            }
         }
     }
 

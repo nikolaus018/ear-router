@@ -23,9 +23,8 @@ extension Color {
     ///
     /// Not simply white. The dark-mode brand above is a light, high-luminance
     /// pink, and white on it measures about 3:1 — below what small text needs.
-    /// So the label flips to near-black there, which is exactly what a
-    /// `.borderedProminent` button does when its tint is bright, and what makes
-    /// a 13pt bold digit on a coloured circle actually readable in the dark.
+    /// So the label flips to near-black there, which is what makes a 13pt bold
+    /// digit on a coloured circle actually readable in the dark.
     static let onBrand = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark
             ? UIColor(white: 0.07, alpha: 1)
@@ -71,13 +70,33 @@ extension Color {
     })
 }
 
+extension View {
+    /// The label of a filled brand-red button.
+    ///
+    /// `.borderedProminent` chooses its own label colour, and against the
+    /// dark-mode brand — a light, high-luminance pink — it chooses white, which
+    /// measures about 3:1. That is below what any text needs, and these buttons
+    /// are the app's primary action every single time one appears: "Navigation",
+    /// "Tour abschließen", "Neue Tour". `Color.onBrand` is the near-black that
+    /// actually reads on that fill, and stays white in light mode, where white
+    /// is the right answer.
+    func onBrandLabel() -> some View {
+        foregroundStyle(Color.onBrand)
+    }
+}
+
 enum Format {
+    /// Built once. Every one of these functions is called from a list row —
+    /// several times per row, once more for its accessibility label — and
+    /// `Locale(identifier:)` is not free enough to pay for on each of them.
+    private static let atLocale = Locale(identifier: "de_AT")
+
     /// "12,4 km" — Austrian decimal comma, one place, which is as precise as a
     /// routed distance is meaningfully accurate.
     static func km(_ value: Double?) -> String? {
         guard let value, value.isFinite else { return nil }
         return value.formatted(
-            .number.precision(.fractionLength(1)).locale(Locale(identifier: "de_AT"))) + " km"
+            .number.precision(.fractionLength(1)).locale(atLocale)) + " km"
     }
 
     /// "1 h 12 min" / "12 min" — minutes only below an hour, because a delivery
@@ -113,13 +132,7 @@ enum Format {
     }
 
     static func date(_ date: Date) -> String {
-        date.formatted(.dateTime.day().month().year().locale(Locale(identifier: "de_AT")))
-    }
-
-    static func dateTime(_ date: Date) -> String {
-        date.formatted(
-            .dateTime.day().month().year().hour().minute()
-                .locale(Locale(identifier: "de_AT")))
+        date.formatted(.dateTime.day().month().year().locale(atLocale))
     }
 }
 

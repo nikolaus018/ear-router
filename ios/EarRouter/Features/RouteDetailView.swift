@@ -41,72 +41,27 @@ struct RouteDetailView: View {
     }
 
     private var list: some View {
-        List {
-            if route.needsOptimize {
-                Section {
-                    OptimizeBanner(busy: busy != nil) { await optimize() }
-                }
-            }
+        // Everything the list needs about the route, derived exactly once.
+        //
+        // Read as computed properties — which is what these were — each of them
+        // re-sorted the route's stops, and `doorGroups` re-ran a whole
+        // union-find over it, *per row*, because the `ForEach` body asked for
+        // them again for every stop it built. On a full tour that is a hundred
+        // sorts and a hundred union-finds for one pass of the list, repeated on
+        // every tick of a delivery. Derived here, it is one of each.
+        let snapshot = RouteSnapshot(route)
+        let visible = visibleStops(in: snapshot)
 
-            if let next = route.nextOpenStop, search.isEmpty {
-                Section("Nächster Stopp") {
-                    StopRow(
-                        stop: next, isNext: true,
-                        sameDoorCount: doorGroups[next.id]?.count ?? 1,
-                        number: customerNumbers[next.id],
-                        onToggleDelivered: { setDelivered(next, true) },
-                        onNavigate: { open(next) })
-                        .contentShape(.rect)
-                        .onTapGesture { editingStop = next }
-                        // Faintly tinted. This row is a *repeat* of one further
-                        // down the list, and without something marking it as
-                        // pinned-to-the-top the same customer appearing twice on
-                        // one screen just looks like a bug.
-                        .listRowBackground(Color.brand.opacity(0.07))
-                }
-            }
-
-            Section {
-                ForEach(visibleStops) { stop in
-                    row(for: stop)
-                }
-            } header: {
-                Text(listHeader)
-            } footer: {
-                if let totals = totalsLine { Text(totals) }
-            }
-
-            // Nothing to deliver yet. A route always has its three fixed
-            // points, so the list is never actually empty — which is exactly
-            // why a freshly created tour needed something saying what to do
-            // next instead of three grey rows and silence.
-            if route.customerStops.isEmpty && search.isEmpty {
-                Section {
-                    EmptyStopsPrompt(
-                        onAdd: { addingStop = true },
-                        onPaste: { showingJSON = true })
-                }
-            }
-
-            // The tour is done. Finishing it is deliberately still the driver's
-            // call (see `RouteStore.setDelivered`), but the call should not be
-            // buried in an overflow menu at the moment it becomes the only
-            // thing left to do.
-            if route.isComplete && route.status == .active && search.isEmpty {
-                Section {
-                    Button {
-                        try? RouteStore.toggleStatus(route, in: context)
-                    } label: {
-                        WideButtonLabel("Tour abschließen", systemImage: "checkmark.seal.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 6, trailing: 20))
-                    .listRowBackground(Color.clear)
-                }
+        return Group {
+            if visible.isEmpty && !search.isEmpty {
+                // Outside the `List`, not an empty section inside it: as a row
+                // it rendered inset under a header counting the nothing it had
+                // found.
+                ContentUnavailableView.search(text: search)
+            } else {
+                stops(snapshot, visible: visible)
             }
         }
-        .listStyle(.insetGrouped)
         // The one place in-flight work is reported. `busy` already carried a
         // sentence describing what was happening; before this it went nowhere,
         // and a bare spinner in the toolbar left the driver guessing whether
@@ -152,7 +107,11 @@ struct RouteDetailView: View {
             TextField("Name", text: $newName)
                 .limited(to: FieldLimits.routeName, text: $newName)
             Button("Abbrechen", role: .cancel) {}
-            Button("Speichern") { try? RouteStore.rename(route, to: newName, in: context) }
+            Button("Speichern") {
+                save("Die Tour konnte nicht umbenannt werden.") {
+                    try RouteStore.rename(route, to: newName, in: context)
+                }
+            }
         }
         .errorAlert($error)
         // An alert only where there is something to report. "Route optimiert"
@@ -168,14 +127,90 @@ struct RouteDetailView: View {
 
     // MARK: - Pieces
 
+    private func stops(_ snapshot: RouteSnapshot, visible: [Stop]) -> some View {
+        List {
+            if route.needsOptimize {
+                Section {
+                    OptimizeBanner(busy: busy != nil) { await optimize() }
+                }
+            }
+
+            if let next = snapshot.nextOpen, search.isEmpty {
+                Section("Nächster Stopp") {
+                    StopRow(
+                        stop: next, isNext: true,
+                        sameDoorCount: snapshot.doorCount(next),
+                        number: snapshot.number(next),
+                        onToggleDelivered: { setDelivered(next, true) },
+                        onNavigate: { open(next) })
+                        .contentShape(.rect)
+                        .onTapGesture { editingStop = next }
+                        // Faintly tinted. This row is a *repeat* of one further
+                        // down the list, and without something marking it as
+                        // pinned-to-the-top the same customer appearing twice on
+                        // one screen just looks like a bug.
+                        .listRowBackground(Color.brand.opacity(0.07))
+                }
+            }
+
+            Section {
+                ForEach(visible) { stop in
+                    row(for: stop, in: snapshot)
+                }
+            } header: {
+                Text(listHeader(snapshot, visible: visible))
+            } footer: {
+                if snapshot.totalKm > 0,
+                   let totals = Format.leg(
+                    km: snapshot.totalKm, minutes: snapshot.totalMinutes) {
+                    Text(totals)
+                }
+            }
+
+            // Nothing to deliver yet. A route always has its three fixed
+            // points, so the list is never actually empty — which is exactly
+            // why a freshly created tour needed something saying what to do
+            // next instead of three grey rows and silence.
+            if snapshot.customerCount == 0 && search.isEmpty {
+                Section {
+                    EmptyStopsPrompt(
+                        onAdd: { addingStop = true },
+                        onPaste: { showingJSON = true })
+                }
+            }
+
+            // The tour is done. Finishing it is deliberately still the driver's
+            // call (see `RouteStore.setDelivered`), but the call should not be
+            // buried in an overflow menu at the moment it becomes the only
+            // thing left to do.
+            if snapshot.isComplete && route.status == .active && search.isEmpty {
+                Section {
+                    Button {
+                        save("Die Tour konnte nicht abgeschlossen werden.") {
+                            try RouteStore.toggleStatus(route, in: context)
+                        }
+                    } label: {
+                        WideButtonLabel("Tour abschließen", systemImage: "checkmark.seal.fill")
+                            .onBrandLabel()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 6, trailing: 20))
+                    .listRowBackground(Color.clear)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
     /// Extracted for the same reason `StopListRow` was: adding one more
     /// modifier inside the `ForEach` pushed the enclosing `List` past what the
     /// type checker will solve in reasonable time.
-    private func row(for stop: Stop) -> some View {
+    private func row(for stop: Stop, in snapshot: RouteSnapshot) -> some View {
         StopListRow(
             stop: stop,
-            sameDoorCount: doorGroups[stop.id]?.count ?? 1,
-            number: customerNumbers[stop.id],
+            sameDoorCount: snapshot.doorCount(stop),
+            number: snapshot.number(stop),
             onTap: { tapped(stop) },
             onToggleDelivered: { setDelivered(stop, !stop.delivered) },
             onDelete: { Task { await delete(stop) } },
@@ -211,13 +246,17 @@ struct RouteDetailView: View {
                     renaming = true
                 }
                 Button("Lieferstatus zurücksetzen", systemImage: "arrow.counterclockwise") {
-                    try? RouteStore.resetDelivered(route, in: context)
+                    save("Der Lieferstatus konnte nicht zurückgesetzt werden.") {
+                        try RouteStore.resetDelivered(route, in: context)
+                    }
                 }
                 Button(
                     route.status == .active ? "Als erledigt markieren" : "Wieder aktivieren",
                     systemImage: route.status == .active ? "checkmark.seal" : "arrow.uturn.backward"
                 ) {
-                    try? RouteStore.toggleStatus(route, in: context)
+                    save("Der Status der Tour konnte nicht geändert werden.") {
+                        try RouteStore.toggleStatus(route, in: context)
+                    }
                 }
             } label: {
                 Label("Mehr", systemImage: "ellipsis.circle")
@@ -232,26 +271,11 @@ struct RouteDetailView: View {
             set: { if !$0 { recheckSummary = nil } })
     }
 
-    /// Which stops share a front door — two households in one Gemeindebau is
-    /// one ring of the bell and two meals carried up, so the list says so.
-    private var doorGroups: [UUID: [UUID]] {
-        SameDoor.groups(for: route.orderedStops)
-    }
-
-    /// Each customer's position in driving order, so the list badge and the
-    /// map pin show the same number.
-    private var customerNumbers: [UUID: Int] {
-        var out: [UUID: Int] = [:]
-        for (i, s) in route.customerStops.enumerated() { out[s.id] = i + 1 }
-        return out
-    }
-
-    private var visibleStops: [Stop] {
-        let all = route.orderedStops
-        guard !search.isEmpty else { return all }
+    private func visibleStops(in snapshot: RouteSnapshot) -> [Stop] {
+        guard !search.isEmpty else { return snapshot.ordered }
         let tokens = search.lowercased()
             .split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-        return all.filter { stop in
+        return snapshot.ordered.filter { stop in
             guard stop.kind == .customer else { return false }
             let haystack = [stop.kunde, stop.strasse, stop.plz]
                 .compactMap { $0 }.joined(separator: " ").lowercased()
@@ -259,20 +283,14 @@ struct RouteDetailView: View {
         }
     }
 
-    private var listHeader: String {
+    private func listHeader(_ snapshot: RouteSnapshot, visible: [Stop]) -> String {
         if !search.isEmpty {
-            return "\(visibleStops.count) von \(route.customerStops.count) Stopps"
+            return "\(visible.count) von \(snapshot.customerCount) Stopps"
         }
         // "0 von 0 geliefert" over a route that has only its three fixed points
         // is a progress report on nothing.
-        if route.customerStops.isEmpty { return "Fixpunkte" }
-        return "\(route.deliveredCount) von \(route.customerStops.count) geliefert"
-    }
-
-    private var totalsLine: String? {
-        let t = route.totals
-        guard t.km > 0 else { return nil }
-        return Format.leg(km: t.km, minutes: t.minutes)
+        if snapshot.customerCount == 0 { return "Fixpunkte" }
+        return "\(snapshot.deliveredCount) von \(snapshot.customerCount) geliefert"
     }
 
     // MARK: - Actions
@@ -288,9 +306,20 @@ struct RouteDetailView: View {
     }
 
     private func setDelivered(_ stop: Stop, _ value: Bool) {
-        do { try RouteStore.setDelivered(stop, value, in: context) } catch {
-            self.error = AppError.message("Konnte den Lieferstatus nicht speichern.")
+        save("Konnte den Lieferstatus nicht speichern.") {
+            try RouteStore.setDelivered(stop, value, in: context)
         }
+    }
+
+    /// Runs a store write and says so when it fails.
+    ///
+    /// These were `try?`. A failed save is rare — it means the store itself is
+    /// in trouble — but "rare" is not "impossible", and swallowing it left the
+    /// driver tapping "Als erledigt markieren" on a tour that stayed open, with
+    /// nothing on screen suggesting why or that anything had gone wrong at all.
+    /// One of these actions already reported itself; now they all do.
+    private func save(_ failure: String, _ write: () throws -> Void) {
+        do { try write() } catch { self.error = AppError.message(failure) }
     }
 
     private func toggleExcluded(_ stop: Stop) async {
@@ -326,7 +355,12 @@ struct RouteDetailView: View {
     private func recheck() async {
         busy = "Adressen werden geprüft …"
         defer { busy = nil }
-        let r = await RouteStore.recheckAddresses(route, in: context)
+        // Each address is a throttled round trip, so this runs for the better
+        // part of a minute on a route with thirty of them. The count is the
+        // difference between a driver waiting and a driver wondering.
+        let r = await RouteStore.recheckAddresses(route, in: context) { done, total in
+            busy = "Adresse \(done + 1) von \(total) wird geprüft …"
+        }
         if r.improved == 0 && r.failed == 0 {
             recheckSummary = "Alle Adressen sind unverändert."
         } else {
@@ -341,6 +375,71 @@ struct RouteDetailView: View {
     private func open(_ stop: Stop) {
         guard let url = NavigationHandoff.url(for: stop) else { return }
         openURL(url)
+    }
+}
+
+/// Everything one pass of the stop list needs to know about a route, computed
+/// in a single walk of its stops.
+///
+/// Exists because each of these answers used to be a computed property on
+/// `Route` or on the view, and every one of them re-sorted the whole stop array
+/// on each read — several times per row, from inside a `ForEach`. The numbers
+/// are identical; the difference is that they are worked out once.
+struct RouteSnapshot {
+    /// The stops in display order — one sort, shared by everything below.
+    let ordered: [Stop]
+    let customerCount: Int
+    let deliveredCount: Int
+    let nextOpen: Stop?
+    let totalKm: Double
+    let totalMinutes: Double
+
+    /// Each customer's position in driving order, so the list badge and the map
+    /// pin show the same number.
+    private let numbers: [UUID: Int]
+    /// How many customers share each stop's front door — two households in one
+    /// Gemeindebau is one ring of the bell and two meals carried up.
+    private let doorCounts: [UUID: Int]
+
+    var isComplete: Bool { customerCount > 0 && deliveredCount == customerCount }
+
+    func number(_ stop: Stop) -> Int? { numbers[stop.id] }
+    func doorCount(_ stop: Stop) -> Int { doorCounts[stop.id] ?? 1 }
+
+    init(_ route: Route) {
+        let ordered = route.orderedStops
+        self.ordered = ordered
+
+        var numbers: [UUID: Int] = [:]
+        var customers = 0
+        var delivered = 0
+        var next: Stop?
+        var km = 0.0
+        var minutes = 0.0
+
+        for stop in ordered {
+            if stop.kind == .customer {
+                customers += 1
+                numbers[stop.id] = customers
+                if stop.delivered {
+                    delivered += 1
+                } else if next == nil {
+                    next = stop
+                }
+            }
+            // Only the legs actually driven count towards the tour's totals.
+            guard !stop.excluded else { continue }
+            km += stop.nextLegKm ?? 0
+            minutes += stop.nextLegMin ?? 0
+        }
+
+        self.customerCount = customers
+        self.deliveredCount = delivered
+        self.nextOpen = next
+        self.numbers = numbers
+        self.totalKm = km
+        self.totalMinutes = minutes
+        self.doorCounts = SameDoor.counts(for: ordered)
     }
 }
 
@@ -364,6 +463,7 @@ struct EmptyStopsPrompt: View {
             VStack(spacing: 8) {
                 Button(action: onAdd) {
                     WideButtonLabel("Stopp hinzufügen", systemImage: "plus")
+                        .onBrandLabel()
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -444,9 +544,11 @@ struct OptimizeBanner: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Neu") { Task { await retry() } }
-                .buttonStyle(.borderedProminent)
-                .disabled(busy)
+            Button { Task { await retry() } } label: {
+                Text("Neu").onBrandLabel()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(busy)
         }
     }
 }

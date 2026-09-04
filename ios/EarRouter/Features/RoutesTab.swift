@@ -19,6 +19,7 @@ struct RoutesTab: View {
     @State private var creating = false
     @State private var newName = ""
     @State private var error: AppError?
+    @State private var pendingDeletion = PendingRouteDeletion()
 
     var body: some View {
         Group {
@@ -30,8 +31,10 @@ struct RoutesTab: View {
                 } description: {
                     Text("Leg eine Tour an und füg die Kundenstopps hinzu.")
                 } actions: {
-                    Button("Neue Tour") { startCreate() }
-                        .buttonStyle(.borderedProminent)
+                    Button { startCreate() } label: {
+                        Text("Neue Tour").onBrandLabel()
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
             } else {
                 List {
@@ -40,7 +43,7 @@ struct RoutesTab: View {
                             RouteSummaryRow(route: route)
                         }
                     }
-                    .onDelete(perform: delete)
+                    .onDelete { pendingDeletion.stage($0, in: routes) }
                 }
             }
         }
@@ -70,6 +73,7 @@ struct RoutesTab: View {
             Text("Start, Lager und Ziel werden automatisch gesetzt.")
         }
         .errorAlert($error)
+        .confirmRouteDeletion($pendingDeletion, in: context, error: $error)
     }
 
     private func startCreate() {
@@ -86,10 +90,66 @@ struct RoutesTab: View {
             self.error = AppError.message("Tour konnte nicht angelegt werden.")
         }
     }
+}
 
-    private func delete(at offsets: IndexSet) {
-        for i in offsets {
-            try? RouteStore.delete(routes[i], in: context)
+/// A swipe-to-delete waiting on the driver to confirm it.
+///
+/// Two problems, one type. A tour carries a day of work — its stops, its notes
+/// and, at midday, which of them have already had their meal — and deleting one
+/// is not undoable anywhere in this app, while deleting a single *stop* already
+/// asks first. And the deletion itself has to be staged by id: `onDelete` hands
+/// over row offsets into a live `@Query`, and saving after the first delete can
+/// refresh that array underneath the loop, so the second offset then names a
+/// different tour, or none at all.
+struct PendingRouteDeletion {
+    private(set) var ids: [UUID] = []
+    private(set) var title = ""
+    private(set) var message = ""
+    var isConfirming = false
+
+    mutating func stage(_ offsets: IndexSet, in routes: [Route]) {
+        let targets = offsets.compactMap { routes.indices.contains($0) ? routes[$0] : nil }
+        guard !targets.isEmpty else { return }
+        ids = targets.map(\.id)
+        if let only = targets.first, targets.count == 1 {
+            title = "Tour löschen?"
+            message =
+                "„\(only.name)“ wird mit \(Format.stops(only.customerCount)) "
+                + "endgültig gelöscht."
+        } else {
+            title = "\(targets.count) Touren löschen?"
+            message = "Die Touren werden mit allen ihren Stopps endgültig gelöscht."
+        }
+        isConfirming = true
+    }
+}
+
+extension View {
+    /// The confirmation itself. Bound to its own flag rather than to the
+    /// presence of the staged deletion, so the title and the message survive
+    /// the dismissal animation instead of blanking out halfway through it.
+    func confirmRouteDeletion(
+        _ pending: Binding<PendingRouteDeletion>, in context: ModelContext,
+        error binding: Binding<AppError?>
+    ) -> some View {
+        confirmationDialog(
+            pending.wrappedValue.title,
+            isPresented: pending.isConfirming,
+            titleVisibility: .visible
+        ) {
+            Button("Löschen", role: .destructive) {
+                do {
+                    try RouteStore.delete(ids: pending.wrappedValue.ids, in: context)
+                } catch {
+                    // Swallowed, a failed delete looked exactly like a delete
+                    // the driver had cancelled: the row simply stayed.
+                    binding.wrappedValue = AppError.message(
+                        "Die Tour konnte nicht gelöscht werden.")
+                }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text(pending.wrappedValue.message)
         }
     }
 }
@@ -105,10 +165,15 @@ struct RouteSummaryRow: View {
     /// Shown instead of the delivery count once the tour is in Verlauf.
     var completedDate: Date?
 
-    private var customerCount: Int { route.customerStops.count }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        // Walked once. Read as computed properties, the subtitle alone counted
+        // the customers twice, summed the tour's legs twice more, and then the
+        // accessibility label below asked for the whole sentence a second time.
+        let customerCount = route.customerCount
+        let delivered = route.deliveredCount
+        let subtitle = subtitle(customers: customerCount, delivered: delivered)
+
+        return VStack(alignment: .leading, spacing: 4) {
             Text(route.name)
                 .font(.headline)
 
@@ -126,7 +191,7 @@ struct RouteSummaryRow: View {
             // the bar was an empty trough promising something the route cannot
             // deliver, and on a finished one it is always full and says nothing.
             if completedDate == nil && customerCount > 0 {
-                ProgressView(value: Double(route.deliveredCount), total: Double(customerCount))
+                ProgressView(value: Double(delivered), total: Double(customerCount))
                     .tint(.success)
             }
         }
@@ -138,14 +203,15 @@ struct RouteSummaryRow: View {
                 : "\(route.name), \(subtitle)")
     }
 
-    private var subtitle: String {
+    private func subtitle(customers: Int, delivered: Int) -> String {
         var parts: [String] = []
         if let completedDate { parts.append(Format.date(completedDate)) }
-        parts.append(Format.stops(customerCount))
-        if completedDate == nil && customerCount > 0 {
-            parts.append("\(route.deliveredCount) geliefert")
+        parts.append(Format.stops(customers))
+        if completedDate == nil && customers > 0 {
+            parts.append("\(delivered) geliefert")
         }
-        if let km = Format.km(route.totals.km), route.totals.km > 0 { parts.append(km) }
+        let km = route.totals.km
+        if km > 0, let formatted = Format.km(km) { parts.append(formatted) }
         return parts.joined(separator: " · ")
     }
 }

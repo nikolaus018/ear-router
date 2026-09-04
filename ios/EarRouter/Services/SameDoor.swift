@@ -25,8 +25,40 @@ enum SameDoor {
     /// itself included. A stop with no neighbours maps to a single-element
     /// group, so callers never have to special-case the common answer.
     static func groups(for stops: [Stop]) -> [UUID: [UUID]] {
+        let (ids, root) = solve(stops)
+        guard !ids.isEmpty else { return [:] }
+
+        var byRoot: [UUID: [UUID]] = [:]
+        for id in ids { byRoot[root[id] ?? id, default: []].append(id) }
+
+        var out: [UUID: [UUID]] = [:]
+        out.reserveCapacity(ids.count)
+        for id in ids { out[id] = byRoot[root[id] ?? id] ?? [id] }
+        return out
+    }
+
+    /// Just how many customers share each stop's door — which is all the stop
+    /// list ever asks. Counted straight off the roots rather than through
+    /// `groups`, so a route's worth of one-element arrays is never built only to
+    /// have `.count` taken off it.
+    static func counts(for stops: [Stop]) -> [UUID: Int] {
+        let (ids, root) = solve(stops)
+        guard !ids.isEmpty else { return [:] }
+
+        var perRoot: [UUID: Int] = [:]
+        for id in ids { perRoot[root[id] ?? id, default: 0] += 1 }
+
+        var out: [UUID: Int] = [:]
+        out.reserveCapacity(ids.count)
+        for id in ids { out[id] = perRoot[root[id] ?? id] ?? 1 }
+        return out
+    }
+
+    /// The union-find itself: the customer ids, and the door each one belongs
+    /// to. Both public answers above are a different reading of this one result.
+    private static func solve(_ stops: [Stop]) -> (ids: [UUID], root: [UUID: UUID]) {
         let customers = stops.filter { $0.kind == .customer }
-        guard !customers.isEmpty else { return [:] }
+        guard !customers.isEmpty else { return ([], [:]) }
 
         // Union-find. A route caps out around a hundred stops so the cost is
         // irrelevant, but the correctness is not: "put each stop in the first
@@ -65,18 +97,19 @@ enum SameDoor {
             }
         }
 
-        var byRoot: [UUID: [UUID]] = [:]
-        for s in customers { byRoot[find(s.id), default: []].append(s.id) }
-
-        var out: [UUID: [UUID]] = [:]
-        for s in customers { out[s.id] = byRoot[find(s.id)] ?? [s.id] }
-        return out
+        var root: [UUID: UUID] = [:]
+        root.reserveCapacity(customers.count)
+        for s in customers { root[s.id] = find(s.id) }
+        return (customers.map(\.id), root)
     }
+
+    private static let pointFormat = "%.\(samePointDecimals)f,%.\(samePointDecimals)f"
+    private static let posix = Locale(identifier: "en_US_POSIX")
 
     private static func pointKey(_ s: Stop) -> String {
         String(
-            format: "%.\(samePointDecimals)f,%.\(samePointDecimals)f",
-            locale: Locale(identifier: "en_US_POSIX"),
+            format: pointFormat,
+            locale: posix,
             s.lat, s.lon)
     }
 }

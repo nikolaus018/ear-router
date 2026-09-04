@@ -88,7 +88,7 @@ struct IDOrderingTests {
     /// in the very last byte still order correctly — the case a naive
     /// early-return chain gets wrong.
     @Test func comparesTheWholeIdIncludingTheLastByte() {
-        var low = [UInt8](repeating: 0, count: 16)
+        let low = [UInt8](repeating: 0, count: 16)
         var high = low
         high[15] = 1
         let a = UUID(uuid: (low[0], low[1], low[2], low[3], low[4], low[5], low[6], low[7],

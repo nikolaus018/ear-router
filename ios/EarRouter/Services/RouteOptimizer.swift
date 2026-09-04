@@ -21,7 +21,7 @@ private let log = Logger(subsystem: "win.ringtwo.EarRouter", category: "optimize
 enum RouteOptimizer {
 
     /// The three fixed points of a tour plus its customers, as value types.
-    private struct Nodes: Sendable {
+    struct Nodes: Sendable {
         var start: FixedStop?
         var via: FixedStop?
         var end: FixedStop?
@@ -34,7 +34,7 @@ enum RouteOptimizer {
         }
     }
 
-    private struct FixedStop: Sendable {
+    struct FixedStop: Sendable {
         let coord: StopCoord
         let excluded: Bool
         var active: StopCoord? { excluded ? nil : coord }
@@ -114,13 +114,11 @@ enum RouteOptimizer {
         // --- read ---
         let (nodes, plannedFrom) = snapshot(route)
 
-        let head = nodes.head
-        let end = nodes.end?.active
+        let plan = Self.plan(nodes)
 
         // `routed` is the driving order and `legs[i]` is the leg from
         // `routed[i]` to `routed[i + 1]`, so `legs.count + 1 == routed.count`
         // holds from here to the write below.
-        var routed = head
         var legs: [(Double, Double)] = []
         var geometry: [[Double]] = []
 
@@ -130,61 +128,28 @@ enum RouteOptimizer {
         // call rather than anything the trip optimizer needs to see. Written
         // as a loop over pairs because the head is 0, 1 or 2 points depending
         // on what this tour skips — with either of them off there is no leg.
-        for pair in zip(head, head.dropFirst()) {
+        for pair in zip(plan.head, plan.head.dropFirst()) {
             let leg = try await OSRMClient.shared.routeLeg(
                 from: (pair.0.lat, pair.0.lon), to: (pair.1.lat, pair.1.lon))
             legs.append((leg.distance, leg.duration))
             append(&geometry, leg.geometry)
         }
 
-        // The optimized section runs from the last fixed head point through
-        // every customer to the destination. That head point is the anchor: it
-        // is already in `routed` and goes into this call only to be routed
-        // *from*, never to be added a second time.
-        let anchor = head.last
-        var tripNodes: [StopCoord] = []
-        if let anchor { tripNodes.append(anchor) }
-        tripNodes.append(contentsOf: nodes.customers)
-        if let end { tripNodes.append(end) }
-
-        if tripNodes.count >= 2 {
-            // OSRM cannot solve a `roundtrip=false` trip with both ends open.
-            // A tour with depot, warehouse *and* destination all switched off
-            // has no fixed point left to anchor to, so the first customer —
-            // first by creation order, i.e. the order they were entered — is
-            // pinned as the start and the tour is left free to end wherever is
-            // cheapest. That is a real choice made on the driver's behalf, but
-            // it is the only one on offer, and "start where the list starts"
-            // is what a hand-entered list already implies.
-            let fixFirst = anchor != nil || end == nil
-            let fixLast = end != nil
-            let coords = tripNodes.map { (lat: $0.lat, lon: $0.lon) }
+        var solvedOrder: [Int]?
+        if plan.needsTrip {
+            let coords = plan.tripNodes.map { (lat: $0.lat, lon: $0.lon) }
             let solved = try await OSRMClient.shared.trip(
-                coords: coords, fixFirst: fixFirst, fixLast: fixLast)
-
-            for idx in solved.order {
-                // The anchor is already the last entry of `routed`.
-                if anchor != nil && idx == 0 { continue }
-                routed.append(tripNodes[idx])
-            }
+                coords: coords, fixFirst: plan.fixFirst, fixLast: plan.fixLast)
+            solvedOrder = solved.order
             legs.append(contentsOf: solved.legs)
             append(&geometry, solved.geometry)
-        } else {
-            // At most one point after the head — nothing to optimize, but it
-            // still belongs in the driving order.
-            routed.append(contentsOf: tripNodes.dropFirst(anchor != nil ? 1 : 0))
         }
+
+        let routed = Self.drivingOrder(plan, solvedOrder: solvedOrder)
 
         // --- write ---
 
-        // Leg distances belong to the driving order; the row they are written
-        // onto is found by stop id, so the display order below can differ from
-        // it without the two ever drifting apart. A stop that is not driven at
-        // all appears in neither map and has its stale legs cleared.
-        var legFor: [UUID: (Double, Double)] = [:]
-        for (pos, node) in routed.enumerated() where pos < legs.count {
-            legFor[node.id] = legs[pos]
-        }
+        let legFor = Self.legIndex(routed: routed, legs: legs)
 
         // Did the route change while this solution was being computed?
         //
@@ -225,12 +190,108 @@ enum RouteOptimizer {
         try context.save()
     }
 
+    // MARK: - The shape of one solve
+
+    /// What this tour asks OSRM, worked out before anything is sent.
+    ///
+    /// Split out from `run` so it can be tested without a network: the three
+    /// fixed points are independently switchable, which means eight shapes of
+    /// tour, and the difference between them is which end OSRM is allowed to
+    /// move. Getting that wrong does not fail — it returns a route that looks
+    /// entirely normal and visits the wrong doors in the wrong order.
+    struct Plan: Equatable {
+        /// The fixed points driven before any customer, in order.
+        let head: [StopCoord]
+        /// The last head point. It is already in the driving order and goes to
+        /// OSRM only to be routed *from*, never to be added a second time.
+        let anchor: StopCoord?
+        /// Everything handed to `/trip`: the anchor, the customers, the end.
+        let tripNodes: [StopCoord]
+        let fixFirst: Bool
+        let fixLast: Bool
+
+        /// Fewer than two points is not an optimization problem.
+        var needsTrip: Bool { tripNodes.count >= 2 }
+    }
+
+    static func plan(_ nodes: Nodes) -> Plan {
+        let head = nodes.head
+        let end = nodes.end?.active
+        let anchor = head.last
+
+        var tripNodes: [StopCoord] = []
+        if let anchor { tripNodes.append(anchor) }
+        tripNodes.append(contentsOf: nodes.customers)
+        if let end { tripNodes.append(end) }
+
+        // OSRM cannot solve a `roundtrip=false` trip with both ends open. A
+        // tour with depot, warehouse *and* destination all switched off has no
+        // fixed point left to anchor to, so the first customer — first by
+        // creation order, i.e. the order they were entered — is pinned as the
+        // start and the tour is left free to end wherever is cheapest. That is
+        // a real choice made on the driver's behalf, but it is the only one on
+        // offer, and "start where the list starts" is what a hand-entered list
+        // already implies.
+        return Plan(
+            head: head,
+            anchor: anchor,
+            tripNodes: tripNodes,
+            fixFirst: anchor != nil || end == nil,
+            fixLast: end != nil)
+    }
+
+    /// Walks OSRM's answer back into the order the van actually drives.
+    ///
+    /// `solvedOrder` is `nil` when there was nothing to optimize, in which case
+    /// whatever single point follows the head still belongs in the order.
+    ///
+    /// The one thing to get right is the anchor: it is the last head point, it
+    /// is already in the driving order, and it is *also* `tripNodes[0]`. Adding
+    /// it again puts the warehouse in the middle of the customer list.
+    static func drivingOrder(_ plan: Plan, solvedOrder: [Int]?) -> [StopCoord] {
+        var routed = plan.head
+        guard let solvedOrder else {
+            routed.append(contentsOf: plan.tripNodes.dropFirst(plan.anchor != nil ? 1 : 0))
+            return routed
+        }
+        for index in solvedOrder {
+            if plan.anchor != nil && index == 0 { continue }
+            // Unreachable: `OSRMClient.visitingOrder` has already refused
+            // anything that is not a permutation of the points we sent. Kept as
+            // a bounds check rather than an index, because the alternative to
+            // skipping one stop here is trapping — and crashing the app in a van
+            // at the second door of the day is worse than a route the driver can
+            // see is wrong.
+            guard plan.tripNodes.indices.contains(index) else { continue }
+            routed.append(plan.tripNodes[index])
+        }
+        return routed
+    }
+
+    /// Which leg belongs to which stop.
+    ///
+    /// Leg distances belong to the *driving* order — `legs[i]` runs from
+    /// `routed[i]` to `routed[i + 1]` — but they are written onto rows found by
+    /// stop id, so the display order can differ from the driving order without
+    /// the two ever drifting apart. The last stop drives no further leg, and a
+    /// stop that is not driven at all never appears here — so both end up with
+    /// their stale distances cleared.
+    static func legIndex(
+        routed: [StopCoord], legs: [(Double, Double)]
+    ) -> [UUID: (Double, Double)] {
+        var out: [UUID: (Double, Double)] = [:]
+        for (position, node) in routed.enumerated() where position < legs.count {
+            out[node.id] = legs[position]
+        }
+        return out
+    }
+
     // MARK: - Helpers
 
     private static func snapshot(_ route: Route) -> (Nodes, Fingerprint) {
         // Ordered by creation so "the first customer" means the one entered
         // first, which is what the no-fixed-points anchor rule relies on.
-        let stops = route.stops.sorted { $0.createdAt < $1.createdAt }
+        let stops = route.stops.sorted(by: Stop.createdBefore)
         var nodes = Nodes()
         for s in stops {
             let coord = s.planningSnapshot
@@ -251,7 +312,7 @@ enum RouteOptimizer {
     private static func fingerprint(_ route: Route) -> Fingerprint {
         Fingerprint(
             entries: route.stops
-                .sorted { $0.createdAt < $1.createdAt }
+                .sorted(by: Stop.createdBefore)
                 .map {
                     Fingerprint.Entry(
                         id: $0.id, lat: $0.lat, lon: $0.lon, excluded: $0.excluded)
@@ -264,7 +325,7 @@ enum RouteOptimizer {
     /// the bottom — rather than flushed to the end, where "Start" would sit
     /// underneath the last customer of the day. Only the customers are placed
     /// by `routed`; that ordering is the whole point of the optimization.
-    private static func displayOrder(_ nodes: Nodes, routed: [StopCoord]) -> [StopCoord] {
+    static func displayOrder(_ nodes: Nodes, routed: [StopCoord]) -> [StopCoord] {
         let customerIDs = Set(nodes.customers.map(\.id))
         var out: [StopCoord] = []
         out.reserveCapacity(routed.count + 3)

@@ -16,20 +16,31 @@ struct JSONEditorSheet: View {
     @FocusState private var editing: Bool
     @State private var result: ImportReport?
     @State private var error: AppError?
+    @State private var loaded = false
+    /// What the import is doing right now, once it reaches the addresses it has
+    /// to look up. `nil` while there is nothing to report.
+    @State private var progress: String?
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                TextEditor(text: $text)
-                    .font(.system(.footnote, design: .monospaced))
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .scrollContentBackground(.hidden)
-                    .padding(.horizontal, 12)
-                    .disabled(busy)
-                    .focused($editing)
-
-            }
+            TextEditor(text: $text)
+                .font(.system(.footnote, design: .monospaced))
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .scrollContentBackground(.hidden)
+                .padding(.horizontal, 12)
+                .disabled(busy)
+                .focused($editing)
+                // The same pill the stop list uses to report work in flight,
+                // for the same reason: this one runs for half a minute.
+                .safeAreaInset(edge: .bottom) {
+                    if let progress {
+                        BusyBanner(text: progress)
+                            .padding(.bottom, 8)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .animation(.snappy, value: progress)
             // Short enough to survive the two glass toolbar buttons either side
             // of it: "Stopps als JSON" truncated to "Stopps als…", which is a
             // title that says nothing.
@@ -73,7 +84,16 @@ struct JSONEditorSheet: View {
                 }
             }
             .errorAlert($error)
-            .onAppear { text = RouteStore.exportJSON(route) }
+            // Loaded once, not on every appearance. `onAppear` fires again when
+            // a sheet presented over this one goes away — and the sheet
+            // presented over this one is the import report, so a partly-failed
+            // import would have thrown away the corrected paste the driver was
+            // standing there to fix.
+            .task {
+                guard !loaded else { return }
+                loaded = true
+                text = RouteStore.exportJSON(route)
+            }
         }
         .interactiveDismissDisabled(busy)
         // A full screen rather than a 260pt panel wedged under the editor and
@@ -92,11 +112,18 @@ struct JSONEditorSheet: View {
 
     private func save() async {
         busy = true
-        defer { busy = false }
+        defer { busy = false; progress = nil }
 
         do {
             let entries = try RouteStore.parseImport(text)
-            let r = try await RouteStore.importJSON(entries, into: route, in: context)
+            // A fresh day's list is thirty addresses at a throttled round trip
+            // each — half a minute behind a spinner that says nothing about how
+            // much of it is left, or whether it is moving at all.
+            let r = try await RouteStore.importJSON(
+                entries, into: route, in: context
+            ) { done, total in
+                progress = "Adresse \(done + 1) von \(total) wird gesucht …"
+            }
             // A clean import has nothing left to say — closing is the answer
             // the driver wants. One with problems reports itself, and the
             // editor stays open behind it so the offending entries can be

@@ -8,6 +8,11 @@ struct LadelisteView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var checked: Set<String> = []
 
+    /// The tick grows with the text, up to a point — the same rule and the same
+    /// numbers as the delivery tick in `StopRow`, because it is the same gesture
+    /// and should not be a different size on this screen.
+    @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
+
     private var items: [PaketItem] { PaketParser.items(for: route) }
 
     var body: some View {
@@ -18,57 +23,18 @@ struct LadelisteView: View {
         let items = items
 
         return NavigationStack {
-            List {
-                Section {
-                    ForEach(items) { item in
-                        Button {
-                            toggle(item)
-                        } label: {
-                            HStack(spacing: 14) {
-                                Text("\(item.qty)")
-                                    .font(.title3.bold().monospacedDigit())
-                                    .foregroundStyle(
-                                        isOn(item) ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.brand))
-                                    .frame(width: 40, alignment: .leading)
-
-                                Text(item.label)
-                                    .font(.body.weight(.medium))
-                                    .strikethrough(isOn(item))
-                                    .foregroundStyle(
-                                        isOn(item) ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
-
-                                Spacer(minLength: 8)
-
-                                Image(
-                                    systemName: isOn(item)
-                                        ? "checkmark.circle.fill" : "circle")
-                                    .font(.system(size: 27))
-                                    .foregroundStyle(isOn(item) ? Color.success : Color.secondary)
-                                    .frame(width: 44, height: 44)
-                            }
-                            .padding(.vertical, 4)
-                            // Without this the `Spacer` is a hole: only the two
-                            // text runs and the circle glyph itself were
-                            // hit-testable, so ticking a line off meant aiming
-                            // at a 22pt target with a gap either side of it.
-                            // The whole row is the button now, which is how
-                            // Reminders behaves and what a driver loading a van
-                            // one-handed actually needs.
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(isOn(item) ? [.isSelected] : [])
-                    }
-                } header: {
-                    Text(progressLabel(items))
-                } footer: {
-                    Text("Tippen zum Abhaken. Die Haken gelten nur für diese Tour.")
-                }
-
+            Group {
                 if items.isEmpty {
+                    // Outside the `List`, not a row inside it. As a row it
+                    // rendered inset between separators, underneath a section
+                    // header reporting "0 von 0 Positionen abgehakt" — a
+                    // progress line about a list that does not exist.
                     ContentUnavailableView(
                         "Keine Pakete", systemImage: "shippingbox",
-                        description: Text("Trag bei den Stopps im Feld „Paket“ ein, was mitkommt."))
+                        description: Text(
+                            "Trag bei den Stopps im Feld „Paket“ ein, was mitkommt."))
+                } else {
+                    list(items)
                 }
             }
             .navigationTitle("Ladeliste")
@@ -87,6 +53,55 @@ struct LadelisteView: View {
             }
             .onAppear(perform: load)
         }
+    }
+
+    private func list(_ items: [PaketItem]) -> some View {
+        List {
+            Section {
+                ForEach(items) { item in
+                    row(item)
+                }
+            } header: {
+                Text(progressLabel(items))
+            } footer: {
+                Text("Tippen zum Abhaken. Die Haken gelten nur für diese Tour.")
+            }
+        }
+    }
+
+    private func row(_ item: PaketItem) -> some View {
+        let on = isOn(item)
+        return Button {
+            toggle(item)
+        } label: {
+            HStack(spacing: 14) {
+                Text("\(item.qty)")
+                    .font(.title3.bold().monospacedDigit())
+                    .foregroundStyle(on ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.brand))
+                    .frame(width: 40, alignment: .leading)
+
+                Text(item.label)
+                    .font(.body.weight(.medium))
+                    .strikethrough(on)
+                    .foregroundStyle(on ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+
+                Spacer(minLength: 8)
+
+                Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: min(27 * textScale, 38)))
+                    .foregroundStyle(on ? Color.success : Color.secondary)
+                    .frame(width: min(44 * textScale, 64), height: min(44 * textScale, 64))
+            }
+            .padding(.vertical, 4)
+            // Without this the `Spacer` is a hole: only the two text runs and
+            // the circle glyph itself were hit-testable, so ticking a line off
+            // meant aiming at a 22pt target with a gap either side of it. The
+            // whole row is the button now, which is how Reminders behaves and
+            // what a driver loading a van one-handed actually needs.
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(on ? [.isSelected] : [])
     }
 
     private func isOn(_ item: PaketItem) -> Bool { checked.contains(item.key) }

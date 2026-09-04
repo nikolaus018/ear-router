@@ -49,7 +49,7 @@ actor OSRMClient {
             + "?overview=full&geometries=geojson"
         let resp: RouteResponse = try await get(path)
         guard resp.code == "Ok" else {
-            throw AppError.message("OSRM route: \(resp.code)")
+            throw Self.failure(code: resp.code)
         }
         guard let route = resp.routes.first else {
             throw AppError.message("OSRM: keine Route gefunden")
@@ -93,45 +93,16 @@ actor OSRMClient {
             + "&roundtrip=false&overview=full&geometries=geojson"
         let resp: TripResponse = try await get(path)
         guard resp.code == "Ok" else {
-            throw AppError.message("OSRM trip: \(resp.code)")
+            throw Self.failure(code: resp.code)
         }
         guard let trip = resp.trips.first else {
             throw AppError.message("OSRM: keine Route gefunden")
         }
-        guard resp.waypoints.count == coords.count else {
-            throw AppError.message("OSRM: unerwartete Antwort (Stopp-Anzahl stimmt nicht)")
-        }
-
-        // `waypoints[i].waypointIndex` is where input point `i` landed in the
-        // optimized visiting order — invert it into "order[position] = input
-        // index" so the caller can walk the trip in visiting order directly.
-        // The result has to be a genuine permutation: a repeated or
-        // out-of-range index would silently produce a route that visits one
-        // stop twice and drops another, which is far worse than refusing to
-        // reorder at all.
-        var order = [Int](repeating: 0, count: coords.count)
-        var seen = [Bool](repeating: false, count: coords.count)
-        for (inputIdx, wp) in resp.waypoints.enumerated() {
-            guard wp.waypointIndex >= 0, wp.waypointIndex < order.count,
-                  !seen[wp.waypointIndex]
-            else {
-                throw AppError.message("OSRM: unerwartete Antwort (ungültige Stopp-Reihenfolge)")
-            }
-            seen[wp.waypointIndex] = true
-            order[wp.waypointIndex] = inputIdx
-        }
-
-        // OSRM is asked to pin these ends, but the caller *relies* on it: the
-        // first visiting position is the node already written into the route's
-        // node list, and the last is the depot the tour has to finish at. A
-        // response that quietly reordered either one would be walked as if it
-        // had not, duplicating one stop and dropping another.
-        if fixFirst && order[0] != 0 {
-            throw AppError.message("OSRM: unerwartete Antwort (Startpunkt wurde verschoben)")
-        }
-        if fixLast && order[order.count - 1] != coords.count - 1 {
-            throw AppError.message("OSRM: unerwartete Antwort (Zielpunkt wurde verschoben)")
-        }
+        // The waypoint count is checked inside `visitingOrder`, along with
+        // everything else about the ordering it hands back.
+        let order = try Self.visitingOrder(
+            waypointIndices: resp.waypoints.map(\.waypointIndex),
+            count: coords.count, fixFirst: fixFirst, fixLast: fixLast)
 
         // A non-roundtrip trip over n waypoints has exactly n-1 legs. Anything
         // else and the caller's `legs[pos - 1]` indexing would silently pair
@@ -144,6 +115,78 @@ actor OSRMClient {
 
         return (order, trip.legs.map { ($0.distance, $0.duration) },
                 Self.toPolyline(trip.geometry))
+    }
+
+    /// Inverts OSRM's waypoint mapping into the visiting order, and refuses
+    /// anything that is not a genuine permutation of the points we sent.
+    ///
+    /// `waypointIndices[i]` is where input point `i` landed in the optimized
+    /// order; the caller wants the other direction — "order[position] = input
+    /// index" — so it can walk the trip in the order it is driven.
+    ///
+    /// The validation is the point. A repeated or out-of-range index produces a
+    /// route that visits one stop twice and drops another, and the pinned ends
+    /// are not a request but a *dependency*: the first visiting position is the
+    /// node already written into the route's list and the last is the depot the
+    /// tour has to finish at, so a response that quietly moved either would be
+    /// walked as if it had not. Every one of those failures yields a route that
+    /// looks completely ordinary on screen — right number of rows, plausible
+    /// distances — while sending the driver to the wrong doors. Refusing to
+    /// reorder at all is enormously better, and that is why this is separated
+    /// out from the request: so it can be tested without one.
+    static func visitingOrder(
+        waypointIndices: [Int], count: Int, fixFirst: Bool, fixLast: Bool
+    ) throws -> [Int] {
+        guard count > 0, waypointIndices.count == count else {
+            throw AppError.message("OSRM: unerwartete Antwort (Stopp-Anzahl stimmt nicht)")
+        }
+
+        var order = [Int](repeating: 0, count: count)
+        var seen = [Bool](repeating: false, count: count)
+        for (inputIndex, position) in waypointIndices.enumerated() {
+            guard position >= 0, position < count, !seen[position] else {
+                throw AppError.message(
+                    "OSRM: unerwartete Antwort (ungültige Stopp-Reihenfolge)")
+            }
+            seen[position] = true
+            order[position] = inputIndex
+        }
+
+        if fixFirst && order[0] != 0 {
+            throw AppError.message("OSRM: unerwartete Antwort (Startpunkt wurde verschoben)")
+        }
+        if fixLast && order[count - 1] != count - 1 {
+            throw AppError.message("OSRM: unerwartete Antwort (Zielpunkt wurde verschoben)")
+        }
+        return order
+    }
+
+    /// Turns an OSRM status code into something a driver can act on.
+    ///
+    /// The codes themselves are protocol words — `NoRoute`, `NoSegment`,
+    /// `InvalidValue` — and they were going straight into the alert, so a tap on
+    /// "Neu optimieren" could answer with "OSRM trip: NoSegment". This app is
+    /// otherwise careful never to do that (see the Nominatim path, which logs
+    /// its networking errors and shows none of them); routing was the one place
+    /// that leaked. The code is still logged, because that is who it is for.
+    private static func failure(code: String) -> AppError {
+        log.error("OSRM refused the request: \(code, privacy: .public)")
+        switch code {
+        case "NoRoute", "NoTrips", "NoSegment":
+            // The likeliest cause by far is a hand-placed pin that ended up
+            // somewhere no vehicle can reach — a courtyard, a field, the far
+            // side of the Danube — so the message points at the pins.
+            return AppError.message(
+                "Für diese Stopps lässt sich keine Fahrtroute berechnen. Meistens liegt "
+                    + "das an einem Pin abseits der Straße — bitte die Stopps auf der Karte "
+                    + "prüfen.")
+        case "TooBig":
+            return AppError.message(
+                "Die Tour hat zu viele Stopps für die Routenoptimierung. Bitte auf mehrere "
+                    + "Touren aufteilen.")
+        default:
+            return AppError.routerUnavailable
+        }
     }
 
     // MARK: - Transport

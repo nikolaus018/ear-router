@@ -55,7 +55,11 @@ enum NavigationHandoff {
 
         func address(_ addr: String) -> URL? {
             var allowed = CharacterSet.urlQueryAllowed
-            allowed.remove(charactersIn: "&=?#")
+            // `+` as well as the obvious separators: it is legal in a query
+            // string and `urlQueryAllowed` therefore leaves it alone, but the
+            // form-encoding convention every maps service decodes with reads it
+            // as a space — so an address carrying one arrives with a hole in it.
+            allowed.remove(charactersIn: "&=?#+")
             guard let q = addr.addingPercentEncoding(withAllowedCharacters: allowed) else {
                 return nil
             }

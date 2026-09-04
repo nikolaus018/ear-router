@@ -28,7 +28,9 @@ actor Geocoder {
     /// Nominatim's usage policy: at most ~1 request/second from one client,
     /// enforced here rather than trusting every call site to remember.
     private static let nominatimMinInterval: TimeInterval = 1.1
-    private var nominatimLast: Date?
+    /// The earliest a *future* call may go out — a reservation, not a record of
+    /// the last one. See `throttleNominatim`.
+    private var nominatimNextSlot = Date.distantPast
 
     private let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
@@ -371,14 +373,36 @@ actor Geocoder {
 
     /// Serializes calls to at most one every `nominatimMinInterval`, holding
     /// callers rather than letting concurrent lookups burst past the policy.
+    ///
+    /// Each caller *claims* its slot before sleeping, and the claim is taken
+    /// with no `await` between the read and the write, so the actor cannot
+    /// interleave another caller into the middle of it. Recording the time of
+    /// the last call instead — which is what this did — left the actor free
+    /// during the sleep, so every caller that arrived while one was waiting
+    /// measured against the same stale timestamp, computed the same delay, and
+    /// woke up to fire simultaneously. A bulk import is exactly the case that
+    /// produces that, and being individually blocked by Nominatim is exactly
+    /// what the policy threatens.
     private func throttleNominatim() async {
-        if let last = nominatimLast {
-            let elapsed = Date().timeIntervalSince(last)
-            if elapsed < Self.nominatimMinInterval {
-                try? await Task.sleep(for: .seconds(Self.nominatimMinInterval - elapsed))
-            }
-        }
-        nominatimLast = Date()
+        let now = Date()
+        let claim = Self.claimSlot(
+            now: now, nextFree: nominatimNextSlot, interval: Self.nominatimMinInterval)
+        nominatimNextSlot = claim.nextFree
+        let wait = claim.fireAt.timeIntervalSince(now)
+        if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+    }
+
+    /// The arithmetic of claiming a slot, separated out so the spacing it
+    /// promises can be checked without waiting a second per assertion.
+    ///
+    /// Every claim takes the first free instant and pushes the mark one
+    /// interval past it, so N callers arriving at once get N slots an interval
+    /// apart rather than N slots at the same moment.
+    static func claimSlot(
+        now: Date, nextFree: Date, interval: TimeInterval
+    ) -> (fireAt: Date, nextFree: Date) {
+        let fireAt = max(now, nextFree)
+        return (fireAt, fireAt.addingTimeInterval(interval))
     }
 
     private func nominatimRawSearch(_ query: String) async throws -> NominatimHit? {

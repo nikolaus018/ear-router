@@ -42,9 +42,18 @@ struct Upstreams: Sendable, Equatable {
 
     /// The parsed form of a typed server address, or `nil` when it is not
     /// something this app can call.
+    ///
+    /// HTTPS only, and that is not a stylistic preference: the app ships no App
+    /// Transport Security exception, so a plain-`http` address is refused by the
+    /// system before the request ever leaves the phone. Accepting one here —
+    /// like accepting `ftp://osrm.example.com`, which "has a scheme and a host"
+    /// used to — would have the settings screen confirm an address as valid and
+    /// then have every routing call fail against it, with nothing on screen
+    /// explaining why.
     static func overrideURL(_ raw: String) -> URL? {
         guard let url = URL(string: raw.trimmed.trimmingSuffix("/")),
-              url.scheme != nil, url.host != nil
+              url.scheme?.lowercased() == "https",
+              let host = url.host, !host.isEmpty
         else { return nil }
         return url
     }

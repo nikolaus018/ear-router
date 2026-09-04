@@ -1,8 +1,5 @@
 import Foundation
 import SwiftData
-import OSLog
-
-private let log = Logger(subsystem: "win.ringtwo.EarRouter", category: "store")
 
 /// One customer stop as it travels through the JSON bulk editor — the same
 /// shape the old backend's `/api/routes/:id/json` accepted, so a list exported
@@ -13,6 +10,35 @@ struct CustomerJSON: Codable, Sendable, Hashable {
     var plz: String
     var paket: String?
     var notiz: String?
+
+    init(kunde: String, strasse: String, plz: String, paket: String?, notiz: String?) {
+        self.kunde = kunde
+        self.strasse = strasse
+        self.plz = plz
+        self.paket = paket
+        self.notiz = notiz
+    }
+
+    /// A missing required key is a *missing field on one entry*, not a
+    /// malformed document.
+    ///
+    /// Decoded strictly — which is what the synthesised initializer does — one
+    /// entry without a `plz` aborted the decode of the whole paste, and the
+    /// driver got "Ungültiges JSON: erwarte eine Liste von Kundenstopps" naming
+    /// nothing, for thirty stops of which twenty-nine were fine. That is the
+    /// same failure `importJSON` already goes out of its way to avoid one layer
+    /// further in, where every entry is validated and reported by name. Missing
+    /// keys become empty strings here so they reach that check and are reported
+    /// the same way. A payload that is genuinely not a list of stops still
+    /// fails outright, because then there is no entry to name.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kunde = try c.decodeIfPresent(String.self, forKey: .kunde) ?? ""
+        strasse = try c.decodeIfPresent(String.self, forKey: .strasse) ?? ""
+        plz = try c.decodeIfPresent(String.self, forKey: .plz) ?? ""
+        paket = try c.decodeIfPresent(String.self, forKey: .paket)
+        notiz = try c.decodeIfPresent(String.self, forKey: .notiz)
+    }
 }
 
 /// What a bulk import did, and what it could not do.
@@ -74,11 +100,18 @@ enum RouteStore {
         return route
     }
 
-    static func defaultRouteName() -> String {
+    /// Built once. This is read from a view body — it is the placeholder in the
+    /// "Neue Tour" field — and a fresh `DateFormatter` per render is one of the
+    /// more expensive things Foundation offers.
+    private static let routeNameFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "de_AT")
         f.dateFormat = "dd.MM.yyyy"
-        return "Tour \(f.string(from: Date()))"
+        return f
+    }()
+
+    static func defaultRouteName() -> String {
+        "Tour \(routeNameFormatter.string(from: Date()))"
     }
 
     static func delete(_ route: Route, in context: ModelContext) throws {
@@ -89,6 +122,21 @@ enum RouteStore {
         // the cascade delete does not reach it. Without this every deleted tour
         // leaves its ticks behind in the app's preferences for good.
         LadelisteState.forget(id)
+    }
+
+    /// Deletes by id rather than by object, because the caller is a list's
+    /// swipe-to-delete: it has row offsets into a live `@Query`, and that array
+    /// is refreshed by the save after the first deletion. Resolving every id up
+    /// front is what keeps a two-row deletion from taking out a third tour.
+    static func delete(ids: [UUID], in context: ModelContext) throws {
+        guard !ids.isEmpty else { return }
+        let wanted = Set(ids)
+        let doomed = try context.fetch(FetchDescriptor<Route>())
+            .filter { wanted.contains($0.id) }
+        guard !doomed.isEmpty else { return }
+        for route in doomed { context.delete(route) }
+        try context.save()
+        for id in wanted { LadelisteState.forget(id) }
     }
 
     static func rename(_ route: Route, to name: String, in context: ModelContext) throws {
@@ -287,15 +335,21 @@ enum RouteStore {
     /// Re-resolves every approximate stop on the route, in case a geocoder has
     /// caught up since. Hand-placed pins are left alone: the driver stood in
     /// front of the building and told us where it is.
+    /// `onProgress` is called with `(done, total)` before each lookup. Every one
+    /// of those is a throttled round trip, so a route with thirty approximate
+    /// addresses takes the better part of a minute — long enough that a bare
+    /// spinner stops reading as "working" and starts reading as "stuck".
     @discardableResult
     static func recheckAddresses(
-        _ route: Route, in context: ModelContext
+        _ route: Route, in context: ModelContext,
+        onProgress: ((Int, Int) -> Void)? = nil
     ) async -> (improved: Int, unchanged: Int, failed: Int) {
         let candidates = route.customerStops.filter { $0.precision != nil && !$0.pinned }
         var improved = 0, unchanged = 0, failed = 0
         var moved = false
 
-        for stop in candidates {
+        for (index, stop) in candidates.enumerated() {
+            onProgress?(index, candidates.count)
             guard let strasse = stop.strasse, let plz = stop.plz else { continue }
             do {
                 let hit = try await Geocoder.shared.geocode(strasse: strasse, plz: plz)
@@ -345,7 +399,10 @@ enum RouteStore {
         return s
     }
 
-    static func parseImport(_ text: String) throws -> [CustomerJSON] {
+    /// `nonisolated` because it is a pure decode. Nothing here touches the
+    /// store, and pinning it to the main actor only means a future caller
+    /// cannot parse a large paste off it.
+    nonisolated static func parseImport(_ text: String) throws -> [CustomerJSON] {
         guard let data = text.data(using: .utf8) else {
             throw AppError.message("Ungültiges JSON: erwarte eine Liste von Kundenstopps.")
         }
@@ -361,8 +418,13 @@ enum RouteStore {
     /// much as possible of what the existing stops carry — above all
     /// `delivered`, which is not in the paste and which a careless
     /// delete-and-reinsert would silently throw away at midday.
+    ///
+    /// `onProgress` is called with `(done, total)` before each address that
+    /// actually has to be looked up — which on a re-paste is none of them, and
+    /// on a fresh day's list is all thirty, at a throttled round trip each.
     static func importJSON(
-        _ entries: [CustomerJSON], into route: Route, in context: ModelContext
+        _ entries: [CustomerJSON], into route: Route, in context: ModelContext,
+        onProgress: ((Int, Int) -> Void)? = nil
     ) async throws -> ImportResult {
         guard entries.count <= maxBulkStops else {
             throw AppError.message(
@@ -476,8 +538,18 @@ enum RouteStore {
         }
 
         // --- apply the cheap matches ---
+        // The address is rewritten too, even though matching on it is what got
+        // us here: the match key collapses "Hauptstr. 5" and "Hauptstraße 5"
+        // onto one door on purpose, so an entry can carry a tidied spelling of
+        // an address the store still holds in its old form. Same door, same
+        // coordinates, nothing to geocode — but the list should read back what
+        // the driver last pasted rather than a spelling they already corrected.
+        // Written only when it actually differs, so an unchanged paste is not
+        // turned into a store full of dirty rows.
         for (entry, stop) in toUpdate {
             stop.kunde = entry.kunde
+            if stop.strasse != entry.strasse { stop.strasse = entry.strasse }
+            if stop.plz != entry.plz { stop.plz = entry.plz }
             stop.paket = entry.paket
             stop.notiz = entry.notiz
             result.updated += 1
@@ -497,7 +569,8 @@ enum RouteStore {
         }
 
         var moved = false
-        for (entry, existingStop) in needsGeocode {
+        for (index, (entry, existingStop)) in needsGeocode.enumerated() {
+            onProgress?(index, needsGeocode.count)
             let hit: GeocodeResult
             do {
                 hit = try await Geocoder.shared.geocode(
@@ -579,7 +652,7 @@ enum RouteStore {
     /// Guards every value that ends up stored, or sent to a shared third-party
     /// service. Nominatim enforces its usage policy per *client*, so a client
     /// that sends it garbage risks the whole app getting blocked.
-    static func validateCustomerFields(
+    nonisolated static func validateCustomerFields(
         kunde: String, strasse: String, paket: String?, notiz: String?
     ) throws {
         try checkLength(kunde, "Kunde", FieldLimits.kunde)
@@ -593,13 +666,15 @@ enum RouteStore {
         if let notiz { try checkNoControlChars(notiz, "Notiz", allowNewlines: true) }
     }
 
-    private static func checkLength(_ value: String, _ field: String, _ max: Int) throws {
+    private nonisolated static func checkLength(
+        _ value: String, _ field: String, _ max: Int
+    ) throws {
         guard value.count <= max else {
             throw AppError.message("\(field) ist zu lang (max. \(max) Zeichen).")
         }
     }
 
-    private static func checkNoControlChars(
+    private nonisolated static func checkNoControlChars(
         _ value: String, _ field: String, allowNewlines: Bool
     ) throws {
         for scalar in value.unicodeScalars {
