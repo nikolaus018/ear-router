@@ -28,6 +28,11 @@ struct JSONEditorSheet: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .scrollContentBackground(.hidden)
+                // Inside the editor's own bounds, so it sits exactly where the
+                // first typed character will.
+                .overlay(alignment: .topLeading) {
+                    if text.isEmpty { placeholder }
+                }
                 .padding(.horizontal, 12)
                 .disabled(busy)
                 .focused($editing)
@@ -92,7 +97,14 @@ struct JSONEditorSheet: View {
             .task {
                 guard !loaded else { return }
                 loaded = true
-                text = RouteStore.exportJSON(route)
+                // A tour with no stops yet opens *empty* rather than on "[]".
+                // Two brackets are not an example of anything — they are what
+                // the driver is trying to work out how to fill — and an empty
+                // editor is what lets the placeholder below say it instead.
+                // "Übernehmen" is disabled on empty text, so nothing is lost:
+                // applying "[]" to a route that has no stops did nothing
+                // anyway.
+                text = route.customerCount == 0 ? "" : RouteStore.exportJSON(route)
             }
         }
         .interactiveDismissDisabled(busy)
@@ -109,6 +121,55 @@ struct JSONEditorSheet: View {
                 .presentationDetents([.medium, .large])
         }
     }
+
+    /// What the editor shows before anything is in it: the shape a day's list
+    /// has to have.
+    ///
+    /// A placeholder rather than prefilled text, for the same reason the "Neue
+    /// Tour" field takes the date as one — prefilled, it would have to be
+    /// deleted before anything could be pasted over it, and an example left in
+    /// by accident is two invented customers imported onto a real tour.
+    ///
+    /// Two entries, not one: the comma between them is the thing people get
+    /// wrong when they write this out by hand, and the second entry carries
+    /// only the three required fields, which says more plainly than a sentence
+    /// could that Paket and Notiz may simply be left out.
+    private var placeholder: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(
+                "Die Tagesliste hier einsetzen — „Kunde“, „Straße“ und „Bezirk“ muss jeder "
+                    + "Eintrag haben, „Paket“ und „Notiz“ sind freiwillig.")
+                .font(.footnote)
+            Text(Self.exampleJSON)
+                .font(.system(.footnote, design: .monospaced))
+        }
+        .foregroundStyle(.tertiary)
+        // The insets `TextEditor` puts around its own text, so the placeholder
+        // sits on the same line the cursor does rather than a few points off it.
+        .padding(.horizontal, 5)
+        .padding(.vertical, 8)
+        // Taps belong to the editor underneath — tapping the example is how
+        // most people will try to start typing.
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+    }
+
+    private static let exampleJSON = """
+        [
+          {
+            "kunde": "Fam. Gruber",
+            "strasse": "Gentzgasse 129/1",
+            "plz": "1180",
+            "paket": "2x Menü",
+            "notiz": "Stiege 1, bitte laut klingeln"
+          },
+          {
+            "kunde": "Hr. Novak",
+            "strasse": "Alser Straße 21",
+            "plz": "1080"
+          }
+        ]
+        """
 
     private func save() async {
         busy = true
