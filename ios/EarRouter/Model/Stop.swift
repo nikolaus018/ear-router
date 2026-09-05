@@ -167,8 +167,19 @@ extension Stop {
     /// A plain, `Sendable` snapshot of everything route planning needs. The
     /// optimizer works on these rather than on the model objects, so no
     /// SwiftData context is ever held across a network call.
+    ///
+    /// Through `coordinate`, not off the stored pair directly. Every other
+    /// consumer of a stop's position already defends against an unusable one —
+    /// the map frames around the fallback, the navigation handoff refuses to
+    /// send it as a point — and planning was the one that did not. A row
+    /// carrying the default `0, 0` went to OSRM as a point in the Gulf of
+    /// Guinea, which does not degrade to a slightly wrong route: OSRM answers
+    /// `NoSegment` for the whole request, so one unusable row left the entire
+    /// tour unroutable, told the driver to go and check their pins, and offered
+    /// a retry that could never succeed.
     var planningSnapshot: StopCoord {
-        StopCoord(id: id, lat: lat, lon: lon)
+        let c = coordinate
+        return StopCoord(id: id, lat: c.latitude, lon: c.longitude)
     }
 
     /// Display order, with the id breaking ties.

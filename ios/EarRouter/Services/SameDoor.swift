@@ -14,6 +14,11 @@ import Foundation
 /// deliberately *not* linked by point: a whole district's worth of them share
 /// one centroid, and grouping those would claim thirty unrelated customers all
 /// live at the same door.
+///
+/// Written to be cheap, because it is not called once. `RouteSnapshot` builds
+/// this on every body evaluation of the stop list — which includes every
+/// keystroke typed into the search field — so a route's worth of doors has to
+/// be worked out well inside a frame.
 enum SameDoor {
 
     /// How precisely two coordinates must agree to count as one door. Five
@@ -28,12 +33,12 @@ enum SameDoor {
         let (ids, root) = solve(stops)
         guard !ids.isEmpty else { return [:] }
 
-        var byRoot: [UUID: [UUID]] = [:]
-        for id in ids { byRoot[root[id] ?? id, default: []].append(id) }
+        var byRoot = [[UUID]](repeating: [], count: ids.count)
+        for (i, id) in ids.enumerated() { byRoot[root[i]].append(id) }
 
         var out: [UUID: [UUID]] = [:]
         out.reserveCapacity(ids.count)
-        for id in ids { out[id] = byRoot[root[id] ?? id] ?? [id] }
+        for (i, id) in ids.enumerated() { out[id] = byRoot[root[i]] }
         return out
     }
 
@@ -45,71 +50,114 @@ enum SameDoor {
         let (ids, root) = solve(stops)
         guard !ids.isEmpty else { return [:] }
 
-        var perRoot: [UUID: Int] = [:]
-        for id in ids { perRoot[root[id] ?? id, default: 0] += 1 }
+        var perRoot = [Int](repeating: 0, count: ids.count)
+        for r in root { perRoot[r] += 1 }
 
         var out: [UUID: Int] = [:]
         out.reserveCapacity(ids.count)
-        for id in ids { out[id] = perRoot[root[id] ?? id] ?? 1 }
+        for (i, id) in ids.enumerated() { out[id] = perRoot[root[i]] }
         return out
     }
 
-    /// The union-find itself: the customer ids, and the door each one belongs
-    /// to. Both public answers above are a different reading of this one result.
-    private static func solve(_ stops: [Stop]) -> (ids: [UUID], root: [UUID: UUID]) {
-        let customers = stops.filter { $0.kind == .customer }
-        guard !customers.isEmpty else { return ([], [:]) }
+    /// The union-find itself: the customer ids in route order, and — as an
+    /// index into that same array — the door each one belongs to. Both public
+    /// answers above are a different reading of this one result.
+    ///
+    /// Over *indices*, not over `UUID`s. The sets being merged are positions in
+    /// one array, so the parent links are an `[Int]` that is walked and
+    /// rewritten in place; keyed by `UUID` they were four dictionaries' worth of
+    /// hashing a 16-byte value to answer what an array subscript answers.
+    private static func solve(_ stops: [Stop]) -> (ids: [UUID], root: [Int]) {
+        var customers: [Stop] = []
+        customers.reserveCapacity(stops.count)
+        for s in stops where s.kind == .customer { customers.append(s) }
+        guard !customers.isEmpty else { return ([], []) }
 
         // Union-find. A route caps out around a hundred stops so the cost is
         // irrelevant, but the correctness is not: "put each stop in the first
         // group it matches" gets the wrong answer when a third stop is the one
         // that reveals two earlier groups are the same door.
-        var parent: [UUID: UUID] = Dictionary(
-            uniqueKeysWithValues: customers.map { ($0.id, $0.id) })
+        var parent = Array(customers.indices)
 
-        func find(_ id: UUID) -> UUID {
-            var root = id
-            while let p = parent[root], p != root { root = p }
+        func find(_ i: Int) -> Int {
+            var root = i
+            while parent[root] != root { root = parent[root] }
             // Path compression, so a long chain is walked once rather than
             // once per lookup.
-            var cur = id
-            while let p = parent[cur], p != root {
+            var cur = i
+            while parent[cur] != root {
+                let next = parent[cur]
                 parent[cur] = root
-                cur = p
+                cur = next
             }
             return root
         }
 
-        func union(_ a: UUID, _ b: UUID) {
+        func union(_ a: Int, _ b: Int) {
             let ra = find(a), rb = find(b)
             if ra != rb { parent[ra] = rb }
         }
 
-        var firstBy: [String: UUID] = [:]
-        func link(_ key: String, _ id: UUID) {
-            if let first = firstBy[key] { union(first, id) } else { firstBy[key] = id }
-        }
+        // One map per kind of link rather than one map with a "a:"/"p:" prefix
+        // interpolated into every key: the prefixes only ever existed to keep
+        // two namespaces out of each other's way, which two dictionaries do for
+        // free and without building a string per stop to do it.
+        var firstByAddress: [AddressDoor: Int] = [:]
+        var firstByPoint: [PointDoor: Int] = [:]
+        firstByAddress.reserveCapacity(customers.count)
+        firstByPoint.reserveCapacity(customers.count)
 
-        for s in customers {
-            link("a:\(AddressText.matchKey(s.strasse ?? ""))|\(s.plz ?? "")", s.id)
-            if s.precision == nil, s.lat.isFinite, s.lon.isFinite {
-                link("p:\(pointKey(s))", s.id)
+        for (i, s) in customers.enumerated() {
+            let address = AddressDoor(
+                street: AddressText.matchKey(s.strasse ?? ""), plz: s.plz ?? "")
+            if let first = firstByAddress[address] {
+                union(first, i)
+            } else {
+                firstByAddress[address] = i
+            }
+
+            if s.precision == nil, let point = PointDoor(lat: s.lat, lon: s.lon) {
+                if let first = firstByPoint[point] {
+                    union(first, i)
+                } else {
+                    firstByPoint[point] = i
+                }
             }
         }
 
-        var root: [UUID: UUID] = [:]
-        root.reserveCapacity(customers.count)
-        for s in customers { root[s.id] = find(s.id) }
+        var root = [Int](repeating: 0, count: customers.count)
+        for i in customers.indices { root[i] = find(i) }
         return (customers.map(\.id), root)
     }
 
-    private static let pointFormat = "%.\(samePointDecimals)f,%.\(samePointDecimals)f"
-    private static let posix = Locale(identifier: "en_US_POSIX")
+    /// One door as the paste-and-re-export pipeline spells it.
+    private struct AddressDoor: Hashable {
+        let street: String
+        let plz: String
+    }
 
-    private static func pointKey(_ s: Stop) -> String {
-        String(
-            format: pointFormat,
-            locale: posix,
-            s.lat, s.lon)
+    /// One door as a position, quantized to about a metre.
+    ///
+    /// A pair of integers rather than a formatted string. This value is only
+    /// ever a dictionary key, and `String(format:)` building it was over half
+    /// the cost of working out a whole route's doors — ~1.9 ms of the 3.3 ms a
+    /// 97-stop tour took, paid again on every redraw of the stop list. It also
+    /// puts `-0.0` and `0.0` in the same bucket, which `"%.5f"` did not.
+    private struct PointDoor: Hashable {
+        let lat: Int64
+        let lon: Int64
+
+        private static let scale = pow(10.0, Double(samePointDecimals))
+
+        /// `nil` for a coordinate outside the Vienna box. A stop there has no
+        /// usable point to share with anything — `Stop.coordinate` already
+        /// replaces it with the city centre everywhere it is drawn or driven to
+        /// — and bounding the value is also what keeps the conversion below
+        /// from trapping on an absurd one.
+        init?(lat: Double, lon: Double) {
+            guard Coordinates.isPlausible(lat: lat, lon: lon) else { return nil }
+            self.lat = Int64((lat * Self.scale).rounded())
+            self.lon = Int64((lon * Self.scale).rounded())
+        }
     }
 }

@@ -77,6 +77,36 @@ struct UnusableCoordinateTests {
         let good = stop(lat: 48.2354, lon: 16.3298)
         #expect(NavigationHandoff.url(for: good)?.absoluteString.contains("48.235400") == true)
     }
+
+    /// Route planning was the last consumer taking the stored pair at face
+    /// value. It is also the one that fails worst: OSRM answers a request
+    /// carrying a point in the Gulf of Guinea with `NoSegment` for the *whole*
+    /// trip, so one unusable row left the entire tour unroutable behind an
+    /// amber banner whose retry could never clear it.
+    @Test func planningNeverSendsAnUnusablePointToTheRouter() {
+        let snapshot = stop(lat: 0, lon: 0).planningSnapshot
+        #expect(snapshot.lat == Coordinates.viennaCenter.lat)
+        #expect(snapshot.lon == Coordinates.viennaCenter.lon)
+        #expect(Coordinates.isPlausible(lat: snapshot.lat, lon: snapshot.lon))
+    }
+
+    @Test func planningKeepsARealPointExactly() {
+        let snapshot = stop(lat: 48.2354, lon: 16.3298).planningSnapshot
+        #expect(snapshot.lat == 48.2354)
+        #expect(snapshot.lon == 16.3298)
+    }
+
+    /// The door grouping quantizes a coordinate into an integer bucket, which
+    /// is only safe on a bounded value — and an out-of-range point is not a
+    /// door anyone shares in any case.
+    @Test func anUnusablePointIsNotADoorToShare() {
+        let a = stop(lat: 0, lon: 0)
+        let b = stop(lat: 0, lon: 0)
+        // Distinct addresses, so nothing but the point could group them.
+        b.strasse = "Anderegasse 9"
+        #expect(SameDoor.counts(for: [a, b])[a.id] == 1)
+        #expect(SameDoor.counts(for: [a, b])[b.id] == 1)
+    }
 }
 
 /// One-line guards that only matter the day someone calls them differently.

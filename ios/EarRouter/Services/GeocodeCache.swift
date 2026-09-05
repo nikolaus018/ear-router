@@ -186,8 +186,14 @@ actor GeocodeCache {
         // anyway, so they only ever sit there. Pruned on load rather than on a
         // timer: this table gains a handful of rows a day, and a cold launch
         // is a more than frequent enough broom.
+        //
+        // And marked dirty when the broom actually swept something, or the
+        // pruning only ever happened in memory: the rows came back off disk on
+        // the next launch, and were dropped again, for the life of the install.
         let cutoff = Date().addingTimeInterval(-Self.missTTL)
-        misses = payload.misses.filter { $0.value > cutoff }
+        let live = payload.misses.filter { $0.value > cutoff }
+        if live.count != payload.misses.count { dirty = true }
+        misses = live
     }
 
     private var saveTask: Task<Void, Never>?
