@@ -189,12 +189,22 @@ struct StopRow: View {
     @ViewBuilder
     private var trailingControls: some View {
         let target = scaled(46, max: 64)
+        // One point size for both circles, and both drawn from the same SF
+        // Symbol family — `circle`, `checkmark.circle.fill` and `circle.fill`
+        // are one shape on Apple's grid, so they come out the same diameter to
+        // the pixel and stay that way at every Dynamic Type size.
+        //
+        // Sized independently they never matched: a symbol at 27pt draws a
+        // circle of about 26, next to a hand-drawn `Circle()` of 38. Two
+        // controls in one column, a third apart in size, read as two unrelated
+        // things rather than as the pair they are.
+        let disc = scaled(30, max: 42)
 
         VStack(spacing: 4) {
             if let onToggleDelivered {
                 Button(action: onToggleDelivered) {
                     Image(systemName: stop.delivered ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: scaled(27, max: 38), weight: .regular))
+                        .font(.system(size: disc, weight: .regular))
                         .foregroundStyle(stop.delivered ? Color.success : Color.secondary)
                         .frame(width: target, height: target)
                         .contentShape(.rect)
@@ -214,11 +224,20 @@ struct StopRow: View {
                     // Filled, it put a second saturated blob on every single row
                     // next to the delivered tick, and a list where everything
                     // shouts tells the driver nothing about what matters.
-                    Image(systemName: "arrow.trianglehead.turn.up.right")
-                        .font(.system(size: scaled(16, max: 22), weight: .semibold))
-                        .foregroundStyle(Color.brand)
-                        .frame(width: scaled(38, max: 53), height: scaled(38, max: 53))
-                        .background(Circle().fill(Color.brand.opacity(0.14)))
+                    //
+                    // The disc is `circle.fill` rather than a `Circle()` shape:
+                    // it is the tick's own symbol, at the tick's own point size,
+                    // which is what makes the two exactly equal instead of
+                    // approximately so. The arrow rides on the same layout box,
+                    // so it stays centred in the disc at every text size.
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: disc, weight: .regular))
+                        .foregroundStyle(Color.brand.opacity(0.14))
+                        .overlay {
+                            Image(systemName: "arrow.trianglehead.turn.up.right")
+                                .font(.system(size: disc * 0.42, weight: .semibold))
+                                .foregroundStyle(Color.brand)
+                        }
                         .frame(width: target, height: target)
                         .contentShape(.rect)
                 }
