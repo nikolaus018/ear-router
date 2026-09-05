@@ -183,7 +183,9 @@ enum RouteStore {
         guard Districts.isValid(plz) else {
             throw AppError.message("Kein gültiger Wiener Bezirk: \(plz)")
         }
-        guard route.customerStops.count < maxBulkStops else {
+        // `customerCount`, not `customerStops.count`: the answer is a number,
+        // and going through the ordered list sorted the whole route to get it.
+        guard route.customerCount < maxBulkStops else {
             throw AppError.message(
                 "Diese Route hat schon \(maxBulkStops) Kundenstopps — das ist das Maximum "
                     + "für die Routenoptimierung.")
@@ -207,7 +209,7 @@ enum RouteStore {
             paket: paket?.trimmed.nilIfEmpty, notiz: notiz?.trimmed.nilIfEmpty,
             lat: lat, lon: lon,
             // Appended at the end until the optimizer places it properly.
-            orderIndex: (route.stops.map(\.orderIndex).max() ?? 0) + 1,
+            orderIndex: nextOrderIndex(in: route),
             precision: precision, pinned: pinned)
         stop.route = route
         context.insert(stop)
@@ -546,13 +548,20 @@ enum RouteStore {
         // the driver last pasted rather than a spelling they already corrected.
         // Written only when it actually differs, so an unchanged paste is not
         // turned into a store full of dirty rows.
+        //
+        // Every field is written only where it actually differs, and the entry
+        // counts as "Aktualisiert" only if at least one of them did. Both for
+        // the same reason: re-pasting this morning's unchanged list is the
+        // normal case, and it used to mark every row in the route dirty and
+        // then report "Aktualisiert: 30" for an import that changed nothing.
         for (entry, stop) in toUpdate {
-            stop.kunde = entry.kunde
-            if stop.strasse != entry.strasse { stop.strasse = entry.strasse }
-            if stop.plz != entry.plz { stop.plz = entry.plz }
-            stop.paket = entry.paket
-            stop.notiz = entry.notiz
-            result.updated += 1
+            var changed = false
+            if stop.kunde != entry.kunde { stop.kunde = entry.kunde; changed = true }
+            if stop.strasse != entry.strasse { stop.strasse = entry.strasse; changed = true }
+            if stop.plz != entry.plz { stop.plz = entry.plz; changed = true }
+            if stop.paket != entry.paket { stop.paket = entry.paket; changed = true }
+            if stop.notiz != entry.notiz { stop.notiz = entry.notiz; changed = true }
+            if changed { result.updated += 1 }
         }
 
         // --- geocode whatever is left ---
@@ -567,6 +576,13 @@ enum RouteStore {
             }
             needsGeocode.append((u.entry, u.existing))
         }
+
+        // Handed out one at a time as stops are inserted. Read off the route
+        // inside the loop — which is what this did — every insert re-scanned
+        // every stop on the route to find the highest index, and relied on
+        // SwiftData having already threaded the new stop onto the inverse
+        // relationship for the next one to see it. A counter needs neither.
+        var nextIndex = nextOrderIndex(in: route)
 
         var moved = false
         for (index, (entry, existingStop)) in needsGeocode.enumerated() {
@@ -603,8 +619,9 @@ enum RouteStore {
                     kind: .customer, kunde: entry.kunde, strasse: entry.strasse,
                     plz: entry.plz, paket: entry.paket, notiz: entry.notiz,
                     lat: hit.lat, lon: hit.lon,
-                    orderIndex: (route.stops.map(\.orderIndex).max() ?? 0) + 1,
+                    orderIndex: nextIndex,
                     precision: precision)
+                nextIndex += 1
                 stop.route = route
                 context.insert(stop)
                 result.inserted += 1
@@ -685,6 +702,21 @@ enum RouteStore {
                 throw AppError.message("\(field) enthält ungültige Steuerzeichen.")
             }
         }
+    }
+
+    // MARK: - Ordering
+
+    /// Where a newly added stop goes: after everything already on the route.
+    ///
+    /// One pass, no intermediate array — this is called once per inserted stop
+    /// during a bulk import of up to 97 of them. The position is provisional in
+    /// any case: the optimizer rewrites every `orderIndex` as soon as it has an
+    /// answer, and until it does the stop belongs at the end of the list rather
+    /// than wherever an unset index would sort it.
+    private static func nextOrderIndex(in route: Route) -> Int {
+        var highest = 0
+        for s in route.stops where s.orderIndex > highest { highest = s.orderIndex }
+        return highest + 1
     }
 
     // MARK: - Matching keys

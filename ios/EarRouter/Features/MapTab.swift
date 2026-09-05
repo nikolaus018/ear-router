@@ -39,6 +39,19 @@ struct MapTab: View {
     @State private var fitToken = 0
     /// Discards the result of a simplification that a newer one has overtaken.
     @State private var lineGeneration = 0
+    /// Where the camera has been asked to go — set when the driver arrives here
+    /// from a stop row's "Auf der Karte zeigen". The camera itself lives in
+    /// `RouteMapCanvas`, so this is a request rather than a position.
+    ///
+    /// It *stands* until it is answered: while it is set, the automatic
+    /// re-frame stays out of the way, because the driven line finishes
+    /// simplifying a moment after this tab opens and would otherwise pull the
+    /// camera straight back off the pin the driver asked to see. Cleared by the
+    /// "Ganze Route zeigen" button and by the map moving to another tour.
+    @State private var pointAt: MapFocusRequest?
+    /// Which route the map is currently built for, so a switch to another one
+    /// can drop a focus request belonging to the old one.
+    @State private var shownRouteID: UUID?
 
     private var route: Route? {
         routes.first { $0.id == focus.currentRouteID } ?? routes.first
@@ -206,9 +219,12 @@ struct MapTab: View {
 
     /// The stop's position among the customers — the number its pin carries, so
     /// the card the pin opens is recognisably about that pin.
+    ///
+    /// Read back off the pin that was tapped rather than recomputed: the
+    /// numbering was worked out once when the pins were built, and asking the
+    /// route again re-sorted every stop on it to arrive at the same answer.
     private func customerNumber(of stop: Stop) -> Int? {
-        guard stop.kind == .customer, let route else { return nil }
-        return route.customerStops.firstIndex { $0.id == stop.id }.map { $0 + 1 }
+        pins.first { $0.id == stop.id }?.monogram.flatMap(Int.init)
     }
 
     private func navigate(to stop: Stop) {
@@ -245,9 +261,24 @@ struct MapTab: View {
             pins: pins,
             style: style,
             selection: $selectedStopID,
-            fitToken: fitToken)
+            fitToken: fitToken,
+            pointAt: $pointAt)
             .onChange(of: shapeKey, initial: true) { rebuildRoute(route) }
             .onChange(of: styleKey) { rebuildPins(for: route) }
+            // Arriving from a stop row in the list. `initial: true` because the
+            // request is usually already standing by the time this tab is built
+            // for the first time — the tap that set it is also what switched
+            // tabs to here.
+            .onChange(of: focus.mapStopID, initial: true) { _, id in
+                guard let id, let stop = route.stops.first(where: { $0.id == id })
+                else { return }
+                // Cleared immediately, so this fires once rather than on every
+                // redraw — and so returning to the map later does not silently
+                // re-aim it at a stop the driver has long since moved on from.
+                focus.mapStopID = nil
+                pointAt = MapFocusRequest(stop: stop, sequence: (pointAt?.sequence ?? 0) + 1)
+                selectedStopID = id
+            }
             // `onChange` only fires if the body was evaluated, and a tab sitting
             // in the background is not guaranteed to be. Rebuilding on appear is
             // what makes a delivery ticked off in the Routen tab reliably show
@@ -301,6 +332,16 @@ struct MapTab: View {
     /// the app for as long as the two took. The map and its pins appear at once
     /// now; the line follows a moment later, with a notice while it does.
     private func rebuildRoute(_ route: Route) {
+        // A focus request belongs to the tour it was made from: showing a
+        // different one is a different question, and gets the whole-route
+        // framing every other route change gets. Only when moving *between*
+        // tours, though — on the very first build there is no previous route,
+        // and a request made from the stop list arrives around the same moment
+        // as this does, so clearing on `nil` would throw away the very request
+        // that opened this tab, depending on which handler happened to run
+        // first.
+        if let shown = shownRouteID, shown != route.id { pointAt = nil }
+        shownRouteID = route.id
         rebuildPins(for: route)
 
         let flat = route.geometryFlat
@@ -499,6 +540,10 @@ private struct RouteMapCanvas: View {
     /// Changes whenever the route's shape has been rebuilt and the view should
     /// frame the whole thing again.
     let fitToken: Int
+    /// One stop to zoom to, or `nil` for the ordinary "show the whole tour"
+    /// behaviour. Cleared from in here when the driver asks for the whole route
+    /// again — that button is how they take the camera back.
+    @Binding var pointAt: MapFocusRequest?
 
     @State private var camera: MapCameraPosition = .automatic
 
@@ -542,13 +587,42 @@ private struct RouteMapCanvas: View {
             MapCompass()
             MapScaleView()
         }
-        .onChange(of: fitToken, initial: true) { fit() }
+        .onChange(of: fitToken, initial: true) {
+            // A stop the driver has just asked to see outranks the automatic
+            // re-frame: the line finishing its simplification a moment later
+            // must not pull the camera back out to the whole tour.
+            if pointAt == nil { fit() }
+        }
+        .onChange(of: pointAt, initial: true) { _, request in
+            guard let request else { return }
+            // Close enough to read the street the door is on, wide enough to
+            // see the stops either side of it.
+            let span = 0.006
+            withAnimation(.easeInOut) {
+                camera = .region(
+                    MKCoordinateRegion(
+                        // Aimed *south* of the pin, which puts the pin in the
+                        // upper part of the map. Arriving here always opens the
+                        // stop's card over the bottom of the screen, and a pin
+                        // centred in the full map rect lands underneath it —
+                        // the driver is then looking at a card describing a
+                        // pin they cannot see.
+                        center: CLLocationCoordinate2D(
+                            latitude: request.coordinate.latitude - span * 0.2,
+                            longitude: request.coordinate.longitude),
+                        span: MKCoordinateSpan(
+                            latitudeDelta: span, longitudeDelta: span)))
+            }
+        }
         // Once the driver has panned off to look at one corner of the tour
         // there was no way back to the whole route short of leaving the tab and
         // coming back. Bottom-trailing, where Apple Maps keeps its own map
         // controls and where a thumb on a phone held in one hand can reach.
         .overlay(alignment: .bottomTrailing) {
-            Button(action: fit) {
+            Button {
+                pointAt = nil
+                fit()
+            } label: {
                 // The `contentShape` is the whole 44pt disc, not just the
                 // glyph: a miss over a map is a pan, so a control here has to
                 // be the size it looks.
@@ -572,6 +646,27 @@ private struct RouteMapCanvas: View {
         let points = line.isEmpty ? pins.map(\.coordinate) : line
         guard let region = MKCoordinateRegion(fitting: points) else { return }
         withAnimation(.easeInOut) { camera = .region(region) }
+    }
+}
+
+/// "Put the camera on this stop." A plain value rather than a coordinate, so
+/// the same stop asked for twice still counts as a change and moves the map
+/// back — the driver panned away in between, and asking again is exactly how
+/// they say so.
+struct MapFocusRequest: Equatable {
+    let latitude: Double
+    let longitude: Double
+    let sequence: Int
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    init(stop: Stop, sequence: Int) {
+        let c = stop.coordinate
+        self.latitude = c.latitude
+        self.longitude = c.longitude
+        self.sequence = sequence
     }
 }
 

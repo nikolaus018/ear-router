@@ -129,8 +129,25 @@ final class RouteFocus {
     /// redraw of the list.
     var revealStopID: UUID?
 
+    /// A stop the map should centre on and select. The same handshake as
+    /// `revealStopID`, in the other direction, and cleared the same way.
+    var mapStopID: UUID?
+
     func focus(_ route: Route) {
         currentRouteID = route.id
+    }
+
+    /// Takes the driver from a row in the stop list to that stop's pin on the
+    /// map — the other half of `reveal(stop:of:)`.
+    ///
+    /// The map could always send you to the list; nothing could send you the
+    /// other way, so "which side of the street is this one on, and what is
+    /// around it" meant switching tabs and then hunting for the right pin among
+    /// thirty identical ones.
+    func showOnMap(stop: Stop, of route: Route) {
+        currentRouteID = route.id
+        mapStopID = stop.id
+        tab = .map
     }
 
     /// Opens the route's stop list and scrolls to one stop — what the map's

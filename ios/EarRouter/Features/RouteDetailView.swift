@@ -12,11 +12,20 @@ struct RouteDetailView: View {
     @State private var addingStop = false
     @State private var showingJSON = false
     @State private var showingLadeliste = false
+    @State private var showingTuercode = false
     @State private var renaming = false
     @State private var newName = ""
     @State private var busy: String?
     @State private var error: AppError?
     @State private var recheckSummary: String?
+    /// A stop swiped (or long-pressed) away, waiting to be confirmed.
+    ///
+    /// Deleting a stop is not undoable and takes its Paket, its Notiz and its
+    /// delivered tick with it. The editor sheet has always asked first; the
+    /// swipe in this list did not, so the one path a driver can trigger by
+    /// accident — a thumb dragging across a row on a phone in a moving van —
+    /// was also the only one that deleted a customer outright.
+    @State private var deletingStop: Stop?
     /// Briefly tinted after arriving from a map pin, so the driver's eye
     /// lands on the row that was tapped rather than on the middle of a list.
     @State private var highlighted: UUID?
@@ -82,7 +91,7 @@ struct RouteDetailView: View {
         .navigationBarTitleDisplayMode(.large)
         .searchable(
             text: $search, placement: .navigationBarDrawer(displayMode: .automatic),
-            prompt: "Kunde, Straße oder Bezirk")
+            prompt: "Kunde, Adresse, Paket oder Notiz")
         .refreshable { await optimize() }
         .toolbar { toolbar }
         .sheet(isPresented: $addingStop) {
@@ -103,6 +112,7 @@ struct RouteDetailView: View {
         .sheet(isPresented: $showingLadeliste) {
             LadelisteView(route: route)
         }
+        .sheet(isPresented: $showingTuercode) { TuercodeSheet() }
         .alert("Tour umbenennen", isPresented: $renaming) {
             TextField("Name", text: $newName)
                 .limited(to: FieldLimits.routeName, text: $newName)
@@ -112,6 +122,25 @@ struct RouteDetailView: View {
                     try RouteStore.rename(route, to: newName, in: context)
                 }
             }
+        }
+        // Bound to the staged stop rather than to a flag, so the sentence the
+        // dialog asks survives the dismissal animation instead of blanking out
+        // halfway through it — the same reason `PendingRouteDeletion` exists.
+        .confirmationDialog(
+            "Stopp löschen?",
+            isPresented: Binding(
+                get: { deletingStop != nil },
+                set: { if !$0 { deletingStop = nil } }),
+            titleVisibility: .visible,
+            presenting: deletingStop
+        ) { stop in
+            Button("Löschen", role: .destructive) {
+                deletingStop = nil
+                Task { await delete(stop) }
+            }
+            Button("Abbrechen", role: .cancel) { deletingStop = nil }
+        } message: { stop in
+            Text("„\(stop.kunde ?? "Dieser Stopp")“ wird aus der Tour entfernt.")
         }
         .errorAlert($error)
         // An alert only where there is something to report. "Route optimiert"
@@ -160,11 +189,7 @@ struct RouteDetailView: View {
             } header: {
                 Text(listHeader(snapshot, visible: visible))
             } footer: {
-                if snapshot.totalKm > 0,
-                   let totals = Format.leg(
-                    km: snapshot.totalKm, minutes: snapshot.totalMinutes) {
-                    Text(totals)
-                }
+                RouteFooter(snapshot: snapshot, searching: !search.isEmpty)
             }
 
             // Nothing to deliver yet. A route always has its three fixed
@@ -201,6 +226,12 @@ struct RouteDetailView: View {
             }
         }
         .listStyle(.insetGrouped)
+        // The moment the last meal is ticked off. Every individual tick already
+        // gives its own impact; this is the one that says the tour is done,
+        // and it is worth feeling through a coat pocket without looking.
+        .sensoryFeedback(.success, trigger: snapshot.isComplete) { was, now in
+            !was && now
+        }
     }
 
     /// Extracted for the same reason `StopListRow` was: adding one more
@@ -213,8 +244,9 @@ struct RouteDetailView: View {
             number: snapshot.number(stop),
             onTap: { tapped(stop) },
             onToggleDelivered: { setDelivered(stop, !stop.delivered) },
-            onDelete: { Task { await delete(stop) } },
-            onNavigate: { open(stop) })
+            onDelete: { deletingStop = stop },
+            onNavigate: { open(stop) },
+            onShowOnMap: { focus.showOnMap(stop: stop, of: route) })
             // The id is the scroll target `reveal` aims at.
             .id(stop.id)
             .listRowBackground(highlighted == stop.id ? Color.brand.opacity(0.12) : nil)
@@ -232,6 +264,11 @@ struct RouteDetailView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("Ladeliste", systemImage: "checklist") { showingLadeliste = true }
+                // Also in Mehr, and it stays there — but this is the screen a
+                // driver is standing on when they read "Türcode ENVV" off a
+                // Notiz at a front door, and getting to the decoder from here
+                // used to mean leaving the tour for another tab.
+                Button("Türcode", systemImage: "key.fill") { showingTuercode = true }
                 Button("Stopps als JSON", systemImage: "curlybraces") { showingJSON = true }
                 Divider()
                 Button("Neu optimieren", systemImage: "arrow.triangle.2.circlepath") {
@@ -277,7 +314,11 @@ struct RouteDetailView: View {
             .split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         return snapshot.ordered.filter { stop in
             guard stop.kind == .customer else { return false }
-            let haystack = [stop.kunde, stop.strasse, stop.plz]
+            // Paket and Notiz are in here as well as the address. They are
+            // where the day's real detail lives — "2x Menü", a door code, "Hund
+            // im Hof" — and a driver who remembers a note but not the name had
+            // no way to find that stop again short of scrolling the whole tour.
+            let haystack = [stop.kunde, stop.strasse, stop.plz, stop.paket, stop.notiz]
                 .compactMap { $0 }.joined(separator: " ").lowercased()
             return tokens.allSatisfy { haystack.contains($0) }
         }
@@ -322,6 +363,22 @@ struct RouteDetailView: View {
         do { try write() } catch { self.error = AppError.message(failure) }
     }
 
+    /// True when this screen already has something in flight.
+    ///
+    /// Guards the two long-running, repeatable jobs — optimizing and
+    /// re-checking addresses — against being started on top of each other. The
+    /// toolbar disables itself while `busy` is set, but pull-to-refresh cannot
+    /// be disabled, so a driver could pull the list to optimize during a
+    /// minute-long address re-check. Neither corrupts anything (the optimizer
+    /// serializes per route), but the two share one banner, and whichever
+    /// finished first cleared it and left the other running invisibly.
+    ///
+    /// Deliberately *not* applied to deleting a stop or switching a fixed point
+    /// out: those are one-shot answers to something the driver just asked for,
+    /// and silently dropping one of those is worse than two overlapping
+    /// banners.
+    private var isBusy: Bool { busy != nil }
+
     private func toggleExcluded(_ stop: Stop) async {
         busy = stop.excluded ? "Wird wieder eingeplant …" : "Wird ausgelassen …"
         defer { busy = nil }
@@ -341,6 +398,7 @@ struct RouteDetailView: View {
     }
 
     private func optimize() async {
+        guard !isBusy else { return }
         busy = "Route wird optimiert …"
         defer { busy = nil }
         do {
@@ -353,6 +411,7 @@ struct RouteDetailView: View {
     }
 
     private func recheck() async {
+        guard !isBusy else { return }
         busy = "Adressen werden geprüft …"
         defer { busy = nil }
         // Each address is a throttled round trip, so this runs for the better
@@ -393,6 +452,18 @@ struct RouteSnapshot {
     let nextOpen: Stop?
     let totalKm: Double
     let totalMinutes: Double
+    /// What is still to drive: every leg from the last stop the driver has
+    /// actually ticked off to the end of the tour.
+    ///
+    /// Not the same number as the total, and the total is not the one a driver
+    /// halfway through a shift is asking for — "27,3 km" stops meaning
+    /// anything the moment the first meal is delivered. A leg belongs to the
+    /// stop it leaves from, so everything before the last delivered stop has
+    /// been driven and everything from it onwards has not. With nothing
+    /// delivered yet this is the whole tour; with everything delivered it is
+    /// the drive back to the depot, which is real and still has to be made.
+    let remainingKm: Double
+    let remainingMinutes: Double
 
     /// Each customer's position in driving order, so the list badge and the map
     /// pin show the same number.
@@ -402,6 +473,9 @@ struct RouteSnapshot {
     private let doorCounts: [UUID: Int]
 
     var isComplete: Bool { customerCount > 0 && deliveredCount == customerCount }
+
+    /// Customers still waiting for their meal.
+    var openCount: Int { customerCount - deliveredCount }
 
     func number(_ stop: Stop) -> Int? { numbers[stop.id] }
     func doorCount(_ stop: Stop) -> Int { doorCounts[stop.id] ?? 1 }
@@ -416,6 +490,13 @@ struct RouteSnapshot {
         var next: Stop?
         var km = 0.0
         var minutes = 0.0
+        // The legs already behind the driver: everything up to, but not
+        // including, the leg leaving the last stop they ticked off. Captured
+        // *before* this stop's own leg is added, and overwritten by each
+        // delivered stop in turn, so the last one to be seen wins — which is
+        // the right answer whether the tour was ticked off in order or not.
+        var drivenKm = 0.0
+        var drivenMinutes = 0.0
 
         for stop in ordered {
             if stop.kind == .customer {
@@ -423,6 +504,8 @@ struct RouteSnapshot {
                 numbers[stop.id] = customers
                 if stop.delivered {
                     delivered += 1
+                    drivenKm = km
+                    drivenMinutes = minutes
                 } else if next == nil {
                     next = stop
                 }
@@ -439,7 +522,60 @@ struct RouteSnapshot {
         self.numbers = numbers
         self.totalKm = km
         self.totalMinutes = minutes
+        // Clamped: a route whose legs were written by two different
+        // optimization runs can hold slightly inconsistent numbers, and a
+        // negative "still to drive" is worse than a zero.
+        self.remainingKm = max(0, km - drivenKm)
+        self.remainingMinutes = max(0, minutes - drivenMinutes)
         self.doorCounts = SameDoor.counts(for: ordered)
+    }
+}
+
+/// The line under the stop list: what is still to drive, and what the whole
+/// tour comes to.
+///
+/// The total on its own was a number for the morning. Once the first meal is
+/// delivered the question stops being "how long is this tour" and becomes "how
+/// much of it is left" — so that is what leads, with the total kept underneath
+/// it for the planning it is still good for. Hidden entirely while the list is
+/// filtered: the search shows a handful of stops out of context, and a distance
+/// covering the ones it is not showing would only be read as belonging to them.
+struct RouteFooter: View {
+    let snapshot: RouteSnapshot
+    let searching: Bool
+
+    var body: some View {
+        if !searching, snapshot.totalKm > 0,
+           let total = Format.leg(km: snapshot.totalKm, minutes: snapshot.totalMinutes) {
+            VStack(alignment: .leading, spacing: 2) {
+                if let remaining = remainingLine {
+                    Text(remaining)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(Color.primary)
+                }
+                Text("Gesamt \(total)")
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// `nil` before the first delivery, when "still to drive" and "the whole
+    /// tour" are the same number written twice.
+    private var remainingLine: String? {
+        guard snapshot.deliveredCount > 0 else { return nil }
+        let distance = Format.leg(
+            km: snapshot.remainingKm, minutes: snapshot.remainingMinutes)
+
+        if snapshot.isComplete {
+            // The last meal is handed over but the van still has to get home,
+            // and that drive is the only thing left on the tour.
+            guard let distance else { return "Alle Stopps geliefert" }
+            return "Alle Stopps geliefert · Rückfahrt \(distance)"
+        }
+
+        let stops = "Noch \(Format.stops(snapshot.openCount))"
+        guard let distance else { return stops }
+        return "\(stops) · \(distance)"
     }
 }
 

@@ -122,6 +122,94 @@ struct RouteSnapshotTests {
         #expect(r.totals.minutes == snap.totalMinutes)
     }
 
+    // MARK: - What is still to drive
+
+    /// Before the first delivery there is nothing behind the driver, so the
+    /// footer's two numbers are the same one — which is exactly why it only
+    /// prints the total until a stop has actually been ticked off.
+    @Test func withNothingDeliveredTheWholeTourIsStillAhead() throws {
+        let r = try route([
+            fixed(.start, km: 20),
+            fixed(.via, km: 5),
+            customer("A", at: 1, km: 2, minutes: 4),
+            customer("B", at: 2, km: 3, minutes: 6),
+            fixed(.end),
+        ])
+        let snap = RouteSnapshot(r)
+        #expect(snap.remainingKm == snap.totalKm)
+        #expect(snap.remainingMinutes == snap.totalMinutes)
+        #expect(snap.openCount == 2)
+    }
+
+    /// A leg belongs to the stop it leaves from, so ticking off the first
+    /// customer means the depot leg, the warehouse leg and that customer's own
+    /// leg into the next one are behind the van — the last of those is not,
+    /// because the driver is standing at the stop it starts from.
+    @Test func deliveringAStopLeavesOnlyTheLegsFromItOnwards() throws {
+        let r = try route([
+            fixed(.start, km: 20),
+            fixed(.via, km: 5),
+            customer("A", at: 1, delivered: true, km: 2, minutes: 4),
+            customer("B", at: 2, km: 3, minutes: 6),
+            fixed(.end),
+        ])
+        let snap = RouteSnapshot(r)
+        #expect(snap.totalKm == 30)
+        // Everything before A's own leg is driven; A → B and B → Ziel are not.
+        #expect(snap.remainingKm == 5)
+        #expect(snap.remainingMinutes == 10)
+        #expect(snap.openCount == 1)
+    }
+
+    /// Ticked off out of order — a customer who was not home, delivered on the
+    /// way back — the answer follows the *last* stop actually ticked, not the
+    /// first one still open.
+    @Test func countsFromTheLastStopTickedOffWhateverOrderThatHappenedIn() throws {
+        let r = try route([
+            fixed(.start, km: 10),
+            customer("A", at: 1, km: 2, minutes: 4),
+            customer("B", at: 2, delivered: true, km: 3, minutes: 6),
+            // The last stop of the tour drives no further leg.
+            customer("C", at: 3),
+        ])
+        let snap = RouteSnapshot(r)
+        #expect(snap.nextOpen?.kunde == "A")
+        // Standing at B: only B → C is left.
+        #expect(snap.remainingKm == 3)
+        #expect(snap.remainingMinutes == 6)
+    }
+
+    /// The last meal is handed over and the van still has to get home. That
+    /// drive is real, it is the only thing left, and reporting zero would have
+    /// the app quietly claim the day is over while the driver is 20 km out.
+    @Test func aFinishedTourStillCarriesTheDriveBack() throws {
+        let r = try route([
+            fixed(.start, km: 20),
+            customer("A", at: 1, delivered: true, km: 2, minutes: 4),
+            customer("B", at: 2, delivered: true, km: 18, minutes: 25),
+            fixed(.end),
+        ])
+        let snap = RouteSnapshot(r)
+        #expect(snap.isComplete)
+        #expect(snap.openCount == 0)
+        #expect(snap.remainingKm == 18)
+        #expect(snap.remainingMinutes == 25)
+    }
+
+    /// A switched-off fixed point is not driven, so it cannot be part of what
+    /// is left either — the same rule the totals already follow.
+    @Test func whatIsLeftLeavesOutExcludedStopsToo() throws {
+        let r = try route([
+            fixed(.start, km: 20),
+            customer("A", at: 1, delivered: true, km: 2, minutes: 4),
+            fixed(.via, excluded: true, km: 15),
+            customer("B", at: 2, km: 3, minutes: 6),
+        ])
+        let snap = RouteSnapshot(r)
+        #expect(snap.totalKm == 25)
+        #expect(snap.remainingKm == 5)
+    }
+
     @Test func agreesWithTheModelOnEveryCount() throws {
         let r = try route([
             fixed(.start), fixed(.via),

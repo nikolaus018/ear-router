@@ -63,11 +63,32 @@ struct ImportMatchingTests {
              entry("Fam. Novak", "Währinger Straße 4")],
             into: route, in: context)
 
-        #expect(result.updated == 2)
+        // Nothing in the paste differs from what is already stored, so nothing
+        // is written and nothing is reported as changed. "Aktualisiert: 2" for
+        // an import that changed nothing is a report about the app's own
+        // plumbing rather than about the tour.
+        #expect(result.updated == 0)
         #expect(result.inserted == 0)
         #expect(result.deleted == 0)
         #expect(a.delivered)
         #expect(!b.delivered)
+    }
+
+    /// The other half of that rule: an entry that really did change is counted,
+    /// once, however many of its fields moved.
+    @Test func anEntryThatActuallyChangedIsCountedOnce() async throws {
+        let a = stop("Fam. Gruber", "Gentzgasse 129", paket: "1 Menü")
+        let b = stop("Fam. Novak", "Währinger Straße 4", lat: 48.232)
+        let (route, context) = try makeRoute([a, b])
+
+        let result = try await RouteStore.importJSON(
+            [entry("Fam. Gruber", "Gentzgasse 129", paket: "2 Menü", notiz: "Hund im Hof"),
+             entry("Fam. Novak", "Währinger Straße 4")],
+            into: route, in: context)
+
+        #expect(result.updated == 1)
+        #expect(a.paket == "2 Menü")
+        #expect(a.notiz == "Hund im Hof")
     }
 
     /// Two households in one Gemeindebau, re-pasted in the other order. Matching

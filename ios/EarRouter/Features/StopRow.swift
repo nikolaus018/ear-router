@@ -8,6 +8,11 @@ import SwiftUI
 /// one-handed, often in the rain: each has to be one tap at a target you can hit
 /// without looking.
 ///
+/// Start, Lager and Ziel carry the navigation button too — the depot, the
+/// warehouse and the end of the shift are three of the drives a tour actually
+/// makes, and reaching them used to mean opening the stop's editor first. They
+/// get no delivered tick: there is nothing to hand over at any of them.
+///
 /// Stacked, not side by side: two 46pt targets on top of each other still come
 /// to less than the height of a row carrying a Paket and a Notiz, and keeping
 /// them in one column leaves the text its full width instead of squeezing a
@@ -57,7 +62,10 @@ struct StopRow: View {
                 details
             }
             Spacer(minLength: 4)
-            if stop.kind == .customer {
+            // A fixed point gets the navigation button but no delivered tick —
+            // there is nothing to hand over at the depot or the warehouse, but
+            // driving to them is the first and the last thing the shift does.
+            if onToggleDelivered != nil || onNavigate != nil {
                 trailingControls
             }
         }
@@ -215,7 +223,7 @@ struct StopRow: View {
                         .contentShape(.rect)
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel("Navigation starten")
+                .accessibilityLabel("Navigation zu \(title) starten")
             }
         }
     }
@@ -267,6 +275,7 @@ struct StopListRow: View {
     let onToggleDelivered: () -> Void
     let onDelete: () -> Void
     let onNavigate: () -> Void
+    let onShowOnMap: () -> Void
 
     private var isCustomer: Bool { stop.kind == .customer }
 
@@ -277,7 +286,7 @@ struct StopListRow: View {
             sameDoorCount: sameDoorCount,
             number: number,
             onToggleDelivered: isCustomer ? onToggleDelivered : nil,
-            onNavigate: isCustomer ? onNavigate : nil)
+            onNavigate: onNavigate)
             // Opens the editor. The trailing buttons are `.borderless`, so they
             // handle their own taps rather than falling through to this.
             .contentShape(.rect)
@@ -305,6 +314,39 @@ struct StopListRow: View {
                     }
                 }
             }
+            .contextMenu { menu }
+    }
+
+    /// Everything you can do with this stop, spelled out.
+    ///
+    /// The row's own controls stay what they are — one tap to tick off, one to
+    /// navigate — because those are the two things done thirty times a tour and
+    /// they must not move. This is for the rest, and it is the only place two of
+    /// them exist at all: seeing a stop on the map (the map could always send
+    /// you to the list, never the other way round), and switching a fixed point
+    /// out of the tour, which until now was a plain tap on the row with nothing
+    /// anywhere saying so.
+    @ViewBuilder
+    private var menu: some View {
+        Button("Navigation starten", systemImage: "arrow.trianglehead.turn.up.right",
+               action: onNavigate)
+        Button("Auf der Karte zeigen", systemImage: "map", action: onShowOnMap)
+
+        if isCustomer {
+            Button(
+                stop.delivered ? "Als offen markieren" : "Als zugestellt markieren",
+                systemImage: stop.delivered ? "arrow.uturn.backward" : "checkmark.circle",
+                action: onToggleDelivered)
+            Divider()
+            Button("Bearbeiten", systemImage: "pencil", action: onTap)
+            Button("Löschen", systemImage: "trash", role: .destructive, action: onDelete)
+        } else {
+            Divider()
+            Button(
+                stop.excluded ? "Wieder einplanen" : "Für diese Tour auslassen",
+                systemImage: stop.excluded ? "arrow.uturn.backward" : "minus.circle",
+                action: onTap)
+        }
     }
 }
 
