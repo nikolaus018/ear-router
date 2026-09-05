@@ -11,16 +11,6 @@ struct RouteDetailView: View {
     @State private var editingStop: Stop?
     @State private var addingStop = false
     @State private var showingJSON = false
-    @State private var showingPhotoImport = false
-    /// A scanned list handed over from the photo import, waiting for the JSON
-    /// editor to open on it.
-    ///
-    /// Staged rather than presented directly, because the two sheets cannot be
-    /// on screen at once: the handover is "close this one, open that one with
-    /// the list in it", and SwiftUI only reliably presents the second once the
-    /// first has actually gone. So the photo sheet dismisses itself and this
-    /// is read in its `onDismiss`.
-    @State private var scannedJSON: String?
     @State private var showingLadeliste = false
     @State private var showingTuercode = false
     @State private var renaming = false
@@ -116,17 +106,8 @@ struct RouteDetailView: View {
                 Task { await delete(stop) }
             }
         }
-        .sheet(isPresented: $showingJSON, onDismiss: { scannedJSON = nil }) {
-            JSONEditorSheet(route: route, initialText: scannedJSON)
-        }
-        .sheet(
-            isPresented: $showingPhotoImport,
-            onDismiss: { if scannedJSON != nil { showingJSON = true } }
-        ) {
-            PhotoImportSheet(route: route) { json in
-                scannedJSON = json
-                showingPhotoImport = false
-            }
+        .sheet(isPresented: $showingJSON) {
+            JSONEditorSheet(route: route)
         }
         .sheet(isPresented: $showingLadeliste) {
             LadelisteView(route: route)
@@ -219,8 +200,7 @@ struct RouteDetailView: View {
                 Section {
                     EmptyStopsPrompt(
                         onAdd: { addingStop = true },
-                        onPaste: { showingJSON = true },
-                        onScan: { showingPhotoImport = true })
+                        onPaste: { showingJSON = true })
                 }
             }
 
@@ -289,17 +269,6 @@ struct RouteDetailView: View {
                 // Notiz at a front door, and getting to the decoder from here
                 // used to mean leaving the tour for another tab.
                 Button("Türcode", systemImage: "key.fill") { showingTuercode = true }
-                Divider()
-                // Above the JSON editor, because it is the same job done the
-                // way a driver actually arrives at it: with the printed tour
-                // list in one hand. The JSON stays underneath it as the way to
-                // fix up what the camera got wrong.
-                // Named to match "Stopps als JSON" underneath it — they are
-                // the same action by two routes, and at this width the longer
-                // phrasing wrapped and hyphenated itself across two lines.
-                Button("Stopps aus Foto", systemImage: "text.viewfinder") {
-                    showingPhotoImport = true
-                }
                 Button("Stopps als JSON", systemImage: "curlybraces") { showingJSON = true }
                 Divider()
                 Button("Neu optimieren", systemImage: "arrow.triangle.2.circlepath") {
@@ -615,40 +584,27 @@ struct RouteFooter: View {
 struct EmptyStopsPrompt: View {
     let onAdd: () -> Void
     let onPaste: () -> Void
-    let onScan: () -> Void
 
     var body: some View {
         VStack(spacing: 14) {
             VStack(spacing: 4) {
                 Text("Noch keine Kundenstopps")
                     .font(.headline)
-                Text(
-                    "Die gedruckte Tagesliste abfotografieren, sie als Liste einsetzen, "
-                        + "oder Stopps einzeln hinzufügen.")
+                Text("Einzeln hinzufügen, oder die ganze Tagesliste auf einmal einsetzen.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
 
             VStack(spacing: 8) {
-                // The prominent one, because it is what a driver holding the
-                // morning's printout is actually here to do. Adding a stop by
-                // hand is the *last* thing that happens to a fresh tour, and it
-                // sat in this slot only because for a while it was the only
-                // thing that could.
-                Button(action: onScan) {
-                    WideButtonLabel("Liste scannen", systemImage: "text.viewfinder")
+                Button(action: onAdd) {
+                    WideButtonLabel("Stopp hinzufügen", systemImage: "plus")
                         .onBrandLabel()
                 }
                 .buttonStyle(.borderedProminent)
 
                 Button(action: onPaste) {
                     WideButtonLabel("Liste einsetzen", systemImage: "curlybraces")
-                }
-                .buttonStyle(.bordered)
-
-                Button(action: onAdd) {
-                    WideButtonLabel("Stopp hinzufügen", systemImage: "plus")
                 }
                 .buttonStyle(.bordered)
             }

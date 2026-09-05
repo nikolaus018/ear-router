@@ -23,7 +23,6 @@ third-party dependencies.
 | `Services/AddressText` | Address normalisation, Stiege/Parzelle sub-addresses, match keys |
 | `Services/Geocoder` | Wien OGD → Nominatim cascade, throttled, with wrong-district detection |
 | `Services/GeocodeCache` | Resolved addresses, and the addresses known not to exist |
-| `Services/ListeOCR` | Reads the printed tour list off a photo of it — rows, columns and all |
 | `Services/OSRMClient` | `/route` and `/trip`, with a public-server fallback |
 | `Services/RouteOptimizer` | Stop ordering and route geometry |
 | `Services/RouteStore` | Every mutation, plus the JSON bulk import |
@@ -37,12 +36,6 @@ third-party dependencies.
 | [Nominatim](https://nominatim.openstreetmap.org) | Fallback geocoder. Rate-limited to 1 req/s in `Geocoder` |
 | `osrm.ringtwo.win` | Routing and stop-order optimisation. Configurable in Mehr; falls back to the public OSRM demo server |
 | Apple MapKit | The map |
-
-OCR runs entirely on the device (Vision `RecognizeDocumentsRequest`); no photo
-leaves the phone. Vision supplies the words and where they sit; `ListeOCR`
-works out the table itself, because a photographed page of this list has its
-rows wrapped over two and three lines with no clear space between them, and
-leans differently at the top of the sheet than at the bottom.
 
 ### Building
 

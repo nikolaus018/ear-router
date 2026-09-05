@@ -131,11 +131,6 @@ enum Format {
         count == 1 ? "1 Stopp" : "\(count) Stopps"
     }
 
-    /// "1 Seite" / "3 Seiten", spelled out for the same reason `stops` is.
-    static func pages(_ count: Int) -> String {
-        count == 1 ? "1 Seite" : "\(count) Seiten"
-    }
-
     static func date(_ date: Date) -> String {
         date.formatted(.dateTime.day().month().year().locale(atLocale))
     }

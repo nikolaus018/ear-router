@@ -260,7 +260,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "EAR Router";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Fotografiert die gedruckte Tagesliste ab, um die Stopps daraus zu übernehmen. Die Aufnahmen bleiben am Gerät.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Zeigt deinen Standort auf der Routenkarte an.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -295,7 +294,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "EAR Router";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Fotografiert die gedruckte Tagesliste ab, um die Stopps daraus zu übernehmen. Die Aufnahmen bleiben am Gerät.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Zeigt deinen Standort auf der Routenkarte an.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
