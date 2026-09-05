@@ -166,12 +166,12 @@ struct RouteSummaryRow: View {
     var completedDate: Date?
 
     var body: some View {
-        // Walked once. Read as computed properties, the subtitle alone counted
-        // the customers twice, summed the tour's legs twice more, and then the
-        // accessibility label below asked for the whole sentence a second time.
-        let customerCount = route.customerCount
-        let delivered = route.deliveredCount
-        let subtitle = subtitle(customers: customerCount, delivered: delivered)
+        // Walked once, for all four numbers. Read as computed properties, the
+        // subtitle alone counted the customers twice and summed the tour's legs
+        // twice more, and then the accessibility label below asked for the
+        // whole sentence a second time.
+        let stats = Stats(route)
+        let subtitle = subtitle(stats)
 
         return VStack(alignment: .leading, spacing: 4) {
             Text(route.name)
@@ -190,8 +190,8 @@ struct RouteSummaryRow: View {
             // Only where there is progress to show. On a tour with no stops yet
             // the bar was an empty trough promising something the route cannot
             // deliver, and on a finished one it is always full and says nothing.
-            if completedDate == nil && customerCount > 0 {
-                ProgressView(value: Double(delivered), total: Double(customerCount))
+            if completedDate == nil && stats.customers > 0 {
+                ProgressView(value: Double(stats.delivered), total: Double(stats.customers))
                     .tint(.success)
             }
         }
@@ -203,16 +203,36 @@ struct RouteSummaryRow: View {
                 : "\(route.name), \(subtitle)")
     }
 
-    private func subtitle(customers: Int, delivered: Int) -> String {
+    private func subtitle(_ stats: Stats) -> String {
         var parts: [String] = []
         if let completedDate { parts.append(Format.date(completedDate)) }
-        parts.append(Format.stops(customers))
-        if completedDate == nil && customers > 0 {
-            parts.append("\(delivered) geliefert")
+        parts.append(Format.stops(stats.customers))
+        if completedDate == nil && stats.customers > 0 {
+            parts.append("\(stats.delivered) geliefert")
         }
-        let km = route.totals.km
-        if km > 0, let formatted = Format.km(km) { parts.append(formatted) }
+        if stats.km > 0, let formatted = Format.km(stats.km) { parts.append(formatted) }
         return parts.joined(separator: " · ")
+    }
+
+    /// Everything the row says about a tour, counted in one pass of its stops.
+    private struct Stats {
+        let customers: Int
+        let delivered: Int
+        let km: Double
+
+        init(_ route: Route) {
+            var customers = 0, delivered = 0, km = 0.0
+            for s in route.stops {
+                if s.kind == .customer {
+                    customers += 1
+                    if s.delivered { delivered += 1 }
+                }
+                if !s.excluded { km += s.nextLegKm ?? 0 }
+            }
+            self.customers = customers
+            self.delivered = delivered
+            self.km = km
+        }
     }
 }
 

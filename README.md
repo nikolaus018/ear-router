@@ -8,8 +8,6 @@ network is needed only to look an address up and to optimise the route.
 
 ```
 ios/            The app. Open ios/EarRouter.xcodeproj in Xcode.
-legacy-web/     The previous Rust + PWA version, kept for reference.
-icon.png        ASBÖ logo, source for the app icon.
 ```
 
 ## The app
@@ -44,10 +42,3 @@ cd ios
 xcodebuild -project EarRouter.xcodeproj -scheme EarRouter \
   -destination 'platform=iOS Simulator,name=iPhone 17' build
 ```
-
-## legacy-web
-
-The Rust (Axum + SQLite) backend and the single-file PWA it served. Superseded
-by `ios/`, which does the same work without a server: the phone calls the
-geocoders and OSRM directly and keeps its own data. Kept because it is the
-reference for how every rule in this app is meant to behave.

@@ -90,7 +90,12 @@ enum NavigationHandoff {
 
     static func url(for stop: Stop) -> URL? {
         let p = provider
-        let isExact = stop.precision == nil && stop.lat.isFinite && stop.lon.isFinite
+        // `isPlausible`, not `isFinite`: an unusable row's stored `0, 0` is
+        // finite, and handing it over as a *point* would navigate the driver
+        // confidently into the Atlantic. Failing the check falls through to the
+        // address, which is the honest answer for a stop we cannot place.
+        let isExact = stop.precision == nil
+            && Coordinates.isPlausible(lat: stop.lat, lon: stop.lon)
         if isExact {
             return p.point(lat: stop.lat, lon: stop.lon)
         }

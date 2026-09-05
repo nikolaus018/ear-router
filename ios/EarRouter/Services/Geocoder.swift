@@ -80,6 +80,12 @@ actor Geocoder {
             throw AppError.notFound(originalQuery)
         }
 
+        // Checked between phases, and checked at all because two of them —
+        // `wienOGDGeocode` and `districtHint` — answer `nil` rather than
+        // throwing when a call fails. A cancelled lookup would otherwise walk
+        // straight past them into the throttled Nominatim calls it was
+        // cancelled to avoid.
+        try Task.checkCancellation()
         if let hit = await wienOGDGeocode(strasse: strasse, plz: plz) {
             await GeocodeCache.shared.store(
                 key, lat: hit.lat, lon: hit.lon,
@@ -91,6 +97,7 @@ actor Geocoder {
         // under. Before spending throttled Nominatim calls — and before ending
         // up at a district-centre pin the driver cannot explain — ask the
         // register the same question without the district.
+        try Task.checkCancellation()
         if let actual = await districtHint(normalized: normalized, plz: plz) {
             log.info("address exists in a different district: \(plz) → \(actual)")
             throw AppError.wrongDistrict(strasse.trimmed, actualPlz: actual)
@@ -104,6 +111,7 @@ actor Geocoder {
         let simplified = AddressText.simplifyHousenumber(normalized)
         let wantedStreet = AddressText.matchKey(AddressText.streetNameOnly(normalized))
 
+        try Task.checkCancellation()
         var result = try await nominatimSearchOne(
             query: "\(simplified), \(plz) Wien, Österreich",
             wantedStreet: wantedStreet, plz: plz)
@@ -121,6 +129,7 @@ actor Geocoder {
         // check this one"), but it lets a route with one bad address save
         // instead of blocking the other 29.
         if result == nil {
+            try Task.checkCancellation()
             result = try await districtCentroid(plz: plz)
         }
 
@@ -218,9 +227,10 @@ actor Geocoder {
         query: String, plz: String, subCheck: SubCheck
     ) async -> GeocodeResult? {
         guard let features = await ogdFetch(query) else { return nil }
-        let ourStreet = AddressText.streetNameOnly(query).lowercased()
+        // `matchKey`, not a lowercased raw string — see `pickFeature`.
+        let ourStreet = AddressText.matchKey(AddressText.streetNameOnly(query))
         guard let best = Self.pickFeature(
-            features, plz: plz, streetLower: ourStreet, requireSub: subCheck.required)
+            features, plz: plz, streetKey: ourStreet, requireSub: subCheck.required)
         else { return nil }
 
         let props = best.properties
@@ -279,14 +289,25 @@ actor Geocoder {
     /// several features for one query, and if the single best-ranked one is in
     /// a neighbouring district, the whole lookup reports "not found" even
     /// though the right address was sitting in the same response.
-    private static func pickFeature(
-        _ features: [OGDFeature], plz: String, streetLower: String, requireSub: String?
+    static func pickFeature(
+        _ features: [OGDFeature], plz: String, streetKey: String, requireSub: String?
     ) -> OGDFeature? {
         features
             .filter { $0.properties.postalCode == plz }
-            .filter {
-                ($0.properties.streetName ?? "").trimmed.lowercased() == streetLower
-            }
+            // Compared through `matchKey`, which is what the other two "is this
+            // the street we asked for?" checks in this file already use — and
+            // what this one has to use as well, because the register is
+            // *tolerant on input and canonical on output*. Ask it for
+            // "Dr. Karl Lueger-Platz 1" — how anyone actually types it — and it
+            // answers with the right building at `Ranking` 0.0 under the name
+            // "Dr.-Karl-Lueger-Platz". A lowercased raw comparison, which is
+            // what this did, then threw that exact answer away over the two
+            // hyphens, fell through to Nominatim, and left the driver with an
+            // "≈ Straße" pin for an address the city had placed precisely.
+            // `matchKey` collapses the punctuation and keeps every letter in
+            // order, so it still tells "Anton-Baumann-Gasse" apart from the
+            // "Anton-Baumann-Park" the register offers for it.
+            .filter { AddressText.matchKey($0.properties.streetName ?? "") == streetKey }
             // A sub-address query only counts if the register came back with
             // *that* sub-address. Asked for one it has never heard of, the
             // service answers with a neighbour at a near-zero `Ranking` —
@@ -335,6 +356,14 @@ actor Geocoder {
             // checked before handing an empty string to the JSON parser.
             guard !data.isEmpty else { return nil }
             return try JSONDecoder().decode(OGDFeatureCollection.self, from: data).features
+        } catch let e as URLError where e.code == .cancelled {
+            // Answered `nil` like any other failure — but logged as what it is,
+            // and safe only because `geocode` re-checks cancellation between
+            // every phase. Without that check `nil` would read as "the register
+            // does not have this address" and send a cancelled lookup on into
+            // the throttled Nominatim calls it was cancelled to avoid.
+            log.debug("Wien OGD lookup cancelled")
+            return nil
         } catch {
             log.warning("Wien OGD unreachable or unparseable: \(error.localizedDescription)")
             return nil
@@ -430,6 +459,11 @@ actor Geocoder {
             return try JSONDecoder().decode([NominatimHit].self, from: data).first
         } catch let e as AppError {
             throw e
+        } catch let e as URLError where e.code == .cancelled {
+            // `URLSession` reports a request cancelled along with its task as a
+            // `URLError`. Rethrown as what it actually is, so a driver who
+            // pressed Abbrechen is not told the geocoder is down.
+            throw CancellationError()
         } catch {
             // The underlying error text describes our networking, not anything
             // the driver can act on — logged, never shown.
@@ -522,15 +556,15 @@ actor Geocoder {
     private struct OGDFeatureCollection: Decodable {
         var features: [OGDFeature] = []
     }
-    private struct OGDFeature: Decodable {
+    struct OGDFeature: Decodable {
         let geometry: OGDGeometry
         let properties: OGDProperties
     }
-    private struct OGDGeometry: Decodable {
+    struct OGDGeometry: Decodable {
         /// `[lon, lat]`.
         let coordinates: [Double]
     }
-    private struct OGDProperties: Decodable {
+    struct OGDProperties: Decodable {
         let streetName: String?
         let postalCode: String?
         let kategorie: String?

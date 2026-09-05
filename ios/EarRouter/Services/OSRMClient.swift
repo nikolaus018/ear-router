@@ -189,6 +189,34 @@ actor OSRMClient {
         }
     }
 
+    /// Asks one specific server whether it can route, with no fallback and no
+    /// cooldown — what "Verbindung testen" in Erweitert actually means.
+    ///
+    /// Deliberately not `routeLeg`: that one is built to *succeed*, falling
+    /// back to the public demo server whenever the configured one cannot
+    /// answer. Used as a connection test it reported "Erreichbar" for a server
+    /// that was not, on the strength of a reply from somewhere else entirely —
+    /// on the one screen whose whole job is telling the driver whether their
+    /// own server is up.
+    func probe(base: URL) async -> Bool {
+        // Two points on the Ring — a query every OSRM build can answer.
+        //
+        // `overview=false` because a test needs no geometry, and its own reply
+        // type because of that: `overview=false` makes OSRM *omit* the
+        // `geometry` field entirely, so decoding the answer as an ordinary
+        // `RouteResponse` — whose `geometry` is not optional — failed on a
+        // perfectly healthy server and reported it unreachable. Only `code` is
+        // read here, which is all "can this server route?" needs.
+        let path = "/route/v1/driving/16.3738,48.2082;16.3919,48.2170?overview=false"
+        do {
+            let resp: ProbeResponse = try await Self.fetch(session, base: base, path: path)
+            return resp.code == "Ok"
+        } catch {
+            log.info("OSRM probe of \(base.absoluteString, privacy: .public) failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     // MARK: - Transport
 
     /// GETs an OSRM path against the configured primary, falling back to the
@@ -218,6 +246,14 @@ actor OSRMClient {
                 // next failure gets a fresh cooldown, not a leftover one.
                 primaryDownSince = nil
                 return value
+            } catch is CancellationError {
+                // The caller walked away. That says nothing about the server, so
+                // it must not start a cooldown — a cancelled add-stop would
+                // otherwise send the next hour's routing to the public demo
+                // server on the strength of a healthy primary the driver simply
+                // did not wait for. And there is nothing to fall back *to*: the
+                // answer is no longer wanted.
+                throw CancellationError()
             } catch {
                 if primaryIsFallback {
                     log.error("OSRM unreachable: \(error.localizedDescription)")
@@ -231,6 +267,8 @@ actor OSRMClient {
 
         do {
             return try await Self.fetch(session, base: fallback, path: pathAndQuery)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             log.error("public OSRM unreachable: \(error.localizedDescription)")
             throw AppError.routerUnavailable
@@ -245,7 +283,16 @@ actor OSRMClient {
         guard let url = URL(string: base.absoluteString + path) else {
             throw AppError.message("OSRM: ungültige URL")
         }
-        let (data, response) = try await session.data(from: url)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(from: url)
+        } catch let e as URLError where e.code == .cancelled {
+            // `URLSession` reports a request cancelled along with its task as a
+            // `URLError`, not as a `CancellationError`. Left as it comes, the
+            // caller above cannot tell it from an outage — and treats a driver
+            // tapping Abbrechen as a server that has gone down.
+            throw CancellationError()
+        }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw AppError.message("OSRM HTTP \(code)")
@@ -300,6 +347,10 @@ actor OSRMClient {
 
     private struct Geometry: Decodable {
         let coordinates: [[Double]]
+    }
+    /// Just OSRM's status word — see `probe`.
+    private struct ProbeResponse: Decodable {
+        let code: String
     }
     private struct RouteResponse: Decodable {
         let code: String

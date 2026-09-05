@@ -12,10 +12,15 @@ struct RouteDetailView: View {
     @State private var addingStop = false
     @State private var showingJSON = false
     @State private var showingLadeliste = false
-    @State private var showingTuercode = false
     @State private var renaming = false
     @State private var newName = ""
     @State private var busy: String?
+    /// The long job `busy` is describing, kept so the banner can stop it.
+    ///
+    /// Only the two that run on the network for a minute at a time — optimizing
+    /// and re-checking addresses — set this. Ticking a stop off or removing one
+    /// is a single write with nothing to interrupt.
+    @State private var busyTask: Task<Void, Never>?
     @State private var error: AppError?
     @State private var recheckSummary: String?
     /// A stop swiped (or long-pressed) away, waiting to be confirmed.
@@ -81,7 +86,7 @@ struct RouteDetailView: View {
         // and takes up no room at all while there is nothing to report.
         .safeAreaInset(edge: .bottom) {
             if let busy {
-                BusyBanner(text: busy)
+                BusyBanner(text: busy, onCancel: busyTask.map { task in { task.cancel() } })
                     .padding(.bottom, 8)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -92,7 +97,10 @@ struct RouteDetailView: View {
         .searchable(
             text: $search, placement: .navigationBarDrawer(displayMode: .automatic),
             prompt: "Kunde, Adresse, Paket oder Notiz")
-        .refreshable { await optimize() }
+        // Awaited, so pull-to-refresh keeps its own spinner for exactly as
+        // long as the optimization runs — but started the same way as the menu
+        // item, so it is the same cancellable job with the same stop button.
+        .refreshable { await startLongJob { await optimize() }?.value }
         .toolbar { toolbar }
         .sheet(isPresented: $addingStop) {
             StopEditorSheet(route: route, stop: nil)
@@ -112,7 +120,6 @@ struct RouteDetailView: View {
         .sheet(isPresented: $showingLadeliste) {
             LadelisteView(route: route)
         }
-        .sheet(isPresented: $showingTuercode) { TuercodeSheet() }
         .alert("Tour umbenennen", isPresented: $renaming) {
             TextField("Name", text: $newName)
                 .limited(to: FieldLimits.routeName, text: $newName)
@@ -160,7 +167,7 @@ struct RouteDetailView: View {
         List {
             if route.needsOptimize {
                 Section {
-                    OptimizeBanner(busy: busy != nil) { await optimize() }
+                    OptimizeBanner(busy: busy != nil) { startLongJob { await optimize() } }
                 }
             }
 
@@ -264,18 +271,13 @@ struct RouteDetailView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("Ladeliste", systemImage: "checklist") { showingLadeliste = true }
-                // Also in Mehr, and it stays there — but this is the screen a
-                // driver is standing on when they read "Türcode ENVV" off a
-                // Notiz at a front door, and getting to the decoder from here
-                // used to mean leaving the tour for another tab.
-                Button("Türcode", systemImage: "key.fill") { showingTuercode = true }
                 Button("Stopps als JSON", systemImage: "curlybraces") { showingJSON = true }
                 Divider()
                 Button("Neu optimieren", systemImage: "arrow.triangle.2.circlepath") {
-                    Task { await optimize() }
+                    startLongJob { await optimize() }
                 }
                 Button("Adressen prüfen", systemImage: "mappin.and.ellipse") {
-                    Task { await recheck() }
+                    startLongJob { await recheck() }
                 }
                 Divider()
                 Button("Umbenennen", systemImage: "pencil") {
@@ -352,6 +354,34 @@ struct RouteDetailView: View {
         }
     }
 
+    /// Starts one of the two long network jobs — optimizing, or re-checking
+    /// addresses — and keeps a handle on it so the busy banner can offer a stop
+    /// button. Returns `nil`, and starts nothing, when one is already running.
+    ///
+    /// The guard lives here rather than only inside the jobs themselves: a job
+    /// that declined to start would otherwise still have replaced `busyTask`,
+    /// and the banner's stop button would then cancel that finished no-op while
+    /// the job actually running carried on behind it.
+    @discardableResult
+    private func startLongJob(_ work: @escaping () async -> Void) -> Task<Void, Never>? {
+        // `busyTask` as well as `busy`: the job sets `busy` from inside its own
+        // body, which does not run until this one suspends, so two taps close
+        // together both saw `busy` still nil. The handle is assigned right
+        // here, synchronously, and is what actually closes that window.
+        guard !isBusy, busyTask == nil else { return nil }
+        let task = Task {
+            await work()
+            // Cleared here rather than in each job's own `defer`. The guard
+            // above refuses to start anything while this is non-nil, so a job
+            // that forgot to clear it would not just leak a handle — it would
+            // leave "Neu optimieren" and "Adressen prüfen" permanently dead for
+            // the rest of the screen's life. Whoever sets it clears it.
+            busyTask = nil
+        }
+        busyTask = task
+        return task
+    }
+
     /// Runs a store write and says so when it fails.
     ///
     /// These were `try?`. A failed save is rare — it means the store itself is
@@ -403,6 +433,11 @@ struct RouteDetailView: View {
         defer { busy = nil }
         do {
             try await RouteOptimizer.optimize(route, in: context)
+        } catch is CancellationError {
+            // Stopped from the banner. The route keeps its `needsOptimize`
+            // flag, so the amber "Route nicht aktuell" row is still there to
+            // try again from — which says it better than an alert would.
+            return
         } catch let e as AppError {
             self.error = e
         } catch {
@@ -420,7 +455,15 @@ struct RouteDetailView: View {
         let r = await RouteStore.recheckAddresses(route, in: context) { done, total in
             busy = "Adresse \(done + 1) von \(total) wird geprüft …"
         }
-        if r.improved == 0 && r.failed == 0 {
+        // Stopped from the banner. Whatever it managed to improve is saved; a
+        // summary counting the addresses it never got to would be reporting on
+        // work the driver called off.
+        if Task.isCancelled { return }
+        // A route with nothing approximate on it never had anything to check,
+        // and "alle unverändert" claims a check that did not happen.
+        if r.improved == 0 && r.unchanged == 0 && r.failed == 0 {
+            recheckSummary = "Keine ungenauen Adressen — es gab nichts zu prüfen."
+        } else if r.improved == 0 && r.failed == 0 {
             recheckSummary = "Alle Adressen sind unverändert."
         } else {
             var parts: [String] = []
@@ -652,16 +695,45 @@ struct WideButtonLabel: View {
 /// locked out of.
 struct BusyBanner: View {
     let text: String
+    /// Offered by the two jobs that run on the network for a minute at a time.
+    /// A one-off write has nothing to interrupt and gets no button.
+    var onCancel: (() -> Void)?
+
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        HStack(spacing: 10) {
-            ProgressView().controlSize(.small)
-            Text(text)
-                .font(.subheadline.weight(.medium))
+        // The label and the stop button sit side by side only while the two of
+        // them fit on one line. "Adresse 4 von 10 wird geprüft …" plus
+        // "Stoppen" is already wider than a phone at accessibility sizes, and
+        // an `HStack` that does not fit does not wrap — it just grows, so the
+        // pill ran off both edges of the screen with the stop button half cut
+        // off the right of it.
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 10))
+
+        return layout {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text(text)
+                    .font(.subheadline.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let onCancel {
+                Button("Stoppen", action: onCancel)
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.brand)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
         .glassEffect(.regular, in: .capsule)
+        // Outside the capsule: this is what stops the pill growing past the
+        // screen. Without it nothing proposes a narrower width, so the text
+        // never wraps and the shape simply overflows.
+        .padding(.horizontal, 16)
+        .accessibilityElement(children: .contain)
         .accessibilityAddTraits(.updatesFrequently)
     }
 }

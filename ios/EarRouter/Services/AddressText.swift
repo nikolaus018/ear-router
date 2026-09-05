@@ -128,7 +128,7 @@ enum AddressText {
     /// Collapsed rather than deleted, because deleting separators would make
     /// "Gentzgasse 129/1" and "Gentzgasse 12/91" collide.
     static func matchKey(_ strasse: String) -> String {
-        let normalized = normalize(strasse).lowercased()
+        let normalized = germanFold(normalize(strasse).lowercased())
         var out = ""
         out.reserveCapacity(normalized.count)
         var pendingSpace = false
@@ -149,7 +149,48 @@ enum AddressText {
     /// answers "Großfeldstraße 9 Parz. 68", and a Stiege comes back as "/1".
     /// Everything that isn't a letter or a digit is noise here, and so is case.
     static func subAddressKey(_ sub: String) -> String {
-        sub.filter { $0.isLetter || $0.isNumber }.lowercased()
+        germanFold(sub.lowercased()).filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// Folds the German letters a driver may or may not have typed onto one
+    /// spelling: ß→ss, ä→ae, ö→oe, ü→ue.
+    ///
+    /// This is what makes a comparison key survive a keyboard. Vienna's address
+    /// register is *tolerant on input and canonical on output* — ask it for
+    /// "Doeblinger Hauptstrasse 1" and it answers, at `Ranking` 0.0, with
+    /// "Döblinger Hauptstraße". Comparing those two without folding rejects the
+    /// register's own exact answer, and the lookup falls through to Nominatim
+    /// and an "≈" pin for an address the city had placed precisely. Measured
+    /// against the live service, the same is true of "Waehringer Guertel",
+    /// "Grosse Neugasse" and "Gusshausstrasse".
+    ///
+    /// `normalize` already folds *one* of these — the "strasse"/"straße"
+    /// suffix — which is why "Gußhausstraße" was still a miss: it fixes the
+    /// ending and leaves the stem. This does the whole alphabet instead.
+    ///
+    /// Expanding rather than contracting (ä→ae, never ae→ä) because expanding
+    /// only ever merges the two spellings of one name; contracting would have
+    /// to guess whether a real "ae" was meant as an umlaut.
+    ///
+    /// It also earns its keep on the re-paste path, where `matchKey` decides
+    /// whether a pasted address is a stop the route already has: a list
+    /// re-exported by a system that strips umlauts used to read as a different
+    /// door, and a different door means delete-and-reinsert — losing the tick
+    /// that says the meal was delivered.
+    static func germanFold(_ lowercased: String) -> String {
+        guard lowercased.contains(where: { "ßäöü".contains($0) }) else { return lowercased }
+        var out = ""
+        out.reserveCapacity(lowercased.count + 4)
+        for c in lowercased {
+            switch c {
+            case "ß": out += "ss"
+            case "ä": out += "ae"
+            case "ö": out += "oe"
+            case "ü": out += "ue"
+            default: out.append(c)
+            }
+        }
+        return out
     }
 
     /// The sub-address of an address string as the *register* spells it —

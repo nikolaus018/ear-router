@@ -99,6 +99,9 @@ enum FieldLimits {
 
 extension String {
     func trimmingSuffix(_ suffix: String) -> String {
+        // Every string ends with the empty string, and removing none of it
+        // changes nothing — so without this the loop never terminates.
+        guard !suffix.isEmpty else { return self }
         var s = self
         while s.hasSuffix(suffix) { s.removeLast(suffix.count) }
         return s

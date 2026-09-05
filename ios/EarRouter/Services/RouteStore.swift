@@ -60,9 +60,14 @@ struct ImportResult: Sendable {
     /// True when something in the paste failed, so no stop was removed this
     /// round — see the deletion step in `importJSON`.
     var deletionsSkipped = false
+    /// The driver stopped the import part-way. What had already resolved is
+    /// kept; the rest was never attempted, which is a different thing from
+    /// having failed and is reported as such.
+    var cancelled = false
 
     var hasProblems: Bool {
         !validationFailures.isEmpty || !geocodeFailures.isEmpty || !approximate.isEmpty
+            || cancelled
     }
 }
 
@@ -351,6 +356,12 @@ enum RouteStore {
         var moved = false
 
         for (index, stop) in candidates.enumerated() {
+            // Stops the whole run rather than the one address. Cancelled and
+            // caught below as an ordinary failure — which is what this did —
+            // the loop marched through all thirty remaining addresses anyway,
+            // at a throttled round trip each, and reported every one of them as
+            // "weiter offen".
+            if Task.isCancelled { break }
             onProgress?(index, candidates.count)
             guard let strasse = stop.strasse, let plz = stop.plz else { continue }
             do {
@@ -363,6 +374,17 @@ enum RouteStore {
                 // as a move re-optimised the whole route for nothing.
                 let movedFar = abs(hit.lat - stop.lat) > 0.000001
                     || abs(hit.lon - stop.lon) > 0.000001
+                // A *worse* answer is not an answer. The register can come back
+                // with only a district for an address it previously placed on
+                // the right street — a transient reindex, a query that fuzzed
+                // differently — and writing that back moved a usable pin to the
+                // middle of the Bezirk and reported it as "verbessert". This
+                // screen exists to improve approximate stops; it must never be
+                // able to make one worse.
+                guard isAtLeastAsGood(newPrecision, as: stop.precision) else {
+                    unchanged += 1
+                    continue
+                }
                 if newPrecision != stop.precision || movedFar {
                     stop.lat = hit.lat
                     stop.lon = hit.lon
@@ -372,6 +394,8 @@ enum RouteStore {
                 } else {
                     unchanged += 1
                 }
+            } catch is CancellationError {
+                break
             } catch {
                 failed += 1
             }
@@ -383,6 +407,22 @@ enum RouteStore {
             await RouteOptimizer.optimizeBestEffort(route, in: context)
         }
         return (improved, unchanged, failed)
+    }
+
+    /// Whether `candidate` places a stop at least as precisely as `current`.
+    /// `nil` is the best answer there is — an exact match, or a hand-placed pin.
+    ///
+    /// Not `private`: this is the rule that decides whether a re-check is
+    /// allowed to overwrite a pin, and it is worth a test of its own.
+    nonisolated static func isAtLeastAsGood(_ candidate: Precision?, as current: Precision?) -> Bool {
+        func rank(_ p: Precision?) -> Int {
+            switch p {
+            case .none, .some(.exact): 0
+            case .some(.street): 1
+            case .some(.district): 2
+            }
+        }
+        return rank(candidate) <= rank(current)
     }
 
     // MARK: - JSON bulk import
@@ -591,6 +631,16 @@ enum RouteStore {
             do {
                 hit = try await Geocoder.shared.geocode(
                     strasse: entry.strasse, plz: entry.plz)
+            } catch is CancellationError {
+                // Everything resolved so far is kept and saved below — the
+                // stops are real and re-pasting the same list will not look
+                // them up again. What a cancelled run must not do is carry on
+                // through the rest at a throttled round trip each, nor record
+                // the addresses it never tried as failures the driver then goes
+                // hunting for. `deletionsSkipped` covers the rest: an
+                // interrupted run has not seen enough to delete anything.
+                result.cancelled = true
+                break
             } catch {
                 result.geocodeFailures.append((entry.kunde, entry.strasse, entry.plz))
                 continue
@@ -646,6 +696,7 @@ enum RouteStore {
         // one malformed paste, which is the worst thing this screen could do.
         result.deletionsSkipped =
             !result.geocodeFailures.isEmpty || !result.validationFailures.isEmpty
+            || result.cancelled
         if !result.deletionsSkipped {
             for stop in existing where !matched.contains(stop.id) {
                 context.delete(stop)

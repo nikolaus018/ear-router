@@ -118,8 +118,15 @@ extension Stop {
     /// Falls back to the geometric centre of Vienna for a row whose stored
     /// coordinates are unusable, so one bad value can never take out the map
     /// for the whole route.
+    ///
+    /// The whole plausibility box, not just `isFinite`. Every writer of these
+    /// two numbers already checks the box — but the default for both is `0`,
+    /// which is finite, off the west coast of Africa, and exactly what a row
+    /// arriving from a future schema migration would carry. That row used to
+    /// put a marker in the Gulf of Guinea, drag the map's whole-route framing
+    /// out to fit it, and hand the same point to the navigation app.
     var coordinate: CLLocationCoordinate2D {
-        guard lat.isFinite, lon.isFinite else {
+        guard Coordinates.isPlausible(lat: lat, lon: lon) else {
             return CLLocationCoordinate2D(
                 latitude: Coordinates.viennaCenter.lat,
                 longitude: Coordinates.viennaCenter.lon)

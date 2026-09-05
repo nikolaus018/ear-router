@@ -204,7 +204,11 @@ struct MapTab: View {
                     if let route { focus.reveal(stop: stop, of: route) }
                     selectedStopID = nil
                 },
-                onMeasure: { previewHeight = $0 })
+                // Zero is not a measurement. `onGeometryChange` reports the
+                // card's height as it is torn down too, and writing that back
+                // left the *next* pin's card opening as a sliver until its own
+                // first measure arrived.
+                onMeasure: { if $0 > 0 { previewHeight = $0 } })
                 // Clamped, because "as tall as its content" has no upper bound
                 // of its own: a Notiz can run to a thousand characters, and a
                 // detent taller than a sheet is allowed to be simply clipped
@@ -774,6 +778,13 @@ struct StopPreviewSheet: View {
     /// Same rule as the delivery tick in the stop list — this is that control,
     /// on a different screen.
     @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
+    /// And the same rule for the number badge, which `StopRow` already scales:
+    /// a fixed 26pt circle clips the digit it exists to show once the text is
+    /// turned up. This is the same badge, so it grows the same way.
+    @ScaledMetric(relativeTo: .footnote) private var badgeSize: CGFloat = 26
+    /// Whether the driver has the text turned up far enough that two buttons
+    /// can no longer sit beside each other — see `actions`.
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private var isCustomer: Bool { stop.kind == .customer }
 
@@ -804,7 +815,7 @@ struct StopPreviewSheet: View {
                 Text("\(number)")
                     .font(.footnote.weight(.semibold).monospacedDigit())
                     .foregroundStyle(Color.onBrand)
-                    .frame(width: 26, height: 26)
+                    .frame(width: badgeSize, height: badgeSize)
                     .background(Circle().fill(stop.delivered ? Color.success : Color.brand))
                     .accessibilityHidden(true)
             }
@@ -812,6 +823,11 @@ struct StopPreviewSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(isCustomer ? (stop.kunde ?? "Stopp") : stop.fixedTitle)
                     .font(.title3.bold())
+                    // Wraps rather than truncating, the same as the address
+                    // directly under it. Without this a customer's name was cut
+                    // to "Hyphen Te…" on the one card whose whole job is saying
+                    // whose door this pin is.
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(stop.listAddress)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -861,8 +877,20 @@ struct StopPreviewSheet: View {
     /// Both buttons share the width evenly. Sized to their own titles they sat
     /// as a centred pair with a margin either side, which reads as a layout that
     /// ran out of content rather than as the card's two actions.
+    ///
+    /// Side by side only while they fit. Half a phone's width is not enough for
+    /// "Navigation" once the driver turns the text up, and a bordered button
+    /// asked to hold a word wider than itself does not shrink the word — it
+    /// wraps it mid-syllable and inflates into a circle, which is how this card
+    /// came to offer "Navi / gati / on". `AnyLayout` swaps the axis rather than
+    /// branching on two separate view trees, so the buttons keep their identity
+    /// and the driver's tap does not land on a freshly-built button.
     private var actions: some View {
-        HStack(spacing: 10) {
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 10))
+            : AnyLayout(HStackLayout(spacing: 10))
+
+        return layout {
             Button(action: onNavigate) {
                 WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
                     .onBrandLabel()

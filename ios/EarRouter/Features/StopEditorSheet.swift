@@ -31,6 +31,18 @@ struct StopEditorSheet: View {
     @State private var discardStoredPin = false
     @State private var showingPinDrop = false
     @State private var saving = false
+    /// The in-flight save, kept so "Abbrechen" can call it off.
+    ///
+    /// Looking an address up is not quick and is not bounded by anything the
+    /// driver can see: the cascade is the register, then the register again
+    /// without the district, then up to two throttled Nominatim calls, and only
+    /// then the re-optimization of the whole tour. An address none of them can
+    /// place walks the entire chain — over a minute, measured, on a good
+    /// connection — and a van on bad LTE is worse. That has to be interruptible.
+    @State private var saveTask: Task<Void, Never>?
+    /// Set by the watchdog in `save()` just before it cancels, so the catch can
+    /// tell "this ran out of time" from "the driver pressed Abbrechen".
+    @State private var budgetExpired = false
     @State private var confirmingDelete = false
     @State private var error: AppError?
     @State private var loaded = false
@@ -150,6 +162,10 @@ struct StopEditorSheet: View {
                     }
                 }
             }
+            // Locks the fields — they must not change under a lookup already
+            // using them — and sits here, under the toolbar in the chain,
+            // rather than over it, so that it does not also reach Abbrechen.
+            .disabled(saving)
             // Short on purpose. "Stopp bearbeiten" between the two glass toolbar
             // buttons truncated to "Stopp bearb…", which looks like a bug in a
             // screen whose whole job is careful data entry.
@@ -157,7 +173,15 @@ struct StopEditorSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Abbrechen") { dismiss() }
+                    // Stays live while a save is in flight, and calls it off.
+                    // `.disabled(saving)` used to cover this button too, which
+                    // left the sheet with no way out at all for as long as the
+                    // lookup took — the driver's only remaining move was to
+                    // force-quit the app.
+                    Button("Abbrechen") {
+                        saveTask?.cancel()
+                        dismiss()
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     // The confirm button becomes the progress indicator, which
@@ -168,13 +192,14 @@ struct StopEditorSheet: View {
                         ProgressView()
                     } else {
                         Button(isEditing ? "Speichern" : "Hinzufügen") {
-                            Task { await save() }
+                            saveTask = Task { await save() }
                         }
                         .disabled(!canSave)
                     }
                 }
             }
-            .disabled(saving)
+            // A swipe would leave the work running with nothing left to report
+            // to. Abbrechen is the deliberate way out, and it cancels.
             .interactiveDismissDisabled(saving)
             .sheet(isPresented: $showingPinDrop) {
                 PinDropSheet(
@@ -247,9 +272,39 @@ struct StopEditorSheet: View {
         notiz = stop.notiz ?? ""
     }
 
+    /// How long a driver is asked to wait for an address before the app gives
+    /// up and offers the pin instead.
+    ///
+    /// A findable address costs one register call, or nothing at all when it is
+    /// cached. This budget only ever runs out on an address the register does
+    /// not have, where the rest of the cascade behind it — the register again
+    /// without the district, two throttled Nominatim calls, a district-centre
+    /// fallback, and then the re-optimization of the whole tour — measured at
+    /// over a minute end to end on a good connection. That is a bad trade for
+    /// someone standing at a van with a route to drive, and the answer it
+    /// eventually arrives at is a district-centre guess the driver would place
+    /// better by hand anyway.
+    private static let saveBudgetSeconds = 30
+
     private func save() async {
         saving = true
-        defer { saving = false }
+        budgetExpired = false
+
+        // Cancels the save from the outside once the budget is spent. A
+        // watchdog rather than a deadline threaded through the services: the
+        // budget is a property of *this screen* — the import behind the same
+        // geocoder is right to be patient — and cancellation is what the
+        // services already understand.
+        let watchdog = Task {
+            try? await Task.sleep(for: .seconds(Self.saveBudgetSeconds))
+            guard !Task.isCancelled else { return }
+            budgetExpired = true
+            saveTask?.cancel()
+        }
+        defer {
+            watchdog.cancel()
+            saving = false
+        }
 
         let coordinate = droppedPin.map { (lat: $0.latitude, lon: $0.longitude) }
         do {
@@ -264,10 +319,27 @@ struct StopEditorSheet: View {
                     paket: paket, notiz: notiz, coordinate: coordinate, in: context)
             }
             dismiss()
-        } catch let e as AppError {
-            error = e
         } catch {
-            self.error = AppError.message("Konnte den Stopp nicht speichern.")
+            // Checked before the error itself, because a cancelled lookup does
+            // not always surface as `CancellationError` — the geocoder reports
+            // an unreachable service for anything its URL session throws, and
+            // "der Geocoder ist nicht erreichbar" is the wrong thing to tell a
+            // driver whose address simply took too long.
+            if budgetExpired {
+                self.error = AppError.message(
+                    "„\(strasse.trimmed)“ konnte in \(Self.saveBudgetSeconds) Sekunden nicht "
+                        + "gefunden werden. Prüf die Schreibweise und den Bezirk — oder setz "
+                        + "den Pin von Hand auf der Karte.")
+            } else if error is CancellationError {
+                // Abbrechen. The sheet is already on its way out and the driver
+                // knows what they did; an alert here would be the app arguing
+                // with them.
+                return
+            } else if let e = error as? AppError {
+                self.error = e
+            } else {
+                self.error = AppError.message("Konnte den Stopp nicht speichern.")
+            }
         }
     }
 }

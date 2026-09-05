@@ -46,7 +46,19 @@ actor GeocodeCache {
     /// than a cached answer did. Exact rows never expire on their own —
     /// correctly — but when the *resolver* improves, every one of them is a
     /// confidently-wrong answer that would otherwise outlive the fix forever.
-    private static let generation = 2
+    ///
+    /// 3: the register's answer is now matched to the asked-for street through
+    /// `AddressText.matchKey` rather than a lowercased raw string, so every
+    /// hyphenated street typed with spaces — "Dr. Karl Lueger-Platz", and most
+    /// of Vienna's named squares — resolves against the city register instead
+    /// of falling through to an approximate Nominatim pin.
+    ///
+    /// 4: and `matchKey` now folds ß/ä/ö/ü, so an address typed without
+    /// umlauts — "Doeblinger Hauptstrasse", "Waehringer Guertel" — resolves
+    /// against the register too. Both of those approximations are cached, and a
+    /// driver who never clears the cache by hand would otherwise keep the old
+    /// "≈" answer for every one of them.
+    private static let generation = 4
 
     private var hits: [String: CachedGeocode] = [:]
     private var misses: [String: Date] = [:]
@@ -160,6 +172,13 @@ actor GeocodeCache {
         // call to the city's own register.
         guard payload.generation >= Self.generation else {
             log.info("geocode cache generation \(payload.generation) < \(Self.generation), clearing")
+            // Marked dirty so the superseded file is actually rewritten. Left
+            // clean, the tables are empty in memory but the old rows stay on
+            // disk — which is harmless right up until the driver opens
+            // Erweitert, is told they have 0 saved addresses, and finds "Cache
+            // leeren" greyed out over a file that is not empty at all.
+            dirty = true
+            save()
             return
         }
         hits = payload.hits

@@ -26,7 +26,13 @@ struct EarRouterApp: App {
             // Rearmed on every launch, which is exactly when the expiry date
             // can have moved: reinstalling from Xcode is what resets the seven
             // days, and it always launches the app.
-            .task { await SideloadExpiry.scheduleReminders() }
+            .task {
+                // Before the reminders, and deliberately not awaited: this is
+                // main-thread work that wants the first idle moment after the
+                // window is up, not a slot behind a notification round trip.
+                MapWarmup.run()
+                await SideloadExpiry.scheduleReminders()
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             // The geocode cache batches its writes, so a force-quit or a
@@ -109,11 +115,11 @@ struct StoreFailureView: View {
 /// Which route is "in focus" app-wide, shared across tabs — the Karte tab
 /// always shows this one regardless of which tab it was opened from.
 ///
-/// `detailOrigin` records *which* tab's list a route was opened from, so the
-/// pushed stops-list detail screen only appears in that one tab — the same
-/// per-tab navigation-stack behaviour `UITabBarController` gives you for free.
-/// Picking a route in the Karte tab's own picker clears it, so browsing the map
-/// never leaves a stray detail screen behind in Routen or Verlauf.
+/// Routen and Verlauf keep a navigation path each rather than sharing one, which
+/// is the same per-tab behaviour `UITabBarController` gives you for free: a tour
+/// pushed from one list does not appear on top of the other. `reveal(stop:of:)`
+/// is what chooses between them, by the route's own status — a completed tour
+/// lives in Verlauf, so that is the stack its detail screen belongs on.
 @Observable
 @MainActor
 final class RouteFocus {

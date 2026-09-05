@@ -20,6 +20,13 @@ struct JSONEditorSheet: View {
     /// What the import is doing right now, once it reaches the addresses it has
     /// to look up. `nil` while there is nothing to report.
     @State private var progress: String?
+    /// The in-flight import, kept so "Schließen" can call it off.
+    ///
+    /// A fresh day's list is thirty addresses at a throttled round trip each —
+    /// half a minute at best, several times that on a bad connection. That is
+    /// far too long to hold a screen with no way out of it, which is exactly
+    /// what disabling this button along with the editor used to do.
+    @State private var importTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -53,13 +60,24 @@ struct JSONEditorSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Schließen") { dismiss() }.disabled(busy)
+                    // Stays live, and stops the import rather than abandoning
+                    // it. Everything already resolved is kept and saved — see
+                    // `RouteStore.importJSON` — so stopping half way costs the
+                    // driver the remaining lookups, not the ones already paid
+                    // for.
+                    Button(busy ? "Stoppen" : "Schließen") {
+                        if busy {
+                            importTask?.cancel()
+                        } else {
+                            dismiss()
+                        }
+                    }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     if busy {
                         ProgressView()
                     } else {
-                        Button("Übernehmen") { Task { await save() } }
+                        Button("Übernehmen") { importTask = Task { await save() } }
                             .disabled(text.trimmed.isEmpty)
                     }
                 }
@@ -189,6 +207,12 @@ struct JSONEditorSheet: View {
             // the driver wants. One with problems reports itself, and the
             // editor stays open behind it so the offending entries can be
             // corrected and submitted again.
+            //
+            // A *stopped* import arrives here too, and deliberately not as a
+            // thrown `CancellationError`: `importJSON` keeps the addresses it
+            // had already resolved, saves them, and reports the stop in
+            // `result.cancelled`. So it counts as "has problems" and the
+            // summary tells the driver where it got to.
             if r.hasProblems {
                 result = ImportReport(result: r)
             } else {
@@ -237,7 +261,14 @@ struct ImportSummary: View {
                 if result.deleted > 0 {
                     LabeledContent("Entfernt", value: "\(result.deleted)")
                 }
-                if result.deletionsSkipped {
+                if result.cancelled {
+                    Label(
+                        "Gestoppt — die restlichen Adressen wurden nicht gesucht. Noch "
+                            + "einmal übernehmen macht dort weiter.",
+                        systemImage: "hand.raised.fill")
+                        .font(.footnote)
+                        .foregroundStyle(Color.warningText)
+                } else if result.deletionsSkipped {
                     Label(
                         "Nichts entfernt — erst die Fehler unten beheben und noch einmal "
                             + "übernehmen.",

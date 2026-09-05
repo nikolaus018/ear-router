@@ -213,8 +213,9 @@ struct AdvancedSettingsView: View {
                 Text("Routenoptimierung")
             } footer: {
                 Text(
-                    "Ist der Server nicht erreichbar, weicht die App automatisch auf den "
-                        + "öffentlichen OSRM-Demoserver aus.")
+                    "Geprüft wird genau dieser Server. Ist er nicht erreichbar, weicht die "
+                        + "App beim Routen automatisch auf den öffentlichen OSRM-Demoserver "
+                        + "aus — die Routenoptimierung funktioniert also weiter.")
             }
 
             Section {
@@ -287,17 +288,20 @@ struct AdvancedSettingsView: View {
         Upstreams.current.osrm.host ?? Upstreams.current.osrm.absoluteString
     }
 
+    /// Tests the server named right above the button, and only that one.
+    ///
+    /// `OSRMClient.probe` rather than an ordinary routing call: the ordinary
+    /// path falls back to the public demo server whenever the configured one
+    /// cannot answer, which is right for routing and wrong for a test — it
+    /// reported "Erreichbar" for a server that was down, because something else
+    /// had replied.
     private func check() async {
         status = .checking
         let started = Date()
-        do {
-            // Two points on the Ring — a query every OSRM build can answer.
-            _ = try await OSRMClient.shared.routeLeg(
-                from: (48.2082, 16.3738), to: (48.2170, 16.3919))
-            status = .reachable(ms: Int(Date().timeIntervalSince(started) * 1000))
-        } catch {
-            status = .unreachable
-        }
+        let ok = await OSRMClient.shared.probe(base: Upstreams.current.osrm)
+        status = ok
+            ? .reachable(ms: Int(Date().timeIntervalSince(started) * 1000))
+            : .unreachable
     }
 }
 

@@ -87,7 +87,17 @@ enum RouteOptimizer {
             // successor that has already queued behind us.
             if inFlight[routeID] == task { inFlight[routeID] = nil }
         }
-        try await task.value
+        // The chaining above needs an *unstructured* task — it has to outlive
+        // this call so the next one can queue behind it — and an unstructured
+        // task inherits no cancellation from whoever is awaiting it. Without
+        // this handler the stop button on the busy banner cancelled the caller
+        // and left the OSRM calls running to completion underneath it: a
+        // control that visibly did nothing.
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     /// For callers that have *already committed* their change — a stop added,
@@ -148,6 +158,13 @@ enum RouteOptimizer {
         let routed = Self.drivingOrder(plan, solvedOrder: solvedOrder)
 
         // --- write ---
+
+        // Stopped while OSRM was answering. What follows is a complete, valid
+        // solution — but writing it would reorder every row in the list a
+        // moment after the driver pressed the button that says stop.
+        // `needsOptimize` is still set, so the amber banner stays and nothing
+        // is lost by dropping this answer on the floor.
+        try Task.checkCancellation()
 
         let legFor = Self.legIndex(routed: routed, legs: legs)
 
