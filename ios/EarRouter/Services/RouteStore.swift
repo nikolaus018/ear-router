@@ -388,11 +388,18 @@ enum RouteStore {
     // MARK: - JSON bulk import
 
     static func exportJSON(_ route: Route) -> String {
-        let payload = route.customerStops.map {
-            CustomerJSON(
-                kunde: $0.kunde ?? "", strasse: $0.strasse ?? "", plz: $0.plz ?? "",
-                paket: $0.paket ?? "", notiz: $0.notiz ?? "")
-        }
+        exportJSON(
+            route.customerStops.map {
+                CustomerJSON(
+                    kunde: $0.kunde ?? "", strasse: $0.strasse ?? "", plz: $0.plz ?? "",
+                    paket: $0.paket ?? "", notiz: $0.notiz ?? "")
+            })
+    }
+
+    /// The same text for a list that is not on a route yet — what the photo
+    /// import hands to the JSON editor when a scanned page needs fixing up as
+    /// text rather than row by row.
+    nonisolated static func exportJSON(_ payload: [CustomerJSON]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         guard let data = try? encoder.encode(payload),

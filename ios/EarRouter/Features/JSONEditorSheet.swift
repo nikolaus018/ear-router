@@ -5,6 +5,11 @@ import SwiftData
 /// shape the web app used, so an existing list pastes straight in.
 struct JSONEditorSheet: View {
     let route: Route
+    /// What the editor opens on, when something other than the route's own
+    /// stops put it there — a scanned list handed over from the photo import
+    /// for correction. `nil` is the normal case: the route's current stops.
+    var initialText: String?
+
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
 
@@ -104,7 +109,11 @@ struct JSONEditorSheet: View {
                 // "Übernehmen" is disabled on empty text, so nothing is lost:
                 // applying "[]" to a route that has no stops did nothing
                 // anyway.
-                text = route.customerCount == 0 ? "" : RouteStore.exportJSON(route)
+                if let initialText {
+                    text = initialText
+                } else {
+                    text = route.customerCount == 0 ? "" : RouteStore.exportJSON(route)
+                }
             }
         }
         .interactiveDismissDisabled(busy)
