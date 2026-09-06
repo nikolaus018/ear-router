@@ -309,11 +309,18 @@ struct ImportSummary: View {
             if !result.approximate.isEmpty {
                 Section("Bitte prüfen") {
                     ForEach(Array(result.approximate.enumerated()), id: \.offset) { _, a in
-                        Label(
-                            "\(a.kunde) — \(a.precision.shortLabel)",
-                            systemImage: "exclamationmark.triangle.fill")
-                            .font(.subheadline)
-                            .foregroundStyle(Color.warning)
+                        // Triangle in the full-strength amber, the name in the
+                        // darker one. Amber text on a white list row measures
+                        // about 2.1:1, and this is the section telling the
+                        // driver which addresses to go and look at.
+                        Label {
+                            Text("\(a.kunde) — \(a.precision.shortLabel)")
+                                .foregroundStyle(Color.warningText)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(Color.warning)
+                        }
+                        .font(.subheadline)
                     }
                 }
             }

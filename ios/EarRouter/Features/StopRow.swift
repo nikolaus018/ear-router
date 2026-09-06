@@ -40,7 +40,6 @@ struct StopRow: View {
     }
 
     let stop: Stop
-    let isNext: Bool
     /// How many customers share this front door, this one included.
     var sameDoorCount: Int = 1
     /// Position among the customers — the same number the map badge shows.
@@ -117,11 +116,29 @@ struct StopRow: View {
 
     // MARK: - Details
 
+    /// Name, address, and then everything else the stop knows about itself
+    /// folded into one running line.
+    ///
+    /// It used to be a stack. Floor, Paket, Notiz, "2 Kunden an dieser Tür",
+    /// the precision warning and the onward leg each got their own line, and
+    /// four of the six were filled chips — so one customer could occupy eight
+    /// lines and four coloured blocks, and a tour of thirty of them was a wall
+    /// of pills with nothing subordinate to anything else. A list where
+    /// everything is emphasised has no emphasis in it.
+    ///
+    /// Now there is a hierarchy. The name and the address lead. Underneath
+    /// them, one strip of plain text carries the facts a driver checks on the
+    /// way past — what to carry up, which floor, how many bells, how sure we
+    /// are of the address — as runs separated by middots, which wraps like
+    /// prose instead of stacking like a form. Colour is spent on exactly two
+    /// things: a multi-item drop, because it changes what comes out of the van,
+    /// and the driver's own note, because it is the one line that has to be
+    /// read before ringing rather than skimmed after.
     private var details: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Text(title)
-                    .font(isNext ? .headline : .body.weight(.medium))
+                    .font(.body.weight(.medium))
                     .strikethrough(stop.delivered && stop.kind == .customer)
                     .foregroundStyle(dimmed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                 if stop.pinned {
@@ -138,45 +155,26 @@ struct StopRow: View {
                     .foregroundStyle(.secondary)
             }
 
-            if let stockwerk, !stockwerk.isEmpty {
-                StockwerkBadge(text: stockwerk, dimmed: stop.delivered)
+            if let meta {
+                meta
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineSpacing(1)
             }
 
-            if let paket = stop.paket, !paket.isEmpty {
-                PaketBadge(
-                    text: paket,
-                    quantity: PaketParser.totalQty(paket),
-                    dimmed: stop.delivered)
-            }
-
-            if let notiz = stop.notiz, !notiz.isEmpty {
-                NotizBadge(text: notiz, dimmed: stop.delivered)
-            }
-
-            if sameDoorCount > 1 {
-                Label("\(sameDoorCount) Kunden an dieser Tür", systemImage: "person.2.fill")
-                    .font(.caption)
-                    .foregroundStyle(Color.brand)
-            }
-
-            if let precision = stop.precision {
-                // Not a `Label`: its icon centres itself against the whole text
-                // block, so on the two-line warnings this wraps to, the triangle
-                // floated in the middle of the gap instead of sitting with the
-                // first line.
-                //
-                // The triangle keeps the full-strength amber and the words do
-                // not: #FF9500 as 12pt text on a white row measures about
-                // 2.1:1, which is a colour you can see but not read — and this
-                // app is read in a car in daylight. The glyph carries the
-                // signal, `warningText` carries the sentence.
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Image(systemName: precision.symbol)
-                        .foregroundStyle(Color.warning)
-                    Text(precision.label)
-                        .foregroundStyle(Color.warningText)
+            if let notiz = stop.notiz?.trimmed, !notiz.isEmpty {
+                // Still its own line, and still the one coloured thing on an
+                // ordinary row. A note is a sentence someone wrote — "Hund im
+                // Hof", "bitte laut klingeln" — and folding it into the strip
+                // above would bury it among the facts it is meant to interrupt.
+                Label {
+                    Text(notiz).italic().lineLimit(3)
+                } icon: {
+                    Image(systemName: "note.text")
                 }
-                .font(.caption)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(dimmed ? Color.secondary : Color.warningText)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             if stop.excluded {
@@ -185,9 +183,12 @@ struct StopRow: View {
                     .foregroundStyle(.secondary)
             }
 
-            if let leg = Format.leg(km: stop.nextLegKm, minutes: stop.nextLegMin) {
+            // Only while the stop is still ahead. The leg belongs to the drive
+            // *out* of this stop, so on one already ticked off it is a distance
+            // the van has covered — true, and no longer anybody's question.
+            if !dimmed, let leg = Format.leg(km: stop.nextLegKm, minutes: stop.nextLegMin) {
                 Text("→ \(leg)")
-                    .font(.caption.monospacedDigit())
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
         }
@@ -196,6 +197,60 @@ struct StopRow: View {
         // stay their own elements — they are the things you act on.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
+    }
+
+    /// The strip under the address, built with `Text` concatenation rather than
+    /// an `HStack` of views: composed this way it is a single paragraph, so it
+    /// wraps mid-strip at large text sizes instead of overflowing off the right
+    /// edge or forcing every fact onto its own line.
+    private var meta: Text? {
+        var runs: [Text] = []
+
+        if let paket = stop.paket?.trimmed, !paket.isEmpty {
+            // Loud only when there is more than one thing to carry. That is the
+            // fact which changes what the driver picks up before shutting the
+            // van, and it is the only place an ordinary row spends the app's
+            // colour.
+            let run = Self.run("shippingbox.fill", paket)
+            runs.append(
+                PaketParser.totalQty(paket) > 1 && !dimmed
+                    ? run.fontWeight(.semibold).foregroundStyle(Color.brand)
+                    : run)
+        }
+
+        if let stockwerk = stockwerk?.trimmed, !stockwerk.isEmpty {
+            runs.append(Self.run("stairs", NextStopCard.floorLabel(stockwerk)))
+        }
+
+        if sameDoorCount > 1 {
+            runs.append(Self.run("person.2.fill", "\(sameDoorCount) an dieser Tür"))
+        }
+
+        if let precision = stop.precision {
+            // The short form — "≈ Straße" — not the full sentence. The sentence
+            // explaining what an approximate pin means belongs where the driver
+            // does something about it: the next-stop card and the editor. In a
+            // list of thirty rows it was a wrapped two-line paragraph on every
+            // stop the geocoder was unsure about.
+            let run = Self.run(precision.symbol, precision.shortLabel)
+            runs.append(dimmed ? run : run.foregroundStyle(Color.warningText))
+        }
+
+        guard !runs.isEmpty else { return nil }
+        let separator = Text(" · ")
+        return runs.dropFirst().reduce(runs[0]) { $0 + separator + $1 }
+    }
+
+    /// One icon-and-words run of the strip.
+    ///
+    /// A narrow *no-break* space between the glyph and its words, not an
+    /// ordinary one: the strip is a single wrapping paragraph, so an ordinary
+    /// space is a place the line is allowed to end — and on a row whose Paket
+    /// runs long that is exactly where it ended, leaving a warning triangle
+    /// alone at the end of one line and the words it belongs to at the start of
+    /// the next.
+    private static func run(_ symbol: String, _ text: String) -> Text {
+        Text(Image(systemName: symbol)) + Text("\u{202F}" + text)
     }
 
     // MARK: - Trailing controls
@@ -317,7 +372,6 @@ struct StopListRow: View {
     var body: some View {
         StopRow(
             stop: stop,
-            isNext: false,
             sameDoorCount: sameDoorCount,
             number: number,
             stockwerk: stockwerk,
@@ -391,66 +445,13 @@ struct StopListRow: View {
     }
 }
 
-/// What the driver is carrying to this door.
+/// A saved floor, in the list of every door ever answered for.
 ///
-/// A multi-item drop is a *filled* badge with the count in it, a single item a
-/// tinted one — the difference is deliberately loud, because "two meals here"
-/// is the thing you need to know before you shut the van door and walk up.
-///
-/// Once the stop is delivered the fill goes away entirely rather than turning
-/// grey: a filled grey block is just as heavy on the page as the coloured one
-/// it replaced, so a finished list stayed as busy as an unfinished one.
-struct PaketBadge: View {
-    let text: String
-    let quantity: Int
-    let dimmed: Bool
-
-    private var multi: Bool { quantity > 1 }
-
-    var body: some View {
-        HStack(spacing: 5) {
-            if multi {
-                Text("\(quantity)")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(dimmed ? Color.secondary : Color.brand)
-                    .frame(width: 15, height: 15)
-                    .background(
-                        Circle().fill(
-                            dimmed ? AnyShapeStyle(.clear) : AnyShapeStyle(Color.onBrand)))
-            } else {
-                Image(systemName: "shippingbox.fill").font(.caption2)
-            }
-            Text(text).lineLimit(2)
-        }
-        .font(.caption.weight(multi ? .bold : .medium))
-        .foregroundStyle(foreground)
-        .padding(.horizontal, dimmed ? 0 : 7)
-        .padding(.vertical, dimmed ? 0 : 3)
-        .background(background, in: .rect(cornerRadius: 6))
-    }
-
-    private var foreground: Color {
-        if dimmed { return .secondary }
-        return multi ? .onBrand : .brand
-    }
-
-    private var background: AnyShapeStyle {
-        if dimmed { return AnyShapeStyle(.clear) }
-        return multi ? AnyShapeStyle(Color.brand) : AnyShapeStyle(Color.brand.opacity(0.18))
-    }
-}
-
-/// The free-text note — a door code, a dog, "bitte laut klingeln". Amber
-/// because it is a thing to read before arriving, not a thing to skim past.
-/// The floor, on the row — the same kind of label as the Paket beside it.
-///
-/// Same geometry, same weight, same corner: a driver reads the row as one strip
-/// of small facts, and a badge that is built differently from the two next to
-/// it reads as something that needs acting on rather than something to know.
-/// Only the tint differs — the Paket badge carries the app's colour because it
-/// is the delivery itself, this one is grey because a floor is context. At a
-/// glance the difference between "two menus" and "third floor" has to be
-/// instant, and colour-against-no-colour is the fastest version of that.
+/// The last badge of its kind. On a stop row a floor is now one run of the
+/// plain strip under the address, because there it competes with the customer's
+/// name for a driver's attention and loses on purpose. Here it is the whole
+/// subject of the row — this screen is a list *of floors* — so it keeps the
+/// chip, which is what makes "3. Stock" and "2/Tür 14" scan as one column.
 struct StockwerkBadge: View {
     let text: String
     let dimmed: Bool
@@ -458,7 +459,7 @@ struct StockwerkBadge: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: "stairs").font(.caption2)
-            Text(label).lineLimit(1)
+            Text(NextStopCard.floorLabel(text)).lineLimit(1)
         }
         .font(.caption.weight(.medium))
         .foregroundStyle(dimmed ? Color.secondary : Color.floorText)
@@ -467,33 +468,6 @@ struct StockwerkBadge: View {
         .background(
             dimmed ? AnyShapeStyle(.clear) : AnyShapeStyle(Color.floor.opacity(0.18)),
             in: .rect(cornerRadius: 6))
-        .accessibilityLabel("Stockwerk \(label)")
-    }
-
-    /// A bare number is a floor and reads better said out: "3" becomes
-    /// "3. Stock". Anything the driver spelled out themselves — "EG",
-    /// "2/Tür 14", "Dachgeschoss" — is left exactly as they wrote it.
-    private var label: String {
-        let t = text.trimmed
-        return t.allSatisfy(\.isNumber) && !t.isEmpty ? "\(t). Stock" : t
-    }
-}
-
-struct NotizBadge: View {
-    let text: String
-    let dimmed: Bool
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 5) {
-            Image(systemName: "note.text").font(.caption2)
-            Text(text).italic().lineLimit(3)
-        }
-        .font(.caption.weight(.medium))
-        .foregroundStyle(dimmed ? Color.secondary : Color.warningText)
-        .padding(.horizontal, dimmed ? 0 : 7)
-        .padding(.vertical, dimmed ? 0 : 3)
-        .background(
-            dimmed ? AnyShapeStyle(.clear) : AnyShapeStyle(Color.warning.opacity(0.16)),
-            in: .rect(cornerRadius: 6))
+        .accessibilityLabel("Stockwerk \(NextStopCard.floorLabel(text))")
     }
 }

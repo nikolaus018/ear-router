@@ -184,22 +184,31 @@ struct RouteDetailView: View {
                 }
             }
 
+            // Not a section with a header and a row in it: the card draws its
+            // own surface, so the list's inset-grouped chrome is cleared out
+            // from under it. It keeps its place *in* the list rather than
+            // floating above one, because the driver scrolls past it to the
+            // rest of the tour constantly and a pinned header would eat a
+            // sixth of a phone screen for the whole shift.
             if let next = snapshot.nextOpen, search.isEmpty {
-                Section("Nächster Stopp") {
-                    StopRow(
-                        stop: next, isNext: true,
-                        sameDoorCount: snapshot.doorCount(next),
+                Section {
+                    NextStopCard(
+                        stop: next,
                         number: snapshot.number(next),
                         stockwerk: floors[next.id],
-                        onToggleDelivered: { setDelivered(next, true) },
-                        onNavigate: { open(next) })
-                        .contentShape(.rect)
-                        .onTapGesture { editingStop = next }
-                        // Faintly tinted. This row is a *repeat* of one further
-                        // down the list, and without something marking it as
-                        // pinned-to-the-top the same customer appearing twice on
-                        // one screen just looks like a bug.
-                        .listRowBackground(Color.brandWash)
+                        sameDoorCount: snapshot.doorCount(next),
+                        deliveredCount: snapshot.deliveredCount,
+                        customerCount: snapshot.customerCount,
+                        openCount: snapshot.openCount,
+                        remainingKm: snapshot.remainingKm,
+                        remainingMinutes: snapshot.remainingMinutes,
+                        onNavigate: { open(next) },
+                        onDelivered: { setDelivered(next, true) },
+                        onEditStockwerk: { stockwerkStop = next })
+                        .listRowInsets(
+                            EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
             }
 
@@ -603,15 +612,18 @@ struct RouteSnapshot {
     }
 }
 
-/// The line under the stop list: what is still to drive, and what the whole
-/// tour comes to.
+/// The line under the stop list: what the whole tour comes to.
 ///
-/// The total on its own was a number for the morning. Once the first meal is
-/// delivered the question stops being "how long is this tour" and becomes "how
-/// much of it is left" — so that is what leads, with the total kept underneath
-/// it for the planning it is still good for. Hidden entirely while the list is
-/// filtered: the search shows a handful of stops out of context, and a distance
-/// covering the ones it is not showing would only be read as belonging to them.
+/// It used to lead with what was still to drive. The next-stop card says that
+/// now, at the top of the screen where a driver halfway through a shift is
+/// already looking, so repeating it down here was the same sentence twice on
+/// one screen. What is left is the planning number — the length of the tour as
+/// a whole — plus the one case the card cannot cover, because the card is gone
+/// by then: the last meal is handed over and the van still has to get home.
+///
+/// Hidden entirely while the list is filtered: the search shows a handful of
+/// stops out of context, and a distance covering the ones it is not showing
+/// would only be read as belonging to them.
 struct RouteFooter: View {
     let snapshot: RouteSnapshot
     let searching: Bool
@@ -620,8 +632,8 @@ struct RouteFooter: View {
         if !searching, snapshot.totalKm > 0,
            let total = Format.leg(km: snapshot.totalKm, minutes: snapshot.totalMinutes) {
             VStack(alignment: .leading, spacing: 2) {
-                if let remaining = remainingLine {
-                    Text(remaining)
+                if let home = wayHome {
+                    Text(home)
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(Color.primary)
                 }
@@ -631,23 +643,14 @@ struct RouteFooter: View {
         }
     }
 
-    /// `nil` before the first delivery, when "still to drive" and "the whole
-    /// tour" are the same number written twice.
-    private var remainingLine: String? {
-        guard snapshot.deliveredCount > 0 else { return nil }
-        let distance = Format.leg(
+    /// Only once every meal is handed over. Until then the card above is
+    /// carrying "how much is left", and this is the tour's total.
+    private var wayHome: String? {
+        guard snapshot.isComplete else { return nil }
+        guard let distance = Format.leg(
             km: snapshot.remainingKm, minutes: snapshot.remainingMinutes)
-
-        if snapshot.isComplete {
-            // The last meal is handed over but the van still has to get home,
-            // and that drive is the only thing left on the tour.
-            guard let distance else { return "Alle Stopps geliefert" }
-            return "Alle Stopps geliefert · Rückfahrt \(distance)"
-        }
-
-        let stops = "Noch \(Format.stops(snapshot.openCount))"
-        guard let distance else { return stops }
-        return "\(stops) · \(distance)"
+        else { return "Alle Stopps geliefert" }
+        return "Alle Stopps geliefert · Rückfahrt \(distance)"
     }
 }
 

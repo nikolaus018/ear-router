@@ -49,6 +49,16 @@ extension Color {
             : UIColor(red: 0.204, green: 0.780, blue: 0.349, alpha: 1) // #34C759
     })
 
+    /// Text and glyphs on a `success`-filled surface — the "Geliefert" button
+    /// on the next-stop card.
+    ///
+    /// Near-black in both appearances, for the same reason `onBrand` is
+    /// near-black in the dark: system green is a high-luminance colour, and
+    /// white on it measures about 2.2:1 in either mode. Against the same green,
+    /// near-black measures 8.7:1. A bright green button with dark type on it is
+    /// the readable version of the button everyone draws in white.
+    static let onSuccess = Color(uiColor: UIColor(white: 0.07, alpha: 1))
+
     /// An approximate pin — "double check this one before you set off".
     static let warning = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark
@@ -216,11 +226,15 @@ extension Precision {
         }
     }
 
+    /// The two-word form, for a list row and the import report. Joined with a
+    /// non-breaking space: it is two tokens that mean nothing apart, and in the
+    /// stop row's wrapping strip an ordinary space let "≈" end one line and
+    /// "Bezirk" start the next.
     var shortLabel: String {
         switch self {
         case .exact: "genau"
-        case .street: "≈ Straße"
-        case .district: "≈ Bezirk"
+        case .street: "≈\u{00A0}Straße"
+        case .district: "≈\u{00A0}Bezirk"
         }
     }
 
