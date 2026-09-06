@@ -62,6 +62,25 @@ extension Color {
             : UIColor(white: 1.0, alpha: 0.9)
     })
 
+    /// The floor badge's fill. Blue is the one tint left that carries no
+    /// meaning in this app yet — red is the delivery itself, amber is a warning
+    /// or a note, green is done — so a floor reads as a fact rather than as
+    /// something that needs acting on.
+    static let floor = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.039, green: 0.518, blue: 1.0, alpha: 1) // #0A84FF
+            : UIColor(red: 0.0, green: 0.478, blue: 1.0, alpha: 1)   // #007AFF
+    })
+
+    /// Text on a `floor`-tinted surface, for the same reason `warningText`
+    /// exists: the fill at 16% is a background, not a colour to set 12pt
+    /// semibold type in.
+    static let floorText = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.42, green: 0.71, blue: 1.0, alpha: 1)   // #6BB5FF
+            : UIColor(red: 0.0, green: 0.32, blue: 0.68, alpha: 1)   // #0052AD
+    })
+
     /// An approximate pin — "double check this one before you set off".
     static let warning = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark

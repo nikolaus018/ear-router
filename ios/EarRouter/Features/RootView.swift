@@ -45,6 +45,6 @@ struct RootView: View {
 #Preview {
     RootView()
         .environment(RouteFocus())
-        .modelContainer(for: [Route.self, Stop.self], inMemory: true)
+        .modelContainer(for: [Route.self, Stop.self, StockwerkNote.self], inMemory: true)
         .tint(Color.brand)
 }

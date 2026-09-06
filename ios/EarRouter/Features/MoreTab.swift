@@ -60,6 +60,25 @@ struct MoreTab: View {
 
             Section {
                 NavigationLink {
+                    StockwerkListView()
+                } label: {
+                    SettingsRow(
+                        icon: "stairs", tint: .floor, title: "Stockwerke",
+                        detail: "Gespeicherte Türen")
+                }
+                NavigationLink {
+                    BackupView()
+                } label: {
+                    SettingsRow(
+                        icon: "externaldrive.fill", tint: .green, title: "Sicherung",
+                        detail: "Alle Daten sichern und laden")
+                }
+            } footer: {
+                Text("Touren, Stopps und Stockwerke liegen nur auf diesem Gerät.")
+            }
+
+            Section {
+                NavigationLink {
                     AdvancedSettingsView()
                 } label: {
                     SettingsRow(icon: "gearshape.fill", tint: .gray, title: "Erweitert")

@@ -45,6 +45,9 @@ struct StopRow: View {
     var sameDoorCount: Int = 1
     /// Position among the customers — the same number the map badge shows.
     var number: Int?
+    /// What is known about this door's floor, from `StockwerkNote`. `nil` when this
+    /// door has not been answered for yet.
+    var stockwerk: String?
     var onToggleDelivered: (() -> Void)?
     var onNavigate: (() -> Void)?
 
@@ -133,6 +136,10 @@ struct StopRow: View {
                 Text(stop.listAddress)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+            }
+
+            if let stockwerk, !stockwerk.isEmpty {
+                StockwerkBadge(text: stockwerk, dimmed: stop.delivered)
             }
 
             if let paket = stop.paket, !paket.isEmpty {
@@ -290,11 +297,13 @@ struct StopListRow: View {
     let stop: Stop
     var sameDoorCount: Int = 1
     var number: Int?
+    var stockwerk: String?
     let onTap: () -> Void
     let onToggleDelivered: () -> Void
     let onDelete: () -> Void
     let onNavigate: () -> Void
     let onShowOnMap: () -> Void
+    var onEditStockwerk: (() -> Void)?
 
     private var isCustomer: Bool { stop.kind == .customer }
 
@@ -304,6 +313,7 @@ struct StopListRow: View {
             isNext: false,
             sameDoorCount: sameDoorCount,
             number: number,
+            stockwerk: stockwerk,
             onToggleDelivered: isCustomer ? onToggleDelivered : nil,
             onNavigate: onNavigate)
             // Opens the editor. The trailing buttons are `.borderless`, so they
@@ -356,6 +366,11 @@ struct StopListRow: View {
                 stop.delivered ? "Als offen markieren" : "Als zugestellt markieren",
                 systemImage: stop.delivered ? "arrow.uturn.backward" : "checkmark.circle",
                 action: onToggleDelivered)
+            if let onEditStockwerk {
+                Button(
+                    stockwerk == nil ? "Stockwerk eintragen" : "Stockwerk ändern",
+                    systemImage: "stairs", action: onEditStockwerk)
+            }
             Divider()
             Button("Bearbeiten", systemImage: "pencil", action: onTap)
             Button("Löschen", systemImage: "trash", role: .destructive, action: onDelete)
@@ -420,6 +435,41 @@ struct PaketBadge: View {
 
 /// The free-text note — a door code, a dog, "bitte laut klingeln". Amber
 /// because it is a thing to read before arriving, not a thing to skim past.
+/// The floor, on the row — the same kind of label as the Paket beside it.
+///
+/// Same geometry, same weight, same corner: a driver reads the row as one strip
+/// of small facts, and a badge that is built differently from the two next to
+/// it reads as something that needs acting on rather than something to know.
+/// Only the tint differs, because at a glance the difference between "two
+/// menus" and "third floor" has to be instant.
+struct StockwerkBadge: View {
+    let text: String
+    let dimmed: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "stairs").font(.caption2)
+            Text(label).lineLimit(1)
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(dimmed ? Color.secondary : Color.floorText)
+        .padding(.horizontal, dimmed ? 0 : 7)
+        .padding(.vertical, dimmed ? 0 : 3)
+        .background(
+            dimmed ? AnyShapeStyle(.clear) : AnyShapeStyle(Color.floor.opacity(0.18)),
+            in: .rect(cornerRadius: 6))
+        .accessibilityLabel("Stockwerk \(label)")
+    }
+
+    /// A bare number is a floor and reads better said out: "3" becomes
+    /// "3. Stock". Anything the driver spelled out themselves — "EG",
+    /// "2/Tür 14", "Dachgeschoss" — is left exactly as they wrote it.
+    private var label: String {
+        let t = text.trimmed
+        return t.allSatisfy(\.isNumber) && !t.isEmpty ? "\(t). Stock" : t
+    }
+}
+
 struct NotizBadge: View {
     let text: String
     let dimmed: Bool

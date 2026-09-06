@@ -34,6 +34,15 @@ struct RouteDetailView: View {
     /// Briefly tinted after arriving from a map pin, so the driver's eye
     /// lands on the row that was tapped rather than on the middle of a list.
     @State private var highlighted: UUID?
+    /// The stop whose floor is being asked about — set by ticking a delivery
+    /// off at a door nothing is known about yet, or from the row's own menu.
+    @State private var stockwerkStop: Stop?
+
+    /// Every door ever answered for. Queried whole rather than per row: this is
+    /// a few thousand short rows after years of tours, one pass turns it into
+    /// the lookup below, and a `@Query` is what makes a floor typed into the
+    /// sheet appear on the row behind it without anything having to reload.
+    @Query private var stockwerkNotes: [StockwerkNote]
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -65,6 +74,7 @@ struct RouteDetailView: View {
         // every tick of a delivery. Derived here, it is one of each.
         let snapshot = RouteSnapshot(route)
         let visible = visibleStops(in: snapshot)
+        let floors = stockwerkNotes.floors(for: snapshot.ordered)
 
         return Group {
             if visible.isEmpty && !search.isEmpty {
@@ -73,7 +83,7 @@ struct RouteDetailView: View {
                 // found.
                 ContentUnavailableView.search(text: search)
             } else {
-                stops(snapshot, visible: visible)
+                stops(snapshot, visible: visible, floors: floors)
             }
         }
         // The one place in-flight work is reported. `busy` already carried a
@@ -114,6 +124,7 @@ struct RouteDetailView: View {
                 Task { await delete(stop) }
             }
         }
+        .stockwerkPrompt(for: $stockwerkStop)
         .sheet(isPresented: $showingJSON) {
             JSONEditorSheet(route: route)
         }
@@ -163,7 +174,9 @@ struct RouteDetailView: View {
 
     // MARK: - Pieces
 
-    private func stops(_ snapshot: RouteSnapshot, visible: [Stop]) -> some View {
+    private func stops(
+        _ snapshot: RouteSnapshot, visible: [Stop], floors: [UUID: String]
+    ) -> some View {
         List {
             if route.needsOptimize {
                 Section {
@@ -177,6 +190,7 @@ struct RouteDetailView: View {
                         stop: next, isNext: true,
                         sameDoorCount: snapshot.doorCount(next),
                         number: snapshot.number(next),
+                        stockwerk: floors[next.id],
                         onToggleDelivered: { setDelivered(next, true) },
                         onNavigate: { open(next) })
                         .contentShape(.rect)
@@ -191,7 +205,7 @@ struct RouteDetailView: View {
 
             Section {
                 ForEach(visible) { stop in
-                    row(for: stop, in: snapshot)
+                    row(for: stop, in: snapshot, floors: floors)
                 }
             } header: {
                 Text(listHeader(snapshot, visible: visible))
@@ -244,16 +258,20 @@ struct RouteDetailView: View {
     /// Extracted for the same reason `StopListRow` was: adding one more
     /// modifier inside the `ForEach` pushed the enclosing `List` past what the
     /// type checker will solve in reasonable time.
-    private func row(for stop: Stop, in snapshot: RouteSnapshot) -> some View {
+    private func row(
+        for stop: Stop, in snapshot: RouteSnapshot, floors: [UUID: String]
+    ) -> some View {
         StopListRow(
             stop: stop,
             sameDoorCount: snapshot.doorCount(stop),
             number: snapshot.number(stop),
+            stockwerk: floors[stop.id],
             onTap: { tapped(stop) },
             onToggleDelivered: { setDelivered(stop, !stop.delivered) },
             onDelete: { deletingStop = stop },
             onNavigate: { open(stop) },
-            onShowOnMap: { focus.showOnMap(stop: stop, of: route) })
+            onShowOnMap: { focus.showOnMap(stop: stop, of: route) },
+            onEditStockwerk: { stockwerkStop = stop })
             // The id is the scroll target `reveal` aims at.
             .id(stop.id)
             .listRowBackground(highlighted == stop.id ? Color.brand.opacity(0.12) : nil)
@@ -348,10 +366,21 @@ struct RouteDetailView: View {
         }
     }
 
+    /// Ticking a delivery off — and, on the way past, the one moment worth
+    /// asking which floor this was.
+    ///
+    /// Only on the tick going *on*, and only once the write has succeeded: a
+    /// driver correcting a mis-tap is not standing in the stairwell, and a
+    /// question on top of a failed save would bury the error it needs to
+    /// report.
     private func setDelivered(_ stop: Stop, _ value: Bool) {
+        var ok = false
         save("Konnte den Lieferstatus nicht speichern.") {
             try RouteStore.setDelivered(stop, value, in: context)
+            ok = true
         }
+        guard ok, value, StockwerkStore.shouldAsk(stop, in: context) else { return }
+        stockwerkStop = stop
     }
 
     /// Starts one of the two long network jobs — optimizing, or re-checking

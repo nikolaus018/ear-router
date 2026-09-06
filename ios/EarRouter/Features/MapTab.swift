@@ -14,6 +14,14 @@ struct MapTab: View {
     @State private var style: MapStyleChoice = .standard
     @State private var selectedStopID: UUID?
     @State private var error: AppError?
+    /// The stop whose floor is being asked about, once its card has closed.
+    @State private var stockwerkStop: Stop?
+    /// Set while that card is still closing — see `cardDismissed`.
+    @State private var pendingStockwerkStop: Stop?
+
+    /// Every door ever answered for — the same query the stop list runs, so a
+    /// floor typed on one screen is on the other one immediately.
+    @Query private var stockwerkNotes: [StockwerkNote]
     /// The measured height of the tapped stop's card — see the sheet below.
     @State private var previewHeight: CGFloat = 200
 
@@ -190,7 +198,7 @@ struct MapTab: View {
                 }
             }
         }
-        .sheet(item: sheetStop) { stop in
+        .sheet(item: sheetStop, onDismiss: cardDismissed) { stop in
             // Sized to what the stop actually has, not to a fixed guess. A
             // fixed height gave a customer with no Paket and no Notiz the same
             // card as one carrying both, leaving a band of empty material under
@@ -198,6 +206,7 @@ struct MapTab: View {
             StopPreviewSheet(
                 stop: stop,
                 number: customerNumber(of: stop),
+                stockwerk: floor(for: stop),
                 onNavigate: { navigate(to: stop) },
                 onToggleDelivered: { toggleDelivered(stop) },
                 onShowInList: {
@@ -218,6 +227,7 @@ struct MapTab: View {
                 .presentationBackground(.regularMaterial)
                 .presentationDragIndicator(.visible)
         }
+        .stockwerkPrompt(for: $stockwerkStop)
         .errorAlert($error)
     }
 
@@ -238,14 +248,56 @@ struct MapTab: View {
 
     private func toggleDelivered(_ stop: Stop) {
         guard stop.kind == .customer else { return }
+        let nowDelivered = !stop.delivered
         do {
-            try RouteStore.setDelivered(stop, !stop.delivered, in: context)
+            try RouteStore.setDelivered(stop, nowDelivered, in: context)
         } catch {
             // The same tick as in the stop list, and it reports itself the same
             // way there. Swallowed here, a failed write left the circle
             // apparently unresponsive.
             self.error = AppError.message("Konnte den Lieferstatus nicht speichern.")
+            return
         }
+        guard nowDelivered, StockwerkStore.shouldAsk(stop, in: context) else { return }
+        askForStockwerk(stop)
+    }
+
+    /// This door's floor, read off the notes the query already holds rather
+    /// than fetched again — and, being the query's own data, it redraws the
+    /// card the moment the prompt writes an answer.
+    private func floor(for stop: Stop) -> String? {
+        guard let key = StockwerkKey.make(for: stop) else { return nil }
+        let value = stockwerkNotes.first { $0.key == key }?.stockwerk?.trimmed
+        return (value?.isEmpty ?? true) ? nil : value
+    }
+
+    /// The floor question, asked from the map.
+    ///
+    /// The pin's own card is a sheet, and one sheet cannot open over another —
+    /// so the card is closed and the question is left waiting for it. The
+    /// handover is the card's own `onDismiss` rather than a timer: a fixed wait
+    /// is a guess about an animation, and the guess is wrong in both
+    /// directions — too short and the presentation is swallowed and the
+    /// customer is never asked, too long and the question arrives on whatever
+    /// screen the driver has moved to since.
+    private func askForStockwerk(_ stop: Stop) {
+        pendingStockwerkStop = stop
+        selectedStopID = nil
+    }
+
+    /// Called when the pin's card has finished closing.
+    ///
+    /// Nothing is asked if the driver has left the map in the meantime: this
+    /// sheet belongs to a tab that stays alive behind the others, and a
+    /// question presented on it would sit there unseen and ambush them the next
+    /// time they opened Karte, about a customer they finished several stops
+    /// ago. The floor is not lost — the customer is simply asked about at the
+    /// next delivery, which is what `shouldAsk` already says.
+    private func cardDismissed() {
+        guard let stop = pendingStockwerkStop else { return }
+        pendingStockwerkStop = nil
+        guard focus.tab == .map else { return }
+        stockwerkStop = stop
     }
 
     private var sheetStop: Binding<Stop?> {
@@ -767,6 +819,8 @@ enum MapStyleChoice: String, CaseIterable, Identifiable {
 struct StopPreviewSheet: View {
     let stop: Stop
     var number: Int?
+    /// The floor, when this door has been answered for.
+    var stockwerk: String?
     let onNavigate: () -> Void
     let onToggleDelivered: () -> Void
     let onShowInList: () -> Void
@@ -857,6 +911,13 @@ struct StopPreviewSheet: View {
     private var details: some View {
         if hasDetails {
             VStack(alignment: .leading, spacing: 8) {
+                if let stockwerk, !stockwerk.isEmpty {
+                    // First in the card for the same reason it is first on the
+                    // row: it is what the driver needs before they get out.
+                    Label(stockwerk, systemImage: "stairs")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.floorText)
+                }
                 if let paket = stop.paket, !paket.isEmpty {
                     Label(paket, systemImage: "shippingbox").font(.subheadline)
                 }
@@ -906,6 +967,7 @@ struct StopPreviewSheet: View {
 
     private var hasDetails: Bool {
         !(stop.paket ?? "").isEmpty || !(stop.notiz ?? "").isEmpty || stop.precision != nil
+            || !(stockwerk ?? "").isEmpty
     }
 }
 
