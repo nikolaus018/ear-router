@@ -21,6 +21,10 @@ struct MoreTab: View {
 
     var body: some View {
         List {
+            // One tint for the whole section rather than a different colour per
+            // row. These three are the app's own tools and they belong
+            // together; giving each its own hue turned a three-row section into
+            // a paint chart, and the glyphs already tell them apart.
             Section("Zusteller-Tools") {
                 Button {
                     showingGourmet = true
@@ -33,14 +37,14 @@ struct MoreTab: View {
                     showingTuercode = true
                 } label: {
                     SettingsRow(
-                        icon: "key.fill", tint: .indigo, title: "Türcode",
+                        icon: "key.fill", tint: .brand, title: "Türcode",
                         detail: "Buchstaben in Ziffern")
                 }
                 Button {
                     showingKilometer = true
                 } label: {
                     SettingsRow(
-                        icon: "gauge.with.dots.needle.bottom.50percent", tint: .teal,
+                        icon: "gauge.with.dots.needle.bottom.50percent", tint: .brand,
                         title: "Kilometerstand", detail: "Gefahrene Kilometer")
                 }
             }
@@ -63,7 +67,7 @@ struct MoreTab: View {
                     StockwerkListView()
                 } label: {
                     SettingsRow(
-                        icon: "stairs", tint: .floor, title: "Stockwerke",
+                        icon: "stairs", tint: .brown, title: "Stockwerke",
                         detail: "Gespeicherte Türen")
                 }
                 NavigationLink {
@@ -342,13 +346,13 @@ struct AboutView: View {
         List {
             Section {
                 VStack(spacing: 12) {
-                    Image("ASBOLogo")
+                    Image("AppMark")
                         .resizable()
                         .scaledToFit()
                         .frame(width: 76, height: 76)
-                        .clipShape(.rect(cornerRadius: 17))
+                        .clipShape(.rect(cornerRadius: 17, style: .continuous))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 17)
+                            RoundedRectangle(cornerRadius: 17, style: .continuous)
                                 .stroke(.primary.opacity(0.08), lineWidth: 0.5))
 
                     VStack(spacing: 3) {
@@ -358,7 +362,7 @@ struct AboutView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Text("Ein Service des Arbeiter-Samariter-Bundes Österreichs")
+                    Text("Für die Essen-auf-Rädern-Touren des\nArbeiter-Samariter-Bundes Österreichs")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

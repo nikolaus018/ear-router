@@ -199,7 +199,7 @@ struct RouteDetailView: View {
                         // down the list, and without something marking it as
                         // pinned-to-the-top the same customer appearing twice on
                         // one screen just looks like a bug.
-                        .listRowBackground(Color.brand.opacity(0.07))
+                        .listRowBackground(Color.brandWash)
                 }
             }
 
@@ -274,7 +274,7 @@ struct RouteDetailView: View {
             onEditStockwerk: { stockwerkStop = stop })
             // The id is the scroll target `reveal` aims at.
             .id(stop.id)
-            .listRowBackground(highlighted == stop.id ? Color.brand.opacity(0.12) : nil)
+            .listRowBackground(highlighted == stop.id ? Color.brandWashStrong : nil)
     }
 
     @ToolbarContentBuilder

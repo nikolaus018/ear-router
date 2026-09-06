@@ -553,13 +553,14 @@ struct MapTab: View {
     }
 
     /// Green once delivered, amber while the location is only approximate,
-    /// otherwise the ordinary stop blue. The colour carries the same meaning it
-    /// does in the list.
+    /// otherwise the app's indigo. The colour carries the same meaning it does
+    /// in the list, and the depot and via points stay graphite: they are the
+    /// shape of the tour, not stops with a state to change.
     private static func tint(for stop: Stop) -> Color {
-        guard stop.kind == .customer else { return .brand }
+        guard stop.kind == .customer else { return .structure }
         if stop.delivered { return .success }
         if stop.precision != nil { return .warning }
-        return .blue
+        return .brand
     }
 
     private static func visualState(for stop: Stop) -> Int {
@@ -632,11 +633,12 @@ private struct RouteMapCanvas: View {
             }
         }
         .mapStyle(style.mapStyle)
-        // Blue, not the app's brand red. `UserAnnotation` and the location
-        // button inherit the app tint, which made the driver's own position a
-        // red dot on a map whose every other red thing is a stop or the route.
-        // Blue is what a user-location dot is on every map anyone has ever
-        // used, and the markers set their own tint so nothing else moves.
+        // System blue, not the app tint. `UserAnnotation` and the location
+        // button inherit the app tint, which would make the driver's own
+        // position indigo on a map where every other indigo thing is a stop or
+        // the route. Blue is what a user-location dot is on every map anyone
+        // has ever used, and the markers set their own tint so nothing else
+        // moves.
         .tint(.blue)
         .mapControls {
             MapUserLocationButton()
@@ -929,7 +931,7 @@ struct StopPreviewSheet: View {
                 if let p = stop.precision {
                     Label(p.label, systemImage: p.symbol)
                         .font(.footnote)
-                        .foregroundStyle(Color.warning)
+                        .foregroundStyle(Color.warningText)
                 }
             }
         }

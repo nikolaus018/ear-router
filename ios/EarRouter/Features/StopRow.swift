@@ -110,7 +110,7 @@ struct StopRow: View {
     private func fixedIcon(_ name: String) -> some View {
         Image(systemName: name)
             .font(.body)
-            .foregroundStyle(Color.brand)
+            .foregroundStyle(Color.structure)
             .frame(width: badgeSize, height: badgeSize)
             .accessibilityHidden(true)
     }
@@ -164,12 +164,19 @@ struct StopRow: View {
                 // block, so on the two-line warnings this wraps to, the triangle
                 // floated in the middle of the gap instead of sitting with the
                 // first line.
+                //
+                // The triangle keeps the full-strength amber and the words do
+                // not: #FF9500 as 12pt text on a white row measures about
+                // 2.1:1, which is a colour you can see but not read — and this
+                // app is read in a car in daylight. The glyph carries the
+                // signal, `warningText` carries the sentence.
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Image(systemName: precision.symbol)
+                        .foregroundStyle(Color.warning)
                     Text(precision.label)
+                        .foregroundStyle(Color.warningText)
                 }
                 .font(.caption)
-                .foregroundStyle(Color.warning)
             }
 
             if stop.excluded {
@@ -227,7 +234,7 @@ struct StopRow: View {
 
             if let onNavigate {
                 Button(action: onNavigate) {
-                    // A soft tinted disc rather than a solid brand-red one.
+                    // A soft tinted disc rather than a solid brand-filled one.
                     // Filled, it put a second saturated blob on every single row
                     // next to the delivered tick, and a list where everything
                     // shouts tells the driver nothing about what matters.
@@ -440,8 +447,10 @@ struct PaketBadge: View {
 /// Same geometry, same weight, same corner: a driver reads the row as one strip
 /// of small facts, and a badge that is built differently from the two next to
 /// it reads as something that needs acting on rather than something to know.
-/// Only the tint differs, because at a glance the difference between "two
-/// menus" and "third floor" has to be instant.
+/// Only the tint differs — the Paket badge carries the app's colour because it
+/// is the delivery itself, this one is grey because a floor is context. At a
+/// glance the difference between "two menus" and "third floor" has to be
+/// instant, and colour-against-no-colour is the fastest version of that.
 struct StockwerkBadge: View {
     let text: String
     let dimmed: Bool

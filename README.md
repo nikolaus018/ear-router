@@ -8,6 +8,7 @@ network is needed only to look an address up and to optimise the route.
 
 ```
 ios/            The app. Open ios/EarRouter.xcodeproj in Xcode.
+ios/Tools/      Draws the app icon. Not part of the build.
 ```
 
 ## The app
@@ -25,6 +26,7 @@ third-party dependencies.
 | `Services/RouteOptimizer` | Stop ordering and route geometry |
 | `Services/RouteStore` | Every mutation, plus the JSON bulk import |
 | `Services/SameDoor` | Which stops share a front door |
+| `Support/Theme` | The palette, and why each colour is the colour it is |
 
 ### External services
 
