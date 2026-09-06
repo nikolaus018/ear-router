@@ -12,6 +12,7 @@ struct MoreTab: View {
         NavigationHandoff.Provider.apple.rawValue
 
     @State private var showingTuercode = false
+    @State private var showingKilometer = false
     @State private var showingGourmet = false
 
     /// The driver's own dispatch portal — the customer list this app's stops
@@ -34,6 +35,13 @@ struct MoreTab: View {
                     SettingsRow(
                         icon: "key.fill", tint: .indigo, title: "Türcode",
                         detail: "Buchstaben in Ziffern")
+                }
+                Button {
+                    showingKilometer = true
+                } label: {
+                    SettingsRow(
+                        icon: "gauge.with.dots.needle.bottom.50percent", tint: .teal,
+                        title: "Kilometerstand", detail: "Gefahrene Kilometer")
                 }
             }
 
@@ -76,6 +84,7 @@ struct MoreTab: View {
         }
         .navigationTitle("Mehr")
         .sheet(isPresented: $showingTuercode) { TuercodeSheet() }
+        .sheet(isPresented: $showingKilometer) { KilometerSheet() }
         .sheet(isPresented: $showingGourmet) {
             SafariView(url: gourmetURL).ignoresSafeArea()
         }
