@@ -187,12 +187,15 @@ struct RouteSummaryRow: View {
                     .foregroundStyle(Color.warning)
             }
 
-            // Only where there is progress to show. On a tour with no stops yet
-            // the bar was an empty trough promising something the route cannot
-            // deliver, and on a finished one it is always full and says nothing.
-            if completedDate == nil && stats.customers > 0 {
+            // Only while there is progress to show: at least one meal handed
+            // over and at least one still to go. An empty trough under a tour
+            // nobody has started is a bar promising something it cannot say,
+            // and a full one under a finished tour says what the tick already
+            // said.
+            if completedDate == nil, stats.delivered > 0, stats.delivered < stats.customers {
                 ProgressView(value: Double(stats.delivered), total: Double(stats.customers))
                     .tint(.success)
+                    .padding(.top, 2)
             }
         }
         .padding(.vertical, 2)
@@ -207,8 +210,15 @@ struct RouteSummaryRow: View {
         var parts: [String] = []
         if let completedDate { parts.append(Format.date(completedDate)) }
         parts.append(Format.stops(stats.customers))
-        if completedDate == nil && stats.customers > 0 {
-            parts.append("\(stats.delivered) geliefert")
+        // "0 geliefert" is not a progress report, it is the absence of one —
+        // and it was on every tour the moment it was created. The count appears
+        // once there is something to count, and turns into the finished
+        // sentence when the tour is done.
+        if completedDate == nil, stats.delivered > 0 {
+            parts.append(
+                stats.delivered == stats.customers
+                    ? "alle geliefert"
+                    : "\(stats.delivered) von \(stats.customers) geliefert")
         }
         if stats.km > 0, let formatted = Format.km(stats.km) { parts.append(formatted) }
         return parts.joined(separator: " · ")

@@ -150,6 +150,11 @@ struct StopEditorSheet: View {
                             confirmingDelete = true
                         }
                         .frame(maxWidth: .infinity)
+                        // The role colours the *title* red and leaves the glyph
+                        // on the sheet's accent, so the one destructive button
+                        // in the app came out half indigo and half red. The
+                        // tint is what carries the role through to the icon.
+                        .tint(.red)
                         .confirmationDialog(
                             "Stopp löschen?", isPresented: $confirmingDelete,
                             titleVisibility: .visible

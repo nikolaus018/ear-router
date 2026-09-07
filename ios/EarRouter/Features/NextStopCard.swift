@@ -2,20 +2,30 @@ import SwiftUI
 
 /// The tour reduced to the one thing the driver is doing right now.
 ///
-/// This used to be a second copy of the customer's own list row, pinned to the
-/// top of the screen under a header. That answered "which one is next" and
-/// nothing else: the same 17pt name and the same strip of small chips as the
-/// thirty rows below it, read at arm's length in a windscreen mount, between a
-/// parking space and a stairwell. And it was visibly the same row twice on one
-/// screen, which reads as a bug rather than as a pin — the code marking it said
-/// as much.
+/// A driver between the van and the door asks four questions and no others:
+/// who and where, what do I carry up, which floor, is there anything I need to
+/// know before I ring. This answers them at the size they are actually asked
+/// at, and puts the two actions that move the tour forward under a thumb.
 ///
-/// So it stopped being a row. A driver between the van and the door is asking
-/// four questions and no others: who and where, what do I carry up, which
-/// floor, is there anything I need to know before I ring. This answers them at
-/// the size they are actually asked at, and puts the two actions that move the
-/// tour forward — navigate, and tick it off — under a thumb as real buttons
-/// rather than as 46pt discs shared with every other row in the list.
+/// The card has been the loudest thing in the app: a saturated slab carrying a
+/// tracked all-caps eyebrow, a hairline progress bar, three filled chips, a
+/// dashed-outline prompt and **two equally weighted filled buttons** side by
+/// side. Every one of those was defensible on its own and together they left
+/// nothing quiet enough to make anything else stand out.
+///
+/// What it is now:
+///
+/// * **A list of facts, not a wall of chips.** One `Label` per fact, in one
+///   icon column, the way Contacts and Maps lay out everything they know about
+///   a place. Colour marks the glyph; the words stay words.
+/// * **One filled button.** "Route" is the accent-filled one — it is what
+///   continues the journey — and "Geliefert" is a green *bordered* button
+///   beside it. Two filled pills of equal weight forced the eye to choose
+///   between them; hue tells them apart now, and weight says which one the
+///   screen is about.
+/// * **No progress bar.** How far through the tour is a property of the tour,
+///   not of this stop, and it now sits under the screen's own title where it is
+///   readable whether or not this card is on screen.
 struct NextStopCard: View {
     let stop: Stop
     let number: Int?
@@ -23,121 +33,58 @@ struct NextStopCard: View {
     let stockwerk: String?
     /// How many customers share this front door, this one included.
     let sameDoorCount: Int
-    let deliveredCount: Int
-    let customerCount: Int
-    let openCount: Int
-    let remainingKm: Double
-    let remainingMinutes: Double
 
     let onNavigate: () -> Void
     let onDelivered: () -> Void
     let onEditStockwerk: () -> Void
     let onEdit: () -> Void
 
-    /// The number badge and the two buttons grow with the user's text size. A
-    /// driver who has turned the type up is usually the same driver who wants a
-    /// bigger target, and this card is where that matters most.
-    @ScaledMetric(relativeTo: .title2) private var badge: CGFloat = 38
+    /// The number badge grows with the user's text size. A driver who has
+    /// turned the type up is usually the same driver who wants a bigger target,
+    /// and this card is where that matters most.
+    @ScaledMetric(relativeTo: .title3) private var badge: CGFloat = 34
 
-    /// Two places on this card put two things side by side, and neither
-    /// survives an accessibility text size in one row: the eyebrow, where
-    /// "NÄCHSTER STOPP" hyphenated itself across three lines next to a distance
-    /// doing the same, and the two buttons, which had half a phone each for a
-    /// word and an icon. Both stack instead. The same switch `BusyBanner`
-    /// makes, for the same reason.
+    /// The two buttons do not survive an accessibility text size in one row —
+    /// they had half a phone each for a word and an icon — so they stack
+    /// instead.
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// How many times the driver has pressed "Geliefert" on this card, and
     /// nothing more — it drives the haptic and is read by nothing else.
     ///
     /// The obvious trigger is `stop.delivered`, which is what this was, and it
-    /// never fired once. This card only ever shows `nextOpen`, so its stop is
-    /// undelivered by definition: tick one off and the snapshot hands the same
-    /// card the *next* undelivered stop in the same update, so the value goes
-    /// `false → false` and `sensoryFeedback` correctly does nothing. The one
-    /// button in the app most likely to be pressed without looking — a thumb
-    /// on a phone in a windscreen mount, a driver already turning for the door
-    /// — was the one that answered with silence. A counter incremented in the
-    /// action fires on the press itself, which is the thing being confirmed.
+    /// never fired once. This card only ever shows the next open stop, so its
+    /// stop is undelivered by definition: tick one off and the same card is
+    /// handed the *next* undelivered stop in the same update, so the value goes
+    /// `false → false` and `sensoryFeedback` correctly does nothing. A counter
+    /// incremented in the action fires on the press itself, which is the thing
+    /// being confirmed.
     @State private var ticks = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            progress
+            eyebrow
             headline
             facts
             actions
         }
         .padding(16)
+        // See `StopRow`: the `.fill` symbols shade themselves otherwise.
+        .symbolRenderingMode(.monochrome)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color.brandWash))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(Color.brand.opacity(0.18), lineWidth: 0.5))
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .onTapGesture { onEdit() }
     }
 
-    // MARK: - Progress
-
-    /// Where the tour stands, on one line above everything else: how far
-    /// through, and what is still ahead.
-    ///
-    /// "Noch 22 Stopps · 18,2 km" rather than "12 von 34 geliefert". Both are
-    /// the same fact, but only one of them is the question a driver actually
-    /// has at half past eleven — the list's own section header below still
-    /// counts the deliveries, for the times the other framing is the one
-    /// wanted.
-    private var progress: some View {
-        let layout = typeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
-            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
-
-        return VStack(alignment: .leading, spacing: 6) {
-            layout {
-                Text("NÄCHSTER STOPP")
-                    .font(.caption2.weight(.semibold))
-                    .tracking(0.7)
-                    .foregroundStyle(Color.brand)
-                if !typeSize.isAccessibilitySize { Spacer(minLength: 8) }
-                Text(remainingLine)
-                    .font(.caption.weight(.medium).monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
-            // A hairline, drawn by hand rather than with `ProgressView`: the
-            // system bar carries its own vertical padding and a minimum height
-            // that made a two-pixel rule into a twelve-point band across the
-            // top of the card.
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.brand.opacity(0.15))
-                    Capsule()
-                        .fill(Color.success)
-                        .frame(width: geo.size.width * fraction)
-                }
-            }
-            .frame(height: 3)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            "Nächster Stopp. \(deliveredCount) von \(customerCount) geliefert. \(remainingLine)")
-    }
-
-    private var fraction: Double {
-        guard customerCount > 0 else { return 0 }
-        return Double(deliveredCount) / Double(customerCount)
-    }
-
-    /// Distance but not time. "Noch 10 Stopps · 51,8 km · 1 h 22 min" is wider
-    /// than the half of a phone this line gets, and wrapping it pushed the
-    /// progress bar and the whole card down by a line. The tour's minutes are
-    /// still under the list, where there is a full width to print them in.
-    private var remainingLine: String {
-        let stops = "Noch \(Format.stops(openCount))"
-        guard let km = Format.km(remainingKm), remainingKm >= 0.05 else { return stops }
-        return "\(stops) · \(km)"
+    /// Sentence case, no letter-spacing. The tracked all-caps version this
+    /// replaces is a web idiom; nothing on an iPhone labels a card that way.
+    private var eyebrow: some View {
+        Text("Nächster Stopp")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(Color.brand)
+            .accessibilityHidden(true)
     }
 
     // MARK: - Who and where
@@ -145,19 +92,19 @@ struct NextStopCard: View {
     private var headline: some View {
         HStack(alignment: .top, spacing: 12) {
             Text(number.map(String.init) ?? "•")
-                .font(.title3.weight(.semibold).monospacedDigit())
+                .font(.headline.monospacedDigit())
                 .foregroundStyle(Color.onBrand)
                 .frame(width: badge, height: badge)
                 .background(Circle().fill(Color.brand))
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(stop.kunde ?? "Stopp")
-                    .font(.title2.weight(.semibold))
+                    .font(.title3.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
                 if !stop.listAddress.isEmpty {
                     Text(stop.listAddress)
-                        .font(.body)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -169,9 +116,7 @@ struct NextStopCard: View {
             // the tap was added, and nothing on the card admitted it: a large,
             // inviting surface that a thumb reaching for "Geliefert" can catch,
             // answering with a full editing form on the one screen a driver
-            // looks at while they are still moving. A chevron is what every
-            // other openable row on this phone wears, and it costs eight points
-            // of a card that has the room.
+            // looks at while they are still moving.
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.tertiary)
@@ -188,88 +133,84 @@ struct NextStopCard: View {
 
     // MARK: - What to carry, and what to know
 
-    /// The three things between the van door and the flat door, each big enough
-    /// to read without stopping to look: what is being delivered, which floor
-    /// it goes to, and anything the driver wrote down about the door itself.
+    /// The things between the van door and the flat door, one line each, in one
+    /// icon column: what is being delivered, which floor it goes to, who else
+    /// is at that door, anything the driver wrote down, and whether the pin can
+    /// be trusted.
     @ViewBuilder
     private var facts: some View {
-        let paket = stop.paket?.trimmed
-        let hasPaket = !(paket ?? "").isEmpty
-        let note = stop.notiz?.trimmed
-        let hasNote = !(note ?? "").isEmpty
-
-        // The chip row is unconditional, because the floor chip in it is.
-        //
-        // It used to be gated on there being *some other* chip to show — a
-        // Paket, a floor already known, a second household at the door — so a
-        // customer with none of those got no chip row, and the dashed
-        // "Stockwerk?" prompt that is the whole way a floor ever gets recorded
-        // never appeared. A stop with nothing else on it is not a stop whose
-        // floor matters less; it is the plainest possible row, on the card the
-        // driver reads standing at the van, and it was the one the question was
-        // never asked from. (The prompt after a delivery still asks — but that
-        // is after the stairs have already been climbed once.)
         VStack(alignment: .leading, spacing: 8) {
-            // Wrapping, not scrolling: at large text sizes "3 × Menü klein"
-            // and "Dachgeschoss" do not fit on one line of a phone, and a row
-            // that overflows off the right edge hides exactly the fact it was
-            // put there to show.
-            WrappingHStack(spacing: 8) {
-                if let paket, hasPaket {
-                    let qty = PaketParser.totalQty(paket)
-                    FactChip(
-                        symbol: "shippingbox.fill", text: paket,
-                        count: qty > 1 ? qty : nil)
+            if let paket = stop.paket?.trimmed, !paket.isEmpty {
+                let many = PaketParser.totalQty(paket) > 1
+                Label {
+                    Text(paket)
+                        .fontWeight(many ? .semibold : .regular)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "shippingbox.fill")
+                        .foregroundStyle(many ? Color.brand : Color.secondary)
                 }
-                // Tappable: the floor is the one fact on this card the
-                // driver is standing in front of the evidence for, and
-                // "wrong floor" is worth one tap to fix rather than a
-                // trip back to the list and into a context menu.
-                Button(action: onEditStockwerk) {
-                    FactChip(
-                        symbol: "stairs",
-                        text: stockwerk.map(Self.floorLabel) ?? "Stockwerk?",
-                        emphasis: stockwerk == nil ? .missing : .quiet)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(
-                    stockwerk.map { "Stockwerk \(Self.floorLabel($0)), ändern" }
-                        ?? "Stockwerk eintragen")
-
-                if sameDoorCount > 1 {
-                    FactChip(
-                        symbol: "person.2.fill",
-                        text: "\(sameDoorCount) an dieser Tür", emphasis: .quiet)
-                }
+                .font(.body)
             }
 
-            if let note, hasNote {
-                Label {
-                    Text(note).italic()
-                } icon: {
-                    Image(systemName: "note.text").font(.caption)
+            // Tappable either way: the floor is the one fact on this card the
+            // driver is standing in front of the evidence for, and "wrong
+            // floor" is worth one tap to fix rather than a trip back to the
+            // list and into a context menu.
+            //
+            // Unknown, it is an ordinary accent-coloured button rather than the
+            // dashed-outline chip it used to be. A dashed border is not
+            // something this phone draws anywhere; a tinted verb is how iOS has
+            // always said "there is something to add here".
+            Button(action: onEditStockwerk) {
+                if let stockwerk = stockwerk?.trimmed, !stockwerk.isEmpty {
+                    Label(Self.floorLabel(stockwerk), systemImage: "stairs")
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                } else {
+                    Label("Stockwerk eintragen", systemImage: "stairs")
+                        .font(.body)
+                        .foregroundStyle(Color.brand)
                 }
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(Color.warningText)
-                .fixedSize(horizontal: false, vertical: true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                stockwerk.map { "Stockwerk \(Self.floorLabel($0)), ändern" }
+                    ?? "Stockwerk eintragen")
+
+            if sameDoorCount > 1 {
+                Label("\(sameDoorCount) an dieser Tür", systemImage: "person.2.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let note = stop.notiz?.trimmed, !note.isEmpty {
+                Label {
+                    Text(note)
+                        .italic()
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "note.text").foregroundStyle(Color.warning)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             }
 
             if let precision = stop.precision {
                 Label {
-                    Text(precision.label)
+                    Text(precision.label).fixedSize(horizontal: false, vertical: true)
                 } icon: {
                     Image(systemName: precision.symbol).foregroundStyle(Color.warning)
                 }
                 .font(.footnote)
-                .foregroundStyle(Color.warningText)
-                .fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(.secondary)
             }
         }
     }
 
     /// "3" is a floor and reads better said out; anything the driver spelled
     /// out themselves is left exactly as they wrote it. Shared with
-    /// `StockwerkBadge`, which makes the same call on the row below.
+    /// `StockwerkBadge` and the stop row, which make the same call.
     static func floorLabel(_ text: String) -> String {
         let t = text.trimmed
         return t.allSatisfy(\.isNumber) && !t.isEmpty ? "\(t). Stock" : t
@@ -277,15 +218,14 @@ struct NextStopCard: View {
 
     // MARK: - The two things you do here
 
-    /// Navigate, then tick off. Both full-size, side by side, because they are
-    /// the two ends of the same errand and the driver presses one on the way
-    /// out and the other on the way back.
+    /// Navigate, then tick off — the two ends of the same errand, pressed one
+    /// on the way out and the other on the way back.
     ///
-    /// Both are filled. Everywhere else in this app that would be one loud
-    /// thing too many, but this card is the whole of driving mode and there is
-    /// genuinely no third action competing with them — the colours are what
-    /// separates "go there" from "done", at a glance, with a thumb already
-    /// moving.
+    /// One of them is filled and it is "Route": it is what the driver presses
+    /// first, and it is the action that continues the tour. "Geliefert" is the
+    /// same size in green, bordered — unmistakable by hue, and no longer
+    /// competing for the eye with the button next to it. Filling both was one
+    /// loud thing too many on a card that is already the app's focal point.
     private var actions: some View {
         let layout = typeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(spacing: 10))
@@ -296,6 +236,7 @@ struct NextStopCard: View {
                 WideButtonLabel("Route", systemImage: "arrow.trianglehead.turn.up.right")
                     .onBrandLabel()
             }
+            .buttonStyle(.borderedProminent)
             .tint(Color.brand)
 
             Button {
@@ -304,90 +245,22 @@ struct NextStopCard: View {
                 onDelivered()
             } label: {
                 WideButtonLabel("Geliefert", systemImage: "checkmark")
-                    .foregroundStyle(Color.onSuccess)
             }
+            .buttonStyle(.bordered)
             .tint(Color.success)
             .sensoryFeedback(.impact(weight: .medium), trigger: ticks)
         }
-        .buttonStyle(.borderedProminent)
         .controlSize(.large)
-    }
-}
-
-/// A single fact about the stop, as a chip: an icon and a word or two.
-///
-/// Three weights of the same shape, because these facts are not equally
-/// important. The delivery itself carries the app's colour; a floor is context
-/// and stays grey; a floor nobody has answered for yet is a dashed outline,
-/// which says "tap me" without spending a colour on it.
-///
-/// A `count` replaces the icon with the number in a filled disc. That is the
-/// one fact on the card which changes what comes out of the van before the
-/// driver shuts the door, and it was briefly a solid block of colour the width
-/// of the card — which made "2x Menü + 2x Nachspeise" heavier on the page than
-/// the customer's own name. A 20pt disc says the same thing and knows its
-/// place.
-struct FactChip: View {
-    enum Emphasis { case normal, quiet, missing }
-
-    let symbol: String
-    let text: String
-    var count: Int?
-    var emphasis: Emphasis = .normal
-
-    var body: some View {
-        HStack(spacing: 6) {
-            if let count {
-                Text("\(count)")
-                    .font(.caption2.weight(.bold).monospacedDigit())
-                    .foregroundStyle(Color.onBrand)
-                    .frame(width: 20, height: 20)
-                    .background(Circle().fill(Color.brand))
-            } else {
-                Image(systemName: symbol).font(.caption)
-            }
-            Text(text).lineLimit(2)
-        }
-        .font(.subheadline.weight(count == nil ? .medium : .semibold))
-        .foregroundStyle(foreground)
-        .padding(.leading, count == nil ? 10 : 5)
-        .padding(.trailing, 10)
-        .padding(.vertical, count == nil ? 6 : 4)
-        .background(background, in: .rect(cornerRadius: 10, style: .continuous))
-        .overlay {
-            if emphasis == .missing {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(
-                        Color.floorText.opacity(0.5),
-                        style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-            }
-        }
-    }
-
-    private var foreground: Color {
-        switch emphasis {
-        case .normal: .brand
-        case .quiet, .missing: .floorText
-        }
-    }
-
-    private var background: AnyShapeStyle {
-        switch emphasis {
-        case .normal: AnyShapeStyle(Color.brand.opacity(0.16))
-        case .quiet: AnyShapeStyle(Color.floor.opacity(0.16))
-        case .missing: AnyShapeStyle(Color.clear)
-        }
     }
 }
 
 /// An `HStack` that wraps onto a second line instead of running off the screen.
 ///
-/// SwiftUI has no such stack, and the alternatives are both wrong here: a
-/// `ScrollView` hides the overflow behind a gesture nobody makes on a card they
-/// are reading, and a `Grid` gives every chip the width of the widest one. This
-/// is `Layout`, which is the supported way to answer "how wide is this actually
-/// going to be" — the chips carry a Paket the driver typed and a floor they
-/// wrote out, so their widths are not knowable in advance.
+/// SwiftUI has no such stack, and the alternatives are both wrong where this is
+/// used: a `ScrollView` hides the overflow behind a gesture nobody makes on a
+/// card they are reading, and a `Grid` gives every item the width of the widest
+/// one. This is `Layout`, which is the supported way to answer "how wide is
+/// this actually going to be" for content somebody typed.
 struct WrappingHStack: Layout {
     var spacing: CGFloat = 8
 
@@ -407,7 +280,7 @@ struct WrappingHStack: Layout {
             var x = bounds.minX
             for item in row.items {
                 // The size the row was measured with, not a fresh unconstrained
-                // one: measuring twice by two different rules is how a chip
+                // one: measuring twice by two different rules is how an item
                 // ends up laid out at one width and drawn at another.
                 subviews[item.index].place(
                     at: CGPoint(x: x, y: y), anchor: .topLeading,
@@ -428,20 +301,17 @@ struct WrappingHStack: Layout {
         var height: CGFloat = 0
     }
 
-    /// Greedy: each chip goes on the current line if it fits and starts a new
+    /// Greedy: each item goes on the current line if it fits and starts a new
     /// one if it does not.
     ///
-    /// Every chip is measured against the width actually available rather than
-    /// against `.unspecified`, which is what it used to be — and `.unspecified`
-    /// asks a `Text` how wide it would like to be with nothing in its way, so a
-    /// chip whose contents run long answered with its whole sentence on one
-    /// line. It then got a line of its own, correctly, and was *placed* at that
-    /// same impossible width: "2x Menü + 1x Nachspeise" on a stop row at an
-    /// accessibility text size ran off the right of the screen and under the
-    /// navigation button. Proposing the container's width instead lets the
-    /// chip wrap inside itself, which is the whole reason its label is
-    /// `fixedSize(horizontal: false)`. A chip that fits is unaffected: content
-    /// sizes to content, and a wider proposal does not make it take the room.
+    /// Every item is measured against the width actually available rather than
+    /// against `.unspecified`, which asks a `Text` how wide it would like to be
+    /// with nothing in its way — so an item whose contents run long answered
+    /// with its whole sentence on one line, got a line of its own, correctly,
+    /// and was then *placed* at that same impossible width, running off the
+    /// right of the screen. Proposing the container's width instead lets it
+    /// wrap inside itself. An item that fits is unaffected: content sizes to
+    /// content, and a wider proposal does not make it take the room.
     private func arrange(subviews: Subviews, in width: CGFloat) -> [Row] {
         var rows: [Row] = []
         var row = Row()

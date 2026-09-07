@@ -49,16 +49,6 @@ extension Color {
             : UIColor(red: 0.204, green: 0.780, blue: 0.349, alpha: 1) // #34C759
     })
 
-    /// Text and glyphs on a `success`-filled surface — the "Geliefert" button
-    /// on the next-stop card.
-    ///
-    /// Near-black in both appearances, for the same reason `onBrand` is
-    /// near-black in the dark: system green is a high-luminance colour, and
-    /// white on it measures about 2.2:1 in either mode. Against the same green,
-    /// near-black measures 8.7:1. A bright green button with dark type on it is
-    /// the readable version of the button everyone draws in white.
-    static let onSuccess = Color(uiColor: UIColor(white: 0.07, alpha: 1))
-
     /// An approximate pin — "double check this one before you set off".
     static let warning = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark
@@ -76,8 +66,8 @@ extension Color {
             : UIColor(red: 0.478, green: 0.294, blue: 0.0, alpha: 1) // #7A4B00
     })
 
-    /// A wash of `brand` behind a whole row: the pinned "Nächster Stopp" card,
-    /// and the row the map has just jumped to.
+    /// The next-stop card's surface — the one place in the app a whole block
+    /// wears the accent.
     ///
     /// Two alphas rather than one, because a wash does not scale between
     /// appearances. Seven percent of a colour laid over white still lifts a

@@ -38,6 +38,7 @@ struct LadelisteView: View {
                 }
             }
             .navigationTitle("Ladeliste")
+            .navigationSubtitle(progressLabel(items))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -61,8 +62,6 @@ struct LadelisteView: View {
                 ForEach(items) { item in
                     row(item)
                 }
-            } header: {
-                Text(progressLabel(items))
             } footer: {
                 Text("Tippen zum Abhaken. Die Haken gelten nur für diese Tour.")
             }
@@ -119,13 +118,17 @@ struct LadelisteView: View {
     /// the set can still hold a key from a package that has since been edited
     /// away, and "4 von 3 abgehakt" is a great way to lose a driver's trust in
     /// the whole list.
+    /// Short enough for one line. It used to be a section header reading
+    /// "0 von 2 Positionen abgehakt · 5 Stück gesamt", which wrapped onto two
+    /// lines on a phone — and the words it spent that second line on ("
+    /// Positionen", "gesamt") were the ones carrying no information. It sits
+    /// under the screen's title now, the same place the tour's progress does.
     private func progressLabel(_ items: [PaketItem]) -> String {
+        guard !items.isEmpty else { return "" }
         let done = items.count { checked.contains($0.key) }
         let pieces = items.reduce(0) { $0 + $1.qty }
-        if done >= items.count && !items.isEmpty {
-            return "Alles abgehakt ✓ · \(pieces) Stück gesamt"
-        }
-        return "\(done) von \(items.count) Positionen abgehakt · \(pieces) Stück gesamt"
+        if done >= items.count { return "Alles abgehakt · \(pieces) Stück" }
+        return "\(done) von \(items.count) abgehakt · \(pieces) Stück"
     }
 
     private func load() {

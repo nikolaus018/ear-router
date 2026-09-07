@@ -108,6 +108,14 @@ struct RouteDetailView: View {
         .animation(.snappy, value: busy)
         .navigationTitle(route.name)
         .navigationBarTitleDisplayMode(.large)
+        // Where the tour stands, under the screen's own title.
+        //
+        // This used to be a tracked caption and a hairline progress bar across
+        // the top of the next-stop card — which meant it was only readable
+        // while that card was on screen, and it was the third thing competing
+        // for the top of the card with the customer's name. The bar itself
+        // never said anything the sentence beside it did not.
+        .navigationSubtitle(subtitle(snapshot))
         .searchable(
             text: $search, placement: .navigationBarDrawer(displayMode: .automatic),
             prompt: "Kunde, Adresse, Paket oder Notiz")
@@ -228,11 +236,6 @@ struct RouteDetailView: View {
                         number: snapshot.number(next),
                         stockwerk: floors[next.id],
                         sameDoorCount: snapshot.doorCount(next),
-                        deliveredCount: snapshot.deliveredCount,
-                        customerCount: snapshot.customerCount,
-                        openCount: snapshot.openCount,
-                        remainingKm: snapshot.remainingKm,
-                        remainingMinutes: snapshot.remainingMinutes,
                         onNavigate: { open(next) },
                         onDelivered: { setDelivered(next, true) },
                         onEditStockwerk: { stockwerkStop = next },
@@ -308,6 +311,7 @@ struct RouteDetailView: View {
             sameDoorCount: snapshot.doorCount(stop),
             number: snapshot.number(stop),
             stockwerk: floors[stop.id],
+            isNext: snapshot.nextOpen?.id == stop.id,
             onTap: { tapped(stop) },
             onToggleDelivered: { setDelivered(stop, !stop.delivered) },
             onDelete: { deletingStop = stop },
@@ -373,6 +377,25 @@ struct RouteDetailView: View {
             }
             .disabled(busy != nil)
         }
+    }
+
+    /// The line under the tour's name: what is still ahead of the driver.
+    ///
+    /// "Noch 22 Stopps · 18,2 km" rather than "12 von 34 geliefert" — both are
+    /// the same fact, but only one of them is the question anybody has at half
+    /// past eleven. The list's own section header still counts the deliveries,
+    /// for the times the other framing is the one wanted.
+    private func subtitle(_ snapshot: RouteSnapshot) -> String {
+        guard snapshot.customerCount > 0 else { return "Noch keine Stopps" }
+        guard snapshot.openCount > 0 else {
+            guard let back = Format.km(snapshot.remainingKm), snapshot.remainingKm >= 0.05
+            else { return "Alle geliefert" }
+            return "Alle geliefert · Rückfahrt \(back)"
+        }
+        let stops = "Noch \(Format.stops(snapshot.openCount))"
+        guard let km = Format.km(snapshot.remainingKm), snapshot.remainingKm >= 0.05
+        else { return stops }
+        return "\(stops) · \(km)"
     }
 
     private var recheckAlert: Binding<Bool> {
@@ -756,12 +779,12 @@ struct RouteSnapshot {
 
 /// The line under the stop list: what the whole tour comes to.
 ///
-/// It used to lead with what was still to drive. The next-stop card says that
-/// now, at the top of the screen where a driver halfway through a shift is
-/// already looking, so repeating it down here was the same sentence twice on
-/// one screen. What is left is the planning number — the length of the tour as
-/// a whole — plus the one case the card cannot cover, because the card is gone
-/// by then: the last meal is handed over and the van still has to get home.
+/// One number, and it is the planning one: how long the tour is as a whole.
+/// What is still to drive — and the drive home once the last meal is handed
+/// over — is the screen's subtitle now, under the tour's own name, where it is
+/// legible whether or not the driver has scrolled to the bottom of the list.
+/// This line carried both for a while, which meant the same sentence appeared
+/// twice on one screen.
 ///
 /// Hidden entirely while the list is filtered: the search shows a handful of
 /// stops out of context, and a distance covering the ones it is not showing
@@ -773,26 +796,8 @@ struct RouteFooter: View {
     var body: some View {
         if !searching, snapshot.totalKm > 0,
            let total = Format.leg(km: snapshot.totalKm, minutes: snapshot.totalMinutes) {
-            VStack(alignment: .leading, spacing: 2) {
-                if let home = wayHome {
-                    Text(home)
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(Color.primary)
-                }
-                Text("Gesamt \(total)")
-            }
-            .accessibilityElement(children: .combine)
+            Text("Gesamt \(total)")
         }
-    }
-
-    /// Only once every meal is handed over. Until then the card above is
-    /// carrying "how much is left", and this is the tour's total.
-    private var wayHome: String? {
-        guard snapshot.isComplete else { return nil }
-        guard let distance = Format.leg(
-            km: snapshot.remainingKm, minutes: snapshot.remainingMinutes)
-        else { return "Alle Stopps geliefert" }
-        return "Alle Stopps geliefert · Rückfahrt \(distance)"
     }
 }
 
@@ -823,11 +828,17 @@ struct EmptyStopsPrompt: View {
                 }
                 .buttonStyle(.borderedProminent)
 
-                Button(action: onImportFile) {
-                    WideButtonLabel("Tabelle importieren", systemImage: "tablecells")
-                }
-                Button(action: onPaste) {
-                    WideButtonLabel("JSON einsetzen", systemImage: "curlybraces")
+                // Both secondary paths bordered, and the style set on the stack
+                // rather than on the last button in it — written per-button it
+                // landed on "JSON einsetzen" alone, so the two ways of doing
+                // the same thing came out wearing different buttons.
+                VStack(spacing: 8) {
+                    Button(action: onImportFile) {
+                        WideButtonLabel("Tabelle importieren", systemImage: "tablecells")
+                    }
+                    Button(action: onPaste) {
+                        WideButtonLabel("JSON einsetzen", systemImage: "curlybraces")
+                    }
                 }
                 .buttonStyle(.bordered)
             }
@@ -918,6 +929,13 @@ struct BusyBanner: View {
     }
 }
 
+/// "The order you are looking at is not the order to drive."
+///
+/// An ordinary list row rather than the filled-button banner it was. The amber
+/// glyph is what makes it findable; the action is a plain tinted verb on the
+/// right, which is what every actionable row on this phone looks like. A
+/// prominent filled button here put a third saturated block on a screen that
+/// already had the next-stop card on it.
 struct OptimizeBanner: View {
     let busy: Bool
     let retry: () async -> Void
@@ -925,18 +943,21 @@ struct OptimizeBanner: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
+                .font(.body)
                 .foregroundStyle(Color.warning)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Route nicht aktuell").font(.subheadline.weight(.semibold))
                 Text("Reihenfolge und Distanzen stimmen nicht mehr.")
                     .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
-            Button { Task { await retry() } } label: {
-                Text("Neu").onBrandLabel()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(busy)
+            Spacer(minLength: 8)
+            Button("Optimieren") { Task { await retry() } }
+                .font(.subheadline.weight(.semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(busy ? Color.secondary : Color.brand)
+                .disabled(busy)
         }
+        .padding(.vertical, 2)
     }
 }

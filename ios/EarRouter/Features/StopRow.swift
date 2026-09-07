@@ -2,105 +2,94 @@ import SwiftUI
 
 /// One stop in the route list.
 ///
-/// Both of the things a driver does at a van door — tick the delivery off and
-/// start navigating — are always-visible buttons on every customer row, never a
-/// swipe. They are the app's primary interactions, done thirty-odd times a tour,
-/// one-handed, often in the rain: each has to be one tap at a target you can hit
-/// without looking.
+/// The rule this row is built on: **one control, one colour, one line per
+/// question.** A tour is thirty of these read with a thumb, and the previous
+/// row spent a filled indigo pill on the Paket, a filled amber block on the
+/// note, a solid indigo disc on the number and two stacked 46pt circles on the
+/// right — so every row shouted, and a list where everything shouts ranks
+/// nothing.
 ///
-/// Start, Lager and Ziel carry the navigation button too — the depot, the
-/// warehouse and the end of the shift are three of the drives a tour actually
-/// makes, and reaching them used to mean opening the stop's editor first. They
-/// get no delivered tick: there is nothing to hand over at any of them.
+/// What is left:
 ///
-/// Stacked, not side by side: two 46pt targets on top of each other still come
-/// to less than the height of a row carrying a Paket and a Notiz, and keeping
-/// them in one column leaves the text its full width instead of squeezing a
-/// wrapped address into what is left beside them.
+/// * **One trailing control.** The delivered tick on a customer, the in/out
+///   switch on a fixed point. Never both, never two circles in a column.
+///   Navigation is still one gesture away — a leading swipe, and the context
+///   menu — and it is a full-width button on the next-stop card, which is the
+///   stop a driver actually navigates to.
+/// * **One solid badge in the whole list**, and it is the stop the driver is
+///   on. Every other number is the same shape in a soft tint, delivered ones
+///   in grey. That is what makes "where am I" answerable without reading.
+/// * **Facts as lines, not blocks.** What to carry and which floor share one
+///   line; the note gets a line with an amber glyph rather than an amber box.
+///   Colour marks the glyph, the text stays text.
 struct StopRow: View {
     /// The badge grows with the user's text size — at accessibility sizes a
-    /// fixed 26pt circle clipped the number it exists to show.
-    @ScaledMetric(relativeTo: .footnote) private var badgeSize: CGFloat = 26
+    /// fixed circle clipped the number it exists to show.
+    @ScaledMetric(relativeTo: .body) private var badgeSize: CGFloat = 26
 
-    /// How far the body text has been scaled up, as a plain multiplier.
-    ///
-    /// The two controls on the right are the app's most-used targets — thirty
-    /// times a tour, one-handed, in the rain — and they were the only thing in
-    /// the row that did not grow with the text. Beside 28pt type a 46pt circle
-    /// reads as a decoration rather than a button, and a driver who has turned
-    /// the text up is usually the same driver who needs the bigger target.
-    ///
-    /// Clamped, because the scale runs to about 3.1× at the largest setting and
-    /// a 140pt control would leave the address nothing to wrap into. The cap is
-    /// what keeps this a bigger button rather than a different layout.
-    @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
-
-    private func scaled(_ base: CGFloat, max cap: CGFloat) -> CGFloat {
-        min(base * textScale, cap)
-    }
+    /// The one control on the row. It is the app's most-pressed target —
+    /// thirty times a tour, one-handed, in the rain — so it grows with the
+    /// text, and is clamped so a driver at the largest setting gets a bigger
+    /// button rather than a different layout.
+    @ScaledMetric(relativeTo: .body) private var controlScale: CGFloat = 1
 
     let stop: Stop
     /// How many customers share this front door, this one included.
     var sameDoorCount: Int = 1
     /// Position among the customers — the same number the map badge shows.
     var number: Int?
-    /// What is known about this door's floor, from `StockwerkNote`. `nil` when this
-    /// door has not been answered for yet.
+    /// What is known about this door's floor, from `StockwerkNote`. `nil` when
+    /// this door has not been answered for yet.
     var stockwerk: String?
+    /// The stop the driver is on. The one row in the list that wears a solid
+    /// badge.
+    var isNext: Bool = false
     var onToggleDelivered: (() -> Void)?
-    var onNavigate: (() -> Void)?
     /// Switches a fixed point in or out of this tour. `nil` on a customer,
     /// which is not something a tour can decide to skip.
     var onToggleExcluded: (() -> Void)?
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Badge and text are one top-aligned group: the number belongs
-            // beside the customer's *name*, not floating halfway down beside
-            // their note. The buttons are outside that group and centre
-            // themselves in the row — top-aligned they left a visible hole
-            // under themselves on any row taller than they are, and on a short
-            // row they are the tallest thing in it, which is what used to drag
-            // the badge above the name.
-            HStack(alignment: .top, spacing: 12) {
-                leading
-                details
-            }
+        HStack(alignment: .top, spacing: 10) {
+            badge
+            details
             Spacer(minLength: 4)
-            // A fixed point gets the navigation button but no delivered tick —
-            // there is nothing to hand over at the depot or the warehouse, but
-            // driving to them is the first and the last thing the shift does.
-            // It gets the in/out control instead, which is the one decision a
-            // tour makes about a fixed point.
-            if onToggleDelivered != nil || onNavigate != nil || onToggleExcluded != nil {
-                trailingControls
-            }
+            control
         }
-        .padding(.vertical, 2)
-        .opacity(stop.excluded ? 0.5 : 1)
+        .padding(.vertical, 3)
+        .opacity(stop.excluded ? 0.45 : 1)
+        // Flat glyphs, not shaded ones. Several of the symbols this row uses
+        // are `.fill` variants, and those draw hierarchically by default — a
+        // `shippingbox.fill` came out as a little shaded 3-D carton rather than
+        // as one solid mark in the colour it was given, which is the one thing
+        // a glyph in a line of text must not do.
+        .symbolRenderingMode(.monochrome)
         // Every row's separator starts under the text rather than under
-        // whatever that particular row happens to lead with — otherwise a fixed
-        // stop's icon and a customer's number badge, being different widths,
-        // gave the same list two different separator insets.
-        .alignmentGuide(.listRowSeparatorLeading) { [badgeSize] _ in badgeSize + 12 }
+        // whatever that row happens to lead with — otherwise a fixed stop's
+        // icon and a customer's number badge, being different widths, give the
+        // same list two different separator insets.
+        .alignmentGuide(.listRowSeparatorLeading) { [badgeSize] _ in badgeSize + 10 }
         .accessibilityElement(children: .contain)
     }
 
-    // MARK: - Leading
+    // MARK: - Badge
 
+    /// The number, or the fixed point's own glyph.
+    ///
+    /// Three states, and only one of them is loud. The stop the driver is on is
+    /// a solid accent disc; every other open stop is the same disc at 12% —
+    /// still unmistakably the app's colour, still legible, but it does not
+    /// compete with the one row that matters. A delivered stop drops to grey,
+    /// which is what makes the finished half of a tour recede.
     @ViewBuilder
-    private var leading: some View {
+    private var badge: some View {
         switch stop.kind {
         case .customer:
             Text(number.map(String.init) ?? "•")
                 .font(.footnote.weight(.semibold).monospacedDigit())
-                .foregroundStyle(
-                    stop.delivered ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.onBrand))
+                .foregroundStyle(badgeForeground)
                 .frame(width: badgeSize, height: badgeSize)
-                .background(
-                    Circle().fill(
-                        stop.delivered
-                            ? AnyShapeStyle(.quaternary) : AnyShapeStyle(Color.brand)))
+                .background(Circle().fill(badgeFill))
                 .accessibilityHidden(true)
         case .start:
             fixedIcon("house.fill")
@@ -111,51 +100,45 @@ struct StopRow: View {
         }
     }
 
+    private var badgeForeground: AnyShapeStyle {
+        if stop.delivered { return AnyShapeStyle(.secondary) }
+        return isNext ? AnyShapeStyle(Color.onBrand) : AnyShapeStyle(Color.brand)
+    }
+
+    private var badgeFill: AnyShapeStyle {
+        if stop.delivered { return AnyShapeStyle(.quaternary) }
+        return isNext
+            ? AnyShapeStyle(Color.brand)
+            : AnyShapeStyle(Color.brand.opacity(0.12))
+    }
+
     private func fixedIcon(_ name: String) -> some View {
         Image(systemName: name)
-            .font(.body)
+            .font(.footnote)
             .foregroundStyle(Color.structure)
             .frame(width: badgeSize, height: badgeSize)
+            .background(Circle().fill(.quaternary))
             .accessibilityHidden(true)
     }
 
     // MARK: - Details
 
-    /// Name, address, then the delivery, then the small print.
-    ///
-    /// This row has been through both extremes. It was once a stack where
-    /// *everything* was a filled chip — floor, Paket, note, "2 Kunden an dieser
-    /// Tür", the precision warning — so one customer took eight lines and four
-    /// coloured blocks and a tour of thirty was a wall of pills with nothing
-    /// subordinate to anything else. The correction was to flatten the lot into
-    /// one middot-separated strip of grey text, which fixed the wall and
-    /// overshot: what the driver carries up, which floor they carry it to and
-    /// what they have to know before ringing came out looking exactly like the
-    /// postcode.
-    ///
-    /// The line between the two is not "chips or no chips", it is *which facts
-    /// are the errand*. Three of them are: the Paket, because it decides what
-    /// comes out of the van; the floor, because it decides which stairs; the
-    /// note, because it has to be read before the bell rather than after. Those
-    /// three get a tag each — a soft fill and a shape, so they read as objects
-    /// on the row rather than as more of the row's text.
-    ///
-    /// Everything else is a qualifier *on the address*, not on the errand — how
-    /// many bells are at this door, how sure we are the door is even the right
-    /// one — and stays as the plain strip it was, which is what keeps the three
-    /// tags meaning something.
+    /// Who and where, then what to carry and which stairs, then the note, then
+    /// the small print — in the order they are needed between the van and the
+    /// door, one line each.
     private var details: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 5) {
                 Text(title)
-                    .font(.body.weight(.medium))
+                    .font(.body)
+                    .fontWeight(isNext ? .semibold : .regular)
                     .strikethrough(stop.delivered && stop.kind == .customer)
                     .foregroundStyle(dimmed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                    .fixedSize(horizontal: false, vertical: true)
                 if stop.pinned {
                     Image(systemName: "hand.point.up.left.fill")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .accessibilityLabel("Pin von Hand gesetzt")
+                        .foregroundStyle(.tertiary)
                 }
             }
 
@@ -163,97 +146,89 @@ struct StopRow: View {
                 Text(stop.listAddress)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            // Side by side while they fit, and wrapping onto a second line
-            // when they do not — the same `WrappingHStack` the next-stop card
-            // uses, for the same reason: "3 × Menü klein" and "Dachgeschoss"
-            // are both things a driver types, so neither width is knowable in
-            // advance, and a row that overflows hides the fact it exists to
-            // show. Paket first and floor second, which is the order the card
-            // puts them in and the order they are needed in — what to carry
-            // before which stairs to carry it up.
-            if paketTag != nil || floorTag != nil {
-                WrappingHStack(spacing: 6) {
-                    paketTag
-                    floorTag
-                }
+            if let carry {
+                carry
+                    .font(.subheadline)
+                    .padding(.top, 2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let notiz = stop.notiz?.trimmed, !notiz.isEmpty {
-                // Its own line rather than beside the other two: a note is a
-                // sentence someone wrote — "Hund im Hof", "bitte laut
-                // klingeln" — and it is the one that wraps.
-                RowTag(
-                    symbol: "note.text", text: notiz, tone: .note,
-                    italic: true, lineLimit: 3, dimmed: dimmed)
+                // A line, not a filled block. The amber is on the glyph, where
+                // it marks the line without setting a sentence in a colour —
+                // the note is regularly two lines of somebody's handwriting,
+                // and two lines inside a coloured box was the heaviest thing on
+                // the row.
+                Label {
+                    Text(notiz)
+                        .italic()
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "note.text")
+                        .foregroundStyle(dimmed ? Color.secondary : Color.warning)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
             }
 
             if let meta {
                 meta
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(1)
-            }
-
-            if stop.excluded {
-                Text("Für diese Tour ausgelassen")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            // Only while the stop is still ahead. The leg belongs to the drive
-            // *out* of this stop, so on one already ticked off it is a distance
-            // the van has covered — true, and no longer anybody's question.
-            if !dimmed, let leg = Format.leg(km: stop.nextLegKm, minutes: stop.nextLegMin) {
-                Text("→ \(leg)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                    .padding(.top, 2)
             }
         }
         // One VoiceOver element for the whole stop, read as a sentence, rather
-        // than seven separate stops of the rotor for one row. The two buttons
-        // stay their own elements — they are the things you act on.
+        // than seven separate stops of the rotor for one row. The trailing
+        // control stays its own element — it is the thing you act on.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
     }
 
-    /// What comes out of the van, as a tag.
+    /// What comes out of the van, and which stairs it goes up — one line,
+    /// because it is one errand and the driver reads it once, at the van door.
     ///
-    /// Loud only when there is more than one thing to carry — that is the fact
-    /// which changes what the driver picks up before shutting the door, and it
-    /// stays the one place an ordinary row spends the app's colour. A single
-    /// meal gets the same tag in grey: still an object on the row, still not
-    /// shouting on all thirty of them.
-    @ViewBuilder
-    private var paketTag: some View {
+    /// Built by concatenating `Text` rather than as an `HStack`, so the whole
+    /// thing is a single paragraph: it wraps mid-line at large text sizes
+    /// instead of overflowing off the right edge or forcing each fact onto a
+    /// line of its own.
+    ///
+    /// The Paket's glyph is the app's colour only when there is more than one
+    /// thing to carry — that is the fact which changes what the driver picks up
+    /// before shutting the door, and it is the one place an ordinary row spends
+    /// a colour at all.
+    private var carry: Text? {
+        var runs: [Text] = []
+
         if let paket = stop.paket?.trimmed, !paket.isEmpty {
-            RowTag(
-                symbol: "shippingbox.fill", text: paket,
-                tone: PaketParser.totalQty(paket) > 1 ? .loud : .quiet,
-                dimmed: dimmed)
+            let many = PaketParser.totalQty(paket) > 1
+            let glyph = Text(Image(systemName: "shippingbox.fill"))
+                .foregroundStyle(dimmed ? Color.secondary : (many ? Color.brand : Color.secondary))
+            let label = Text(paket)
+                .foregroundStyle(dimmed ? Color.secondary : Color.primary)
+                .fontWeight(many ? .semibold : .regular)
+            runs.append(Text("\(glyph)\u{202F}\(label)"))
         }
-    }
 
-    /// Which stairs. Always grey, never the app's colour: a floor is something
-    /// to *know*, not something to decide, and it sits beside a Paket that may
-    /// well be the loud one. The tag is what makes it its own object; the
-    /// colour is what keeps it in its place.
-    @ViewBuilder
-    private var floorTag: some View {
         if let stockwerk = stockwerk?.trimmed, !stockwerk.isEmpty {
-            RowTag(
-                symbol: "stairs", text: NextStopCard.floorLabel(stockwerk),
-                tone: .quiet, dimmed: dimmed)
+            let glyph = Text(Image(systemName: "stairs")).foregroundStyle(Color.secondary)
+            let label = Text(NextStopCard.floorLabel(stockwerk))
+                .foregroundStyle(dimmed ? Color.secondary : Color.primary)
+            runs.append(Text("\(glyph)\u{202F}\(label)"))
         }
+
+        guard !runs.isEmpty else { return nil }
+        return runs.dropFirst().reduce(runs[0]) { Text("\($0)  \($1)") }
     }
 
-    /// The strip under the tags: what qualifies the *address* rather than the
-    /// errand — how many bells are at this door, and how sure we are of the
-    /// door. Built with `Text` concatenation rather than an `HStack` of views:
-    /// composed this way it is a single paragraph, so it wraps mid-strip at
-    /// large text sizes instead of overflowing off the right edge or forcing
-    /// every fact onto its own line.
+    /// The small print: what qualifies the *address* rather than the errand —
+    /// how many bells are at this door, how sure we are of the door, how far it
+    /// is to the next one, and whether this point is in the tour at all.
     private var meta: Text? {
         var runs: [Text] = []
 
@@ -264,118 +239,88 @@ struct StopRow: View {
         if let precision = stop.precision {
             // The short form — "≈ Straße" — not the full sentence. The sentence
             // explaining what an approximate pin means belongs where the driver
-            // does something about it: the next-stop card and the editor. In a
-            // list of thirty rows it was a wrapped two-line paragraph on every
-            // stop the geocoder was unsure about.
+            // does something about it: the next-stop card and the editor.
             let run = Self.run(precision.symbol, precision.shortLabel)
             runs.append(dimmed ? run : run.foregroundStyle(Color.warningText))
+        }
+
+        if stop.excluded {
+            runs.append(Text("Ausgelassen"))
+        }
+
+        // Only while the stop is still ahead. The leg belongs to the drive
+        // *out* of this stop, so on one already ticked off it is a distance the
+        // van has covered — true, and no longer anybody's question.
+        if !dimmed, let leg = Format.leg(km: stop.nextLegKm, minutes: stop.nextLegMin) {
+            runs.append(Text("→ \(leg)").monospacedDigit())
         }
 
         guard !runs.isEmpty else { return nil }
         return runs.dropFirst().reduce(runs[0]) { Text("\($0) · \($1)") }
     }
 
-    /// One icon-and-words run of the strip.
+    /// One icon-and-words run of a strip.
     ///
     /// A narrow *no-break* space between the glyph and its words, not an
-    /// ordinary one: the strip is a single wrapping paragraph, so an ordinary
-    /// space is a place the line is allowed to end — and on a row whose Paket
-    /// runs long that is exactly where it ended, leaving a warning triangle
-    /// alone at the end of one line and the words it belongs to at the start of
-    /// the next.
+    /// ordinary one: a strip is a single wrapping paragraph, so an ordinary
+    /// space is a place the line is allowed to end — and that is exactly where
+    /// it ended, leaving a warning triangle alone at the end of one line and
+    /// the words it belongs to at the start of the next.
     private static func run(_ symbol: String, _ text: String) -> Text {
         Text("\(Image(systemName: symbol))\u{202F}\(text)")
     }
 
-    // MARK: - Trailing controls
+    // MARK: - The one control
 
+    /// The delivered tick on a customer, the in/out switch on a fixed point.
+    ///
+    /// Never two. This row used to carry the tick *and* a navigation disc in a
+    /// column, so the most-scanned surface in the app had two competing targets
+    /// on every one of thirty rows and a visible hole under them on any row
+    /// taller than they were. Navigation moved to where it is actually used —
+    /// a full-width button on the next-stop card, a leading swipe here, and the
+    /// context menu — and the row got its width back.
     @ViewBuilder
-    private var trailingControls: some View {
-        let target = scaled(46, max: 64)
-        // One point size for both circles, and both drawn from the same SF
-        // Symbol family — `circle`, `checkmark.circle.fill` and `circle.fill`
-        // are one shape on Apple's grid, so they come out the same diameter to
-        // the pixel and stay that way at every Dynamic Type size.
-        //
-        // Sized independently they never matched: a symbol at 27pt draws a
-        // circle of about 26, next to a hand-drawn `Circle()` of 38. Two
-        // controls in one column, a third apart in size, read as two unrelated
-        // things rather than as the pair they are.
-        let disc = scaled(30, max: 42)
+    private var control: some View {
+        let target = min(42 * controlScale, 58)
+        let disc = min(27 * controlScale, 36)
 
-        VStack(spacing: 4) {
-            if let onToggleDelivered {
-                Button(action: onToggleDelivered) {
-                    Image(systemName: stop.delivered ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: disc, weight: .regular))
-                        .foregroundStyle(stop.delivered ? Color.success : Color.secondary)
-                        .frame(width: target, height: target)
-                        .contentShape(.rect)
-                }
-                // `.borderless` is what makes several buttons in one List row
-                // independently tappable — without it a tap anywhere in the row
-                // fires every button in it.
-                .buttonStyle(.borderless)
-                .accessibilityLabel(
-                    stop.delivered ? "Zustellung zurücknehmen" : "Als zugestellt markieren")
-                .sensoryFeedback(.impact(weight: .medium), trigger: stop.delivered)
+        if let onToggleDelivered {
+            Button(action: onToggleDelivered) {
+                Image(systemName: stop.delivered ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: disc, weight: .regular))
+                    .foregroundStyle(stop.delivered ? Color.success : Color.secondary)
+                    .frame(width: target, height: target)
+                    .contentShape(.rect)
             }
-
-            if let onToggleExcluded {
-                // The affordance this action never had. Switching Start, Lager
-                // or Ziel out of a tour was a plain tap on the row — the same
-                // gesture that opens the editor on every row above it, doing
-                // something else entirely, with nothing on screen saying so.
-                // A driver found it by accident or not at all, and finding it
-                // by accident meant the tour quietly re-planned around a leg
-                // they had not decided to drop.
-                //
-                // The glyph names the *action*, not the state, which is what
-                // the row's own context menu already does: a minus to leave
-                // this point out, an arrow to put it back. The row still
-                // toggles on tap, so nothing anybody has learned stops working
-                // — this is what makes it learnable in the first place.
-                Button(action: onToggleExcluded) {
-                    Image(systemName: stop.excluded
-                        ? "arrow.uturn.backward.circle" : "minus.circle")
-                        .font(.system(size: disc, weight: .regular))
-                        .foregroundStyle(stop.excluded ? Color.brand : Color.secondary)
-                        .frame(width: target, height: target)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(
-                    stop.excluded
-                        ? "\(title) wieder einplanen"
-                        : "\(title) für diese Tour auslassen")
+            // `.borderless` is what makes a button in a List row tappable on its
+            // own — without it a tap anywhere in the row fires it.
+            .buttonStyle(.borderless)
+            .accessibilityLabel(
+                stop.delivered ? "Zustellung zurücknehmen" : "Als zugestellt markieren")
+            .sensoryFeedback(.impact(weight: .medium), trigger: stop.delivered)
+        } else if let onToggleExcluded {
+            // The affordance this action never had before it was a control:
+            // switching Start, Lager or Ziel out of a tour was a plain tap on
+            // the row — the same gesture that opens the editor on every row
+            // above it, doing something else entirely, with nothing on screen
+            // saying so.
+            //
+            // The glyph names the *action*, not the state: a minus to leave
+            // this point out, an arrow to put it back.
+            Button(action: onToggleExcluded) {
+                Image(systemName: stop.excluded
+                    ? "arrow.uturn.backward.circle" : "minus.circle")
+                    .font(.system(size: disc, weight: .regular))
+                    .foregroundStyle(stop.excluded ? Color.brand : Color.secondary)
+                    .frame(width: target, height: target)
+                    .contentShape(.rect)
             }
-
-            if let onNavigate {
-                Button(action: onNavigate) {
-                    // A soft tinted disc rather than a solid brand-filled one.
-                    // Filled, it put a second saturated blob on every single row
-                    // next to the delivered tick, and a list where everything
-                    // shouts tells the driver nothing about what matters.
-                    //
-                    // The disc is `circle.fill` rather than a `Circle()` shape:
-                    // it is the tick's own symbol, at the tick's own point size,
-                    // which is what makes the two exactly equal instead of
-                    // approximately so. The arrow rides on the same layout box,
-                    // so it stays centred in the disc at every text size.
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: disc, weight: .regular))
-                        .foregroundStyle(Color.brand.opacity(0.14))
-                        .overlay {
-                            Image(systemName: "arrow.trianglehead.turn.up.right")
-                                .font(.system(size: disc * 0.42, weight: .semibold))
-                                .foregroundStyle(Color.brand)
-                        }
-                        .frame(width: target, height: target)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Navigation zu \(title) starten")
-            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(
+                stop.excluded
+                    ? "\(title) wieder einplanen"
+                    : "\(title) für diese Tour auslassen")
         }
     }
 
@@ -401,10 +346,6 @@ struct StopRow: View {
             parts.append(stop.delivered ? "zugestellt" : "offen")
         }
         if let paket = stop.paket, !paket.isEmpty { parts.append(paket) }
-        // The row has shown the floor since floors existed and has never once
-        // said it out loud: this sentence is the whole row for a driver using
-        // VoiceOver, and the one fact that only this app knows was missing
-        // from it.
         if let stockwerk = stockwerk?.trimmed, !stockwerk.isEmpty {
             parts.append("Stockwerk \(NextStopCard.floorLabel(stockwerk))")
         }
@@ -419,24 +360,16 @@ struct StopRow: View {
     }
 }
 
-/// One fact about a stop, as a small filled tag.
+/// One fact, as an icon and a word or two, with no fill behind it.
 ///
-/// Deliberately not `FactChip`, which is the next-stop card's chip and should
-/// stay that way. The two are read in different situations and want different
-/// sizes for it: the card is one stop at arm's length in a windscreen mount and
-/// can afford 17pt type and a 20pt count disc, and this is thirty rows being
-/// scanned with a thumb. Sharing one component would mean one of the two
-/// wearing the other's proportions.
-///
-/// What they *do* share is the vocabulary — brand for the thing that changes
-/// what leaves the van, the floor's own grey for context, amber for the
-/// driver's own note — so a stop looks like the same stop on the card and on
-/// the row below it. The import review borrows it for the same reason: a
-/// Paket should look like a Paket before it is a stop, too.
+/// It used to be a filled tag, and on a row carrying a Paket, a floor and a
+/// note that was three coloured blocks under one name. The tag is now the
+/// glyph: colour marks *which kind* of fact this is, and the words stay words.
+/// Kept as a type because the import review shows the same facts about a
+/// customer who is not a stop yet, and one should look like the other.
 struct RowTag: View {
     enum Tone {
-        /// A multi-item drop. The one place an ordinary row spends the app's
-        /// colour.
+        /// A multi-item drop — the fact that changes what leaves the van.
         case loud
         /// Context: a floor, something to know rather than decide.
         case quiet
@@ -448,66 +381,37 @@ struct RowTag: View {
     let text: String
     var tone: Tone = .quiet
     var italic = false
-    /// Four, not two. A tag that runs long wraps inside itself rather than
-    /// truncating: the Paket is what comes out of the van before the door
-    /// shuts, and "2x Menü + 1x Nach…" is the one way this row could be
-    /// actively wrong. Four rather than three because at an accessibility text
-    /// size the two 64pt controls on the right leave the text about a third of
-    /// the screen, and three lines of that is not a full Paket. Bounded all the
-    /// same, because the field takes 200 characters and a driver who pastes a
-    /// paragraph into it should not get a row the height of the screen.
-    var lineLimit = 4
-    /// Delivered, or left out of this tour. The tag gives up its fill and its
-    /// padding and goes back to being plain grey text — the same thing
-    /// `StockwerkBadge` does, and what keeps the finished half of a tour from
-    /// competing with the half still to drive.
+    var lineLimit = 3
+    /// Delivered, or left out of this tour: the glyph gives up its colour.
     var dimmed = false
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 5) {
-            Image(systemName: symbol)
-                .font(.caption)
-                .imageScale(.small)
+        Label {
             Text(text)
                 .italic(italic)
                 .lineLimit(lineLimit)
-                // Wraps inside the tag rather than pushing it wider than the
-                // row — a Notiz is a sentence and regularly runs to two lines.
                 .fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(dimmed ? AnyShapeStyle(.secondary) : textStyle)
+        } icon: {
+            Image(systemName: symbol)
+                .foregroundStyle(dimmed ? Color.secondary : glyph)
         }
-        .font(font)
-        .foregroundStyle(foreground)
-        .padding(.horizontal, dimmed ? 0 : 8)
-        .padding(.vertical, dimmed ? 0 : 4)
-        .background(background, in: .rect(cornerRadius: 8, style: .continuous))
+        .font(.subheadline)
+        .fontWeight(tone == .loud ? .semibold : .regular)
     }
 
-    /// The note is a step smaller than the other two. It is a sentence rather
-    /// than a label, it is the one that wraps, and its amber fill is already
-    /// doing the work of making it impossible to miss.
-    private var font: Font {
+    private var glyph: Color {
         switch tone {
-        case .loud: .subheadline.weight(.semibold)
-        case .quiet: .subheadline
-        case .note: .footnote.weight(.medium)
+        case .loud: .brand
+        case .quiet: .secondary
+        case .note: .warning
         }
     }
 
-    private var foreground: Color {
-        guard !dimmed else { return .secondary }
-        return switch tone {
-        case .loud: Color.brand
-        case .quiet: Color.floorText
-        case .note: Color.warningText
-        }
-    }
-
-    private var background: AnyShapeStyle {
-        guard !dimmed else { return AnyShapeStyle(.clear) }
-        return switch tone {
-        case .loud: AnyShapeStyle(Color.brand.opacity(0.14))
-        case .quiet: AnyShapeStyle(Color.floor.opacity(0.14))
-        case .note: AnyShapeStyle(Color.warning.opacity(0.16))
+    private var textStyle: AnyShapeStyle {
+        switch tone {
+        case .loud, .quiet: AnyShapeStyle(.primary)
+        case .note: AnyShapeStyle(.secondary)
         }
     }
 }
@@ -523,6 +427,7 @@ struct StopListRow: View {
     var sameDoorCount: Int = 1
     var number: Int?
     var stockwerk: String?
+    var isNext: Bool = false
     let onTap: () -> Void
     let onToggleDelivered: () -> Void
     let onDelete: () -> Void
@@ -541,11 +446,11 @@ struct StopListRow: View {
             sameDoorCount: sameDoorCount,
             number: number,
             stockwerk: stockwerk,
+            isNext: isNext,
             onToggleDelivered: isCustomer ? onToggleDelivered : nil,
-            onNavigate: onNavigate,
             onToggleExcluded: isCustomer ? nil : onToggleExcluded)
-            // Opens the editor. The trailing buttons are `.borderless`, so they
-            // handle their own taps rather than falling through to this.
+            // Opens the editor. The trailing control is `.borderless`, so it
+            // handles its own taps rather than falling through to this.
             .contentShape(.rect)
             .onTapGesture(perform: onTap)
             .accessibilityHint(
@@ -554,8 +459,21 @@ struct StopListRow: View {
                     : (stop.excluded
                         ? "Doppeltippen, um diesen Punkt wieder einzuplanen"
                         : "Doppeltippen, um diesen Punkt für diese Tour auszulassen"))
+            // Navigation lives here now, on every row including the fixed
+            // points — the depot, the warehouse and the end of the shift are
+            // three of the drives a tour actually makes. It came off the row as
+            // a second visible disc; one swipe is what it costs instead.
             .swipeActions(edge: .leading) {
+                Button(action: onNavigate) {
+                    Label("Route", systemImage: "arrow.trianglehead.turn.up.right")
+                }
+                .tint(Color.brand)
+            }
+            .swipeActions(edge: .trailing) {
                 if isCustomer {
+                    Button(role: .destructive, action: onDelete) {
+                        Label("Löschen", systemImage: "trash")
+                    }
                     Button(action: onToggleDelivered) {
                         Label(
                             stop.delivered ? "Offen" : "Geliefert",
@@ -564,25 +482,16 @@ struct StopListRow: View {
                     .tint(stop.delivered ? Color.warning : Color.success)
                 }
             }
-            .swipeActions(edge: .trailing) {
-                if isCustomer {
-                    Button(role: .destructive, action: onDelete) {
-                        Label("Löschen", systemImage: "trash")
-                    }
-                }
-            }
             .contextMenu { menu }
     }
 
     /// Everything you can do with this stop, spelled out.
     ///
-    /// The row's own controls stay what they are — one tap to tick off, one to
-    /// navigate — because those are the two things done thirty times a tour and
-    /// they must not move. This is for the rest, and it is the only place two of
-    /// them exist at all: seeing a stop on the map (the map could always send
-    /// you to the list, never the other way round), and switching a fixed point
-    /// out of the tour, which until now was a plain tap on the row with nothing
-    /// anywhere saying so.
+    /// The row's own control stays what it is — one tap to tick off — because
+    /// that is the thing done thirty times a tour and it must not move. This is
+    /// for the rest, and it is the only place one of them exists at all: seeing
+    /// a stop on the map, which the map could always do in the other direction
+    /// and never in this one.
     @ViewBuilder
     private var menu: some View {
         Button("Navigation starten", systemImage: "arrow.trianglehead.turn.up.right",
@@ -614,11 +523,11 @@ struct StopListRow: View {
 
 /// A saved floor, in the list of every door ever answered for.
 ///
-/// The last badge of its kind. On a stop row a floor is now one run of the
-/// plain strip under the address, because there it competes with the customer's
-/// name for a driver's attention and loses on purpose. Here it is the whole
-/// subject of the row — this screen is a list *of floors* — so it keeps the
-/// chip, which is what makes "3. Stock" and "2/Tür 14" scan as one column.
+/// Still a badge, and the only one left in the app. On a stop row a floor is
+/// one run of the line under the address, because there it competes with the
+/// customer's name and loses on purpose. Here it is the whole subject of the
+/// row — this screen is a list *of floors* — so the chip is what makes
+/// "3. Stock" and "2/Tür 14" scan as one column.
 struct StockwerkBadge: View {
     let text: String
     let dimmed: Bool
@@ -633,8 +542,8 @@ struct StockwerkBadge: View {
         .padding(.horizontal, dimmed ? 0 : 7)
         .padding(.vertical, dimmed ? 0 : 3)
         .background(
-            dimmed ? AnyShapeStyle(.clear) : AnyShapeStyle(Color.floor.opacity(0.18)),
-            in: .rect(cornerRadius: 6))
+            dimmed ? AnyShapeStyle(.clear) : AnyShapeStyle(Color.floor.opacity(0.14)),
+            in: .rect(cornerRadius: 6, style: .continuous))
         .accessibilityLabel("Stockwerk \(NextStopCard.floorLabel(text))")
     }
 }

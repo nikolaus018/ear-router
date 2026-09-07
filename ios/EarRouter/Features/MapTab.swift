@@ -975,28 +975,50 @@ struct StopPreviewSheet: View {
     @ViewBuilder
     private var details: some View {
         if hasDetails {
+            // The same vocabulary as the next-stop card: one `Label` per
+            // fact in one icon column, colour on the glyph and the words left
+            // as words. These lines used to set the whole sentence in amber or
+            // in the floor's grey, which made a two-line note the loudest thing
+            // on the card.
             VStack(alignment: .leading, spacing: 8) {
                 if let stockwerk, !stockwerk.isEmpty {
                     // First in the card for the same reason it is first on the
                     // row: it is what the driver needs before they get out.
-                    Label(stockwerk, systemImage: "stairs")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.floorText)
+                    Label(NextStopCard.floorLabel(stockwerk), systemImage: "stairs")
+                        .font(.subheadline)
                 }
                 if let paket = stop.paket, !paket.isEmpty {
-                    Label(paket, systemImage: "shippingbox").font(.subheadline)
+                    Label {
+                        Text(paket).fontWeight(
+                            PaketParser.totalQty(paket) > 1 ? .semibold : .regular)
+                    } icon: {
+                        Image(systemName: "shippingbox.fill")
+                            .foregroundStyle(
+                                PaketParser.totalQty(paket) > 1
+                                    ? Color.brand : Color.secondary)
+                    }
+                    .font(.subheadline)
                 }
                 if let notiz = stop.notiz, !notiz.isEmpty {
-                    Label(notiz, systemImage: "note.text")
-                        .font(.subheadline)
-                        .foregroundStyle(Color.warningText)
+                    Label {
+                        Text(notiz).italic()
+                    } icon: {
+                        Image(systemName: "note.text").foregroundStyle(Color.warning)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                 }
                 if let p = stop.precision {
-                    Label(p.label, systemImage: p.symbol)
-                        .font(.footnote)
-                        .foregroundStyle(Color.warningText)
+                    Label {
+                        Text(p.label)
+                    } icon: {
+                        Image(systemName: p.symbol).foregroundStyle(Color.warning)
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 }
             }
+            .symbolRenderingMode(.monochrome)
         }
     }
 

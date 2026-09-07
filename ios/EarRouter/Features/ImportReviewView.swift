@@ -197,28 +197,37 @@ struct ImportReviewView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                if !entry.paket.isEmpty || !entry.notiz.isEmpty {
-                    WrappingHStack(spacing: 6) {
-                        if !entry.paket.isEmpty {
-                            RowTag(
-                                symbol: "shippingbox.fill", text: entry.paket,
-                                tone: PaketParser.totalQty(entry.paket) > 1 ? .loud : .quiet)
-                        }
-                        if !entry.notiz.isEmpty {
-                            RowTag(
-                                symbol: "note.text", text: entry.notiz, tone: .note,
-                                italic: true, lineLimit: 2)
-                        }
-                    }
+                // Stacked, not side by side. These were filled tags laid out
+                // by `WrappingHStack`, which is the right layout for chips and
+                // the wrong one for what they are now: lines of text with a
+                // coloured glyph in front. Two of those on one row read as one
+                // run-on sentence.
+                if !entry.paket.isEmpty {
+                    RowTag(
+                        symbol: "shippingbox.fill", text: entry.paket,
+                        tone: PaketParser.totalQty(entry.paket) > 1 ? .loud : .quiet)
+                        .padding(.top, 2)
+                }
+                if !entry.notiz.isEmpty {
+                    RowTag(
+                        symbol: "note.text", text: entry.notiz, tone: .note,
+                        italic: true, lineLimit: 2)
                 }
 
                 if let problem = entry.problem {
-                    Label(problem, systemImage: "exclamationmark.triangle.fill")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(Color.warningText)
+                    Label {
+                        Text(problem).fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Color.warning)
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
                 }
             }
             .padding(.vertical, 2)
+            .symbolRenderingMode(.monochrome)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(.rect)
         }
