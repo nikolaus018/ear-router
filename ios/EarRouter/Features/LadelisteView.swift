@@ -76,7 +76,7 @@ struct LadelisteView: View {
             HStack(spacing: 14) {
                 Text("\(item.qty)")
                     .font(.title3.bold().monospacedDigit())
-                    .foregroundStyle(on ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.brand))
+                    .foregroundStyle(on ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.accentColor))
                     .frame(width: 40, alignment: .leading)
 
                 Text(item.label)
@@ -88,7 +88,7 @@ struct LadelisteView: View {
 
                 Image(systemName: on ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: min(27 * textScale, 38)))
-                    .foregroundStyle(on ? Color.success : Color.secondary)
+                    .foregroundStyle(on ? Color.delivered : Color.secondary)
                     .frame(width: min(44 * textScale, 64), height: min(44 * textScale, 64))
             }
             .padding(.vertical, 4)

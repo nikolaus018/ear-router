@@ -209,8 +209,7 @@ struct BackupView: View {
             // is about to delete. Wound back first, so the restore never
             // happens underneath a screen showing what it removed.
             if mode == .replace {
-                focus.routesPath = NavigationPath()
-                focus.historyPath = NavigationPath()
+                focus.toursPath = NavigationPath()
                 focus.currentRouteID = nil
             }
             let outcome = try BackupRestore.apply(archive, mode: mode, in: context)

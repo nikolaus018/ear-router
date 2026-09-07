@@ -232,14 +232,16 @@ struct ImportSummary: View {
                             + "einmal übernehmen macht dort weiter.",
                         systemImage: "hand.raised.fill")
                         .font(.footnote)
-                        .foregroundStyle(Color.warningText)
+                        .labelStyle(TintedIconLabelStyle(tint: .attention))
+                        .foregroundStyle(.secondary)
                 } else if result.deletionsSkipped {
                     Label(
                         "Nichts entfernt — erst die Fehler unten beheben und noch einmal "
                             + "übernehmen.",
                         systemImage: "exclamationmark.shield.fill")
                         .font(.footnote)
-                        .foregroundStyle(Color.warningText)
+                        .labelStyle(TintedIconLabelStyle(tint: .attention))
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -280,10 +282,9 @@ struct ImportSummary: View {
                         // driver which addresses to go and look at.
                         Label {
                             Text("\(a.kunde) — \(a.precision.shortLabel)")
-                                .foregroundStyle(Color.warningText)
                         } icon: {
                             Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(Color.warning)
+                                .foregroundStyle(Color.attention)
                         }
                         .font(.subheadline)
                     }

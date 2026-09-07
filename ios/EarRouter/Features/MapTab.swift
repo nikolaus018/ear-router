@@ -599,14 +599,14 @@ struct MapTab: View {
     }
 
     /// Green once delivered, amber while the location is only approximate,
-    /// otherwise the app's indigo. The colour carries the same meaning it does
-    /// in the list, and the depot and via points stay graphite: they are the
-    /// shape of the tour, not stops with a state to change.
+    /// otherwise the accent. The colour carries the same meaning it does in the
+    /// list, and the depot and via points stay grey: they are the shape of the
+    /// tour, not stops with a state to change.
     private static func tint(for stop: Stop) -> Color {
-        guard stop.kind == .customer else { return .structure }
-        if stop.delivered { return .success }
-        if stop.precision != nil { return .warning }
-        return .brand
+        guard stop.kind == .customer else { return .fixture }
+        if stop.delivered { return .delivered }
+        if stop.precision != nil { return .attention }
+        return .accentColor
     }
 
     private static func visualState(for stop: Stop) -> Int {
@@ -662,7 +662,7 @@ private struct RouteMapCanvas: View {
                         style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
                 MapPolyline(coordinates: line)
                     .stroke(
-                        Color.brand,
+                        Color.accentColor,
                         style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
             }
 
@@ -799,7 +799,7 @@ private struct MapNotice: View {
                 ProgressView().controlSize(.small)
             } else {
                 Image(systemName: "location.slash.fill")
-                    .foregroundStyle(Color.warning)
+                    .foregroundStyle(Color.attention)
             }
             Text(text)
                 .font(.footnote.weight(.medium))
@@ -933,9 +933,10 @@ struct StopPreviewSheet: View {
             if let number {
                 Text("\(number)")
                     .font(.footnote.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(Color.onBrand)
+                    .foregroundStyle(.white)
                     .frame(width: badgeSize, height: badgeSize)
-                    .background(Circle().fill(stop.delivered ? Color.success : Color.brand))
+                    .background(
+                        Circle().fill(stop.delivered ? Color.delivered : Color.accentColor))
                     .accessibilityHidden(true)
             }
 
@@ -960,7 +961,7 @@ struct StopPreviewSheet: View {
                 Button(action: onToggleDelivered) {
                     Image(systemName: stop.delivered ? "checkmark.circle.fill" : "circle")
                         .font(.system(size: min(30 * textScale, 40)))
-                        .foregroundStyle(stop.delivered ? Color.success : Color.secondary)
+                        .foregroundStyle(stop.delivered ? Color.delivered : Color.secondary)
                         .frame(width: min(44 * textScale, 64), height: min(44 * textScale, 64))
                         .contentShape(.rect)
                 }
@@ -981,41 +982,16 @@ struct StopPreviewSheet: View {
             // in the floor's grey, which made a two-line note the loudest thing
             // on the card.
             VStack(alignment: .leading, spacing: 8) {
-                if let stockwerk, !stockwerk.isEmpty {
-                    // First in the card for the same reason it is first on the
-                    // row: it is what the driver needs before they get out.
-                    Label(NextStopCard.floorLabel(stockwerk), systemImage: "stairs")
+                if let carry = StopFacts.carry(paket: stop.paket, stockwerk: stockwerk) {
+                    carry
                         .font(.subheadline)
-                }
-                if let paket = stop.paket, !paket.isEmpty {
-                    Label {
-                        Text(paket).fontWeight(
-                            PaketParser.totalQty(paket) > 1 ? .semibold : .regular)
-                    } icon: {
-                        Image(systemName: "shippingbox.fill")
-                            .foregroundStyle(
-                                PaketParser.totalQty(paket) > 1
-                                    ? Color.brand : Color.secondary)
-                    }
-                    .font(.subheadline)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if let notiz = stop.notiz, !notiz.isEmpty {
-                    Label {
-                        Text(notiz).italic()
-                    } icon: {
-                        Image(systemName: "note.text").foregroundStyle(Color.warning)
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    StopFacts.note(notiz).font(.subheadline)
                 }
                 if let p = stop.precision {
-                    Label {
-                        Text(p.label)
-                    } icon: {
-                        Image(systemName: p.symbol).foregroundStyle(Color.warning)
-                    }
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    StopFacts.precision(p).font(.footnote)
                 }
             }
             .symbolRenderingMode(.monochrome)
@@ -1041,7 +1017,6 @@ struct StopPreviewSheet: View {
         return layout {
             Button(action: onNavigate) {
                 WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
-                    .onBrandLabel()
             }
             .buttonStyle(.borderedProminent)
             Button(action: onShowInList) {

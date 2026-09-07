@@ -254,7 +254,8 @@ struct StopEditorSheet: View {
                 "Der Pin wird beim Sichern verworfen und die Adresse neu gesucht.",
                 systemImage: "magnifyingglass")
         } else if let p = stop?.precision {
-            Label(p.label, systemImage: p.symbol).foregroundStyle(Color.warning)
+            Label(p.label, systemImage: p.symbol)
+                .labelStyle(TintedIconLabelStyle(tint: .attention))
         }
     }
 
@@ -391,7 +392,7 @@ struct PinDropSheet: View {
                 // centre the camera reports.
                 Image(systemName: "mappin")
                     .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(Color.brand)
+                    .foregroundStyle(Color.accentColor)
                     .shadow(radius: 3)
                     .offset(y: -17)
                     .allowsHitTesting(false)

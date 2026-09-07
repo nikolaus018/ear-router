@@ -21,30 +21,32 @@ struct MoreTab: View {
 
     var body: some View {
         List {
-            // One tint for the whole section rather than a different colour per
-            // row. These three are the app's own tools and they belong
-            // together; giving each its own hue turned a three-row section into
-            // a paint chart, and the glyphs already tell them apart.
+            // A tint per row, which is what Settings.app does and what makes a
+            // settings list findable: after a week the driver reaches for the
+            // brown tile, not for the third row down. These were all one colour
+            // — defensible when that colour was the app's own indigo and
+            // nothing else on the screen wore it, and wrong now that the accent
+            // is the system blue every tappable thing in the app is drawn in.
             Section("Zusteller-Tools") {
                 Button {
                     showingGourmet = true
                 } label: {
                     SettingsRow(
-                        icon: "square.grid.2x2.fill", tint: .brand, title: "Gourmet",
+                        icon: "square.grid.2x2.fill", tint: .purple, title: "Gourmet",
                         detail: "Kundenliste öffnen")
                 }
                 Button {
                     showingTuercode = true
                 } label: {
                     SettingsRow(
-                        icon: "key.fill", tint: .brand, title: "Türcode",
+                        icon: "key.fill", tint: .indigo, title: "Türcode",
                         detail: "Buchstaben in Ziffern")
                 }
                 Button {
                     showingKilometer = true
                 } label: {
                     SettingsRow(
-                        icon: "gauge.with.dots.needle.bottom.50percent", tint: .brand,
+                        icon: "gauge.with.dots.needle.bottom.50percent", tint: .teal,
                         title: "Kilometerstand", detail: "Gefahrene Kilometer")
                 }
             }
@@ -167,18 +169,19 @@ private struct SideloadExpiryRow: View {
             HStack(spacing: 12) {
                 SettingsRow(
                     icon: left.isUrgent ? "exclamationmark.triangle.fill" : "hourglass",
-                    tint: left.isUrgent ? .warning : .gray,
+                    tint: left.isUrgent ? .attention : .gray,
                     title: "Läuft ab",
                     detail: expiry.formatted(date: .abbreviated, time: .shortened))
 
                 Spacer(minLength: 8)
 
-                // `warningText`, not `warning`: the amber that reads as a tinted
-                // icon tile is about 2:1 against a list background, which is not
-                // a colour you put a number in.
+                // Secondary either way. The amber that reads as a tinted icon
+                // tile is about 2:1 against a list background, which is not a
+                // colour to put a number in — the tile beside it is already
+                // carrying the urgency.
                 Text(left.label)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(left.isUrgent ? Color.warningText : Color.secondary)
+                    .foregroundStyle(.secondary)
             }
             // Combined, so VoiceOver reads "Läuft ab, 11.09.2026, 16:04, Noch 6
             // Tage" as one row instead of three unrelated fragments. Written
@@ -215,8 +218,8 @@ struct AdvancedSettingsView: View {
 
         var tint: Color {
             switch self {
-            case .reachable: .success
-            case .unreachable: .warning
+            case .reachable: .delivered
+            case .unreachable: .attention
             default: .secondary
             }
         }
@@ -279,7 +282,8 @@ struct AdvancedSettingsView: View {
                         "Keine gültige Adresse — es wird der Standardserver verwendet. "
                             + "Erwartet wird etwas wie https://osrm.example.com",
                         systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(Color.warning)
+                        .labelStyle(TintedIconLabelStyle(tint: .attention))
+                        .foregroundStyle(.secondary)
                 } else {
                     Text("Leer lassen für den Standardserver.")
                 }

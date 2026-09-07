@@ -197,21 +197,19 @@ struct ImportReviewView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                // Stacked, not side by side. These were filled tags laid out
-                // by `WrappingHStack`, which is the right layout for chips and
-                // the wrong one for what they are now: lines of text with a
-                // coloured glyph in front. Two of those on one row read as one
-                // run-on sentence.
-                if !entry.paket.isEmpty {
-                    RowTag(
-                        symbol: "shippingbox.fill", text: entry.paket,
-                        tone: PaketParser.totalQty(entry.paket) > 1 ? .loud : .quiet)
+                // The same lines the stop row draws, because this is the same
+                // customer one step before they become a stop — a Paket should
+                // look like a Paket before it is on a tour, too.
+                if let carry = StopFacts.carry(paket: entry.paket, stockwerk: nil) {
+                    carry
+                        .font(.subheadline)
                         .padding(.top, 2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if !entry.notiz.isEmpty {
-                    RowTag(
-                        symbol: "note.text", text: entry.notiz, tone: .note,
-                        italic: true, lineLimit: 2)
+                    StopFacts.note(entry.notiz, lineLimit: 2)
+                        .font(.subheadline)
+                        .padding(.top, 2)
                 }
 
                 if let problem = entry.problem {
@@ -219,8 +217,8 @@ struct ImportReviewView: View {
                         Text(problem).fixedSize(horizontal: false, vertical: true)
                     } icon: {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(Color.warning)
                     }
+                    .labelStyle(TintedIconLabelStyle(tint: .attention))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .padding(.top, 2)
@@ -400,7 +398,8 @@ struct ImportEntryEditor: View {
                 } footer: {
                     if let problem = entry.problem {
                         Label(problem, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(Color.warning)
+                            .labelStyle(TintedIconLabelStyle(tint: .attention))
+                            .foregroundStyle(.secondary)
                     }
                 }
 

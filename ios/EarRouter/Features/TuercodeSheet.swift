@@ -41,7 +41,7 @@ struct TuercodeSheet: View {
                         .foregroundStyle(.secondary)
                     Text(output)
                         .font(.system(size: 40, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Color.brand)
+                        .foregroundStyle(Color.accentColor)
                         .textSelection(.enabled)
                         .contentTransition(.numericText())
                         .animation(.snappy, value: output)

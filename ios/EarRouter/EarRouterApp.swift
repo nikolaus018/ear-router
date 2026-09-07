@@ -22,7 +22,6 @@ struct EarRouterApp: App {
                     StoreFailureView(error: store.failure)
                 }
             }
-            .tint(Color.brand)
             // Rearmed on every launch, which is exactly when the expiry date
             // can have moved: reinstalling from Xcode is what resets the seven
             // days, and it always launches the app.
@@ -94,41 +93,49 @@ final class Store {
 struct StoreFailureView: View {
     let error: String?
 
+    /// Built outside the view builder. Concatenated inline it was four string
+    /// operands and an optional inside a `ContentUnavailableView`, which is
+    /// enough for the type checker to give up on the whole body.
+    private var explanation: String {
+        let base =
+            "Die gespeicherten Touren konnten nicht geöffnet werden. Die alten Daten "
+            + "wurden nicht gelöscht — bitte melde dich beim Entwickler, bevor du "
+            + "die App neu installierst."
+        guard let error else { return base }
+        return base + "\n\n" + error
+    }
+
     var body: some View {
         ContentUnavailableView {
             Label("Daten nicht lesbar", systemImage: "exclamationmark.triangle.fill")
         } description: {
-            Text(
-                "Die gespeicherten Touren konnten nicht geöffnet werden. Die alten Daten "
-                    + "wurden nicht gelöscht — bitte melde dich beim Entwickler, bevor du "
-                    + "die App neu installierst."
-                    + (error.map { "\n\n\($0)" } ?? ""))
+            Text(explanation)
         } actions: {
-            Link(destination: URL(string: "mailto:nikolaus.marek@outlook.com")!) {
-                Text("Entwickler kontaktieren").onBrandLabel()
-            }
-            .buttonStyle(.borderedProminent)
+            Link("Entwickler kontaktieren",
+                 destination: URL(string: "mailto:nikolaus.marek@outlook.com")!)
+                .buttonStyle(.borderedProminent)
         }
     }
 }
 
-/// Which route is "in focus" app-wide, shared across tabs — the Karte tab
-/// always shows this one regardless of which tab it was opened from.
+/// Which route is "in focus" app-wide, shared across tabs — Heute and Karte
+/// both show this one, whichever tab it was chosen from.
 ///
-/// Routen and Verlauf keep a navigation path each rather than sharing one, which
-/// is the same per-tab behaviour `UITabBarController` gives you for free: a tour
-/// pushed from one list does not appear on top of the other. `reveal(stop:of:)`
-/// is what chooses between them, by the route's own status — a completed tour
-/// lives in Verlauf, so that is the stack its detail screen belongs on.
+/// There is one navigation path now rather than two. Routen and Verlauf used to
+/// keep a stack each so that a tour pushed from one list did not appear on top
+/// of the other; they are one list with two sections now, so there is one stack
+/// and nothing to keep apart.
 @Observable
 @MainActor
 final class RouteFocus {
-    enum Tab: Hashable { case routes, map, history, more }
+    enum Tab: Hashable { case today, map, tours, more }
 
-    var tab: Tab = .routes
+    /// Heute, because that is the tour being driven. The app used to open on
+    /// the list of tours, which put a document browser in front of a driver who
+    /// has exactly one document.
+    var tab: Tab = .today
     var currentRouteID: UUID?
-    var routesPath = NavigationPath()
-    var historyPath = NavigationPath()
+    var toursPath = NavigationPath()
 
     /// A stop the list should scroll to and flash as soon as it appears.
     /// Cleared by whoever consumes it, so it fires once rather than on every
@@ -159,18 +166,21 @@ final class RouteFocus {
     /// Opens the route's stop list and scrolls to one stop — what the map's
     /// preview card does when you want to see a pin in context.
     ///
-    /// A completed route lives in Verlauf rather than Routen, so the push goes
-    /// onto that tab's stack; pushing it onto Routen would land the driver on a
-    /// detail screen inside a list the route is not in.
+    /// An active tour is the one Heute is already showing, so that is where it
+    /// goes, with no stack to push. A finished tour has no home but the archive,
+    /// so that one is pushed onto Touren.
     func reveal(stop: Stop, of route: Route) {
         currentRouteID = route.id
         revealStopID = stop.id
         if route.status == .completed {
-            historyPath = NavigationPath([route.id])
-            tab = .history
+            toursPath = NavigationPath([route.id])
+            tab = .tours
         } else {
-            routesPath = NavigationPath([route.id])
-            tab = .routes
+            // Cleared, not pushed. Heute renders the focused active tour at the
+            // root of its own tab; leaving a stale detail screen on the Touren
+            // stack would mean the driver's Back button led somewhere they had
+            // never been.
+            tab = .today
         }
     }
 }

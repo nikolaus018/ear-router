@@ -39,7 +39,6 @@ struct KilometerSheet: View {
 
                     Button { save() } label: {
                         WideButtonLabel("Stand merken", systemImage: "arrow.down.to.line")
-                            .onBrandLabel()
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
@@ -115,7 +114,7 @@ struct KilometerSheet: View {
 
             Text(drivenLabel)
                 .font(.system(size: 40, weight: .bold, design: .monospaced))
-                .foregroundStyle(driven == nil ? Color.secondary : Color.brand)
+                .foregroundStyle(driven == nil ? Color.secondary : Color.accentColor)
                 .textSelection(.enabled)
                 .contentTransition(.numericText())
                 .animation(.snappy, value: drivenLabel)
@@ -131,7 +130,8 @@ struct KilometerSheet: View {
                     "Der neue Stand ist kleiner als der alte.",
                     systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
-                    .foregroundStyle(Color.warningText)
+                    .labelStyle(TintedIconLabelStyle(tint: .attention))
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.top, 2)
             }

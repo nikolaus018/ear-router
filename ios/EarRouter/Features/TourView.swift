@@ -2,7 +2,27 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 
-struct RouteDetailView: View {
+/// One tour: its stops in driving order, and everything you can do to them.
+///
+/// The screen is two things stacked, and the split is the whole idea.
+///
+/// **The list is the tour** — an uninterrupted sequence from the depot to the
+/// finish flag, in the order it will be driven, with nothing wedged into the
+/// middle of it. It used to have a card for the current stop sitting between
+/// the fixed points and the customers, which meant the same customer appeared
+/// twice on one screen four rows apart, at two different sizes.
+///
+/// **The bottom of the screen is what to do now.** It holds exactly one thing
+/// at a time and it never scrolls away: the card for the stop the driver is on
+/// while there are meals left, the button that finishes the tour once there are
+/// not, and the progress banner over the top of either while a long job runs.
+/// That is the Now Playing bar, the Maps route card, the call banner — the
+/// pattern this phone has always used for "the thing you are doing, while you
+/// look at something else".
+///
+/// Reached two ways and identical in both: it is the root of Heute for the tour
+/// being driven, and the pushed detail for any tour picked out of Touren.
+struct TourView: View {
     @Bindable var route: Route
     @Environment(\.modelContext) private var context
     @Environment(RouteFocus.self) private var focus
@@ -35,8 +55,8 @@ struct RouteDetailView: View {
     /// accident — a thumb dragging across a row on a phone in a moving van —
     /// was also the only one that deleted a customer outright.
     @State private var deletingStop: Stop?
-    /// Briefly tinted after arriving from a map pin, so the driver's eye
-    /// lands on the row that was tapped rather than on the middle of a list.
+    /// Briefly tinted after arriving from a map pin, so the driver's eye lands
+    /// on the row that was tapped rather than on the middle of a list.
     @State private var highlighted: UUID?
     /// The stop whose floor is being asked about — set by ticking a delivery
     /// off at a door nothing is known about yet, or from the row's own menu.
@@ -50,7 +70,7 @@ struct RouteDetailView: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            list
+            screen
                 .onChange(of: focus.revealStopID, initial: true) { _, id in
                     guard let id else { return }
                     // Cleared immediately so this fires once, not on every
@@ -67,11 +87,11 @@ struct RouteDetailView: View {
         }
     }
 
-    private var list: some View {
+    private var screen: some View {
         // Everything the list needs about the route, derived exactly once.
         //
         // Read as computed properties — which is what these were — each of them
-        // re-sorted the route's stops, and `doorGroups` re-ran a whole
+        // re-sorted the route's stops, and the door grouping re-ran a whole
         // union-find over it, *per row*, because the `ForEach` body asked for
         // them again for every stop it built. On a full tour that is a hundred
         // sorts and a hundred union-finds for one pass of the list, repeated on
@@ -90,38 +110,34 @@ struct RouteDetailView: View {
                 stops(snapshot, visible: visible, floors: floors)
             }
         }
-        // The one place in-flight work is reported. `busy` already carried a
-        // sentence describing what was happening; before this it went nowhere,
-        // and a bare spinner in the toolbar left the driver guessing whether
-        // the app was optimising, geocoding or removing something.
-        // `safeAreaInset`, not an overlay: the list runs underneath the floating
-        // tab bar, so a banner pinned to the bottom of its frame would be drawn
-        // behind it. An inset is placed *inside* the safe area, above the bar,
-        // and takes up no room at all while there is nothing to report.
-        .safeAreaInset(edge: .bottom) {
-            if let busy {
-                BusyBanner(text: busy, onCancel: busyTask.map { task in { task.cancel() } })
-                    .padding(.bottom, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+        // The one slot on this screen for "what to do now", and it holds one
+        // thing at a time. `safeAreaInset`, not an overlay: the list runs
+        // underneath the floating tab bar, so anything pinned to the bottom of
+        // its frame would be drawn behind it. An inset is placed *inside* the
+        // safe area, above the bar, and takes up no room at all when there is
+        // nothing to put in it.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 8) {
+                if let busy {
+                    BusyBanner(text: busy, onCancel: busyTask.map { task in { task.cancel() } })
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                bottomAction(snapshot, floors: floors)
             }
+            .padding(.bottom, 8)
         }
         .animation(.snappy, value: busy)
         .navigationTitle(route.name)
-        .navigationBarTitleDisplayMode(.large)
-        // Where the tour stands, under the screen's own title.
-        //
-        // This used to be a tracked caption and a hairline progress bar across
-        // the top of the next-stop card — which meant it was only readable
-        // while that card was on screen, and it was the third thing competing
-        // for the top of the card with the customer's name. The bar itself
-        // never said anything the sentence beside it did not.
         .navigationSubtitle(subtitle(snapshot))
-        .searchable(
-            text: $search, placement: .navigationBarDrawer(displayMode: .automatic),
-            prompt: "Kunde, Adresse, Paket oder Notiz")
-        // Awaited, so pull-to-refresh keeps its own spinner for exactly as
-        // long as the optimization runs — but started the same way as the menu
-        // item, so it is the same cancellable job with the same stop button.
+        // Default placement, which on iOS 26 is a search button in the toolbar
+        // that opens the field. Pinned into the title's drawer it was a bar
+        // permanently parked under the tour's name — a control the driver uses
+        // a handful of times a week, given a fixed slot on the screen they look
+        // at all day.
+        .searchable(text: $search, prompt: "Kunde, Adresse, Paket oder Notiz")
+        // Awaited, so pull-to-refresh keeps its own spinner for exactly as long
+        // as the optimization runs — but started the same way as the menu item,
+        // so it is the same cancellable job with the same stop button.
         .refreshable { await startLongJob { await optimize() }?.value }
         .toolbar { toolbar }
         .sheet(isPresented: $addingStop) {
@@ -211,7 +227,7 @@ struct RouteDetailView: View {
         .onAppear { focus.focus(route) }
     }
 
-    // MARK: - Pieces
+    // MARK: - The list
 
     private func stops(
         _ snapshot: RouteSnapshot, visible: [Stop], floors: [UUID: String]
@@ -220,30 +236,6 @@ struct RouteDetailView: View {
             if route.needsOptimize {
                 Section {
                     OptimizeBanner(busy: busy != nil) { startLongJob { await optimize() } }
-                }
-            }
-
-            // Not a section with a header and a row in it: the card draws its
-            // own surface, so the list's inset-grouped chrome is cleared out
-            // from under it. It keeps its place *in* the list rather than
-            // floating above one, because the driver scrolls past it to the
-            // rest of the tour constantly and a pinned header would eat a
-            // sixth of a phone screen for the whole shift.
-            if let next = snapshot.nextOpen, search.isEmpty {
-                Section {
-                    NextStopCard(
-                        stop: next,
-                        number: snapshot.number(next),
-                        stockwerk: floors[next.id],
-                        sameDoorCount: snapshot.doorCount(next),
-                        onNavigate: { open(next) },
-                        onDelivered: { setDelivered(next, true) },
-                        onEditStockwerk: { stockwerkStop = next },
-                        onEdit: { editingStop = next })
-                        .listRowInsets(
-                            EdgeInsets(top: 4, leading: 0, bottom: 8, trailing: 0))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
                 }
             }
 
@@ -269,40 +261,18 @@ struct RouteDetailView: View {
                         onPaste: { showingJSON = true })
                 }
             }
-
-            // The tour is done. Finishing it is deliberately still the driver's
-            // call (see `RouteStore.setDelivered`), but the call should not be
-            // buried in an overflow menu at the moment it becomes the only
-            // thing left to do.
-            if snapshot.isComplete && route.status == .active && search.isEmpty {
-                Section {
-                    Button {
-                        save("Die Tour konnte nicht abgeschlossen werden.") {
-                            try RouteStore.toggleStatus(route, in: context)
-                        }
-                    } label: {
-                        WideButtonLabel("Tour abschließen", systemImage: "checkmark.seal.fill")
-                            .onBrandLabel()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 6, trailing: 20))
-                    .listRowBackground(Color.clear)
-                }
-            }
         }
-        .listStyle(.insetGrouped)
         // The moment the last meal is ticked off. Every individual tick already
-        // gives its own impact; this is the one that says the tour is done,
-        // and it is worth feeling through a coat pocket without looking.
+        // gives its own impact; this is the one that says the tour is done, and
+        // it is worth feeling through a coat pocket without looking.
         .sensoryFeedback(.success, trigger: snapshot.isComplete) { was, now in
             !was && now
         }
     }
 
-    /// Extracted for the same reason `StopListRow` was: adding one more
-    /// modifier inside the `ForEach` pushed the enclosing `List` past what the
-    /// type checker will solve in reasonable time.
+    /// Extracted for the same reason `StopListRow` was: one more modifier
+    /// inside the `ForEach` pushed the enclosing `List` past what the type
+    /// checker will solve in reasonable time.
     private func row(
         for stop: Stop, in snapshot: RouteSnapshot, floors: [UUID: String]
     ) -> some View {
@@ -321,8 +291,50 @@ struct RouteDetailView: View {
             onToggleExcluded: { Task { await toggleExcluded(stop) } })
             // The id is the scroll target `reveal` aims at.
             .id(stop.id)
-            .listRowBackground(highlighted == stop.id ? Color.brandWashStrong : nil)
+            .listRowBackground(
+                highlighted == stop.id ? Color.accentColor.opacity(0.12) : nil)
     }
+
+    // MARK: - What to do now
+
+    /// The bottom slot: the stop being delivered, or the button that ends the
+    /// tour, or nothing at all.
+    ///
+    /// Hidden while the list is filtered. A driver typing a name into the
+    /// search field is looking something up, not standing at a door, and the
+    /// card would cover a third of the results they came for.
+    @ViewBuilder
+    private func bottomAction(_ snapshot: RouteSnapshot, floors: [UUID: String]) -> some View {
+        if !search.isEmpty {
+            EmptyView()
+        } else if let next = snapshot.nextOpen {
+            NowCard(
+                stop: next,
+                number: snapshot.number(next),
+                stockwerk: floors[next.id],
+                sameDoorCount: snapshot.doorCount(next),
+                onNavigate: { open(next) },
+                onDelivered: { setDelivered(next, true) },
+                onOpen: { editingStop = next })
+        } else if snapshot.isComplete && route.status == .active {
+            // Finishing the tour is deliberately still the driver's call (see
+            // `RouteStore.setDelivered`), but the moment it becomes the only
+            // thing left to do it should not be buried in an overflow menu —
+            // and this slot has just been vacated by the last stop.
+            Button {
+                save("Die Tour konnte nicht abgeschlossen werden.") {
+                    try RouteStore.toggleStatus(route, in: context)
+                }
+            } label: {
+                WideButtonLabel("Tour abschließen", systemImage: "checkmark.seal.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .padding(.horizontal, 20)
+        }
+    }
+
+    // MARK: - Toolbar
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
@@ -373,11 +385,13 @@ struct RouteDetailView: View {
                     }
                 }
             } label: {
-                Label("Mehr", systemImage: "ellipsis.circle")
+                Label("Mehr", systemImage: "ellipsis")
             }
             .disabled(busy != nil)
         }
     }
+
+    // MARK: - Text
 
     /// The line under the tour's name: what is still ahead of the driver.
     ///
@@ -398,6 +412,16 @@ struct RouteDetailView: View {
         return "\(stops) · \(km)"
     }
 
+    private func listHeader(_ snapshot: RouteSnapshot, visible: [Stop]) -> String {
+        if !search.isEmpty {
+            return "\(visible.count) von \(snapshot.customerCount) Stopps"
+        }
+        // "0 von 0 geliefert" over a route that has only its three fixed points
+        // is a progress report on nothing.
+        if snapshot.customerCount == 0 { return "Fixpunkte" }
+        return "\(snapshot.deliveredCount) von \(snapshot.customerCount) geliefert"
+    }
+
     private var recheckAlert: Binding<Bool> {
         Binding(
             get: { recheckSummary != nil },
@@ -411,12 +435,11 @@ struct RouteDetailView: View {
         // This app already knows that a Viennese address survives being typed
         // without its umlauts — `AddressText.germanFold` is what makes the
         // register answer for "Waehringer Guertel", and what makes a re-pasted
-        // list match the stops already on the route. The Stockwerke list
-        // searches through it too. This one field did not, so a driver hunting
-        // for "Grosse Neugasse" or "Doebling" on a phone keyboard they are
-        // holding in one hand got an empty list for a stop that is sitting
-        // right there — and a search that finds nothing reads as a tour that
-        // has lost a customer.
+        // list match the stops already on the route. This one field did not, so
+        // a driver hunting for "Grosse Neugasse" or "Doebling" on a phone
+        // keyboard they are holding in one hand got an empty list for a stop
+        // sitting right there — and a search that finds nothing reads as a tour
+        // that has lost a customer.
         let tokens = AddressText.matchKey(search)
             .split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         guard !tokens.isEmpty else { return snapshot.ordered }
@@ -431,16 +454,6 @@ struct RouteDetailView: View {
                     .compactMap { $0 }.joined(separator: " "))
             return tokens.allSatisfy { haystack.contains($0) }
         }
-    }
-
-    private func listHeader(_ snapshot: RouteSnapshot, visible: [Stop]) -> String {
-        if !search.isEmpty {
-            return "\(visible.count) von \(snapshot.customerCount) Stopps"
-        }
-        // "0 von 0 geliefert" over a route that has only its three fixed points
-        // is a progress report on nothing.
-        if snapshot.customerCount == 0 { return "Fixpunkte" }
-        return "\(snapshot.deliveredCount) von \(snapshot.customerCount) geliefert"
     }
 
     // MARK: - Actions
@@ -506,20 +519,19 @@ struct RouteDetailView: View {
     /// in trouble — but "rare" is not "impossible", and swallowing it left the
     /// driver tapping "Als erledigt markieren" on a tour that stayed open, with
     /// nothing on screen suggesting why or that anything had gone wrong at all.
-    /// One of these actions already reported itself; now they all do.
     private func save(_ failure: String, _ write: () throws -> Void) {
         do { try write() } catch { self.error = AppError.message(failure) }
     }
 
     /// True when this screen already has something in flight.
     ///
-    /// Guards the two long-running, repeatable jobs — optimizing and
-    /// re-checking addresses — against being started on top of each other. The
-    /// toolbar disables itself while `busy` is set, but pull-to-refresh cannot
-    /// be disabled, so a driver could pull the list to optimize during a
-    /// minute-long address re-check. Neither corrupts anything (the optimizer
-    /// serializes per route), but the two share one banner, and whichever
-    /// finished first cleared it and left the other running invisibly.
+    /// Guards the two long-running, repeatable jobs against being started on
+    /// top of each other. The toolbar disables itself while `busy` is set, but
+    /// pull-to-refresh cannot be disabled, so a driver could pull the list to
+    /// optimize during a minute-long address re-check. Neither corrupts
+    /// anything (the optimizer serializes per route), but the two share one
+    /// banner, and whichever finished first cleared it and left the other
+    /// running invisibly.
     ///
     /// Deliberately *not* applied to deleting a stop or switching a fixed point
     /// out: those are one-shot answers to something the driver just asked for,
@@ -535,16 +547,16 @@ struct RouteDetailView: View {
     /// land on top of one. Sharing `busy` unconditionally, both of those wrote
     /// their sentence over the running job's, and then their `defer` tore the
     /// banner down: the pill and its "Stoppen" button vanished while the job it
-    /// belonged to carried on invisibly underneath. A long job owns the banner
-    /// for as long as it runs; a one-shot write that arrives during one does
-    /// its work quietly and leaves the report alone.
+    /// belonged to carried on invisibly underneath.
     private var ownsBanner: Bool { busyTask == nil }
 
     private func toggleExcluded(_ stop: Stop) async {
         let banner = ownsBanner
         if banner { busy = stop.excluded ? "Wird wieder eingeplant …" : "Wird ausgelassen …" }
         defer { if banner { busy = nil } }
-        do { try await RouteStore.setExcluded(stop, !stop.excluded, in: context) } catch let e as AppError {
+        do {
+            try await RouteStore.setExcluded(stop, !stop.excluded, in: context)
+        } catch let e as AppError {
             self.error = e
         } catch {
             self.error = AppError.message("Konnte den Stopp nicht ändern.")
@@ -636,8 +648,7 @@ struct RouteDetailView: View {
         // A file from the document picker lives outside this app's sandbox and
         // the permission to read it has to be taken and given back explicitly —
         // without this the read fails on anything in iCloud Drive, which is
-        // exactly where a file mailed to a phone ends up. The same dance
-        // `BackupView` does.
+        // exactly where a file mailed to a phone ends up.
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
 
@@ -658,133 +669,12 @@ struct RouteDetailView: View {
     }
 }
 
-/// Everything one pass of the stop list needs to know about a route, computed
-/// in a single walk of its stops.
+/// The line under the stop list: how long the tour is as a whole.
 ///
-/// Exists because each of these answers used to be a computed property on
-/// `Route` or on the view, and every one of them re-sorted the whole stop array
-/// on each read — several times per row, from inside a `ForEach`. The numbers
-/// are identical; the difference is that they are worked out once.
-struct RouteSnapshot {
-    /// The stops in display order — one sort, shared by everything below.
-    let ordered: [Stop]
-    let customerCount: Int
-    let deliveredCount: Int
-    let nextOpen: Stop?
-    let totalKm: Double
-    let totalMinutes: Double
-    /// What is still to drive: every leg from the last stop the driver has
-    /// actually ticked off to the end of the tour.
-    ///
-    /// Not the same number as the total, and the total is not the one a driver
-    /// halfway through a shift is asking for — "27,3 km" stops meaning
-    /// anything the moment the first meal is delivered. A leg belongs to the
-    /// stop it leaves from, so everything before the last delivered stop has
-    /// been driven and everything from it onwards has not. With nothing
-    /// delivered yet this is the whole tour; with everything delivered it is
-    /// the drive back to the depot, which is real and still has to be made.
-    let remainingKm: Double
-    let remainingMinutes: Double
-
-    /// Each customer's position in driving order, so the list badge and the map
-    /// pin show the same number.
-    private let numbers: [UUID: Int]
-    /// How many customers share each stop's front door — two households in one
-    /// Gemeindebau is one ring of the bell and two meals carried up.
-    private let doorCounts: [UUID: Int]
-
-    var isComplete: Bool { customerCount > 0 && deliveredCount == customerCount }
-
-    /// Customers still waiting for their meal.
-    var openCount: Int { customerCount - deliveredCount }
-
-    func number(_ stop: Stop) -> Int? { numbers[stop.id] }
-    func doorCount(_ stop: Stop) -> Int { doorCounts[stop.id] ?? 1 }
-
-    init(_ route: Route) {
-        let ordered = route.orderedStops
-        self.ordered = ordered
-
-        var numbers: [UUID: Int] = [:]
-        var customers = 0
-        var delivered = 0
-        var next: Stop?
-        var km = 0.0
-        var minutes = 0.0
-        // The legs already behind the driver: everything up to, but not
-        // including, the leg leaving the last stop they ticked off. Captured
-        // *before* this stop's own leg is added, so the drive out of that stop
-        // still counts as ahead of them — they are standing at its door.
-        var drivenKm = 0.0
-        var drivenMinutes = 0.0
-
-        for stop in ordered {
-            if stop.kind == .customer {
-                customers += 1
-                numbers[stop.id] = customers
-                if stop.delivered {
-                    delivered += 1
-                    // Only while every customer up to here has been delivered.
-                    //
-                    // Ticked off in order — the normal case, and the one every
-                    // other test in `RouteSnapshotTests` describes — that is
-                    // every delivered stop in turn, and this is exactly what it
-                    // always was. What it now refuses to do is let a delivery
-                    // made *out* of order drag the mark forward past doors that
-                    // are still owed. A customer met on the street and handed
-                    // their meal twenty stops early used to move it to their
-                    // position, so the card paired "Noch 22 Stopps" with the
-                    // four kilometres between stop 25 and the depot — a
-                    // distance twenty-two doors cannot fit in, on the one line
-                    // a driver plans the next hour from.
-                    //
-                    // What is left then covers the whole tour from the last
-                    // point the plan was still being followed. That over-counts
-                    // by however much of it the driver has already driven, and
-                    // that is the deliberate direction: the real answer — "how
-                    // far is it from where I am now, back to the doors I
-                    // skipped, and on to the end" — is a re-routing problem
-                    // this cannot solve from stored leg distances. Of the two
-                    // ways to be wrong about it, telling a driver a tour is
-                    // shorter than it is, at midday, with meals going cold, is
-                    // the one that costs something.
-                    if next == nil {
-                        drivenKm = km
-                        drivenMinutes = minutes
-                    }
-                } else if next == nil {
-                    next = stop
-                }
-            }
-            // Only the legs actually driven count towards the tour's totals.
-            guard !stop.excluded else { continue }
-            km += stop.nextLegKm ?? 0
-            minutes += stop.nextLegMin ?? 0
-        }
-
-        self.customerCount = customers
-        self.deliveredCount = delivered
-        self.nextOpen = next
-        self.numbers = numbers
-        self.totalKm = km
-        self.totalMinutes = minutes
-        // Clamped: a route whose legs were written by two different
-        // optimization runs can hold slightly inconsistent numbers, and a
-        // negative "still to drive" is worse than a zero.
-        self.remainingKm = max(0, km - drivenKm)
-        self.remainingMinutes = max(0, minutes - drivenMinutes)
-        self.doorCounts = SameDoor.counts(for: ordered)
-    }
-}
-
-/// The line under the stop list: what the whole tour comes to.
-///
-/// One number, and it is the planning one: how long the tour is as a whole.
-/// What is still to drive — and the drive home once the last meal is handed
-/// over — is the screen's subtitle now, under the tour's own name, where it is
-/// legible whether or not the driver has scrolled to the bottom of the list.
-/// This line carried both for a while, which meant the same sentence appeared
-/// twice on one screen.
+/// One number, and it is the planning one. What is still to drive — and the
+/// drive home once the last meal is handed over — is the screen's subtitle,
+/// under the tour's own name, where it is legible whether or not the driver has
+/// scrolled this far.
 ///
 /// Hidden entirely while the list is filtered: the search shows a handful of
 /// stops out of context, and a distance covering the ones it is not showing
@@ -801,8 +691,8 @@ struct RouteFooter: View {
     }
 }
 
-/// What the list shows a driver who has just created a tour: the two ways
-/// stops get onto it, rather than three grey fixed rows and no next step.
+/// What the list shows a driver who has just created a tour: the ways stops get
+/// onto it, rather than three grey fixed rows and no next step.
 struct EmptyStopsPrompt: View {
     let onAdd: () -> Void
     let onImportFile: () -> Void
@@ -824,7 +714,6 @@ struct EmptyStopsPrompt: View {
             VStack(spacing: 8) {
                 Button(action: onAdd) {
                     WideButtonLabel("Stopp hinzufügen", systemImage: "plus")
-                        .onBrandLabel()
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -851,39 +740,10 @@ struct EmptyStopsPrompt: View {
     }
 }
 
-/// A button label that fills the width it is given and centres its icon and
-/// title inside it.
-///
-/// Two reasons this is not just `Button(_:systemImage:)`. That initializer's
-/// icon is advisory — in a bordered button inside a `List` the system drops it,
-/// so a pair of buttons ended up with one icon between them and looked broken.
-/// And without the explicit `maxWidth`, two buttons stacked under each other
-/// size to their own titles, so they came out different widths with their text
-/// sitting at different places on the screen.
-struct WideButtonLabel: View {
-    private let title: String
-    private let systemImage: String
-
-    init(_ title: String, systemImage: String) {
-        self.title = title
-        self.systemImage = systemImage
-    }
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: systemImage)
-                .imageScale(.medium)
-            Text(title)
-        }
-        .fontWeight(.medium)
-        .frame(maxWidth: .infinity)
-    }
-}
-
-/// The "something is happening" pill. A capsule floating over the list rather
-/// than a scrim across it: the driver can still read and scroll the stops while
-/// an optimization runs, which is a slow network call they have no reason to be
-/// locked out of.
+/// The "something is happening" pill, above whatever else is in the bottom
+/// slot. A capsule floating over the list rather than a scrim across it: the
+/// driver can still read and scroll the stops while an optimization runs, which
+/// is a slow network call they have no reason to be locked out of.
 struct BusyBanner: View {
     let text: String
     /// Offered by the two jobs that run on the network for a minute at a time.
@@ -914,7 +774,7 @@ struct BusyBanner: View {
                 Button("Stoppen", action: onCancel)
                     .font(.subheadline.weight(.semibold))
                     .buttonStyle(.plain)
-                    .foregroundStyle(Color.brand)
+                    .foregroundStyle(Color.accentColor)
             }
         }
         .padding(.horizontal, 16)
@@ -933,9 +793,7 @@ struct BusyBanner: View {
 ///
 /// An ordinary list row rather than the filled-button banner it was. The amber
 /// glyph is what makes it findable; the action is a plain tinted verb on the
-/// right, which is what every actionable row on this phone looks like. A
-/// prominent filled button here put a third saturated block on a screen that
-/// already had the next-stop card on it.
+/// right, which is what every actionable row on this phone looks like.
 struct OptimizeBanner: View {
     let busy: Bool
     let retry: () async -> Void
@@ -944,7 +802,8 @@ struct OptimizeBanner: View {
         HStack(spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.body)
-                .foregroundStyle(Color.warning)
+                .foregroundStyle(Color.attention)
+                .symbolRenderingMode(.monochrome)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Route nicht aktuell").font(.subheadline.weight(.semibold))
                 Text("Reihenfolge und Distanzen stimmen nicht mehr.")
@@ -955,7 +814,7 @@ struct OptimizeBanner: View {
             Button("Optimieren") { Task { await retry() } }
                 .font(.subheadline.weight(.semibold))
                 .buttonStyle(.plain)
-                .foregroundStyle(busy ? Color.secondary : Color.brand)
+                .foregroundStyle(busy ? Color.secondary : Color.accentColor)
                 .disabled(busy)
         }
         .padding(.vertical, 2)

@@ -132,7 +132,14 @@ struct StockwerkListView: View {
                 }
                 Spacer(minLength: 8)
                 if let stockwerk = note.stockwerk, !stockwerk.trimmed.isEmpty {
-                    StockwerkBadge(text: stockwerk, dimmed: false)
+                    // A plain grey value on the right, the way Settings puts
+                    // one there. It used to be a tinted chip — the app's last
+                    // one — which made a list *of floors* spend a colour on the
+                    // one thing every single row has.
+                    Text(Format.floor(stockwerk))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .accessibilityLabel("Stockwerk \(Format.floor(stockwerk))")
                 } else if note.dontAsk {
                     // The other thing a row can mean: not a floor, but a
                     // standing instruction not to ask for one.

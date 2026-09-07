@@ -135,7 +135,6 @@ struct StockwerkForm: View {
                 Section {
                     Button(action: saveAndClose) {
                         WideButtonLabel("Speichern", systemImage: "checkmark")
-                            .onBrandLabel()
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
@@ -146,7 +145,8 @@ struct StockwerkForm: View {
                     if let saveError {
                         Label(saveError, systemImage: "exclamationmark.triangle.fill")
                             .font(.footnote)
-                            .foregroundStyle(Color.warningText)
+                            .labelStyle(TintedIconLabelStyle(tint: .attention))
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -192,26 +192,36 @@ struct StockwerkForm: View {
     private var quickPicks: some View {
         HStack(spacing: 8) {
             ForEach(quick, id: \.self) { value in
-                Button {
-                    text = value
-                    focused = false
-                } label: {
-                    Text(value)
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(
-                            isPicked(value)
-                                ? AnyShapeStyle(Color.brand.opacity(0.16))
-                                : AnyShapeStyle(.quaternary.opacity(0.5)),
-                            in: .rect(cornerRadius: 10))
-                        .foregroundStyle(isPicked(value) ? Color.brand : Color.primary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(value == "EG" ? "Erdgeschoss" : "\(value). Stock")
-                .accessibilityAddTraits(isPicked(value) ? [.isSelected] : [])
+                quickPick(value)
             }
         }
+    }
+
+    /// One floor button. Split out of the `HStack` above because three
+    /// conditional style properties inside a `ForEach` is past what the type
+    /// checker will solve in reasonable time.
+    private func quickPick(_ value: String) -> some View {
+        let picked = isPicked(value)
+        return Button {
+            text = value
+            focused = false
+        } label: {
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .foregroundStyle(picked ? Color.accentColor : Color.primary)
+                .background(quickPickFill(picked), in: .rect(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(value == "EG" ? "Erdgeschoss" : "\(value). Stock")
+        .accessibilityAddTraits(picked ? [.isSelected] : [])
+    }
+
+    private func quickPickFill(_ picked: Bool) -> AnyShapeStyle {
+        picked
+            ? AnyShapeStyle(Color.accentColor.opacity(0.16))
+            : AnyShapeStyle(.quaternary.opacity(0.5))
     }
 
     private func isPicked(_ value: String) -> Bool {
