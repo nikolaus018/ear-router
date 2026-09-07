@@ -121,24 +121,29 @@ struct StopRow: View {
 
     // MARK: - Details
 
-    /// Name, address, and then everything else the stop knows about itself
-    /// folded into one running line.
+    /// Name, address, then the delivery, then the small print.
     ///
-    /// It used to be a stack. Floor, Paket, Notiz, "2 Kunden an dieser Tür",
-    /// the precision warning and the onward leg each got their own line, and
-    /// four of the six were filled chips — so one customer could occupy eight
-    /// lines and four coloured blocks, and a tour of thirty of them was a wall
-    /// of pills with nothing subordinate to anything else. A list where
-    /// everything is emphasised has no emphasis in it.
+    /// This row has been through both extremes. It was once a stack where
+    /// *everything* was a filled chip — floor, Paket, note, "2 Kunden an dieser
+    /// Tür", the precision warning — so one customer took eight lines and four
+    /// coloured blocks and a tour of thirty was a wall of pills with nothing
+    /// subordinate to anything else. The correction was to flatten the lot into
+    /// one middot-separated strip of grey text, which fixed the wall and
+    /// overshot: what the driver carries up, which floor they carry it to and
+    /// what they have to know before ringing came out looking exactly like the
+    /// postcode.
     ///
-    /// Now there is a hierarchy. The name and the address lead. Underneath
-    /// them, one strip of plain text carries the facts a driver checks on the
-    /// way past — what to carry up, which floor, how many bells, how sure we
-    /// are of the address — as runs separated by middots, which wraps like
-    /// prose instead of stacking like a form. Colour is spent on exactly two
-    /// things: a multi-item drop, because it changes what comes out of the van,
-    /// and the driver's own note, because it is the one line that has to be
-    /// read before ringing rather than skimmed after.
+    /// The line between the two is not "chips or no chips", it is *which facts
+    /// are the errand*. Three of them are: the Paket, because it decides what
+    /// comes out of the van; the floor, because it decides which stairs; the
+    /// note, because it has to be read before the bell rather than after. Those
+    /// three get a tag each — a soft fill and a shape, so they read as objects
+    /// on the row rather than as more of the row's text.
+    ///
+    /// Everything else is a qualifier *on the address*, not on the errand — how
+    /// many bells are at this door, how sure we are the door is even the right
+    /// one — and stays as the plain strip it was, which is what keeps the three
+    /// tags meaning something.
     private var details: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
@@ -160,26 +165,35 @@ struct StopRow: View {
                     .foregroundStyle(.secondary)
             }
 
+            // Side by side while they fit, and wrapping onto a second line
+            // when they do not — the same `WrappingHStack` the next-stop card
+            // uses, for the same reason: "3 × Menü klein" and "Dachgeschoss"
+            // are both things a driver types, so neither width is knowable in
+            // advance, and a row that overflows hides the fact it exists to
+            // show. Paket first and floor second, which is the order the card
+            // puts them in and the order they are needed in — what to carry
+            // before which stairs to carry it up.
+            if paketTag != nil || floorTag != nil {
+                WrappingHStack(spacing: 6) {
+                    paketTag
+                    floorTag
+                }
+            }
+
+            if let notiz = stop.notiz?.trimmed, !notiz.isEmpty {
+                // Its own line rather than beside the other two: a note is a
+                // sentence someone wrote — "Hund im Hof", "bitte laut
+                // klingeln" — and it is the one that wraps.
+                RowTag(
+                    symbol: "note.text", text: notiz, tone: .note,
+                    italic: true, lineLimit: 3, dimmed: dimmed)
+            }
+
             if let meta {
                 meta
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineSpacing(1)
-            }
-
-            if let notiz = stop.notiz?.trimmed, !notiz.isEmpty {
-                // Still its own line, and still the one coloured thing on an
-                // ordinary row. A note is a sentence someone wrote — "Hund im
-                // Hof", "bitte laut klingeln" — and folding it into the strip
-                // above would bury it among the facts it is meant to interrupt.
-                Label {
-                    Text(notiz).italic().lineLimit(3)
-                } icon: {
-                    Image(systemName: "note.text")
-                }
-                .font(.caption.weight(.medium))
-                .foregroundStyle(dimmed ? Color.secondary : Color.warningText)
-                .fixedSize(horizontal: false, vertical: true)
             }
 
             if stop.excluded {
@@ -204,28 +218,44 @@ struct StopRow: View {
         .accessibilityLabel(accessibilityDescription)
     }
 
-    /// The strip under the address, built with `Text` concatenation rather than
-    /// an `HStack` of views: composed this way it is a single paragraph, so it
-    /// wraps mid-strip at large text sizes instead of overflowing off the right
-    /// edge or forcing every fact onto its own line.
+    /// What comes out of the van, as a tag.
+    ///
+    /// Loud only when there is more than one thing to carry — that is the fact
+    /// which changes what the driver picks up before shutting the door, and it
+    /// stays the one place an ordinary row spends the app's colour. A single
+    /// meal gets the same tag in grey: still an object on the row, still not
+    /// shouting on all thirty of them.
+    @ViewBuilder
+    private var paketTag: some View {
+        if let paket = stop.paket?.trimmed, !paket.isEmpty {
+            RowTag(
+                symbol: "shippingbox.fill", text: paket,
+                tone: PaketParser.totalQty(paket) > 1 ? .loud : .quiet,
+                dimmed: dimmed)
+        }
+    }
+
+    /// Which stairs. Always grey, never the app's colour: a floor is something
+    /// to *know*, not something to decide, and it sits beside a Paket that may
+    /// well be the loud one. The tag is what makes it its own object; the
+    /// colour is what keeps it in its place.
+    @ViewBuilder
+    private var floorTag: some View {
+        if let stockwerk = stockwerk?.trimmed, !stockwerk.isEmpty {
+            RowTag(
+                symbol: "stairs", text: NextStopCard.floorLabel(stockwerk),
+                tone: .quiet, dimmed: dimmed)
+        }
+    }
+
+    /// The strip under the tags: what qualifies the *address* rather than the
+    /// errand — how many bells are at this door, and how sure we are of the
+    /// door. Built with `Text` concatenation rather than an `HStack` of views:
+    /// composed this way it is a single paragraph, so it wraps mid-strip at
+    /// large text sizes instead of overflowing off the right edge or forcing
+    /// every fact onto its own line.
     private var meta: Text? {
         var runs: [Text] = []
-
-        if let paket = stop.paket?.trimmed, !paket.isEmpty {
-            // Loud only when there is more than one thing to carry. That is the
-            // fact which changes what the driver picks up before shutting the
-            // van, and it is the only place an ordinary row spends the app's
-            // colour.
-            let run = Self.run("shippingbox.fill", paket)
-            runs.append(
-                PaketParser.totalQty(paket) > 1 && !dimmed
-                    ? run.fontWeight(.semibold).foregroundStyle(Color.brand)
-                    : run)
-        }
-
-        if let stockwerk = stockwerk?.trimmed, !stockwerk.isEmpty {
-            runs.append(Self.run("stairs", NextStopCard.floorLabel(stockwerk)))
-        }
 
         if sameDoorCount > 1 {
             runs.append(Self.run("person.2.fill", "\(sameDoorCount) an dieser Tür"))
@@ -371,6 +401,13 @@ struct StopRow: View {
             parts.append(stop.delivered ? "zugestellt" : "offen")
         }
         if let paket = stop.paket, !paket.isEmpty { parts.append(paket) }
+        // The row has shown the floor since floors existed and has never once
+        // said it out loud: this sentence is the whole row for a driver using
+        // VoiceOver, and the one fact that only this app knows was missing
+        // from it.
+        if let stockwerk = stockwerk?.trimmed, !stockwerk.isEmpty {
+            parts.append("Stockwerk \(NextStopCard.floorLabel(stockwerk))")
+        }
         if let notiz = stop.notiz, !notiz.isEmpty { parts.append("Notiz: \(notiz)") }
         if sameDoorCount > 1 { parts.append("\(sameDoorCount) Kunden an dieser Tür") }
         if let precision = stop.precision { parts.append(precision.label) }
@@ -379,6 +416,98 @@ struct StopRow: View {
             parts.append("\(leg) bis zum nächsten Stopp")
         }
         return parts.joined(separator: ", ")
+    }
+}
+
+/// One fact about a stop, as a small filled tag.
+///
+/// Deliberately not `FactChip`, which is the next-stop card's chip and should
+/// stay that way. The two are read in different situations and want different
+/// sizes for it: the card is one stop at arm's length in a windscreen mount and
+/// can afford 17pt type and a 20pt count disc, and this is thirty rows being
+/// scanned with a thumb. Sharing one component would mean one of the two
+/// wearing the other's proportions.
+///
+/// What they *do* share is the vocabulary — brand for the thing that changes
+/// what leaves the van, the floor's own grey for context, amber for the
+/// driver's own note — so a stop looks like the same stop on the card and on
+/// the row below it.
+private struct RowTag: View {
+    enum Tone {
+        /// A multi-item drop. The one place an ordinary row spends the app's
+        /// colour.
+        case loud
+        /// Context: a floor, something to know rather than decide.
+        case quiet
+        /// The driver's own words, which have to be read before the bell.
+        case note
+    }
+
+    let symbol: String
+    let text: String
+    var tone: Tone = .quiet
+    var italic = false
+    /// Four, not two. A tag that runs long wraps inside itself rather than
+    /// truncating: the Paket is what comes out of the van before the door
+    /// shuts, and "2x Menü + 1x Nach…" is the one way this row could be
+    /// actively wrong. Four rather than three because at an accessibility text
+    /// size the two 64pt controls on the right leave the text about a third of
+    /// the screen, and three lines of that is not a full Paket. Bounded all the
+    /// same, because the field takes 200 characters and a driver who pastes a
+    /// paragraph into it should not get a row the height of the screen.
+    var lineLimit = 4
+    /// Delivered, or left out of this tour. The tag gives up its fill and its
+    /// padding and goes back to being plain grey text — the same thing
+    /// `StockwerkBadge` does, and what keeps the finished half of a tour from
+    /// competing with the half still to drive.
+    var dimmed = false
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Image(systemName: symbol)
+                .font(.caption)
+                .imageScale(.small)
+            Text(text)
+                .italic(italic)
+                .lineLimit(lineLimit)
+                // Wraps inside the tag rather than pushing it wider than the
+                // row — a Notiz is a sentence and regularly runs to two lines.
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(font)
+        .foregroundStyle(foreground)
+        .padding(.horizontal, dimmed ? 0 : 8)
+        .padding(.vertical, dimmed ? 0 : 4)
+        .background(background, in: .rect(cornerRadius: 8, style: .continuous))
+    }
+
+    /// The note is a step smaller than the other two. It is a sentence rather
+    /// than a label, it is the one that wraps, and its amber fill is already
+    /// doing the work of making it impossible to miss.
+    private var font: Font {
+        switch tone {
+        case .loud: .subheadline.weight(.semibold)
+        case .quiet: .subheadline
+        case .note: .footnote.weight(.medium)
+        }
+    }
+
+    private var foreground: Color {
+        guard !dimmed else { return .secondary }
+        return switch tone {
+        case .loud: Color.brand
+        case .quiet: Color.floorText
+        case .note: Color.warningText
+        }
+    }
+
+    private var background: AnyShapeStyle {
+        guard !dimmed else { return AnyShapeStyle(.clear) }
+        return switch tone {
+        case .loud: AnyShapeStyle(Color.brand.opacity(0.14))
+        case .quiet: AnyShapeStyle(Color.floor.opacity(0.14))
+        case .note: AnyShapeStyle(Color.warning.opacity(0.16))
+        }
     }
 }
 

@@ -405,43 +405,62 @@ struct WrappingHStack: Layout {
         var y = bounds.minY
         for row in arrange(subviews: subviews, in: bounds.width) {
             var x = bounds.minX
-            for index in row.indices {
-                let size = subviews[index].sizeThatFits(.unspecified)
-                subviews[index].place(
+            for item in row.items {
+                // The size the row was measured with, not a fresh unconstrained
+                // one: measuring twice by two different rules is how a chip
+                // ends up laid out at one width and drawn at another.
+                subviews[item.index].place(
                     at: CGPoint(x: x, y: y), anchor: .topLeading,
-                    proposal: ProposedViewSize(size))
-                x += size.width + spacing
+                    proposal: ProposedViewSize(item.size))
+                x += item.size.width + spacing
             }
             y += row.height + spacing
         }
     }
 
+    private struct Item {
+        let index: Int
+        let size: CGSize
+    }
+
     private struct Row {
-        var indices: [Int] = []
+        var items: [Item] = []
         var height: CGFloat = 0
     }
 
     /// Greedy: each chip goes on the current line if it fits and starts a new
-    /// one if it does not. A chip wider than the card on its own still gets its
-    /// own line rather than an empty one above it.
+    /// one if it does not.
+    ///
+    /// Every chip is measured against the width actually available rather than
+    /// against `.unspecified`, which is what it used to be — and `.unspecified`
+    /// asks a `Text` how wide it would like to be with nothing in its way, so a
+    /// chip whose contents run long answered with its whole sentence on one
+    /// line. It then got a line of its own, correctly, and was *placed* at that
+    /// same impossible width: "2x Menü + 1x Nachspeise" on a stop row at an
+    /// accessibility text size ran off the right of the screen and under the
+    /// navigation button. Proposing the container's width instead lets the
+    /// chip wrap inside itself, which is the whole reason its label is
+    /// `fixedSize(horizontal: false)`. A chip that fits is unaffected: content
+    /// sizes to content, and a wider proposal does not make it take the room.
     private func arrange(subviews: Subviews, in width: CGFloat) -> [Row] {
         var rows: [Row] = []
         var row = Row()
         var x: CGFloat = 0
 
         for index in subviews.indices {
-            let size = subviews[index].sizeThatFits(.unspecified)
-            let needed = row.indices.isEmpty ? size.width : x + spacing + size.width
-            if !row.indices.isEmpty && needed > width {
+            let size = subviews[index].sizeThatFits(
+                ProposedViewSize(width: max(0, width), height: nil))
+            let needed = row.items.isEmpty ? size.width : x + spacing + size.width
+            if !row.items.isEmpty && needed > width {
                 rows.append(row)
                 row = Row()
                 x = 0
             }
-            x = row.indices.isEmpty ? size.width : x + spacing + size.width
-            row.indices.append(index)
+            x = row.items.isEmpty ? size.width : x + spacing + size.width
+            row.items.append(Item(index: index, size: size))
             row.height = max(row.height, size.height)
         }
-        if !row.indices.isEmpty { rows.append(row) }
+        if !row.items.isEmpty { rows.append(row) }
         return rows
     }
 }
