@@ -29,6 +29,10 @@ struct StopRow: View {
     /// layout.
     @ScaledMetric(relativeTo: .body) private var controlScale: CGFloat = 1
 
+    /// At accessibility text sizes the row stops being three columns and
+    /// becomes two rows. See `body`.
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     let stop: Stop
     /// How many customers share this front door, this one included.
     var sameDoorCount: Int = 1
@@ -44,11 +48,34 @@ struct StopRow: View {
     var onToggleExcluded: (() -> Void)?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            badge
-            details
-            Spacer(minLength: 4)
+        // Three columns at ordinary text sizes; two rows once the text is big.
+        //
+        // Held horizontal at every size, the trailing control kept its 58pt
+        // column and the badge kept its own, so at an accessibility size the
+        // name and address were left about a third of the screen to wrap into —
+        // and German street names do not wrap into that. "Muehlschuettelgasse"
+        // broke as "Muehlschuet-telgasse" and "Petritschgasse" as
+        // "Petritschga-sse", hyphenated mid-syllable, on the line whose entire
+        // job is to be read at a glance from a moving van. Dropping the control
+        // onto its own row hands the text the full width back, which is what
+        // the words needed all along.
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 10))
+
+        return layout {
+            HStack(alignment: .top, spacing: 10) {
+                badge
+                details
+                // Only while the control is beside them. Stacked, the text has
+                // already taken the width and a spacer would just push the
+                // badge off the left.
+                if !typeSize.isAccessibilitySize { Spacer(minLength: 4) }
+            }
             control
+                .frame(
+                    maxWidth: typeSize.isAccessibilitySize ? .infinity : nil,
+                    alignment: .trailing)
         }
         .padding(.vertical, 3)
         .opacity(stop.excluded ? 0.45 : 1)

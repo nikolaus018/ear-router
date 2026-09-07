@@ -35,7 +35,11 @@ struct RootView: View {
         @Bindable var focus = focus
 
         TabView(selection: $focus.tab) {
-            Tab("Touren", systemImage: "shippingbox", value: RouteFocus.Tab.tours) {
+            // `truck.box`, not `shippingbox`: a tour is a delivery *run*, and
+            // `shippingbox` is already the glyph for the Lager stop in the list
+            // and for the empty state. One symbol doing three jobs teaches the
+            // driver nothing about any of them.
+            Tab("Touren", systemImage: "truck.box", value: RouteFocus.Tab.tours) {
                 NavigationStack(path: $focus.toursPath) {
                     ToursTab()
                 }

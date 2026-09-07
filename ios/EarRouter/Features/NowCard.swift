@@ -33,6 +33,14 @@ struct NowCard: View {
     /// the text.
     let onOpen: () -> Void
 
+    /// The width the card should occupy, measured from the screen by whoever
+    /// presents it.
+    ///
+    /// A real number rather than "as wide as you can be": `safeAreaInset`
+    /// proposes an *unspecified* width to its content, so left to itself the
+    /// card sizes to whichever customer happens to have the longest name.
+    var width: CGFloat = 320
+
     /// The badge grows with the user's text size. A driver who has turned the
     /// type up is usually the same driver who wants a bigger target.
     @ScaledMetric(relativeTo: .headline) private var badge: CGFloat = 30
@@ -59,6 +67,7 @@ struct NowCard: View {
             actions
         }
         .padding(14)
+        .frame(width: width, alignment: .leading)
         .symbolRenderingMode(.monochrome)
         // A material and a shadow, not glass. Glass is the right treatment for
         // a control floating over a photograph or a map; over a list of text it
@@ -86,46 +95,7 @@ struct NowCard: View {
                 .background(Circle().fill(Color.accentColor))
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(stop.kunde ?? "Stopp")
-                    .font(.headline)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if !stop.listAddress.isEmpty {
-                    Text(stop.listAddress)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if let carry = StopFacts.carry(paket: stop.paket, stockwerk: stockwerk) {
-                    carry
-                        .font(.subheadline)
-                        .padding(.top, 2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if sameDoorCount > 1 {
-                    StopFacts.run("person.2.fill", "\(sameDoorCount) an dieser Tür")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                // Two lines, not three. The card is chrome over a list the
-                // driver still has to be able to read; a note that runs long is
-                // one tap away in full, and the tap is the whole card.
-                if let notiz = stop.notiz?.trimmed, !notiz.isEmpty {
-                    StopFacts.note(notiz, lineLimit: 2)
-                        .font(.subheadline)
-                        .padding(.top, 2)
-                }
-
-                if let precision = stop.precision {
-                    StopFacts.precision(precision)
-                        .font(.caption)
-                        .padding(.top, 1)
-                }
-            }
+            details
 
             Spacer(minLength: 6)
 
@@ -146,6 +116,74 @@ struct NowCard: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Doppeltippen zum Bearbeiten")
+    }
+
+    /// Who, where, and what to carry — and, at accessibility text sizes, only
+    /// as much of that as still leaves a tour behind the card.
+    ///
+    /// The card has no natural ceiling: `safeAreaInset` hands its content as
+    /// much height as it asks for, and at a large accessibility size a name, an
+    /// address, a Paket, a floor and a note ask for the whole screen. It grew
+    /// until it covered the entire list and pushed "Geliefert" — the button the
+    /// screen exists for — off the bottom behind the tab bar. The driver who
+    /// most needs big text was the one who could no longer deliver anything.
+    ///
+    /// A scroll view inside the card was the obvious fix and the wrong one: it
+    /// is a second scroller inside a screen that is already a list, and every
+    /// `Text` in it that used the hierarchical `.secondary` style stopped
+    /// drawing — the address and the note's words vanished, leaving a card that
+    /// looked plausible and was missing the two lines read at the door.
+    ///
+    /// So the content adapts instead. At those sizes the card answers the two
+    /// questions it cannot delegate — **who is next** and **what comes out of
+    /// the van** — and the address, the note, the door count and the precision
+    /// warning stay on the row directly above it, one tap from the editor that
+    /// holds every one of them.
+    private var details: some View {
+        let brief = typeSize.isAccessibilitySize
+
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(stop.kunde ?? "Stopp")
+                .font(.headline)
+                .lineLimit(brief ? 2 : nil)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !stop.listAddress.isEmpty, !brief {
+                Text(stop.listAddress)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let carry = StopFacts.carry(paket: stop.paket, stockwerk: stockwerk) {
+                carry
+                    .font(.subheadline)
+                    .lineLimit(brief ? 3 : nil)
+                    .padding(.top, 2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if sameDoorCount > 1, !brief {
+                StopFacts.run("person.2.fill", "\(sameDoorCount) an dieser Tür")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Two lines, not three. The card is chrome over a list the driver
+            // still has to be able to read; a note that runs long is one tap
+            // away in full, and the tap is the whole card.
+            if let notiz = stop.notiz?.trimmed, !notiz.isEmpty, !brief {
+                StopFacts.note(notiz, lineLimit: 2)
+                    .font(.subheadline)
+                    .padding(.top, 2)
+            }
+
+            if let precision = stop.precision, !brief {
+                StopFacts.precision(precision)
+                    .font(.caption)
+                    .padding(.top, 1)
+            }
+        }
     }
 
     // MARK: - The two things you do here

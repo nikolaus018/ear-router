@@ -63,6 +63,11 @@ struct TourView: View {
     /// The stop whose floor is being asked about — set by ticking a delivery
     /// off at a door nothing is known about yet, or from the row's own menu.
     @State private var stockwerkStop: Stop?
+    /// How wide this screen is, so the card at the bottom of it can be given a
+    /// real width. Measured rather than assumed: `safeAreaInset` proposes an
+    /// unspecified width to its content, and everything inside the card then
+    /// negotiates against nothing.
+    @State private var screenSize: CGSize = .zero
 
     /// Every door ever answered for. Queried whole rather than per row: this is
     /// a few thousand short rows after years of tours, one pass turns it into
@@ -118,6 +123,13 @@ struct TourView: View {
         // its frame would be drawn behind it. An inset is placed *inside* the
         // safe area, above the bar, and takes up no room at all when there is
         // nothing to put in it.
+        .background {
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { screenSize = geo.size }
+                    .onChange(of: geo.size) { _, new in screenSize = new }
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
                 if let busy {
@@ -307,7 +319,12 @@ struct TourView: View {
     /// card would cover a third of the results they came for.
     @ViewBuilder
     private func bottomAction(_ snapshot: RouteSnapshot, floors: [UUID: String]) -> some View {
-        if !search.isEmpty {
+        if !search.isEmpty || route.status != .active {
+            // Nothing at all on a finished tour. The slot is "what to do now",
+            // and a tour in the archive is not something to do — it showed a
+            // live "Navigation / Geliefert" card for a day's work already done,
+            // over a list already struck through, because it was gated on there
+            // being an undelivered stop rather than on the tour being open.
             EmptyView()
         } else if let next = snapshot.nextOpen {
             NowCard(
@@ -317,7 +334,8 @@ struct TourView: View {
                 sameDoorCount: snapshot.doorCount(next),
                 onNavigate: { open(next) },
                 onDelivered: { setDelivered(next, true) },
-                onOpen: { editingStop = next })
+                onOpen: { editingStop = next },
+                width: max(0, screenSize.width - 24))
         } else if snapshot.isComplete && route.status == .active {
             // Finishing the tour is deliberately still the driver's call (see
             // `RouteStore.setDelivered`), but the moment it becomes the only
@@ -403,6 +421,16 @@ struct TourView: View {
     /// for the times the other framing is the one wanted.
     private func subtitle(_ snapshot: RouteSnapshot) -> String {
         guard snapshot.customerCount > 0 else { return "Noch keine Stopps" }
+        // A finished tour is history, and history has no "still to drive". It
+        // was answering "Noch 4 Stopps · 11,7 km" under a tour filed in
+        // Erledigt — a forecast about a day that is over, and one that goes on
+        // being wrong for as long as the tour is kept.
+        guard route.status == .active else {
+            let day = route.completedAt ?? route.createdAt
+            let parts = [Format.date(day), Format.stops(snapshot.customerCount),
+                         Format.km(snapshot.totalKm)].compactMap { $0 }
+            return parts.joined(separator: " · ")
+        }
         guard snapshot.openCount > 0 else {
             guard let back = Format.km(snapshot.remainingKm), snapshot.remainingKm >= 0.05
             else { return "Alle geliefert" }
