@@ -1,0 +1,431 @@
+import SwiftUI
+import SwiftData
+
+/// The day's list, as understood, before any of it touches the tour.
+///
+/// Every way stops arrive in bulk goes through here — a pasted JSON list and a
+/// file from the office both end up on this screen — and nothing is written,
+/// looked up or reordered until the driver says so. That ordering is the whole
+/// point of the screen.
+///
+/// Before it, the sequence was: paste, wait out thirty throttled address
+/// lookups, and *then* read a report saying three entries were rejected and two
+/// resolved somewhere approximate. The corrections had to be made by editing
+/// raw JSON — or, from a file, by going back to a computer — and the thirty
+/// lookups paid for again. Everything that report could say about an entry is
+/// knowable here, before a single request goes out: a missing name, an address
+/// with no street, a postcode that is not a Vienna district. So it is said
+/// here, on the row it belongs to, while it still costs one tap to fix.
+///
+/// It is also the answer to the plainer problem, which is that a list from
+/// somebody else is not always right. A customer who cancelled this morning, a
+/// name spelled two ways, a Hinweis that belongs on the stop below — this is
+/// where a driver fixes those, on their own list, without touching the file.
+struct ImportReviewView: View {
+    let route: Route
+    /// What the paste or the file was understood to say. Owned from here on:
+    /// the driver's edits are theirs, and nothing writes back to the source.
+    @State var entries: [Entry]
+
+    @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var editing: Entry?
+    @State private var busy = false
+    @State private var progress: String?
+    @State private var importTask: Task<Void, Never>?
+    @State private var pendingDeletions: PendingDeletions?
+    @State private var result: ImportReport?
+    @State private var error: AppError?
+
+    /// One row. A `UUID` of its own rather than the entry's contents, because
+    /// the contents are not unique: a real list carries five consecutive meals
+    /// for "Caritas der Erzdiözese Wien gem." at one address, and identified by
+    /// value those five are one row that cannot be edited or deleted apart.
+    struct Entry: Identifiable, Hashable {
+        let id = UUID()
+        var kunde: String
+        var strasse: String
+        var plz: String
+        var paket: String
+        var notiz: String
+
+        init(_ json: CustomerJSON) {
+            kunde = json.kunde.trimmed
+            strasse = json.strasse.trimmed
+            plz = json.plz.trimmed
+            paket = json.paket?.trimmed ?? ""
+            notiz = json.notiz?.trimmed ?? ""
+        }
+
+        var json: CustomerJSON {
+            CustomerJSON(
+                kunde: kunde, strasse: strasse, plz: plz,
+                paket: paket.nilIfEmpty, notiz: notiz.nilIfEmpty)
+        }
+
+        /// What the import would refuse this entry for, said now rather than
+        /// after thirty round trips. Exactly the checks `RouteStore` runs, so
+        /// a row without a warning here cannot be rejected there.
+        var problem: String? {
+            if kunde.isEmpty { return "Kein Kunde" }
+            if strasse.isEmpty { return "Keine Straße" }
+            if plz.isEmpty { return "Kein Bezirk" }
+            if !Districts.isValid(plz) { return "\(plz) ist kein Wiener Bezirk" }
+            do {
+                try RouteStore.validateCustomerFields(
+                    kunde: kunde, strasse: strasse, paket: paket.nilIfEmpty,
+                    notiz: notiz.nilIfEmpty)
+            } catch let e as AppError {
+                return e.message
+            } catch {
+                return "Ungültiger Eintrag"
+            }
+            return nil
+        }
+    }
+
+    init(route: Route, entries: [CustomerJSON]) {
+        self.route = route
+        _entries = State(initialValue: entries.map(Entry.init))
+    }
+
+    private var problems: Int { entries.count { $0.problem != nil } }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if entries.isEmpty {
+                    ContentUnavailableView {
+                        Label("Nichts mehr übrig", systemImage: "tray")
+                    } description: {
+                        Text(
+                            "Alle Einträge wurden entfernt. „Übernehmen“ würde damit jeden "
+                                + "Kundenstopp dieser Tour löschen.")
+                    }
+                } else {
+                    list
+                }
+            }
+            // One word. "Liste prüfen" truncated to "Liste prüf…" between the
+            // two glass toolbar buttons, and the section header underneath
+            // already says how many entries there are and how many need
+            // looking at.
+            .navigationTitle("Prüfen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbar }
+            .safeAreaInset(edge: .bottom) {
+                if let progress {
+                    BusyBanner(text: progress)
+                        .padding(.bottom, 8)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy, value: progress)
+            .sheet(item: $editing) { entry in
+                ImportEntryEditor(entry: entry) { updated in
+                    if let index = entries.firstIndex(where: { $0.id == updated.id }) {
+                        entries[index] = updated
+                    }
+                }
+            }
+            .confirmationDialog(
+                pendingDeletions?.title ?? "",
+                isPresented: Binding(
+                    get: { pendingDeletions != nil },
+                    set: { if !$0 { pendingDeletions = nil } }),
+                titleVisibility: .visible,
+                presenting: pendingDeletions
+            ) { pending in
+                Button("Übernehmen und entfernen", role: .destructive) {
+                    pendingDeletions = nil
+                    importTask = Task { await apply(pending.entries) }
+                }
+                Button("Abbrechen", role: .cancel) { pendingDeletions = nil }
+            } message: { pending in
+                Text(pending.message)
+            }
+            .sheet(item: $result) { report in
+                ImportSummary(result: report.result)
+                    .presentationDetents([.medium, .large])
+            }
+            .errorAlert($error)
+            .interactiveDismissDisabled(busy)
+        }
+    }
+
+    // MARK: - The list
+
+    private var list: some View {
+        List {
+            Section {
+                ForEach($entries) { $entry in
+                    row(entry)
+                }
+                .onDelete { entries.remove(atOffsets: $0) }
+            } header: {
+                Text(header)
+            } footer: {
+                Text(
+                    problems > 0
+                        ? "Einträge mit Warnung werden nicht übernommen. Tippen zum "
+                            + "Korrigieren, oder nach links wischen zum Entfernen."
+                        : "Tippen zum Bearbeiten, nach links wischen zum Entfernen. "
+                            + "Erst „Übernehmen“ sucht die Adressen und ändert die Tour.")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .disabled(busy)
+    }
+
+    private var header: String {
+        let count = entries.count == 1 ? "1 Eintrag" : "\(entries.count) Einträge"
+        guard problems > 0 else { return count }
+        return "\(count) · \(problems == 1 ? "1 Warnung" : "\(problems) Warnungen")"
+    }
+
+    private func row(_ entry: Entry) -> some View {
+        Button {
+            editing = entry
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.kunde.isEmpty ? "Ohne Namen" : entry.kunde)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(entry.kunde.isEmpty ? Color.secondary : Color.primary)
+
+                Text(address(entry))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                if !entry.paket.isEmpty || !entry.notiz.isEmpty {
+                    WrappingHStack(spacing: 6) {
+                        if !entry.paket.isEmpty {
+                            RowTag(
+                                symbol: "shippingbox.fill", text: entry.paket,
+                                tone: PaketParser.totalQty(entry.paket) > 1 ? .loud : .quiet)
+                        }
+                        if !entry.notiz.isEmpty {
+                            RowTag(
+                                symbol: "note.text", text: entry.notiz, tone: .note,
+                                italic: true, lineLimit: 2)
+                        }
+                    }
+                }
+
+                if let problem = entry.problem {
+                    Label(problem, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(Color.warningText)
+                }
+            }
+            .padding(.vertical, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func address(_ entry: Entry) -> String {
+        let parts = [entry.strasse, entry.plz].filter { !$0.isEmpty }
+        return parts.isEmpty ? "Keine Adresse" : parts.joined(separator: ", ")
+    }
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            // Stays live and calls the import off, the same as every other long
+            // job in this app. What has already resolved is kept.
+            Button(busy ? "Stoppen" : "Abbrechen") {
+                if busy { importTask?.cancel() } else { dismiss() }
+            }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+            if busy {
+                ProgressView()
+            } else {
+                Button("Übernehmen") { submit() }
+            }
+        }
+    }
+
+    // MARK: - Applying
+
+    /// Everything the import will actually be given: the entries the driver
+    /// left, minus the ones it would refuse anyway.
+    ///
+    /// Dropping the broken ones here rather than sending them is what lets the
+    /// import delete. A round carrying any failure deletes nothing at all —
+    /// deliberately, because a failed address and a genuinely removed customer
+    /// are indistinguishable to it — so a single unfixable row would otherwise
+    /// silently turn every "Übernehmen" into an update-only round for the rest
+    /// of the day. The driver has already seen those rows flagged, and has
+    /// already been given the chance to fix or remove them.
+    private var submittable: [CustomerJSON] {
+        entries.filter { $0.problem == nil }.map(\.json)
+    }
+
+    private func submit() {
+        let payload = submittable
+        let preview = RouteStore.deletionPreview(payload, in: route)
+        if !preview.names.isEmpty {
+            pendingDeletions = PendingDeletions(
+                entries: payload, names: preview.names, skipped: entries.count - payload.count)
+            return
+        }
+        importTask = Task { await apply(payload) }
+    }
+
+    private func apply(_ payload: [CustomerJSON]) async {
+        busy = true
+        defer { busy = false; progress = nil }
+
+        do {
+            let r = try await RouteStore.importJSON(
+                payload, into: route, in: context
+            ) { done, total in
+                progress = "Adresse \(done + 1) von \(total) wird gesucht …"
+            }
+            if r.hasProblems {
+                result = ImportReport(result: r)
+            } else {
+                dismiss()
+            }
+        } catch let e as AppError {
+            error = e
+        } catch {
+            self.error = AppError.message("Import fehlgeschlagen.")
+        }
+    }
+
+    /// A confirmed-once deletion, with its sentences built ahead of the
+    /// dismissal animation — the same reason `PendingRouteDeletion` exists.
+    struct PendingDeletions: Identifiable {
+        let id = UUID()
+        let entries: [CustomerJSON]
+        let title: String
+        let message: String
+
+        init(entries: [CustomerJSON], names: [String], skipped: Int) {
+            self.entries = entries
+            title = names.count == 1
+                ? "1 Kunde wird entfernt"
+                : "\(names.count) Kunden werden entfernt"
+
+            let shown = names.prefix(5).joined(separator: ", ")
+            let rest = names.count - min(names.count, 5)
+            let list = rest > 0 ? "\(shown) und \(rest) weitere" : shown
+
+            var text = entries.isEmpty
+                ? "Die Liste ist leer — damit werden alle Kundenstopps dieser Tour "
+                    + "gelöscht: \(list). Lieferstatus, Paket und Notizen gehen mit."
+                : "Diese Kunden stehen nicht mehr in der Liste und werden aus der Tour "
+                    + "gelöscht: \(list). Lieferstatus, Paket und Notizen gehen mit."
+            if skipped > 0 {
+                // Said out loud, because a row skipped for a warning is a row
+                // the driver may well have meant to keep — and its customer is
+                // then one of the names above.
+                text += skipped == 1
+                    ? "\n\n1 Eintrag mit Warnung wird nicht übernommen."
+                    : "\n\n\(skipped) Einträge mit Warnung werden nicht übernommen."
+            }
+            message = text
+        }
+    }
+}
+
+// MARK: - Editing one entry
+
+/// One row of the list, open for correction.
+///
+/// The same five fields `StopEditorSheet` has and deliberately none of its
+/// machinery: nothing here is geocoded, nothing is saved, and there is no stop
+/// to delete. It is a text correction on a list that has not been applied yet.
+struct ImportEntryEditor: View {
+    @State private var entry: ImportReviewView.Entry
+    let onSave: (ImportReviewView.Entry) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused: Field?
+
+    private enum Field: Hashable { case kunde, strasse, paket, notiz }
+
+    init(entry: ImportReviewView.Entry, onSave: @escaping (ImportReviewView.Entry) -> Void) {
+        _entry = State(initialValue: entry)
+        self.onSave = onSave
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Kunde") {
+                    TextField("Name", text: $entry.kunde)
+                        .autocorrectionDisabled()
+                        .submitLabel(.next)
+                        .focused($focused, equals: .kunde)
+                        .onSubmit { focused = .strasse }
+                        .limited(to: FieldLimits.kunde, text: $entry.kunde)
+                }
+
+                Section {
+                    TextField("Straße und Hausnummer", text: $entry.strasse)
+                        .autocorrectionDisabled()
+                        .submitLabel(.next)
+                        .focused($focused, equals: .strasse)
+                        .onSubmit { focused = .paket }
+                        .limited(to: FieldLimits.strasse, text: $entry.strasse)
+                    Picker("Bezirk", selection: $entry.plz) {
+                        Text("Bitte wählen").tag("")
+                        // The file's own postcode, when it is not one of the 23.
+                        // Offered rather than silently dropped, so the picker
+                        // shows what is actually stored and the driver can see
+                        // what they are correcting.
+                        if !entry.plz.isEmpty && !Districts.isValid(entry.plz) {
+                            Text("\(entry.plz) — kein Wiener Bezirk").tag(entry.plz)
+                        }
+                        ForEach(Districts.all) { d in
+                            Text("\(d.plz) — \(d.label)").tag(d.plz)
+                        }
+                    }
+                } header: {
+                    Text("Adresse")
+                } footer: {
+                    if let problem = entry.problem {
+                        Label(problem, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Color.warning)
+                    }
+                }
+
+                Section {
+                    TextField("Paket (z. B. 1x Vitalmenü EP TGM5)", text: $entry.paket)
+                        .autocorrectionDisabled()
+                        .submitLabel(.next)
+                        .focused($focused, equals: .paket)
+                        .onSubmit { focused = .notiz }
+                        .limited(to: FieldLimits.paket, text: $entry.paket)
+                    TextField("Notiz", text: $entry.notiz, axis: .vertical)
+                        .lineLimit(2...6)
+                        .autocorrectionDisabled()
+                        .focused($focused, equals: .notiz)
+                        .limited(to: FieldLimits.notiz, text: $entry.notiz)
+                } header: {
+                    Text("Lieferung")
+                } footer: {
+                    Text("Autokorrektur ist hier aus — Türcodes und Stiegen bleiben, wie sie sind.")
+                }
+            }
+            .navigationTitle("Eintrag")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Abbrechen") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Fertig") {
+                        onSave(entry)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}

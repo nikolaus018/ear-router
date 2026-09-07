@@ -9,7 +9,6 @@ struct JSONEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var text = ""
-    @State private var busy = false
     /// A full-screen `TextEditor` has no way out of the keyboard of its own —
     /// no Return to commit, nothing else to tap. Without an explicit Fertig the
     /// driver was stuck looking at half a JSON list.
@@ -17,23 +16,13 @@ struct JSONEditorSheet: View {
     @State private var result: ImportReport?
     @State private var error: AppError?
     @State private var loaded = false
-    /// What the import is doing right now, once it reaches the addresses it has
-    /// to look up. `nil` while there is nothing to report.
-    @State private var progress: String?
-    /// The in-flight import, kept so "Schließen" can call it off.
+    /// The parsed list, waiting to be checked over.
     ///
-    /// A fresh day's list is thirty addresses at a throttled round trip each —
-    /// half a minute at best, several times that on a bad connection. That is
-    /// far too long to hold a screen with no way out of it, which is exactly
-    /// what disabling this button along with the editor used to do.
-    @State private var importTask: Task<Void, Never>?
-    /// The customers this paste would remove, held while the driver decides.
-    ///
-    /// Nothing else on this screen destroys anything: an entry that is new gets
-    /// added, an entry that changed gets edited. Removal is the one outcome the
-    /// paste can produce that takes a delivered tick, a Paket and a Notiz with
-    /// it, and it was the only one that happened without a word.
-    @State private var pendingDeletions: PendingPasteDeletions?
+    /// Everything that used to happen when "Übernehmen" was tapped — the
+    /// deletion warning, the thirty throttled lookups, the report at the end —
+    /// now happens one screen further on, after the driver has actually seen
+    /// what the paste was understood to say.
+    @State private var review: ReviewPayload?
 
     var body: some View {
         NavigationStack {
@@ -48,18 +37,7 @@ struct JSONEditorSheet: View {
                     if text.isEmpty { placeholder }
                 }
                 .padding(.horizontal, 12)
-                .disabled(busy)
                 .focused($editing)
-                // The same pill the stop list uses to report work in flight,
-                // for the same reason: this one runs for half a minute.
-                .safeAreaInset(edge: .bottom) {
-                    if let progress {
-                        BusyBanner(text: progress)
-                            .padding(.bottom, 8)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-                }
-                .animation(.snappy, value: progress)
             // "Tagesliste", not "JSON", and not "Stopps als JSON" — which is
             // what this and the menu item that opens it used to be called,
             // while the empty state's button for the same screen said "Liste
@@ -72,26 +50,13 @@ struct JSONEditorSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    // Stays live, and stops the import rather than abandoning
-                    // it. Everything already resolved is kept and saved — see
-                    // `RouteStore.importJSON` — so stopping half way costs the
-                    // driver the remaining lookups, not the ones already paid
-                    // for.
-                    Button(busy ? "Stoppen" : "Schließen") {
-                        if busy {
-                            importTask?.cancel()
-                        } else {
-                            dismiss()
-                        }
-                    }
+                    Button("Schließen") { dismiss() }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    if busy {
-                        ProgressView()
-                    } else {
-                        Button("Übernehmen") { submit() }
-                            .disabled(text.trimmed.isEmpty)
-                    }
+                    // "Weiter", not "Übernehmen": this button no longer changes
+                    // the tour, it opens the list for checking.
+                    Button("Weiter") { submit() }
+                        .disabled(text.trimmed.isEmpty)
                 }
                 ToolbarItem(placement: .keyboard) {
                     Spacer()
@@ -114,13 +79,6 @@ struct JSONEditorSheet: View {
                     }
                     .labelStyle(.titleAndIcon)
                     .buttonBorderShape(.capsule)
-                    // Locked while an import runs, for the same reason the
-                    // editor itself is: the two buttons that rewrite the text
-                    // stayed live underneath a `.disabled` editor, so the one
-                    // thing a driver could still change mid-import was the very
-                    // content it was importing. Stopping and submitting again
-                    // then applied something they had not read.
-                    .disabled(busy)
                     Spacer()
                     // Empties the editor, which is what the word means — it
                     // used to leave "[]" behind, and "[]" is not an empty
@@ -131,7 +89,6 @@ struct JSONEditorSheet: View {
                     // placeholder back; a driver who really means to clear the
                     // round can still type the two brackets, and is asked.
                     Button("Leeren", role: .destructive) { text = "" }
-                        .disabled(busy)
                 }
             }
             .errorAlert($error)
@@ -153,68 +110,18 @@ struct JSONEditorSheet: View {
                 text = route.customerCount == 0 ? "" : RouteStore.exportJSON(route)
             }
         }
-        .interactiveDismissDisabled(busy)
-        // A full screen rather than a 260pt panel wedged under the editor and
-        // behind the bottom bar. What a partly-failed import has to say —
-        // which addresses were rejected, which resolved only approximately —
-        // is the whole reason the driver is still on this screen, and it was
-        // the part with the least room to say it.
-        .sheet(item: $result) { report in
-            ImportSummary(result: report.result)
-                // Half height: this is a short report, and leaving the editor
-                // visible behind it keeps the entries it is complaining about
-                // in view.
-                .presentationDetents([.medium, .large])
-        }
-        .confirmationDialog(
-            pendingDeletions?.title ?? "",
-            isPresented: Binding(
-                get: { pendingDeletions != nil },
-                set: { if !$0 { pendingDeletions = nil } }),
-            titleVisibility: .visible,
-            presenting: pendingDeletions
-        ) { pending in
-            Button("Übernehmen und entfernen", role: .destructive) {
-                pendingDeletions = nil
-                importTask = Task { await apply(pending.entries) }
-            }
-            Button("Abbrechen", role: .cancel) { pendingDeletions = nil }
-        } message: { pending in
-            Text(pending.message)
+        // The parsed list, before any of it is applied. Full screen, because
+        // checking thirty stops is the job it is there for.
+        .sheet(item: $review) { payload in
+            ImportReviewView(route: route, entries: payload.entries)
         }
     }
 
-    /// A paste that would remove customers, waiting to be confirmed. Held as a
-    /// value with its sentences already built, so they survive the dismissal
-    /// animation rather than blanking out halfway through it — the same reason
-    /// `PendingRouteDeletion` exists.
-    struct PendingPasteDeletions: Identifiable {
+    /// `[CustomerJSON]` is a plain value; this is the identity a
+    /// `.sheet(item:)` needs to present one.
+    struct ReviewPayload: Identifiable {
         let id = UUID()
         let entries: [CustomerJSON]
-        let title: String
-        let message: String
-
-        init(entries: [CustomerJSON], names: [String]) {
-            self.entries = entries
-            title = names.count == 1
-                ? "1 Kunde wird entfernt"
-                : "\(names.count) Kunden werden entfernt"
-
-            // Named, up to a point. Five is about what a confirmation can be
-            // read at in a van; past that the count is the fact and the names
-            // are reassurance that the app knows which ones it means.
-            let shown = names.prefix(5).joined(separator: ", ")
-            let rest = names.count - min(names.count, 5)
-            let list = rest > 0 ? "\(shown) und \(rest) weitere" : shown
-
-            if entries.isEmpty {
-                message = "Die Liste ist leer — damit werden alle Kundenstopps dieser Tour "
-                    + "gelöscht: \(list). Lieferstatus, Paket und Notizen gehen mit."
-            } else {
-                message = "Diese Kunden stehen nicht mehr in der Liste und werden aus der "
-                    + "Tour gelöscht: \(list). Lieferstatus, Paket und Notizen gehen mit."
-            }
-        }
     }
 
     /// What the editor shows before anything is in it: the shape a day's list
@@ -266,60 +173,19 @@ struct JSONEditorSheet: View {
         ]
         """
 
-    /// Parses the paste and, if applying it would remove customers, asks first.
+    /// Parses the paste and hands it on to be checked.
     ///
-    /// Deliberately synchronous and before any network call: the question is
-    /// about what is already on the phone, and asking it after thirty throttled
-    /// lookups would be asking it after the driver has stopped watching.
+    /// Nothing here reaches the store, the geocoder or the tour — the driver
+    /// has typed or pasted text and the only honest next step is showing them
+    /// what it was understood to mean.
+    ///
+    /// This screen takes a JSON list and nothing else. A table from the office
+    /// is a file, and files are `Tagesliste aus Datei` — a different action,
+    /// with a file picker, because they are two different things a driver
+    /// reaches for on two different days.
     private func submit() {
-        let entries: [CustomerJSON]
         do {
-            entries = try RouteStore.parseImport(text)
-        } catch let e as AppError {
-            error = e
-            return
-        } catch {
-            self.error = AppError.message("Import fehlgeschlagen.")
-            return
-        }
-
-        let preview = RouteStore.deletionPreview(entries, in: route)
-        if !preview.names.isEmpty {
-            pendingDeletions = PendingPasteDeletions(
-                entries: entries, names: preview.names)
-            return
-        }
-        importTask = Task { await apply(entries) }
-    }
-
-    private func apply(_ entries: [CustomerJSON]) async {
-        busy = true
-        defer { busy = false; progress = nil }
-
-        do {
-            // A fresh day's list is thirty addresses at a throttled round trip
-            // each — half a minute behind a spinner that says nothing about how
-            // much of it is left, or whether it is moving at all.
-            let r = try await RouteStore.importJSON(
-                entries, into: route, in: context
-            ) { done, total in
-                progress = "Adresse \(done + 1) von \(total) wird gesucht …"
-            }
-            // A clean import has nothing left to say — closing is the answer
-            // the driver wants. One with problems reports itself, and the
-            // editor stays open behind it so the offending entries can be
-            // corrected and submitted again.
-            //
-            // A *stopped* import arrives here too, and deliberately not as a
-            // thrown `CancellationError`: `importJSON` keeps the addresses it
-            // had already resolved, saves them, and reports the stop in
-            // `result.cancelled`. So it counts as "has problems" and the
-            // summary tells the driver where it got to.
-            if r.hasProblems {
-                result = ImportReport(result: r)
-            } else {
-                dismiss()
-            }
+            review = ReviewPayload(entries: try RouteStore.parseImport(text))
         } catch let e as AppError {
             error = e
         } catch {

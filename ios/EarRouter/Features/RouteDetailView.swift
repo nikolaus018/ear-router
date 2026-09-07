@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 struct RouteDetailView: View {
     @Bindable var route: Route
@@ -11,6 +12,9 @@ struct RouteDetailView: View {
     @State private var editingStop: Stop?
     @State private var addingStop = false
     @State private var showingJSON = false
+    /// The office's own file, on its way to being checked over.
+    @State private var pickingFile = false
+    @State private var fileReview: [CustomerJSON]?
     @State private var showingLadeliste = false
     @State private var renaming = false
     @State private var newName = ""
@@ -127,6 +131,33 @@ struct RouteDetailView: View {
         .stockwerkPrompt(for: $stockwerkStop)
         .sheet(isPresented: $showingJSON) {
             JSONEditorSheet(route: route)
+        }
+        // A file and a paste are two ways of saying the same thing, so they
+        // arrive at the same screen: the list, as understood, before any of it
+        // touches the tour.
+        .sheet(item: fileReviewBinding) { payload in
+            ImportReviewView(route: route, entries: payload.entries)
+        }
+        .fileImporter(
+            isPresented: $pickingFile,
+            // Broad on purpose. A file arriving by mail or AirDrop is regularly
+            // typed as plain `data` or `text` whatever its extension says, and a
+            // picker that greys out the one file the driver came to open is
+            // worse than one that opens it and explains what it found. The
+            // format is decided on the bytes in `Tagesliste`, not on the type.
+            allowedContentTypes: [
+                .commaSeparatedText, .tabSeparatedText, .delimitedText,
+                .plainText, .text, .spreadsheet, .data,
+            ],
+            allowsMultipleSelection: false
+        ) { outcome in
+            switch outcome {
+            case .success(let urls):
+                if let url = urls.first { readList(url) }
+            case .failure(let failure):
+                error = AppError.message(
+                    "Die Datei konnte nicht geöffnet werden. \(failure.localizedDescription)")
+            }
         }
         .sheet(isPresented: $showingLadeliste) {
             LadelisteView(route: route)
@@ -300,6 +331,9 @@ struct RouteDetailView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("Ladeliste", systemImage: "checklist") { showingLadeliste = true }
+                Button("Tagesliste aus Datei", systemImage: "doc.text") {
+                    pickingFile = true
+                }
                 Button("Tagesliste einsetzen", systemImage: "list.clipboard") {
                     showingJSON = true
                 }
@@ -550,6 +584,42 @@ struct RouteDetailView: View {
             if r.unchanged > 0 { parts.append("\(r.unchanged) unverändert") }
             if r.failed > 0 { parts.append("\(r.failed) weiter offen") }
             recheckSummary = parts.joined(separator: ", ") + "."
+        }
+    }
+
+    /// `sheet(item:)` needs an identity, and a bare array has none.
+    private struct FileReview: Identifiable {
+        let id = UUID()
+        let entries: [CustomerJSON]
+    }
+
+    private var fileReviewBinding: Binding<FileReview?> {
+        Binding(
+            get: { fileReview.map { FileReview(entries: $0) } },
+            set: { if $0 == nil { fileReview = nil } })
+    }
+
+    /// Reads the office's file and hands what it says to the review screen.
+    ///
+    /// Nothing is written and no address is looked up here: this is a decode,
+    /// and the driver sees the result before any of it becomes a stop.
+    private func readList(_ url: URL) {
+        // A file from the document picker lives outside this app's sandbox and
+        // the permission to read it has to be taken and given back explicitly —
+        // without this the read fails on anything in iCloud Drive, which is
+        // exactly where a file mailed to a phone ends up. The same dance
+        // `BackupView` does.
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+        do {
+            let data = try Data(contentsOf: url)
+            fileReview = try Tagesliste.parse(data, filename: url.lastPathComponent)
+        } catch let failure as AppError {
+            error = failure
+        } catch {
+            self.error = AppError.message(
+                "Die Datei konnte nicht gelesen werden. \(error.localizedDescription)")
         }
     }
 

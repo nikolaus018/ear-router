@@ -431,8 +431,9 @@ struct StopRow: View {
 /// What they *do* share is the vocabulary — brand for the thing that changes
 /// what leaves the van, the floor's own grey for context, amber for the
 /// driver's own note — so a stop looks like the same stop on the card and on
-/// the row below it.
-private struct RowTag: View {
+/// the row below it. The import review borrows it for the same reason: a
+/// Paket should look like a Paket before it is a stop, too.
+struct RowTag: View {
     enum Tone {
         /// A multi-item drop. The one place an ordinary row spends the app's
         /// colour.
