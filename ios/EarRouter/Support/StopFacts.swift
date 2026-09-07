@@ -14,41 +14,41 @@ import SwiftUI
 /// ground, which is what forced the old palette to keep a second, darker
 /// version of every colour just for text.
 enum StopFacts {
-    /// What comes out of the van and which stairs it goes up, as one line.
+    /// What comes out of the van, on a line of its own.
     ///
-    /// Built by concatenating `Text` rather than as an `HStack`, so the whole
-    /// thing is a single paragraph: it wraps mid-line at large text sizes
-    /// instead of overflowing off the right edge or forcing each fact onto a
-    /// line of its own.
+    /// Built as a `Text` rather than as an `HStack`, so glyph and words are one
+    /// paragraph: it wraps mid-line at large text sizes instead of overflowing
+    /// off the right edge.
     ///
-    /// The Paket's glyph takes the accent only when there is more than one
-    /// thing to carry. That is the fact which changes what the driver picks up
-    /// before shutting the van door, and it is the one place an ordinary row
-    /// spends a colour at all.
-    static func carry(
-        paket: String?, stockwerk: String?, dimmed: Bool = false
-    ) -> Text? {
-        var runs: [Text] = []
+    /// The glyph takes the accent only when there is more than one thing to
+    /// carry. That is the fact which changes what the driver picks up before
+    /// shutting the van door, and it is the one place an ordinary row spends a
+    /// colour at all.
+    ///
+    /// Paket and floor used to share one line, separated by a double space, on
+    /// the theory that they are one errand: what to carry and which stairs to
+    /// carry it up. They read as one run-on fact — and the moment either ran
+    /// long, the pair wrapped into a shape where it was no longer obvious where
+    /// one ended and the other began. A line each. They are two things a driver
+    /// checks separately, standing in two different places.
+    static func paket(_ paket: String?, dimmed: Bool = false) -> Text? {
+        guard let paket = paket?.trimmed, !paket.isEmpty else { return nil }
+        let many = PaketParser.totalQty(paket) > 1
+        let glyph = Text(Image(systemName: "shippingbox.fill"))
+            .foregroundStyle(dimmed || !many ? Color.secondary : Color.accentColor)
+        let label = Text(paket)
+            .foregroundStyle(dimmed ? Color.secondary : Color.primary)
+            .fontWeight(many ? .semibold : .regular)
+        return Text("\(glyph)\u{202F}\(label)")
+    }
 
-        if let paket = paket?.trimmed, !paket.isEmpty {
-            let many = PaketParser.totalQty(paket) > 1
-            let glyph = Text(Image(systemName: "shippingbox.fill"))
-                .foregroundStyle(dimmed || !many ? Color.secondary : Color.accentColor)
-            let label = Text(paket)
-                .foregroundStyle(dimmed ? Color.secondary : Color.primary)
-                .fontWeight(many ? .semibold : .regular)
-            runs.append(Text("\(glyph)\u{202F}\(label)"))
-        }
-
-        if let stockwerk = stockwerk?.trimmed, !stockwerk.isEmpty {
-            let glyph = Text(Image(systemName: "stairs")).foregroundStyle(Color.secondary)
-            let label = Text(Format.floor(stockwerk))
-                .foregroundStyle(dimmed ? Color.secondary : Color.primary)
-            runs.append(Text("\(glyph)\u{202F}\(label)"))
-        }
-
-        guard !runs.isEmpty else { return nil }
-        return runs.dropFirst().reduce(runs[0]) { Text("\($0)  \($1)") }
+    /// Which stairs, on a line of its own. See `paket(_:dimmed:)`.
+    static func floor(_ stockwerk: String?, dimmed: Bool = false) -> Text? {
+        guard let stockwerk = stockwerk?.trimmed, !stockwerk.isEmpty else { return nil }
+        let glyph = Text(Image(systemName: "stairs")).foregroundStyle(Color.secondary)
+        let label = Text(Format.floor(stockwerk))
+            .foregroundStyle(dimmed ? Color.secondary : Color.primary)
+        return Text("\(glyph)\u{202F}\(label)")
     }
 
     /// The driver's own words about the door, which have to be read before the

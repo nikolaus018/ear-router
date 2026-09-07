@@ -155,11 +155,18 @@ struct NowCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let carry = StopFacts.carry(paket: stop.paket, stockwerk: stockwerk) {
-                carry
+            if let paket = StopFacts.paket(stop.paket) {
+                paket
                     .font(.subheadline)
-                    .lineLimit(brief ? 3 : nil)
+                    .lineLimit(brief ? 2 : nil)
                     .padding(.top, 2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let floor = StopFacts.floor(stockwerk) {
+                floor
+                    .font(.subheadline)
+                    .lineLimit(brief ? 1 : nil)
                     .fixedSize(horizontal: false, vertical: true)
             }
 

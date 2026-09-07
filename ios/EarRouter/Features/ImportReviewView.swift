@@ -200,8 +200,8 @@ struct ImportReviewView: View {
                 // The same lines the stop row draws, because this is the same
                 // customer one step before they become a stop — a Paket should
                 // look like a Paket before it is on a tour, too.
-                if let carry = StopFacts.carry(paket: entry.paket, stockwerk: nil) {
-                    carry
+                if let paket = StopFacts.paket(entry.paket) {
+                    paket
                         .font(.subheadline)
                         .padding(.top, 2)
                         .fixedSize(horizontal: false, vertical: true)

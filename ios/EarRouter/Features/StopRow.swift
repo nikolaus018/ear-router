@@ -22,10 +22,11 @@ import SwiftUI
 /// * **One solid badge in the whole list**, and it is the stop the driver is
 ///   on. Every other open stop is the same disc in a soft tint, delivered ones
 ///   grey. "Where am I" is answerable without reading a word.
-/// * **Facts as lines.** What to carry and which stairs share one line; the
-///   note gets its own; everything that merely qualifies the address is one
-///   grey strip at the bottom. A glyph carries the colour and the words stay
-///   words — see `StopFacts`.
+/// * **A line each.** What to carry, which stairs, and the note the driver
+///   wrote — three separate lines, because they are three separate checks made
+///   in three different places. Everything that merely qualifies the *address*
+///   stays one grey strip at the bottom. A glyph carries the colour and the
+///   words stay words — see `StopFacts`.
 struct StopRow: View {
     /// The badge grows with the user's text size — at accessibility sizes a
     /// fixed circle clipped the number it exists to show.
@@ -177,11 +178,16 @@ struct StopRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let carry = StopFacts.carry(
-                paket: stop.paket, stockwerk: stockwerk, dimmed: dimmed) {
-                carry
+            if let paket = StopFacts.paket(stop.paket, dimmed: dimmed) {
+                paket
                     .font(.subheadline)
                     .padding(.top, 2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let floor = StopFacts.floor(stockwerk, dimmed: dimmed) {
+                floor
+                    .font(.subheadline)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
