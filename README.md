@@ -25,6 +25,8 @@ third-party dependencies.
 | `Services/OSRMClient` | `/route` and `/trip`, with a public-server fallback |
 | `Services/RouteOptimizer` | Stop ordering and route geometry |
 | `Services/RouteStore` | Every mutation, plus the JSON bulk import |
+| `Services/Tagesliste` | The office's daily list: CSV/TSV and `.xlsx`, mapped by column name |
+| `Services/XLSX` | A ZIP reader and an OOXML reader, for the workbook case |
 | `Services/SameDoor` | Which stops share a front door |
 | `Support/Theme` | The palette, and why each colour is the colour it is |
 

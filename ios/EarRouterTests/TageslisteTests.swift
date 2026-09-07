@@ -260,28 +260,30 @@ struct TageslisteTests {
 
     // MARK: - Refusing what it cannot read
 
-    /// A workbook is a ZIP. Refused by name, with the one sentence that fixes
-    /// it — rather than half-read into a plausible tour that visits the wrong
-    /// doors.
-    @Test func refusesAnExcelWorkbookWithSomethingToDoAboutIt() {
-        let xlsx = Data([0x50, 0x4B, 0x03, 0x04] + Array(repeating: 0, count: 64))
+    /// A workbook is a ZIP and is now read rather than refused — see
+    /// `XLSXTests`. What is still refused is a ZIP that only *claims* to be
+    /// one: four bytes of signature and nothing behind them is a damaged file,
+    /// and is named as one.
+    @Test func refusesSomethingThatOnlyStartsLikeAnArchive() {
+        let truncated = Data([0x50, 0x4B, 0x03, 0x04] + Array(repeating: 0, count: 64))
         #expect(throws: AppError.self) {
-            try Tagesliste.parse(xlsx, filename: "Tour.xlsx")
-        }
-        do {
-            _ = try Tagesliste.parse(xlsx, filename: "Tour.xlsx")
-        } catch let e as AppError {
-            #expect(e.message.contains("Tour.xlsx"))
-            #expect(e.message.contains("CSV"))
-        } catch {
-            Issue.record("expected an AppError")
+            try Tagesliste.parse(truncated, filename: "Tour.xlsx")
         }
     }
 
-    /// And the old binary `.xls`, which is not a ZIP but is just as unreadable.
+    /// The old binary `.xls`, which is a 1997 compound-file document and a
+    /// different problem entirely. Refused, and told what to do about it.
     @Test func refusesTheOldBinaryExcelFormat() {
         let xls = Data([0xD0, 0xCF, 0x11, 0xE0] + Array(repeating: 0, count: 64))
-        #expect(throws: AppError.self) { try Tagesliste.parse(xls, filename: "Tour.xls") }
+        do {
+            _ = try Tagesliste.parse(xls, filename: "Tour.xls")
+            Issue.record("expected a refusal")
+        } catch let e as AppError {
+            #expect(e.message.contains("Tour.xls"))
+            #expect(e.message.contains("xlsx") || e.message.contains("CSV"))
+        } catch {
+            Issue.record("expected an AppError")
+        }
     }
 
     @Test func refusesAFileWithNoRecognisableHeader() {

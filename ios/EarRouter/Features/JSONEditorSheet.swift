@@ -38,15 +38,12 @@ struct JSONEditorSheet: View {
                 }
                 .padding(.horizontal, 12)
                 .focused($editing)
-            // "Tagesliste", not "JSON", and not "Stopps als JSON" — which is
-            // what this and the menu item that opens it used to be called,
-            // while the empty state's button for the same screen said "Liste
-            // einsetzen". Three names for one thing, two of them naming a file
-            // format at a driver who is trying to paste this morning's round.
-            // The format is right there on screen the moment the sheet opens;
-            // the name should say what the screen is for. Short, too, which is
-            // what the two glass toolbar buttons either side of it need.
-            .navigationTitle("Tagesliste")
+            // Named for the format, because the format is the only thing that
+            // distinguishes this screen from importing a table — and the driver
+            // chooses between the two while holding one or the other. It also
+            // has to be short: the two glass toolbar buttons either side of it
+            // truncate anything longer.
+            .navigationTitle("JSON")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

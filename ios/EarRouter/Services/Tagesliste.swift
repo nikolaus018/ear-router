@@ -11,14 +11,11 @@ import Foundation
 /// matched by *name* rather than by position, so a column appearing, moving or
 /// being renamed does not silently shift the address into the postcode.
 ///
-/// What this deliberately does not do is parse `.xlsx`. That is a ZIP of XML
-/// and reading it means writing a ZIP reader and an OOXML reader with no real
-/// file to check either against — and a spreadsheet reader that is subtly wrong
-/// does not fail, it produces a plausible tour that sends a driver to the wrong
-/// doors. A workbook is recognised and refused with the one sentence that fixes
-/// it. Every *text* format Excel exports is read here, which is what the
-/// "Speichern unter" menu actually offers: CSV in all three of its separators,
-/// and tab-delimited text.
+/// Two shapes of file arrive here and leave as the same thing. A workbook goes
+/// to `XLSX`, which unzips it and reads the cells; a text export is parsed
+/// below. Everything after that — finding the header, mapping the columns,
+/// cleaning what Excel put in the cells — is one path, because the difference
+/// between the two formats ends at "here is a table of strings".
 enum Tagesliste {
 
     // MARK: - Entry point
@@ -32,47 +29,55 @@ enum Tagesliste {
         guard !data.isEmpty else {
             throw AppError.message("Die Datei ist leer.")
         }
-        try refuseWorkbook(data, filename: filename)
 
+        // The old binary `.xls` is refused outright and on purpose. It is a
+        // compound-file document from 1997 with a wholly different structure to
+        // everything below, it is not what a current Excel saves by default,
+        // and adding a second binary reader on the chance the office still uses
+        // it would be a lot of untested code for a file nobody has sent.
+        if starts(data, with: [0xD0, 0xCF, 0x11, 0xE0]) {
+            throw AppError.message(oldExcelHint(filename))
+        }
+
+        for table in try tables(data, filename: filename) {
+            guard let header = headerRow(in: table) else { continue }
+            let entries = rows(table, from: header.index, columns: header.columns)
+            if !entries.isEmpty { return entries }
+        }
+
+        throw AppError.message(
+            "In der Datei ist keine Kopfzeile mit „KD“ und „Straße“ mit Einträgen darunter "
+                + "zu finden. Bitte prüfen, ob das die richtige Datei ist.")
+    }
+
+    /// The candidate tables in a file — a workbook's worksheets, or the single
+    /// table a text export is.
+    ///
+    /// Several, because a workbook mailed out of an office regularly has a
+    /// cover sheet or last week's tab in front of this week's, and "sheet one"
+    /// is a worse rule than "the first sheet that looks like a tour".
+    private static func tables(_ data: Data, filename: String) throws -> [[[String]]] {
+        // Every ZIP starts this way, which is what an `.xlsx` is.
+        if starts(data, with: [0x50, 0x4B, 0x03, 0x04]) {
+            return try XLSX.tables(from: data)
+        }
         guard let text = decode(data) else {
             throw AppError.message(
                 "Die Datei lässt sich nicht als Text lesen. Bitte aus Excel über "
-                    + "„Speichern unter“ als CSV exportieren.")
+                    + "„Speichern unter“ als CSV oder .xlsx exportieren.")
         }
-
-        let table = bestTable(from: text)
-        guard let header = headerRow(in: table) else {
-            throw AppError.message(
-                "In der Datei ist keine Kopfzeile mit „KD“ und „Straße“ zu finden. "
-                    + "Bitte prüfen, ob das die richtige Datei ist.")
-        }
-
-        let entries = rows(table, from: header.index, columns: header.columns)
-        guard !entries.isEmpty else {
-            throw AppError.message("Die Datei enthält keine Kundenstopps.")
-        }
-        return entries
+        return [bestTable(from: text)]
     }
 
-    /// A workbook, an OpenDocument sheet, or anything else that is a ZIP: all of
-    /// them start `PK\u{03}\u{04}`, because that is what a ZIP is.
-    private static func refuseWorkbook(_ data: Data, filename: String) throws {
-        let zip: [UInt8] = [0x50, 0x4B, 0x03, 0x04]
-        guard data.count >= 4, Array(data.prefix(4)) == zip else {
-            // The other Excel format worth naming: the old binary `.xls`, which
-            // is a compound-file document and starts with this signature.
-            let ole: [UInt8] = [0xD0, 0xCF, 0x11, 0xE0]
-            guard data.count >= 4, Array(data.prefix(4)) == ole else { return }
-            throw AppError.message(exportHint(filename))
-        }
-        throw AppError.message(exportHint(filename))
+    private static func starts(_ data: Data, with signature: [UInt8]) -> Bool {
+        data.count >= signature.count && Array(data.prefix(signature.count)) == signature
     }
 
-    private static func exportHint(_ filename: String) -> String {
+    private static func oldExcelHint(_ filename: String) -> String {
         let name = filename.isEmpty ? "Diese Datei" : "„\(filename)“"
-        return "\(name) ist eine Excel-Mappe, keine Textdatei. In Excel bitte "
-            + "„Datei → Speichern unter“ und als Format „CSV UTF-8 (durch Trennzeichen "
-            + "getrennt)“ wählen — diese Datei lässt sich dann direkt einlesen."
+        return "\(name) ist eine alte Excel-Datei (.xls). Bitte in Excel über "
+            + "„Datei → Speichern unter“ als „Excel-Arbeitsmappe (.xlsx)“ oder als "
+            + "„CSV UTF-8“ neu speichern."
     }
 
     // MARK: - Bytes to text

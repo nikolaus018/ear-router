@@ -262,6 +262,7 @@ struct RouteDetailView: View {
                 Section {
                     EmptyStopsPrompt(
                         onAdd: { addingStop = true },
+                        onImportFile: { pickingFile = true },
                         onPaste: { showingJSON = true })
                 }
             }
@@ -331,10 +332,15 @@ struct RouteDetailView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("Ladeliste", systemImage: "checklist") { showingLadeliste = true }
-                Button("Tagesliste aus Datei", systemImage: "doc.text") {
+                // Two names for two things. These were "Tagesliste aus Datei"
+                // and "Tagesliste einsetzen", which read as one feature worded
+                // twice — and the driver has to pick between them at the moment
+                // they are holding one or the other. What actually tells them
+                // apart is the format, so that is what they are called.
+                Button("Tabelle importieren", systemImage: "tablecells") {
                     pickingFile = true
                 }
-                Button("Tagesliste einsetzen", systemImage: "list.clipboard") {
+                Button("JSON einsetzen", systemImage: "curlybraces") {
                     showingJSON = true
                 }
                 Divider()
@@ -794,6 +800,7 @@ struct RouteFooter: View {
 /// stops get onto it, rather than three grey fixed rows and no next step.
 struct EmptyStopsPrompt: View {
     let onAdd: () -> Void
+    let onImportFile: () -> Void
     let onPaste: () -> Void
 
     var body: some View {
@@ -801,7 +808,9 @@ struct EmptyStopsPrompt: View {
             VStack(spacing: 4) {
                 Text("Noch keine Kundenstopps")
                     .font(.headline)
-                Text("Einzeln hinzufügen, oder die ganze Tagesliste auf einmal einsetzen.")
+                Text(
+                    "Einzeln hinzufügen, oder die ganze Tagesliste auf einmal — als "
+                        + "Excel-Tabelle vom Büro, oder als JSON-Liste.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -814,8 +823,11 @@ struct EmptyStopsPrompt: View {
                 }
                 .buttonStyle(.borderedProminent)
 
+                Button(action: onImportFile) {
+                    WideButtonLabel("Tabelle importieren", systemImage: "tablecells")
+                }
                 Button(action: onPaste) {
-                    WideButtonLabel("Tagesliste einsetzen", systemImage: "list.clipboard")
+                    WideButtonLabel("JSON einsetzen", systemImage: "curlybraces")
                 }
                 .buttonStyle(.bordered)
             }
