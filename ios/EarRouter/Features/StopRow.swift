@@ -6,11 +6,19 @@ import SwiftUI
 /// So the row is built to be *skimmed*, and everything in it earns its place
 /// against that:
 ///
-/// * **One trailing control.** The delivered tick on a customer, the in/out
-///   switch on a fixed point — never both, never two circles in a column.
-///   Navigation is a leading swipe and a menu item, and a full-width button on
-///   the card pinned to the bottom of the screen, which is the stop a driver
-///   actually navigates to.
+/// * **Two trailing controls, side by side.** Navigation, then the delivered
+///   tick on a customer or the in/out switch on a fixed point. Never stacked:
+///   two discs in a column left a visible hole under themselves on a tall row
+///   and made the pair the loudest thing in the list.
+///
+///   Navigation was briefly *not* here at all — moved to a swipe, on the
+///   grounds that the driver navigates to the next stop and the next stop has
+///   a full-width button on the card. That reasoning only holds while the tour
+///   is driven strictly in order. A door nobody answers, a customer caught on
+///   the street, a stop come back to at the end — all of those want navigation
+///   to a row that is not the next one, and a swipe with wet hands in a moving
+///   van is a harder gesture than a tap. It is quiet now rather than absent:
+///   a plain tinted arrow, no filled disc behind it.
 /// * **One solid badge in the whole list**, and it is the stop the driver is
 ///   on. Every other open stop is the same disc in a soft tint, delivered ones
 ///   grey. "Where am I" is answerable without reading a word.
@@ -46,6 +54,9 @@ struct StopRow: View {
     /// Switches a fixed point in or out of this tour. `nil` on a customer,
     /// which is not something a tour can decide to skip.
     var onToggleExcluded: (() -> Void)?
+    /// On every row, fixed points included: the depot, the warehouse and the
+    /// end of the shift are three of the drives a tour actually makes.
+    var onNavigate: (() -> Void)?
 
     var body: some View {
         // Three columns at ordinary text sizes; two rows once the text is big.
@@ -72,7 +83,7 @@ struct StopRow: View {
                 // badge off the left.
                 if !typeSize.isAccessibilitySize { Spacer(minLength: 4) }
             }
-            control
+            controls
                 .frame(
                     maxWidth: typeSize.isAccessibilitySize ? .infinity : nil,
                     alignment: .trailing)
@@ -227,18 +238,53 @@ struct StopRow: View {
         return runs.dropFirst().reduce(runs[0]) { Text("\($0) · \($1)") }
     }
 
-    // MARK: - The one control
+    // MARK: - The two controls
 
-    @ViewBuilder
-    private var control: some View {
-        // 44, not 42. Apple's minimum touch target is 44×44 points, and this
-        // is the app's most-pressed control — thirty times a tour, one-handed,
-        // in the rain. It had been trimmed to 42 to buy the address two more
-        // points of width, which is exactly the trade the guideline exists to
-        // stop you making.
+    private var controls: some View {
+        // 44, not 42. Apple's minimum touch target is 44×44 points, and these
+        // are the app's most-pressed controls — thirty times a tour each,
+        // one-handed, in the rain. The tick had been trimmed to 42 to buy the
+        // address two more points of width, which is exactly the trade the
+        // guideline exists to stop you making.
         let target = min(44 * controlScale, 60)
         let disc = min(27 * controlScale, 36)
+        let arrow = min(19 * controlScale, 26)
 
+        // Two points apart, because the targets already carry their own
+        // padding: the glyphs sit about 19 points apart, which reads as a pair
+        // rather than as two unrelated buttons that happen to be adjacent.
+        return HStack(spacing: 2) {
+            navigateButton(arrow: arrow, target: target)
+            stateButton(disc: disc, target: target)
+        }
+    }
+
+    /// A bare tinted arrow, not the filled disc this used to be.
+    ///
+    /// Filled, it put a second saturated blob on all thirty rows next to the
+    /// delivered tick — and a list where everything shouts ranks nothing. The
+    /// glyph alone is unmistakably a control, sits in a full 44pt target, and
+    /// costs the row no colour it cannot afford.
+    @ViewBuilder
+    private func navigateButton(arrow: CGFloat, target: CGFloat) -> some View {
+        if let onNavigate {
+            Button(action: onNavigate) {
+                Image(systemName: "arrow.trianglehead.turn.up.right")
+                    .font(.system(size: arrow, weight: .semibold))
+                    .foregroundStyle(dimmed ? Color.secondary : Color.accentColor)
+                    .frame(width: target, height: target)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Navigation zu \(title) starten")
+        }
+    }
+
+    /// The tick on a customer, the in/out switch on a fixed point. Trailing-most
+    /// of the two, because it is the one pressed at every single door and the
+    /// edge of the screen is where a thumb lands.
+    @ViewBuilder
+    private func stateButton(disc: CGFloat, target: CGFloat) -> some View {
         if let onToggleDelivered {
             Button(action: onToggleDelivered) {
                 Image(systemName: stop.delivered ? "checkmark.circle.fill" : "circle")
@@ -343,9 +389,10 @@ struct StopListRow: View {
             stockwerk: stockwerk,
             isNext: isNext,
             onToggleDelivered: isCustomer ? onToggleDelivered : nil,
-            onToggleExcluded: isCustomer ? nil : onToggleExcluded)
-            // Opens the editor. The trailing control is `.borderless`, so it
-            // handles its own taps rather than falling through to this.
+            onToggleExcluded: isCustomer ? nil : onToggleExcluded,
+            onNavigate: onNavigate)
+            // Opens the editor. The trailing controls are `.borderless`, so
+            // they handle their own taps rather than falling through to this.
             .contentShape(.rect)
             .onTapGesture(perform: onTap)
             .accessibilityHint(
@@ -354,20 +401,15 @@ struct StopListRow: View {
                     : (stop.excluded
                         ? "Doppeltippen, um diesen Punkt wieder einzuplanen"
                         : "Doppeltippen, um diesen Punkt für diese Tour auszulassen"))
-            // Navigation lives here now, on every row including the fixed
-            // points — the depot, the warehouse and the end of the shift are
-            // three of the drives a tour actually makes.
+            // Both swipes are second paths to something already visible on
+            // the row, which is what a swipe should be. Leading was briefly
+            // "Route" — the only way to navigate to a stop that was not the
+            // next one, which is a lot to ask of a gesture nothing on screen
+            // advertises. Navigation is a button again, so the swipes go back
+            // to what this app has always had: deliver one way, delete the
+            // other.
             .swipeActions(edge: .leading) {
-                Button(action: onNavigate) {
-                    Label("Route", systemImage: "arrow.trianglehead.turn.up.right")
-                }
-                .tint(Color.accentColor)
-            }
-            .swipeActions(edge: .trailing) {
                 if isCustomer {
-                    Button(role: .destructive, action: onDelete) {
-                        Label("Löschen", systemImage: "trash")
-                    }
                     Button(action: onToggleDelivered) {
                         Label(
                             stop.delivered ? "Offen" : "Geliefert",
@@ -376,16 +418,23 @@ struct StopListRow: View {
                     .tint(stop.delivered ? .attention : .delivered)
                 }
             }
+            .swipeActions(edge: .trailing) {
+                if isCustomer {
+                    Button(role: .destructive, action: onDelete) {
+                        Label("Löschen", systemImage: "trash")
+                    }
+                }
+            }
             .contextMenu { menu }
     }
 
     /// Everything you can do with this stop, spelled out.
     ///
-    /// The row's own control stays what it is — one tap to tick off — because
-    /// that is the thing done thirty times a tour and it must not move. This is
-    /// for the rest, and it is the only place one of them exists at all: seeing
-    /// a stop on the map, which the map could always do in the other direction
-    /// and never in this one.
+    /// The row's own two controls stay what they are — one tap to navigate,
+    /// one to tick off — because those are the things done thirty times a tour
+    /// and they must not move. This is for the rest, and it is the only place
+    /// one of them exists at all: seeing a stop on the map, which the map could
+    /// always do in the other direction and never in this one.
     @ViewBuilder
     private var menu: some View {
         Button("Navigation starten", systemImage: "arrow.trianglehead.turn.up.right",
