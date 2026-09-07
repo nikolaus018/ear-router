@@ -47,6 +47,22 @@ struct MapTab: View {
     @State private var fitToken = 0
     /// Discards the result of a simplification that a newer one has overtaken.
     @State private var lineGeneration = 0
+    /// The route shape `line` and `pins` were actually built from, and the one
+    /// a simplification currently in flight is working towards.
+    ///
+    /// These are what let this tab answer "is what I am drawing still what the
+    /// route says?" instead of "was I told about a change?". The difference is
+    /// the whole bug: being told relies on `onChange`, `onChange` relies on the
+    /// body having been evaluated, and a tab sitting behind three others is not
+    /// guaranteed to be evaluated at all. `onAppear` was the fallback for
+    /// exactly that — and it only ever rebuilt the *pins*, so the one thing it
+    /// could not repair was the driven line. Worse, it declined to do even that
+    /// whenever a simplification happened to be in flight as the tab came
+    /// forward, which measurement says is most of the time. A line left stale
+    /// that way stays stale until the app is relaunched, because nothing else
+    /// is ever going to ask again.
+    @State private var builtShape: ShapeKey?
+    @State private var pendingShape: ShapeKey?
     /// Where the camera has been asked to go — set when the driver arrives here
     /// from a stop row's "Auf der Karte zeigen". The camera itself lives in
     /// `RouteMapCanvas`, so this is a request rather than a position.
@@ -319,7 +335,7 @@ struct MapTab: View {
             selection: $selectedStopID,
             fitToken: fitToken,
             pointAt: $pointAt)
-            .onChange(of: shapeKey, initial: true) { rebuildRoute(route) }
+            .onChange(of: shapeKey, initial: true) { reconcile(route) }
             .onChange(of: styleKey) { rebuildPins(for: route) }
             // Arriving from a stop row in the list. `initial: true` because the
             // request is usually already standing by the time this tab is built
@@ -336,16 +352,9 @@ struct MapTab: View {
                 selectedStopID = id
             }
             // `onChange` only fires if the body was evaluated, and a tab sitting
-            // in the background is not guaranteed to be. Rebuilding on appear is
-            // what makes a delivery ticked off in the Routen tab reliably show
-            // up green here.
-            .onAppear {
-                if line.isEmpty && !buildingLine {
-                    rebuildRoute(route)
-                } else {
-                    rebuildPins(for: route)
-                }
-            }
+            // in the background is not guaranteed to be — so coming back to this
+            // tab checks for itself rather than trusting that it was told.
+            .onAppear { reconcile(route) }
             // The permission prompt the blue dot needs. Nothing else in the app
             // asks for it, and the map is the one place it means anything.
             .task { LocationAuthorization.shared.requestIfNeeded() }
@@ -396,7 +405,27 @@ struct MapTab: View {
     /// then landed on the main thread together, and opening the Karte tab froze
     /// the app for as long as the two took. The map and its pins appear at once
     /// now; the line follows a moment later, with a notice while it does.
-    private func rebuildRoute(_ route: Route) {
+    /// Brings the map up to date with the route, and does nothing if it already
+    /// is.
+    ///
+    /// Called both from `onChange` and from `onAppear`, which is the point:
+    /// either one alone can miss, and between them they cannot. A shape already
+    /// drawn — or already being drawn — costs a pin rebuild, which is cheap by
+    /// design; anything else is genuinely out of date and gets redrawn.
+    private func reconcile(_ route: Route) {
+        let shape = shapeKey
+        guard shape != builtShape, shape != pendingShape else {
+            // The line is current. Colours may still have moved — a delivery
+            // ticked off in the Routen tab is exactly the change that reaches
+            // here without altering the shape of anything.
+            rebuildPins(for: route)
+            return
+        }
+        rebuildRoute(route, shape: shape)
+    }
+
+    private func rebuildRoute(_ route: Route, shape: ShapeKey) {
+        pendingShape = shape
         // A focus request belongs to the tour it was made from: showing a
         // different one is a different question, and gets the whole-route
         // framing every other route change gets. Only when moving *between*
@@ -416,6 +445,8 @@ struct MapTab: View {
         guard flat.count >= 4 else {
             line = []
             buildingLine = false
+            builtShape = shape
+            pendingShape = nil
             fitToken += 1
             return
         }
@@ -425,9 +456,15 @@ struct MapTab: View {
             let simplified = Self.simplifiedLine(flat: flat, tolerance: 0.00002)
             await MainActor.run {
                 // A newer rebuild has already started; this answer is stale.
+                // Nothing is recorded as drawn, so if that newer one somehow
+                // never lands, the next `reconcile` still sees the shape as
+                // undrawn and tries again rather than believing a line it never
+                // put on screen.
                 guard generation == lineGeneration else { return }
                 line = simplified
                 buildingLine = false
+                builtShape = shape
+                pendingShape = nil
                 fitToken += 1
             }
         }
