@@ -194,3 +194,93 @@ struct XLSXTests {
         }
     }
 }
+
+/// The reader against a workbook shaped the way Excel actually shapes one.
+///
+/// The fixture above is minimal; this one carries everything a real export has
+/// that a minimal one does not — a merged title block, a gap in the row
+/// numbers, style indices on every cell, a date as a serial number, formulas
+/// with cached results, a formula that errored, a name split into rich-text
+/// runs, `xml:space="preserve"`, and the `mc:Ignorable` namespace soup.
+///
+/// It is still not a file from the office's Excel. It is as close as can be
+/// built without one.
+struct XLSXExcelShapedTests {
+
+    private func parse() throws -> [CustomerJSON] {
+        try Tagesliste.parse(XLSXFixtures.excelLike, filename: "Tour VM5.xlsx")
+    }
+
+    /// The header is on row 3, under a merged title and a row Excel did not
+    /// write at all.
+    @Test func findsTheHeaderUnderAMergedTitleAndASkippedRow() throws {
+        let entries = try parse()
+        #expect(entries.count == 5)
+        #expect(entries[0].kunde == "Thomas Kaltenbacher")
+    }
+
+    /// A name Excel stored as two runs — "Thomas " bolded, then "Kaltenbacher"
+    /// — is one name, not two and not the first half.
+    @Test func richTextRunsBecomeOneName() throws {
+        #expect(try parse()[0].kunde == "Thomas Kaltenbacher")
+    }
+
+    /// `xml:space="preserve"` keeps the padding Excel stored; the import
+    /// trims it, because " lfd " is the note "lfd".
+    @Test func preservedWhitespaceIsStillTrimmed() throws {
+        #expect(try parse()[0].notiz == "lfd")
+    }
+
+    /// The Hinweis column is a VLOOKUP. Its cached result is what the driver
+    /// sees on the printed sheet, and it is what the cell is worth here.
+    @Test func aFormulaCellReadsAsItsCachedResult() throws {
+        #expect(try parse()[0].notiz == "lfd")
+    }
+
+    /// And where that VLOOKUP failed, the cell is a typed error — which is the
+    /// `#NV` on three of the four photographed pages.
+    @Test func aFormulaThatErroredIsWorthNothing() throws {
+        let pusch = try #require(try parse().first { $0.kunde == "Edith Pusch" })
+        #expect(pusch.notiz == nil)
+    }
+
+    /// Row 5's Hinweis cell is absent entirely. Every column after it must
+    /// stay where it belongs.
+    @Test func anAbsentTrailingCellDoesNotDisturbTheRow() throws {
+        let tenor = try #require(try parse().first { $0.kunde == "Peter Tenor" })
+        #expect(tenor.strasse == "Floridusgasse 51/10")
+        #expect(tenor.plz == "1210")
+        #expect(tenor.paket == "1x Vitalmenü EP TGM5")
+        #expect(tenor.notiz == nil)
+    }
+
+    /// The Datum column is a date serial number with a date format. It is not
+    /// read — but it must not be mistaken for anything either.
+    @Test func theDateColumnIsIgnoredRatherThanMisread() throws {
+        for entry in try parse() {
+            #expect(!entry.strasse.contains("46265"))
+            #expect(entry.plz == "1210")
+        }
+    }
+
+    /// Style indices on every cell change nothing about what a cell says.
+    @Test func styledCellsReadTheSame() throws {
+        let entries = try parse()
+        #expect(entries[0].strasse == "Mühlschüttelgasse 55-57/6/5")
+        #expect(entries[0].paket == "1x Vitalmenü EP DLM5 (LVK)")
+    }
+
+    /// And the whole list is ready for the import, same as every other source.
+    @Test func everyEntryIsReadyForTheImport() throws {
+        for entry in try parse() {
+            #expect(Districts.isValid(entry.plz))
+            #expect(!entry.kunde.isEmpty)
+            #expect(!entry.strasse.isEmpty)
+            #expect(throws: Never.self) {
+                try RouteStore.validateCustomerFields(
+                    kunde: entry.kunde, strasse: entry.strasse,
+                    paket: entry.paket, notiz: entry.notiz)
+            }
+        }
+    }
+}
