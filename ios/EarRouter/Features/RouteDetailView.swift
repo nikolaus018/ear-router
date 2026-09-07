@@ -204,9 +204,10 @@ struct RouteDetailView: View {
                         remainingMinutes: snapshot.remainingMinutes,
                         onNavigate: { open(next) },
                         onDelivered: { setDelivered(next, true) },
-                        onEditStockwerk: { stockwerkStop = next })
+                        onEditStockwerk: { stockwerkStop = next },
+                        onEdit: { editingStop = next })
                         .listRowInsets(
-                            EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+                            EdgeInsets(top: 4, leading: 0, bottom: 8, trailing: 0))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }

@@ -237,8 +237,7 @@ struct StopRow: View {
         }
 
         guard !runs.isEmpty else { return nil }
-        let separator = Text(" · ")
-        return runs.dropFirst().reduce(runs[0]) { $0 + separator + $1 }
+        return runs.dropFirst().reduce(runs[0]) { Text("\($0) · \($1)") }
     }
 
     /// One icon-and-words run of the strip.
@@ -250,7 +249,7 @@ struct StopRow: View {
     /// alone at the end of one line and the words it belongs to at the start of
     /// the next.
     private static func run(_ symbol: String, _ text: String) -> Text {
-        Text(Image(systemName: symbol)) + Text("\u{202F}" + text)
+        Text("\(Image(systemName: symbol))\u{202F}\(text)")
     }
 
     // MARK: - Trailing controls

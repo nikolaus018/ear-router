@@ -32,6 +32,7 @@ struct NextStopCard: View {
     let onNavigate: () -> Void
     let onDelivered: () -> Void
     let onEditStockwerk: () -> Void
+    let onEdit: () -> Void
 
     /// The number badge and the two buttons grow with the user's text size. A
     /// driver who has turned the type up is usually the same driver who wants a
@@ -60,6 +61,8 @@ struct NextStopCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(Color.brand.opacity(0.18), lineWidth: 0.5))
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onTapGesture { onEdit() }
     }
 
     // MARK: - Progress
@@ -249,7 +252,7 @@ struct NextStopCard: View {
 
         return layout {
             Button(action: onNavigate) {
-                WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
+                WideButtonLabel("Route", systemImage: "arrow.trianglehead.turn.up.right")
                     .onBrandLabel()
             }
             .tint(Color.brand)
