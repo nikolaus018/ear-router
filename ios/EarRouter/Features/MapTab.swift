@@ -846,14 +846,29 @@ private struct MapPin: Identifiable, Equatable {
     let latitude: Double
     let longitude: Double
 
-    /// The `ForEach` identity, folding in the pin's visual state so a stop that
-    /// changes colour is rebuilt rather than reused with its old tint.
+    /// The `ForEach` identity: **everything this pin draws**, not just which
+    /// stop it is.
+    ///
+    /// It used to be the stop's id and its colour, which left the number out —
+    /// and the number is the one thing about a marker that changes without the
+    /// stop itself changing at all. Delete a customer and every stop behind it
+    /// renumbers; their ids and colours do not move, so `ForEach` saw no
+    /// change, reused the markers it already had, and left them drawing the
+    /// numbers they were built with. The map then showed a tour with two stop
+    /// 2s and no stop 3 — numbers that disagreed with the list beside them,
+    /// which on a map whose whole job is "which pin is my next door" is worse
+    /// than showing nothing.
+    ///
+    /// So the identity now covers the title, the monogram or symbol, the tint
+    /// (via `visualState`) and the coordinate — the four things `Marker` puts
+    /// on screen. Anything that changes what is drawn changes this, and the
+    /// marker is rebuilt.
     ///
     /// Stored, not computed. `RouteMapCanvas`'s body is re-evaluated on every
     /// frame of a pan — that is the whole reason it is a separate view — and a
-    /// computed identity meant `uuidString` plus an interpolation *per pin per
-    /// frame*: on a hundred-stop tour, twelve thousand string allocations a
-    /// second, thrown away immediately. Built once, when the pins are.
+    /// computed identity meant string interpolation *per pin per frame*: on a
+    /// hundred-stop tour, twelve thousand allocations a second, thrown away
+    /// immediately. Built once, when the pins are.
     let annotationID: String
 
     var coordinate: CLLocationCoordinate2D {
@@ -871,7 +886,13 @@ private struct MapPin: Identifiable, Equatable {
         self.tint = tint
         self.latitude = coordinate.latitude
         self.longitude = coordinate.longitude
-        self.annotationID = "\(id.uuidString)-\(visualState)"
+        // Coordinates rounded to about a metre: the same door re-geocoded can
+        // come back a few billionths of a degree away, and that is not a pin
+        // that needs rebuilding.
+        let lat = Int((coordinate.latitude * 100_000).rounded())
+        let lon = Int((coordinate.longitude * 100_000).rounded())
+        self.annotationID =
+            "\(id.uuidString)-\(visualState)-\(monogram ?? symbol)-\(lat),\(lon)-\(title)"
     }
 }
 
@@ -999,8 +1020,13 @@ struct StopPreviewSheet: View {
             // in the floor's grey, which made a two-line note the loudest thing
             // on the card.
             VStack(alignment: .leading, spacing: 8) {
-                if let carry = StopFacts.carry(paket: stop.paket, stockwerk: stockwerk) {
-                    carry
+                if let paket = StopFacts.paket(stop.paket) {
+                    paket
+                        .font(.subheadline)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let floor = StopFacts.floor(stockwerk) {
+                    floor
                         .font(.subheadline)
                         .fixedSize(horizontal: false, vertical: true)
                 }
