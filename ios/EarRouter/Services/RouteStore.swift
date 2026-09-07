@@ -346,11 +346,17 @@ enum RouteStore {
     /// of those is a throttled round trip, so a route with thirty approximate
     /// addresses takes the better part of a minute — long enough that a bare
     /// spinner stops reading as "working" and starts reading as "stuck".
+    ///
+    /// `stored` is false when the improvements could not be written. It is the
+    /// one outcome here that is not about an address: `try?` on that save meant
+    /// a store in trouble reported "12 verbessert" over twelve corrections that
+    /// went nowhere, and the driver set off on pins the app had already told
+    /// them were fixed.
     @discardableResult
     static func recheckAddresses(
         _ route: Route, in context: ModelContext,
         onProgress: ((Int, Int) -> Void)? = nil
-    ) async -> (improved: Int, unchanged: Int, failed: Int) {
+    ) async -> (improved: Int, unchanged: Int, failed: Int, stored: Bool) {
         let candidates = route.customerStops.filter { $0.precision != nil && !$0.pinned }
         var improved = 0, unchanged = 0, failed = 0
         var moved = false
@@ -401,12 +407,21 @@ enum RouteStore {
             }
         }
 
-        if moved {
-            route.needsOptimize = true
-            try? context.save()
-            await RouteOptimizer.optimizeBestEffort(route, in: context)
+        guard moved else { return (improved, unchanged, failed, true) }
+
+        route.needsOptimize = true
+        do {
+            try context.save()
+        } catch {
+            // Wound back, so the route keeps the pins it had rather than
+            // holding corrections in memory that the next unrelated write would
+            // either flush or lose. Nothing was improved, because nothing was
+            // kept — and the caller is told so rather than shown a total.
+            context.rollback()
+            return (0, unchanged, failed, false)
         }
-        return (improved, unchanged, failed)
+        await RouteOptimizer.optimizeBestEffort(route, in: context)
+        return (improved, unchanged, failed, true)
     }
 
     /// Whether `candidate` places a stop at least as precisely as `current`.
@@ -507,77 +522,10 @@ enum RouteStore {
         }
 
         let existing = route.customerStops
-        var matched = Set<UUID>()
-        var toUpdate: [(CustomerJSON, Stop)] = []
-        var unresolved: [(entry: CustomerJSON, existing: Stop?)] = []
-
-        // --- Pass 1: match on address ---
-        // The common case, and the cheap one — an unchanged address means an
-        // unchanged location, so there is nothing to geocode and nothing to
-        // re-route.
-        //
-        // Each address bucket carries the stop's name alongside it, because an
-        // address alone is not enough to say *which* stop an entry is. Two
-        // customers at one door is a case this app goes out of its way to
-        // support — one building, two households, two meals. Matching a bucket
-        // positionally would silently assume the paste lists them in the same
-        // order the store happens to hold them; re-paste with the rows swapped
-        // and each one claims the *other's* stop, writing the names over each
-        // other while `delivered` stays where it was.
-        var byAddress: [AddressKey: [Stop]] = [:]
-        for s in existing {
-            byAddress[AddressKey(s.strasse ?? "", s.plz ?? ""), default: []].append(s)
-        }
-
-        for entry in normalized {
-            let key = AddressKey(entry.strasse, entry.plz)
-            guard var bucket = byAddress[key], !bucket.isEmpty else {
-                unresolved.append((entry, nil))
-                continue
-            }
-            // The same name at the same address is the same stop, whatever
-            // order either side lists them in. Falling back to the first
-            // unclaimed one when no name matches keeps the behaviour that was
-            // right for a customer renamed in place at an unchanged address —
-            // an edit of that stop, not a new one.
-            let wanted = nameKey(entry.kunde)
-            let pos = bucket.firstIndex { nameKey($0.kunde ?? "") == wanted } ?? 0
-            let stop = bucket.remove(at: pos)
-            byAddress[key] = bucket
-            matched.insert(stop.id)
-            toUpdate.append((entry, stop))
-        }
-
-        // --- Pass 2: match the leftovers on customer name ---
-        // Address matching alone cannot tell "Fam. Gruber moved to a new flat"
-        // apart from "Fam. Gruber left the route and someone new joined". It
-        // resolves both as a delete plus an insert — which loses everything
-        // the stop carried that is not in the paste, and what it carries is
-        // `delivered`. Re-pasting a corrected list at midday would silently
-        // un-tick a customer who had already had their meal.
-        //
-        // Deliberately conservative: a name must be unambiguous on *both*
-        // sides — exactly one unclaimed existing stop and exactly one
-        // unclaimed submitted entry — or the pass declines and the
-        // delete/insert behaviour stands. Guessing between two customers
-        // called "Fam. Gruber" would be worse than not guessing at all.
-        var submittedNameCounts: [String: Int] = [:]
-        for u in unresolved {
-            submittedNameCounts[nameKey(u.entry.kunde), default: 0] += 1
-        }
-        var existingByName: [String: [Stop]] = [:]
-        for s in existing where !matched.contains(s.id) {
-            existingByName[nameKey(s.kunde ?? ""), default: []].append(s)
-        }
-        for i in unresolved.indices {
-            let key = nameKey(unresolved[i].entry.kunde)
-            guard submittedNameCounts[key] == 1,
-                  let ids = existingByName[key], ids.count == 1
-            else { continue }
-            matched.insert(ids[0].id)
-            existingByName.removeValue(forKey: key)
-            unresolved[i].existing = ids[0]
-        }
+        let match = Self.match(normalized, against: existing)
+        let matched = match.matched
+        let toUpdate = match.toUpdate
+        let unresolved = match.unresolved
 
         // --- apply the cheap matches ---
         // The address is rewritten too, even though matching on it is what got
@@ -768,6 +716,150 @@ enum RouteStore {
         var highest = 0
         for s in route.stops where s.orderIndex > highest { highest = s.orderIndex }
         return highest + 1
+    }
+
+    // MARK: - Matching a paste against the route
+
+    /// Which submitted entry is which stop already on the route.
+    ///
+    /// Extracted so that `importJSON` and `deletionPreview` cannot drift apart:
+    /// the preview's whole job is to name the customers the import is about to
+    /// delete, and it can only do that honestly if it decides "matched" by
+    /// exactly the same rules the import will.
+    struct PasteMatch {
+        /// Entries that landed on a stop whose address already matches — the
+        /// cheap case, with nothing to geocode.
+        var toUpdate: [(CustomerJSON, Stop)] = []
+        /// Entries with no address match. `existing` is set where pass 2 could
+        /// still tie the entry to a stop by name — a customer who moved.
+        var unresolved: [(entry: CustomerJSON, existing: Stop?)] = []
+        /// Every stop the paste accounted for. Anything on the route that is
+        /// not in here is a customer the paste dropped.
+        var matched = Set<UUID>()
+    }
+
+    static func match(_ entries: [CustomerJSON], against existing: [Stop]) -> PasteMatch {
+        var out = PasteMatch()
+
+        // --- Pass 1: match on address ---
+        // The common case, and the cheap one — an unchanged address means an
+        // unchanged location, so there is nothing to geocode and nothing to
+        // re-route.
+        //
+        // Each address bucket carries the stop's name alongside it, because an
+        // address alone is not enough to say *which* stop an entry is. Two
+        // customers at one door is a case this app goes out of its way to
+        // support — one building, two households, two meals. Matching a bucket
+        // positionally would silently assume the paste lists them in the same
+        // order the store happens to hold them; re-paste with the rows swapped
+        // and each one claims the *other's* stop, writing the names over each
+        // other while `delivered` stays where it was.
+        var byAddress: [AddressKey: [Stop]] = [:]
+        for s in existing {
+            byAddress[AddressKey(s.strasse ?? "", s.plz ?? ""), default: []].append(s)
+        }
+
+        for entry in entries {
+            let key = AddressKey(entry.strasse, entry.plz)
+            guard var bucket = byAddress[key], !bucket.isEmpty else {
+                out.unresolved.append((entry, nil))
+                continue
+            }
+            // The same name at the same address is the same stop, whatever
+            // order either side lists them in. Falling back to the first
+            // unclaimed one when no name matches keeps the behaviour that was
+            // right for a customer renamed in place at an unchanged address —
+            // an edit of that stop, not a new one.
+            let wanted = nameKey(entry.kunde)
+            let pos = bucket.firstIndex { nameKey($0.kunde ?? "") == wanted } ?? 0
+            let stop = bucket.remove(at: pos)
+            byAddress[key] = bucket
+            out.matched.insert(stop.id)
+            out.toUpdate.append((entry, stop))
+        }
+
+        // --- Pass 2: match the leftovers on customer name ---
+        // Address matching alone cannot tell "Fam. Gruber moved to a new flat"
+        // apart from "Fam. Gruber left the route and someone new joined". It
+        // resolves both as a delete plus an insert — which loses everything
+        // the stop carried that is not in the paste, and what it carries is
+        // `delivered`. Re-pasting a corrected list at midday would silently
+        // un-tick a customer who had already had their meal.
+        //
+        // Deliberately conservative: a name must be unambiguous on *both*
+        // sides — exactly one unclaimed existing stop and exactly one
+        // unclaimed submitted entry — or the pass declines and the
+        // delete/insert behaviour stands. Guessing between two customers
+        // called "Fam. Gruber" would be worse than not guessing at all.
+        var submittedNameCounts: [String: Int] = [:]
+        for u in out.unresolved {
+            submittedNameCounts[nameKey(u.entry.kunde), default: 0] += 1
+        }
+        var existingByName: [String: [Stop]] = [:]
+        for s in existing where !out.matched.contains(s.id) {
+            existingByName[nameKey(s.kunde ?? ""), default: []].append(s)
+        }
+        for i in out.unresolved.indices {
+            let key = nameKey(out.unresolved[i].entry.kunde)
+            guard submittedNameCounts[key] == 1,
+                  let ids = existingByName[key], ids.count == 1
+            else { continue }
+            out.matched.insert(ids[0].id)
+            existingByName.removeValue(forKey: key)
+            out.unresolved[i].existing = ids[0]
+        }
+
+        return out
+    }
+
+    /// The customers on the route that this paste does not mention, by name —
+    /// which is to say, the ones applying it would delete.
+    ///
+    /// Asked *before* the import runs, because after it there is nothing to
+    /// ask. Deleting a stop from the list confirms first; deleting a tour
+    /// confirms twice. Applying a paste deleted as many customer stops as it
+    /// liked and said nothing at all — and the two ways to trigger it are the
+    /// two most ordinary things anyone does on that screen: tapping "Leeren",
+    /// which used to leave behind a valid empty list, and losing a few lines to
+    /// a fat-fingered selection in a monospace editor on a phone. Everything
+    /// those stops carried — the Paket, the Notiz, the delivered tick from this
+    /// morning — went with them.
+    ///
+    /// Entries that would fail validation are excluded first, exactly as the
+    /// import excludes them, because an import carrying a failure deletes
+    /// nothing at all.
+    static func deletionPreview(
+        _ entries: [CustomerJSON], in route: Route
+    ) -> (names: [String], blockedByFailures: Bool) {
+        var valid: [CustomerJSON] = []
+        var anyFailed = false
+        for e in entries {
+            let kunde = e.kunde.trimmed
+            let strasse = e.strasse.trimmed
+            let plz = e.plz.trimmed
+            guard !kunde.isEmpty, !strasse.isEmpty, !plz.isEmpty,
+                  (try? validateCustomerFields(
+                    kunde: kunde, strasse: strasse, paket: e.paket, notiz: e.notiz)) != nil
+            else {
+                anyFailed = true
+                continue
+            }
+            valid.append(
+                CustomerJSON(
+                    kunde: kunde, strasse: strasse, plz: plz,
+                    paket: e.paket?.trimmed.nilIfEmpty, notiz: e.notiz?.trimmed.nilIfEmpty))
+        }
+
+        // A round with any failure in it deletes nothing — the import says so
+        // itself — so there is nothing to warn about.
+        guard !anyFailed else { return ([], true) }
+
+        let existing = route.customerStops
+        let matched = match(valid, against: existing).matched
+        let names = existing
+            .filter { !matched.contains($0.id) }
+            .map { $0.kunde?.trimmed.nilIfEmpty ?? $0.listAddress.nilIfEmpty ?? "Stopp" }
+        return (names, false)
     }
 
     // MARK: - Matching keys

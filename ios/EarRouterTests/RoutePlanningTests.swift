@@ -332,3 +332,45 @@ struct NominatimThrottleTests {
         #expect(abs(claim.fireAt.timeIntervalSince(now) - 0.4) < 0.000_001)
     }
 }
+
+/// How long the self-hosted router gets before the app gives up on it and
+/// asks the public demo server instead.
+///
+/// The deadline exists for a primary that accepts a connection and then stalls,
+/// and it used to be a flat four seconds for every call — which quietly made it
+/// a cap on how hard the router is allowed to *think*. A `/route` over two
+/// points answers in milliseconds; a `/trip` over ninety-seven customers is a
+/// travelling-salesman solve and legitimately takes seconds. So the flat
+/// version timed out a perfectly healthy server on exactly the tours that need
+/// it, put it in a minute-long cooldown, and sent the work to a shared demo
+/// server sitting at its own hundred-waypoint ceiling.
+struct OSRMDeadlineTests {
+
+    /// A two-point leg still gets the short deadline it always had.
+    @Test func aFixedLegKeepsTheShortDeadline() {
+        #expect(OSRMClient.primaryDeadline(waypoints: 2) == 4)
+    }
+
+    /// Degenerate counts cannot pull it below the base.
+    @Test func neverShorterThanTheBase() {
+        #expect(OSRMClient.primaryDeadline(waypoints: 0) == 4)
+        #expect(OSRMClient.primaryDeadline(waypoints: 1) == 4)
+    }
+
+    /// A full tour gets meaningfully longer, and the growth is monotonic — a
+    /// bigger problem is never given less time than a smaller one.
+    @Test func afullTourGetsRoomToSolve() {
+        let small = OSRMClient.primaryDeadline(waypoints: 10)
+        let full = OSRMClient.primaryDeadline(waypoints: osrmMaxTripCoords)
+        #expect(small > 4)
+        #expect(full > small)
+        #expect(full > 15)
+    }
+
+    /// Never past the URL session's own request timeout: a deadline longer
+    /// than that can never fire, so it would silently stop being a deadline.
+    @Test func neverOutlivesTheRequestTimeout() {
+        #expect(OSRMClient.primaryDeadline(waypoints: osrmMaxTripCoords) <= 20)
+        #expect(OSRMClient.primaryDeadline(waypoints: 10_000) <= 20)
+    }
+}

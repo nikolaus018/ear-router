@@ -47,6 +47,20 @@ struct NextStopCard: View {
     /// makes, for the same reason.
     @Environment(\.dynamicTypeSize) private var typeSize
 
+    /// How many times the driver has pressed "Geliefert" on this card, and
+    /// nothing more — it drives the haptic and is read by nothing else.
+    ///
+    /// The obvious trigger is `stop.delivered`, which is what this was, and it
+    /// never fired once. This card only ever shows `nextOpen`, so its stop is
+    /// undelivered by definition: tick one off and the snapshot hands the same
+    /// card the *next* undelivered stop in the same update, so the value goes
+    /// `false → false` and `sensoryFeedback` correctly does nothing. The one
+    /// button in the app most likely to be pressed without looking — a thumb
+    /// on a phone in a windscreen mount, a driver already turning for the door
+    /// — was the one that answered with silence. A counter incremented in the
+    /// action fires on the press itself, which is the thing being confirmed.
+    @State private var ticks = 0
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             progress
@@ -148,7 +162,28 @@ struct NextStopCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+
+            Spacer(minLength: 8)
+
+            // Says that the card opens. Tapping it has edited the stop since
+            // the tap was added, and nothing on the card admitted it: a large,
+            // inviting surface that a thumb reaching for "Geliefert" can catch,
+            // answering with a full editing form on the one screen a driver
+            // looks at while they are still moving. A chevron is what every
+            // other openable row on this phone wears, and it costs eight points
+            // of a card that has the room.
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
         }
+        // The name, the address and the chevron are one thing to VoiceOver, and
+        // that thing is a button — the tap gesture on the card is otherwise
+        // invisible to it entirely.
+        .contentShape(.rect)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Doppeltippen zum Bearbeiten")
     }
 
     // MARK: - What to carry, and what to know
@@ -163,65 +198,71 @@ struct NextStopCard: View {
         let note = stop.notiz?.trimmed
         let hasNote = !(note ?? "").isEmpty
 
-        if hasPaket || stockwerk != nil || sameDoorCount > 1 || hasNote
-            || stop.precision != nil {
-            VStack(alignment: .leading, spacing: 8) {
-                if hasPaket || stockwerk != nil || sameDoorCount > 1 {
-                    // Wrapping, not scrolling: at large text sizes "3 × Menü
-                    // klein" and "Dachgeschoss" do not fit on one line of a
-                    // phone, and a row that overflows off the right edge hides
-                    // exactly the fact it was put there to show.
-                    WrappingHStack(spacing: 8) {
-                        if let paket, hasPaket {
-                            let qty = PaketParser.totalQty(paket)
-                            FactChip(
-                                symbol: "shippingbox.fill", text: paket,
-                                count: qty > 1 ? qty : nil)
-                        }
-                        // Tappable: the floor is the one fact on this card the
-                        // driver is standing in front of the evidence for, and
-                        // "wrong floor" is worth one tap to fix rather than a
-                        // trip back to the list and into a context menu.
-                        Button(action: onEditStockwerk) {
-                            FactChip(
-                                symbol: "stairs",
-                                text: stockwerk.map(Self.floorLabel) ?? "Stockwerk?",
-                                emphasis: stockwerk == nil ? .missing : .quiet)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(
-                            stockwerk.map { "Stockwerk \(Self.floorLabel($0)), ändern" }
-                                ?? "Stockwerk eintragen")
-
-                        if sameDoorCount > 1 {
-                            FactChip(
-                                symbol: "person.2.fill",
-                                text: "\(sameDoorCount) an dieser Tür", emphasis: .quiet)
-                        }
-                    }
+        // The chip row is unconditional, because the floor chip in it is.
+        //
+        // It used to be gated on there being *some other* chip to show — a
+        // Paket, a floor already known, a second household at the door — so a
+        // customer with none of those got no chip row, and the dashed
+        // "Stockwerk?" prompt that is the whole way a floor ever gets recorded
+        // never appeared. A stop with nothing else on it is not a stop whose
+        // floor matters less; it is the plainest possible row, on the card the
+        // driver reads standing at the van, and it was the one the question was
+        // never asked from. (The prompt after a delivery still asks — but that
+        // is after the stairs have already been climbed once.)
+        VStack(alignment: .leading, spacing: 8) {
+            // Wrapping, not scrolling: at large text sizes "3 × Menü klein"
+            // and "Dachgeschoss" do not fit on one line of a phone, and a row
+            // that overflows off the right edge hides exactly the fact it was
+            // put there to show.
+            WrappingHStack(spacing: 8) {
+                if let paket, hasPaket {
+                    let qty = PaketParser.totalQty(paket)
+                    FactChip(
+                        symbol: "shippingbox.fill", text: paket,
+                        count: qty > 1 ? qty : nil)
                 }
-
-                if let note, hasNote {
-                    Label {
-                        Text(note).italic()
-                    } icon: {
-                        Image(systemName: "note.text").font(.caption)
-                    }
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(Color.warningText)
-                    .fixedSize(horizontal: false, vertical: true)
+                // Tappable: the floor is the one fact on this card the
+                // driver is standing in front of the evidence for, and
+                // "wrong floor" is worth one tap to fix rather than a
+                // trip back to the list and into a context menu.
+                Button(action: onEditStockwerk) {
+                    FactChip(
+                        symbol: "stairs",
+                        text: stockwerk.map(Self.floorLabel) ?? "Stockwerk?",
+                        emphasis: stockwerk == nil ? .missing : .quiet)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    stockwerk.map { "Stockwerk \(Self.floorLabel($0)), ändern" }
+                        ?? "Stockwerk eintragen")
 
-                if let precision = stop.precision {
-                    Label {
-                        Text(precision.label)
-                    } icon: {
-                        Image(systemName: precision.symbol).foregroundStyle(Color.warning)
-                    }
-                    .font(.footnote)
-                    .foregroundStyle(Color.warningText)
-                    .fixedSize(horizontal: false, vertical: true)
+                if sameDoorCount > 1 {
+                    FactChip(
+                        symbol: "person.2.fill",
+                        text: "\(sameDoorCount) an dieser Tür", emphasis: .quiet)
                 }
+            }
+
+            if let note, hasNote {
+                Label {
+                    Text(note).italic()
+                } icon: {
+                    Image(systemName: "note.text").font(.caption)
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.warningText)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let precision = stop.precision {
+                Label {
+                    Text(precision.label)
+                } icon: {
+                    Image(systemName: precision.symbol).foregroundStyle(Color.warning)
+                }
+                .font(.footnote)
+                .foregroundStyle(Color.warningText)
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -257,12 +298,16 @@ struct NextStopCard: View {
             }
             .tint(Color.brand)
 
-            Button(action: onDelivered) {
+            Button {
+                // Counted here rather than read off the stop — see `ticks`.
+                ticks += 1
+                onDelivered()
+            } label: {
                 WideButtonLabel("Geliefert", systemImage: "checkmark")
                     .foregroundStyle(Color.onSuccess)
             }
             .tint(Color.success)
-            .sensoryFeedback(.impact(weight: .medium), trigger: stop.delivered)
+            .sensoryFeedback(.impact(weight: .medium), trigger: ticks)
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)

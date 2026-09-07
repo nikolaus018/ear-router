@@ -281,7 +281,8 @@ struct RouteDetailView: View {
             onDelete: { deletingStop = stop },
             onNavigate: { open(stop) },
             onShowOnMap: { focus.showOnMap(stop: stop, of: route) },
-            onEditStockwerk: { stockwerkStop = stop })
+            onEditStockwerk: { stockwerkStop = stop },
+            onToggleExcluded: { Task { await toggleExcluded(stop) } })
             // The id is the scroll target `reveal` aims at.
             .id(stop.id)
             .listRowBackground(highlighted == stop.id ? Color.brandWashStrong : nil)
@@ -299,7 +300,9 @@ struct RouteDetailView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("Ladeliste", systemImage: "checklist") { showingLadeliste = true }
-                Button("Stopps als JSON", systemImage: "curlybraces") { showingJSON = true }
+                Button("Tagesliste einsetzen", systemImage: "list.clipboard") {
+                    showingJSON = true
+                }
                 Divider()
                 Button("Neu optimieren", systemImage: "arrow.triangle.2.circlepath") {
                     startLongJob { await optimize() }
@@ -340,16 +343,29 @@ struct RouteDetailView: View {
 
     private func visibleStops(in snapshot: RouteSnapshot) -> [Stop] {
         guard !search.isEmpty else { return snapshot.ordered }
-        let tokens = search.lowercased()
+        // Folded on both sides, not just lowercased.
+        //
+        // This app already knows that a Viennese address survives being typed
+        // without its umlauts — `AddressText.germanFold` is what makes the
+        // register answer for "Waehringer Guertel", and what makes a re-pasted
+        // list match the stops already on the route. The Stockwerke list
+        // searches through it too. This one field did not, so a driver hunting
+        // for "Grosse Neugasse" or "Doebling" on a phone keyboard they are
+        // holding in one hand got an empty list for a stop that is sitting
+        // right there — and a search that finds nothing reads as a tour that
+        // has lost a customer.
+        let tokens = AddressText.matchKey(search)
             .split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        guard !tokens.isEmpty else { return snapshot.ordered }
         return snapshot.ordered.filter { stop in
             guard stop.kind == .customer else { return false }
             // Paket and Notiz are in here as well as the address. They are
             // where the day's real detail lives — "2x Menü", a door code, "Hund
             // im Hof" — and a driver who remembers a note but not the name had
             // no way to find that stop again short of scrolling the whole tour.
-            let haystack = [stop.kunde, stop.strasse, stop.plz, stop.paket, stop.notiz]
-                .compactMap { $0 }.joined(separator: " ").lowercased()
+            let haystack = AddressText.matchKey(
+                [stop.kunde, stop.strasse, stop.plz, stop.paket, stop.notiz]
+                    .compactMap { $0 }.joined(separator: " "))
             return tokens.allSatisfy { haystack.contains($0) }
         }
     }
@@ -448,9 +464,23 @@ struct RouteDetailView: View {
     /// banners.
     private var isBusy: Bool { busy != nil }
 
+    /// Whether a one-shot write may put its own sentence in the banner.
+    ///
+    /// The list stays tappable while a long job runs — deliberately, so a
+    /// minute of address checking does not lock the driver out of their own
+    /// tour — which means removing a stop or switching out a fixed point can
+    /// land on top of one. Sharing `busy` unconditionally, both of those wrote
+    /// their sentence over the running job's, and then their `defer` tore the
+    /// banner down: the pill and its "Stoppen" button vanished while the job it
+    /// belonged to carried on invisibly underneath. A long job owns the banner
+    /// for as long as it runs; a one-shot write that arrives during one does
+    /// its work quietly and leaves the report alone.
+    private var ownsBanner: Bool { busyTask == nil }
+
     private func toggleExcluded(_ stop: Stop) async {
-        busy = stop.excluded ? "Wird wieder eingeplant …" : "Wird ausgelassen …"
-        defer { busy = nil }
+        let banner = ownsBanner
+        if banner { busy = stop.excluded ? "Wird wieder eingeplant …" : "Wird ausgelassen …" }
+        defer { if banner { busy = nil } }
         do { try await RouteStore.setExcluded(stop, !stop.excluded, in: context) } catch let e as AppError {
             self.error = e
         } catch {
@@ -459,8 +489,9 @@ struct RouteDetailView: View {
     }
 
     private func delete(_ stop: Stop) async {
-        busy = "Wird entfernt …"
-        defer { busy = nil }
+        let banner = ownsBanner
+        if banner { busy = "Wird entfernt …" }
+        defer { if banner { busy = nil } }
         do { try await RouteStore.deleteStop(stop, in: context) } catch {
             self.error = AppError.message("Stopp konnte nicht entfernt werden.")
         }
@@ -498,6 +529,15 @@ struct RouteDetailView: View {
         // summary counting the addresses it never got to would be reporting on
         // work the driver called off.
         if Task.isCancelled { return }
+        // The store refused the corrections. Reported as the failure it is
+        // rather than folded into the summary: every other line in that alert
+        // is about an address, and this one is about the phone.
+        guard r.stored else {
+            self.error = AppError.message(
+                "Die geprüften Adressen konnten nicht gespeichert werden. Die Stopps "
+                    + "stehen unverändert auf der alten Position.")
+            return
+        }
         // A route with nothing approximate on it never had anything to check,
         // and "alle unverändert" claims a check that did not happen.
         if r.improved == 0 && r.unchanged == 0 && r.failed == 0 {
@@ -574,9 +614,8 @@ struct RouteSnapshot {
         var minutes = 0.0
         // The legs already behind the driver: everything up to, but not
         // including, the leg leaving the last stop they ticked off. Captured
-        // *before* this stop's own leg is added, and overwritten by each
-        // delivered stop in turn, so the last one to be seen wins — which is
-        // the right answer whether the tour was ticked off in order or not.
+        // *before* this stop's own leg is added, so the drive out of that stop
+        // still counts as ahead of them — they are standing at its door.
         var drivenKm = 0.0
         var drivenMinutes = 0.0
 
@@ -586,8 +625,34 @@ struct RouteSnapshot {
                 numbers[stop.id] = customers
                 if stop.delivered {
                     delivered += 1
-                    drivenKm = km
-                    drivenMinutes = minutes
+                    // Only while every customer up to here has been delivered.
+                    //
+                    // Ticked off in order — the normal case, and the one every
+                    // other test in `RouteSnapshotTests` describes — that is
+                    // every delivered stop in turn, and this is exactly what it
+                    // always was. What it now refuses to do is let a delivery
+                    // made *out* of order drag the mark forward past doors that
+                    // are still owed. A customer met on the street and handed
+                    // their meal twenty stops early used to move it to their
+                    // position, so the card paired "Noch 22 Stopps" with the
+                    // four kilometres between stop 25 and the depot — a
+                    // distance twenty-two doors cannot fit in, on the one line
+                    // a driver plans the next hour from.
+                    //
+                    // What is left then covers the whole tour from the last
+                    // point the plan was still being followed. That over-counts
+                    // by however much of it the driver has already driven, and
+                    // that is the deliberate direction: the real answer — "how
+                    // far is it from where I am now, back to the doors I
+                    // skipped, and on to the end" — is a re-routing problem
+                    // this cannot solve from stored leg distances. Of the two
+                    // ways to be wrong about it, telling a driver a tour is
+                    // shorter than it is, at midday, with meals going cold, is
+                    // the one that costs something.
+                    if next == nil {
+                        drivenKm = km
+                        drivenMinutes = minutes
+                    }
                 } else if next == nil {
                     next = stop
                 }
@@ -680,7 +745,7 @@ struct EmptyStopsPrompt: View {
                 .buttonStyle(.borderedProminent)
 
                 Button(action: onPaste) {
-                    WideButtonLabel("Liste einsetzen", systemImage: "curlybraces")
+                    WideButtonLabel("Tagesliste einsetzen", systemImage: "list.clipboard")
                 }
                 .buttonStyle(.bordered)
             }

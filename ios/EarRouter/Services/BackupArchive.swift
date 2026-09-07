@@ -300,6 +300,18 @@ enum BackupRestore {
             for route in try context.fetch(FetchDescriptor<Route>()) {
                 // Stops go with the route — the relationship's delete rule is
                 // cascade — so deleting the routes empties both tables.
+                //
+                // The packing checklist is the exception, and it is the same
+                // exception `RouteStore.delete` documents: it lives in
+                // `UserDefaults`, outside the store, so nothing cascades it
+                // away. This path deleted routes directly and did not say so,
+                // which meant a restore-and-replace left one set of ticks
+                // behind per tour, in the app's preferences, for good. It also
+                // has to happen here rather than after the insert below: a
+                // replace re-inserts the file's tours under the *same* ids, and
+                // forgetting afterwards would clear the checklist of a tour
+                // that had just been restored.
+                LadelisteState.forget(route.id)
                 context.delete(route)
             }
             for note in try context.fetch(FetchDescriptor<StockwerkNote>()) {

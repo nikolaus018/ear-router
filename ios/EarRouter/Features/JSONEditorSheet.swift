@@ -27,6 +27,13 @@ struct JSONEditorSheet: View {
     /// far too long to hold a screen with no way out of it, which is exactly
     /// what disabling this button along with the editor used to do.
     @State private var importTask: Task<Void, Never>?
+    /// The customers this paste would remove, held while the driver decides.
+    ///
+    /// Nothing else on this screen destroys anything: an entry that is new gets
+    /// added, an entry that changed gets edited. Removal is the one outcome the
+    /// paste can produce that takes a delivered tick, a Paket and a Notiz with
+    /// it, and it was the only one that happened without a word.
+    @State private var pendingDeletions: PendingPasteDeletions?
 
     var body: some View {
         NavigationStack {
@@ -53,10 +60,15 @@ struct JSONEditorSheet: View {
                     }
                 }
                 .animation(.snappy, value: progress)
-            // Short enough to survive the two glass toolbar buttons either side
-            // of it: "Stopps als JSON" truncated to "Stopps als…", which is a
-            // title that says nothing.
-            .navigationTitle("JSON")
+            // "Tagesliste", not "JSON", and not "Stopps als JSON" — which is
+            // what this and the menu item that opens it used to be called,
+            // while the empty state's button for the same screen said "Liste
+            // einsetzen". Three names for one thing, two of them naming a file
+            // format at a driver who is trying to paste this morning's round.
+            // The format is right there on screen the moment the sheet opens;
+            // the name should say what the screen is for. Short, too, which is
+            // what the two glass toolbar buttons either side of it need.
+            .navigationTitle("Tagesliste")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -77,7 +89,7 @@ struct JSONEditorSheet: View {
                     if busy {
                         ProgressView()
                     } else {
-                        Button("Übernehmen") { importTask = Task { await save() } }
+                        Button("Übernehmen") { submit() }
                             .disabled(text.trimmed.isEmpty)
                     }
                 }
@@ -102,8 +114,24 @@ struct JSONEditorSheet: View {
                     }
                     .labelStyle(.titleAndIcon)
                     .buttonBorderShape(.capsule)
+                    // Locked while an import runs, for the same reason the
+                    // editor itself is: the two buttons that rewrite the text
+                    // stayed live underneath a `.disabled` editor, so the one
+                    // thing a driver could still change mid-import was the very
+                    // content it was importing. Stopping and submitting again
+                    // then applied something they had not read.
+                    .disabled(busy)
                     Spacer()
-                    Button("Leeren", role: .destructive) { text = "[]" }
+                    // Empties the editor, which is what the word means — it
+                    // used to leave "[]" behind, and "[]" is not an empty
+                    // editor but a *valid list of no customers*. Two taps,
+                    // Leeren then Übernehmen, and every stop on the tour was
+                    // gone, silently, with the sheet closing on a job well
+                    // done. Empty text disables Übernehmen and brings the
+                    // placeholder back; a driver who really means to clear the
+                    // round can still type the two brackets, and is asked.
+                    Button("Leeren", role: .destructive) { text = "" }
+                        .disabled(busy)
                 }
             }
             .errorAlert($error)
@@ -137,6 +165,55 @@ struct JSONEditorSheet: View {
                 // visible behind it keeps the entries it is complaining about
                 // in view.
                 .presentationDetents([.medium, .large])
+        }
+        .confirmationDialog(
+            pendingDeletions?.title ?? "",
+            isPresented: Binding(
+                get: { pendingDeletions != nil },
+                set: { if !$0 { pendingDeletions = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDeletions
+        ) { pending in
+            Button("Übernehmen und entfernen", role: .destructive) {
+                pendingDeletions = nil
+                importTask = Task { await apply(pending.entries) }
+            }
+            Button("Abbrechen", role: .cancel) { pendingDeletions = nil }
+        } message: { pending in
+            Text(pending.message)
+        }
+    }
+
+    /// A paste that would remove customers, waiting to be confirmed. Held as a
+    /// value with its sentences already built, so they survive the dismissal
+    /// animation rather than blanking out halfway through it — the same reason
+    /// `PendingRouteDeletion` exists.
+    struct PendingPasteDeletions: Identifiable {
+        let id = UUID()
+        let entries: [CustomerJSON]
+        let title: String
+        let message: String
+
+        init(entries: [CustomerJSON], names: [String]) {
+            self.entries = entries
+            title = names.count == 1
+                ? "1 Kunde wird entfernt"
+                : "\(names.count) Kunden werden entfernt"
+
+            // Named, up to a point. Five is about what a confirmation can be
+            // read at in a van; past that the count is the fact and the names
+            // are reassurance that the app knows which ones it means.
+            let shown = names.prefix(5).joined(separator: ", ")
+            let rest = names.count - min(names.count, 5)
+            let list = rest > 0 ? "\(shown) und \(rest) weitere" : shown
+
+            if entries.isEmpty {
+                message = "Die Liste ist leer — damit werden alle Kundenstopps dieser Tour "
+                    + "gelöscht: \(list). Lieferstatus, Paket und Notizen gehen mit."
+            } else {
+                message = "Diese Kunden stehen nicht mehr in der Liste und werden aus der "
+                    + "Tour gelöscht: \(list). Lieferstatus, Paket und Notizen gehen mit."
+            }
         }
     }
 
@@ -189,12 +266,37 @@ struct JSONEditorSheet: View {
         ]
         """
 
-    private func save() async {
+    /// Parses the paste and, if applying it would remove customers, asks first.
+    ///
+    /// Deliberately synchronous and before any network call: the question is
+    /// about what is already on the phone, and asking it after thirty throttled
+    /// lookups would be asking it after the driver has stopped watching.
+    private func submit() {
+        let entries: [CustomerJSON]
+        do {
+            entries = try RouteStore.parseImport(text)
+        } catch let e as AppError {
+            error = e
+            return
+        } catch {
+            self.error = AppError.message("Import fehlgeschlagen.")
+            return
+        }
+
+        let preview = RouteStore.deletionPreview(entries, in: route)
+        if !preview.names.isEmpty {
+            pendingDeletions = PendingPasteDeletions(
+                entries: entries, names: preview.names)
+            return
+        }
+        importTask = Task { await apply(entries) }
+    }
+
+    private func apply(_ entries: [CustomerJSON]) async {
         busy = true
         defer { busy = false; progress = nil }
 
         do {
-            let entries = try RouteStore.parseImport(text)
             // A fresh day's list is thirty addresses at a throttled round trip
             // each — half a minute behind a spinner that says nothing about how
             // much of it is left, or whether it is moving at all.

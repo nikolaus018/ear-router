@@ -357,18 +357,27 @@ struct MapTab: View {
     /// anything because the permission was refused.
     @ViewBuilder
     private var statusBanner: some View {
-        if buildingLine && line.isEmpty {
-            MapNotice(text: "Route wird gezeichnet …", busy: true)
-                .padding(.top, 8)
-        } else if LocationAuthorization.shared.isDenied {
-            Button {
-                LocationAuthorization.shared.openSettings()
-            } label: {
-                MapNotice(text: "Standort aus — in Einstellungen erlauben", busy: false)
+        Group {
+            if buildingLine && line.isEmpty {
+                MapNotice(text: "Route wird gezeichnet …", busy: true)
+            } else if LocationAuthorization.shared.isDenied {
+                Button {
+                    LocationAuthorization.shared.openSettings()
+                } label: {
+                    MapNotice(text: "Standort aus — in Einstellungen erlauben", busy: false)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
-            .padding(.top, 8)
         }
+        .padding(.top, 8)
+        // Clear of MapKit's own controls, which it draws in the trailing corner
+        // of this same overlay space and which this notice ran straight into:
+        // the pill sized itself to its sentence, the sentence is a long one,
+        // and the right-hand end of it sat underneath the user-location button.
+        // Two controls in one place, neither fully tappable. Inset on both
+        // sides rather than only the trailing one, so the pill stays centred
+        // over the map instead of drifting left of it.
+        .padding(.horizontal, 56)
     }
 
     // MARK: - Building the map content
@@ -649,7 +658,20 @@ private struct RouteMapCanvas: View {
             // A stop the driver has just asked to see outranks the automatic
             // re-frame: the line finishing its simplification a moment later
             // must not pull the camera back out to the whole tour.
-            if pointAt == nil { fit() }
+            //
+            // It outranks exactly *one* of them, though, and then stands down.
+            // Left standing — which is what it did — a request made once from a
+            // stop row suppressed every automatic re-frame for the rest of the
+            // tour's life on this tab: re-optimising the route redrew the line
+            // under a camera that never moved to fit it, and the only way back
+            // was the "Ganze Route zeigen" button, which is not something a
+            // driver knows they need to press. Suppressing the one re-frame the
+            // request was made to survive is the whole job.
+            guard pointAt == nil else {
+                pointAt = nil
+                return
+            }
+            fit()
         }
         .onChange(of: pointAt, initial: true) { _, request in
             guard let request else { return }
@@ -745,6 +767,10 @@ private struct MapNotice: View {
             Text(text)
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(Color.primary)
+                // Wraps inside the space it is given rather than pushing the
+                // pill wider than that space — which is the whole point of the
+                // insets the caller puts around it.
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)

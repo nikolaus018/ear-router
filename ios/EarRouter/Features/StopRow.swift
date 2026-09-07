@@ -49,6 +49,9 @@ struct StopRow: View {
     var stockwerk: String?
     var onToggleDelivered: (() -> Void)?
     var onNavigate: (() -> Void)?
+    /// Switches a fixed point in or out of this tour. `nil` on a customer,
+    /// which is not something a tour can decide to skip.
+    var onToggleExcluded: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -67,7 +70,9 @@ struct StopRow: View {
             // A fixed point gets the navigation button but no delivered tick —
             // there is nothing to hand over at the depot or the warehouse, but
             // driving to them is the first and the last thing the shift does.
-            if onToggleDelivered != nil || onNavigate != nil {
+            // It gets the in/out control instead, which is the one decision a
+            // tour makes about a fixed point.
+            if onToggleDelivered != nil || onNavigate != nil || onToggleExcluded != nil {
                 trailingControls
             }
         }
@@ -286,6 +291,35 @@ struct StopRow: View {
                 .sensoryFeedback(.impact(weight: .medium), trigger: stop.delivered)
             }
 
+            if let onToggleExcluded {
+                // The affordance this action never had. Switching Start, Lager
+                // or Ziel out of a tour was a plain tap on the row — the same
+                // gesture that opens the editor on every row above it, doing
+                // something else entirely, with nothing on screen saying so.
+                // A driver found it by accident or not at all, and finding it
+                // by accident meant the tour quietly re-planned around a leg
+                // they had not decided to drop.
+                //
+                // The glyph names the *action*, not the state, which is what
+                // the row's own context menu already does: a minus to leave
+                // this point out, an arrow to put it back. The row still
+                // toggles on tap, so nothing anybody has learned stops working
+                // — this is what makes it learnable in the first place.
+                Button(action: onToggleExcluded) {
+                    Image(systemName: stop.excluded
+                        ? "arrow.uturn.backward.circle" : "minus.circle")
+                        .font(.system(size: disc, weight: .regular))
+                        .foregroundStyle(stop.excluded ? Color.brand : Color.secondary)
+                        .frame(width: target, height: target)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(
+                    stop.excluded
+                        ? "\(title) wieder einplanen"
+                        : "\(title) für diese Tour auslassen")
+            }
+
             if let onNavigate {
                 Button(action: onNavigate) {
                     // A soft tinted disc rather than a solid brand-filled one.
@@ -365,6 +399,9 @@ struct StopListRow: View {
     let onNavigate: () -> Void
     let onShowOnMap: () -> Void
     var onEditStockwerk: (() -> Void)?
+    /// Only ever called for a fixed point — the same action the row's own tap
+    /// and its context menu perform.
+    var onToggleExcluded: (() -> Void)?
 
     private var isCustomer: Bool { stop.kind == .customer }
 
@@ -375,7 +412,8 @@ struct StopListRow: View {
             number: number,
             stockwerk: stockwerk,
             onToggleDelivered: isCustomer ? onToggleDelivered : nil,
-            onNavigate: onNavigate)
+            onNavigate: onNavigate,
+            onToggleExcluded: isCustomer ? nil : onToggleExcluded)
             // Opens the editor. The trailing buttons are `.borderless`, so they
             // handle their own taps rather than falling through to this.
             .contentShape(.rect)

@@ -264,3 +264,155 @@ struct ImportParsingTests {
         }
     }
 }
+
+/// What the paste screen asks before it applies anything.
+///
+/// Every other destructive action in this app confirms first: deleting a stop
+/// names it, deleting a tour names it twice. Applying a paste removed as many
+/// customers as it liked and said nothing — and the two ways to trigger that
+/// are the two most ordinary things anyone does on that screen. "Leeren" used
+/// to leave a valid empty list behind, so Leeren-then-Übernehmen wiped the
+/// round in two taps; and losing a few lines to a selection in a monospace
+/// editor on a phone looks exactly like a correct paste.
+///
+/// The preview has to decide "this stop is accounted for" by *exactly* the
+/// rules the import will use, or it warns about the wrong customers — which is
+/// why it and `importJSON` now share one matcher.
+@MainActor
+struct DeletionPreviewTests {
+
+    private func makeRoute(_ stops: [Stop]) throws -> Route {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let route = Route(name: "Tour")
+        context.insert(route)
+        for (i, s) in stops.enumerated() {
+            s.orderIndex = i
+            s.route = route
+            context.insert(s)
+        }
+        try context.save()
+        return route
+    }
+
+    private func stop(_ kunde: String, _ strasse: String, lat: Double = 48.23) -> Stop {
+        Stop(kind: .customer, kunde: kunde, strasse: strasse, plz: "1180",
+             lat: lat, lon: 16.32)
+    }
+
+    private func entry(_ kunde: String, _ strasse: String) -> CustomerJSON {
+        CustomerJSON(kunde: kunde, strasse: strasse, plz: "1180", paket: nil, notiz: nil)
+    }
+
+    /// The paste that says nothing takes everything. This is the Leeren trap,
+    /// and it is the one the driver must be asked about.
+    @Test func anEmptyListAccountsForNobody() throws {
+        let route = try makeRoute([
+            stop("Fam. Gruber", "Gentzgasse 129", lat: 48.231),
+            stop("Hr. Novak", "Alser Straße 21", lat: 48.232),
+        ])
+        let preview = RouteStore.deletionPreview([], in: route)
+        #expect(preview.names.count == 2)
+        #expect(preview.names.contains("Fam. Gruber"))
+        #expect(preview.names.contains("Hr. Novak"))
+        #expect(!preview.blockedByFailures)
+    }
+
+    /// The normal morning: the same list back again, nothing to warn about, no
+    /// dialog in the way of the one action the screen exists for.
+    @Test func anUnchangedListWarnsAboutNothing() throws {
+        let route = try makeRoute([
+            stop("Fam. Gruber", "Gentzgasse 129", lat: 48.231),
+            stop("Hr. Novak", "Alser Straße 21", lat: 48.232),
+        ])
+        let preview = RouteStore.deletionPreview(
+            [entry("Fam. Gruber", "Gentzgasse 129"), entry("Hr. Novak", "Alser Straße 21")],
+            in: route)
+        #expect(preview.names.isEmpty)
+    }
+
+    /// One customer dropped off the round: named, and only that one.
+    @Test func namesExactlyTheCustomersTheListDropped() throws {
+        let route = try makeRoute([
+            stop("Fam. Gruber", "Gentzgasse 129", lat: 48.231),
+            stop("Hr. Novak", "Alser Straße 21", lat: 48.232),
+            stop("Fr. Berger", "Hauptstraße 3", lat: 48.233),
+        ])
+        let preview = RouteStore.deletionPreview(
+            [entry("Fam. Gruber", "Gentzgasse 129"), entry("Fr. Berger", "Hauptstraße 3")],
+            in: route)
+        #expect(preview.names == ["Hr. Novak"])
+    }
+
+    /// A customer who moved is *not* a deletion — the import edits their stop
+    /// in place, keeping the delivered tick. The warning has to know that, or
+    /// it cries wolf on the one case the matcher goes furthest out of its way
+    /// to handle.
+    @Test func aCustomerWhoMovedIsNotADeletion() throws {
+        let route = try makeRoute([
+            stop("Fam. Gruber", "Gentzgasse 129", lat: 48.231),
+        ])
+        let preview = RouteStore.deletionPreview(
+            [entry("Fam. Gruber", "Alser Straße 21")], in: route)
+        #expect(preview.names.isEmpty)
+    }
+
+    /// The tidied spelling of an address the store still holds in its old form
+    /// is the same door, and the same stop.
+    @Test func aRespelledAddressIsNotADeletion() throws {
+        let route = try makeRoute([
+            stop("Fam. Gruber", "Grossfeldstr. 9/Parz.68", lat: 48.231),
+        ])
+        let preview = RouteStore.deletionPreview(
+            [entry("Fam. Gruber", "Großfeldstraße 9 / Parz. 68")], in: route)
+        #expect(preview.names.isEmpty)
+    }
+
+    /// An entry that will fail validation stops the import deleting anything at
+    /// all, so there is nothing to warn about — warning anyway would name
+    /// customers who are then still there afterwards.
+    @Test func aPasteThatWillFailValidationDeletesNothingAndWarnsAboutNothing() throws {
+        let route = try makeRoute([
+            stop("Fam. Gruber", "Gentzgasse 129", lat: 48.231),
+            stop("Hr. Novak", "Alser Straße 21", lat: 48.232),
+        ])
+        // No street: rejected per entry, which is what makes the whole round
+        // keep its deletions.
+        let preview = RouteStore.deletionPreview(
+            [entry("Fam. Gruber", "Gentzgasse 129"), entry("Fr. Berger", "")], in: route)
+        #expect(preview.blockedByFailures)
+        #expect(preview.names.isEmpty)
+    }
+
+    /// Two households behind one front door: a paste listing both accounts for
+    /// both, and a paste listing one accounts for one.
+    @Test func twoCustomersAtOneDoorAreCountedSeparately() throws {
+        let route = try makeRoute([
+            stop("Fam. Gruber", "Gentzgasse 129", lat: 48.231),
+            stop("Fr. Berger", "Gentzgasse 129", lat: 48.231),
+        ])
+        #expect(
+            RouteStore.deletionPreview(
+                [entry("Fam. Gruber", "Gentzgasse 129"), entry("Fr. Berger", "Gentzgasse 129")],
+                in: route
+            ).names.isEmpty)
+        #expect(
+            RouteStore.deletionPreview(
+                [entry("Fam. Gruber", "Gentzgasse 129")], in: route
+            ).names == ["Fr. Berger"])
+    }
+
+    /// A stop with no name at all still has to be nameable in the warning —
+    /// "wird gelöscht: " followed by nothing tells the driver less than
+    /// nothing.
+    @Test func aStopWithNoNameIsNamedByItsAddress() throws {
+        let unnamed = Stop(
+            kind: .customer, kunde: nil, strasse: "Gentzgasse 129", plz: "1180",
+            lat: 48.231, lon: 16.32)
+        let route = try makeRoute([unnamed])
+        let preview = RouteStore.deletionPreview([], in: route)
+        #expect(preview.names == ["Gentzgasse 129, 1180"])
+    }
+}

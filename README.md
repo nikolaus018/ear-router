@@ -44,3 +44,28 @@ cd ios
 xcodebuild -project EarRouter.xcodeproj -scheme EarRouter \
   -destination 'platform=iOS Simulator,name=iPhone 17' build
 ```
+
+```bash
+cd ios
+xcodebuild -project EarRouter.xcodeproj -scheme EarRouter \
+  -destination 'platform=iOS Simulator,name=iPhone 17' test
+```
+
+### The two schemes
+
+| Scheme | Run builds | For |
+|---|---|---|
+| `EarRouter` | Debug | Developing. Debugger, incremental builds, `@testable` |
+| `EarRouter (Fahrbetrieb)` | Release | Installing the driver's phone |
+
+Installing from Xcode *is* how this app ships — a free developer account signs
+a profile good for seven days, so the phone is reinstalled about weekly,
+straight from the Run button (see `Support/SideloadExpiry`). Whatever Run
+builds is what somebody uses for a week, and Debug means `-Onone`: no
+inlining, no generic specialisation, no ARC elision. That is the wrong
+build to hand over for the map's per-frame change keys, the union-find behind
+"2 an dieser Tür", and the polyline simplification.
+
+So: develop with `EarRouter`, and reinstall the van's phone with
+`EarRouter (Fahrbetrieb)`. Tests run under Debug in both, which is where
+`ENABLE_TESTABILITY` lives.

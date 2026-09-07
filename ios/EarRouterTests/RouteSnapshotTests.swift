@@ -161,10 +161,23 @@ struct RouteSnapshotTests {
         #expect(snap.openCount == 1)
     }
 
-    /// Ticked off out of order — a customer who was not home, delivered on the
-    /// way back — the answer follows the *last* stop actually ticked, not the
-    /// first one still open.
-    @Test func countsFromTheLastStopTickedOffWhateverOrderThatHappenedIn() throws {
+    /// Ticked off out of order — a customer met on the street and handed their
+    /// meal early — what is left still covers every door still owed, including
+    /// the ones the driver has driven past.
+    ///
+    /// This used to follow the *last* stop ticked wherever it sat, so ticking B
+    /// reported the 3 km from B to the end while A was still open and still had
+    /// to be driven to. Paired with the card's own "Noch 2 Stopps" that is a
+    /// sentence no tour can satisfy.
+    ///
+    /// The answer here is the whole tour, which over-counts by the depot → A
+    /// leg the van has in fact already driven. That is on purpose: with the
+    /// plan no longer being followed in order, "how far from here, back to A,
+    /// and on to C" is a re-routing question, not a sum of stored legs — and
+    /// the honest thing to do with a number that cannot be known exactly is to
+    /// err long. A driver told a tour is shorter than it is finds out at the
+    /// wrong end of the day.
+    @Test func doesNotWriteOffTheStopsBehindAnEarlyDelivery() throws {
         let r = try route([
             fixed(.start, km: 10),
             customer("A", at: 1, km: 2, minutes: 4),
@@ -174,9 +187,48 @@ struct RouteSnapshotTests {
         ])
         let snap = RouteSnapshot(r)
         #expect(snap.nextOpen?.kunde == "A")
-        // Standing at B: only B → C is left.
+        #expect(snap.openCount == 2)
+        #expect(snap.totalKm == 15)
+        // Never the 3 km the old rule reported, which wrote A off entirely.
+        #expect(snap.remainingKm == 15)
+        #expect(snap.remainingMinutes == 20)
+        #expect(snap.remainingKm > 3)
+    }
+
+    /// And once the skipped stop is caught up, the mark moves again — the
+    /// freeze is tied to the first stop still *open*, not to the fact that
+    /// something was once ticked out of order.
+    @Test func theMarkMovesAgainOnceTheSkippedStopIsCaughtUp() throws {
+        let r = try route([
+            fixed(.start, km: 10),
+            customer("A", at: 1, delivered: true, km: 2, minutes: 4),
+            customer("B", at: 2, delivered: true, km: 3, minutes: 6),
+            customer("C", at: 3),
+        ])
+        let snap = RouteSnapshot(r)
+        #expect(snap.nextOpen?.kunde == "C")
+        // Standing at B, with only B → C left, and that leg is zero.
         #expect(snap.remainingKm == 3)
         #expect(snap.remainingMinutes == 6)
+    }
+
+    /// The same route ticked off in order: the mark moves with every delivery,
+    /// exactly as it always did. The out-of-order rule above only ever freezes
+    /// it at the first stop still open, which on an in-order tour is the stop
+    /// after the last one delivered.
+    @Test func stillFollowsEveryDeliveryWhileTheTourIsTickedInOrder() throws {
+        let r = try route([
+            fixed(.start, km: 10),
+            customer("A", at: 1, delivered: true, km: 2, minutes: 4),
+            customer("B", at: 2, delivered: true, km: 3, minutes: 6),
+            customer("C", at: 3, km: 4, minutes: 8),
+            fixed(.end),
+        ])
+        let snap = RouteSnapshot(r)
+        #expect(snap.nextOpen?.kunde == "C")
+        // Standing at B: B → C and C → Ziel.
+        #expect(snap.remainingKm == 7)
+        #expect(snap.remainingMinutes == 14)
     }
 
     /// The last meal is handed over and the van still has to get home. That
@@ -313,5 +365,72 @@ struct HandoffAndUpstreamTests {
             lat: 48.2301, lon: 16.3201)
         let url = NavigationHandoff.Provider.apple.point(lat: stop.lat, lon: stop.lon)
         #expect(url?.absoluteString.contains("48.230100,16.320100") == true)
+    }
+}
+
+/// Searching the stop list.
+///
+/// The filter is `RouteDetailView`'s, but the thing it turns on is
+/// `AddressText.matchKey` — so what is pinned here is that a driver typing on a
+/// phone keyboard, one-handed, finds the stop that is sitting right in front of
+/// them. Every other search in the app already folded; this field did not, and
+/// a search that finds nothing does not read as "type it differently", it reads
+/// as a tour that has lost a customer.
+struct StopSearchFoldingTests {
+
+    /// The filter, as the list applies it: every token has to appear somewhere
+    /// in the row.
+    private func matches(_ needle: String, _ fields: [String]) -> Bool {
+        let tokens = AddressText.matchKey(needle)
+            .split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        guard !tokens.isEmpty else { return true }
+        let haystack = AddressText.matchKey(fields.joined(separator: " "))
+        return tokens.allSatisfy { haystack.contains($0) }
+    }
+
+    @Test func findsAnUmlautAddressTypedWithoutOne() {
+        #expect(matches("waehringer", ["Fam. Gruber", "Währinger Straße 4", "1180"]))
+        #expect(matches("doebling", ["Fr. Berger", "Döblinger Hauptstraße 1", "1190"]))
+    }
+
+    @Test func findsASharpSTypedAsDoubleS() {
+        #expect(matches("grosse neugasse", ["Hr. Novak", "Große Neugasse 12", "1040"]))
+    }
+
+    /// And the other way round — typed *with* the umlaut against a list that
+    /// was exported without one.
+    @Test func foldsBothSidesNotJustTheQuery() {
+        #expect(matches("Währinger", ["Fam. Gruber", "Waehringer Strasse 4", "1180"]))
+    }
+
+    /// The abbreviation a dispatch list is full of.
+    @Test func findsAStreetWrittenTheOtherTwoWays() {
+        #expect(matches("hauptstrasse", ["Fr. Berger", "Hauptstr. 3", "1180"]))
+        #expect(matches("hauptstraße", ["Fr. Berger", "Hauptstr. 3", "1180"]))
+    }
+
+    /// Punctuation between the driver and the row is not a reason to hide it.
+    @Test func punctuationDoesNotBlockAMatch() {
+        #expect(matches("fam gruber", ["Fam. Gruber", "Gentzgasse 129/1", "1180"]))
+        #expect(matches("129 1", ["Fam. Gruber", "Gentzgasse 129/1", "1180"]))
+    }
+
+    /// Paket and Notiz stay searchable — that is where the day's real detail
+    /// lives, and folding must not quietly drop them.
+    @Test func stillSearchesThePaketAndTheNote() {
+        #expect(matches("menue", ["Fam. Gruber", "Gentzgasse 129", "1180", "2x Menü"]))
+        #expect(matches("hund", ["Fam. Gruber", "Gentzgasse 129", "1180", "", "Hund im Hof"]))
+    }
+
+    /// It is still a search: a customer who is not there is not found.
+    @Test func doesNotMatchSomethingThatIsNotOnTheRow() {
+        #expect(!matches("novak", ["Fam. Gruber", "Gentzgasse 129", "1180"]))
+        #expect(!matches("gentzgasse 130", ["Fam. Gruber", "Gentzgasse 129", "1180"]))
+    }
+
+    /// Every token has to land, so a second word narrows rather than widens.
+    @Test func everyTokenHasToMatch() {
+        #expect(matches("gruber gentzgasse", ["Fam. Gruber", "Gentzgasse 129", "1180"]))
+        #expect(!matches("gruber alser", ["Fam. Gruber", "Gentzgasse 129", "1180"]))
     }
 }

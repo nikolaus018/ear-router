@@ -15,6 +15,19 @@ struct StockwerkListView: View {
 
     @State private var search = ""
     @State private var editing: StockwerkNote?
+    /// Floors swiped away, waiting to be confirmed.
+    ///
+    /// Staged rather than deleted outright, and staged *by value* rather than
+    /// by row offset. Two reasons, and they are the two this app already knows
+    /// about from `PendingRouteDeletion`: `onDelete` hands over offsets into a
+    /// live `@Query`, which the save after the first deletion refreshes
+    /// underneath the loop — and a floor is the one thing in here that exists
+    /// nowhere else. It is not on any list the office sends; it was learned
+    /// once, standing in a stairwell, and there is no second copy to restore
+    /// from. Deleting a route asks first. Deleting a stop asks first. This
+    /// deleted a customer's floor on the one gesture a thumb makes by accident.
+    @State private var deleting: [StockwerkNote] = []
+    @State private var error: AppError?
 
     private var visible: [StockwerkNote] {
         let needle = AddressText.matchKey(search)
@@ -29,7 +42,13 @@ struct StockwerkListView: View {
     }
 
     var body: some View {
-        List {
+        // Filtered once per draw. Read straight off the computed property — as
+        // `offsets.map { visible[$0] }` did — a two-row swipe re-ran the whole
+        // filter twice, and every read of it folds a `matchKey` over every
+        // customer the driver has ever been asked about.
+        let visible = visible
+
+        return List {
             if notes.isEmpty {
                 ContentUnavailableView {
                     Label("Noch keine Stockwerke", systemImage: "stairs")
@@ -48,12 +67,12 @@ struct StockwerkListView: View {
                         row(note)
                     }
                     .onDelete { offsets in
-                        delete(offsets.map { visible[$0] })
+                        deleting = offsets.compactMap {
+                            visible.indices.contains($0) ? visible[$0] : nil
+                        }
                     }
                 } footer: {
-                    Text(
-                        notes.count == 1
-                            ? "1 Kunde" : "\(notes.count) Kunden")
+                    Text(footer(visible))
                 }
             }
         }
@@ -61,6 +80,40 @@ struct StockwerkListView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $search, prompt: "Kunde, Adresse oder Stockwerk")
         .sheet(item: $editing) { StockwerkNoteSheet(note: $0) }
+        .confirmationDialog(
+            deleting.count == 1 ? "Stockwerk löschen?" : "\(deleting.count) Stockwerke löschen?",
+            isPresented: Binding(
+                get: { !deleting.isEmpty },
+                set: { if !$0 { deleting = [] } }),
+            titleVisibility: .visible
+        ) {
+            Button("Löschen", role: .destructive) { confirmDelete() }
+            Button("Abbrechen", role: .cancel) { deleting = [] }
+        } message: {
+            Text(deletionMessage)
+        }
+        .errorAlert($error)
+    }
+
+    /// Counts what is on screen while the list is filtered, and everything
+    /// otherwise. It said "1.243 Kunden" under two search results, which is a
+    /// footer describing a list the driver is not looking at.
+    private func footer(_ visible: [StockwerkNote]) -> String {
+        if !search.isEmpty {
+            return visible.count == 1
+                ? "1 von \(notes.count) Kunden"
+                : "\(visible.count) von \(notes.count) Kunden"
+        }
+        return notes.count == 1 ? "1 Kunde" : "\(notes.count) Kunden"
+    }
+
+    private var deletionMessage: String {
+        guard let only = deleting.first, deleting.count == 1 else {
+            return "Die Stockwerke werden gelöscht. Diese Kunden werden bei der "
+                + "nächsten Lieferung wieder gefragt."
+        }
+        return "Das gespeicherte Stockwerk für „\(only.title)“ wird gelöscht. "
+            + "Beim nächsten Mal fragt die App wieder danach."
     }
 
     private func row(_ note: StockwerkNote) -> some View {
@@ -91,8 +144,22 @@ struct StockwerkListView: View {
         }
     }
 
-    private func delete(_ notes: [StockwerkNote]) {
-        for note in notes { context.delete(note) }
-        try? context.save()
+    /// `try?` here meant a failed delete looked exactly like a delete the
+    /// driver had cancelled: the row simply stayed. Every other write in this
+    /// app says so when it fails; this one now does too.
+    private func confirmDelete() {
+        let doomed = deleting
+        deleting = []
+        guard !doomed.isEmpty else { return }
+        do {
+            for note in doomed { context.delete(note) }
+            try context.save()
+        } catch {
+            context.rollback()
+            self.error = AppError.message(
+                doomed.count == 1
+                    ? "Das Stockwerk konnte nicht gelöscht werden."
+                    : "Die Stockwerke konnten nicht gelöscht werden.")
+        }
     }
 }

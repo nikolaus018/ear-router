@@ -20,11 +20,30 @@ actor OSRMClient {
     /// enough that a primary coming back (a reboot, a restarted tunnel) is
     /// noticed again within about a minute.
     private static let primaryRetryAfter: TimeInterval = 60
-    /// How long the primary gets to answer before the public fallback is tried.
-    /// This caps the failure the connect timeout does not: a primary that
-    /// *accepts* the connection and then stalls (a container still loading its
-    /// graph, a captive portal swallowing the request).
-    private static let primaryDeadline: TimeInterval = 4
+    /// How long the primary gets to answer a two-point call before the public
+    /// fallback is tried. This caps the failure the connect timeout does not: a
+    /// primary that *accepts* the connection and then stalls (a container still
+    /// loading its graph, a captive portal swallowing the request).
+    private static let baseDeadline: TimeInterval = 4
+    /// Added per waypoint past the first two.
+    ///
+    /// A flat deadline was wrong, and wrong in the direction that hurts most.
+    /// `/route` over two points answers in tens of milliseconds; `/trip` over
+    /// ninety-seven customers is a travelling-salesman solve, and a self-hosted
+    /// instance on a small box takes seconds over it — legitimately. Four
+    /// seconds therefore timed out the *healthy* primary on exactly the tours
+    /// that need it most, marked it down for a minute, and sent the request to
+    /// the public demo server, which is slower, shared, and sitting at its own
+    /// hundred-waypoint ceiling. The symptom was "big tours always route via
+    /// the demo server", and the cooldown made it stick for the rest of the
+    /// morning.
+    private static let deadlinePerWaypoint: TimeInterval = 0.15
+
+    /// Never past `timeoutIntervalForRequest`, which is the real ceiling — a
+    /// deadline longer than the session's own timeout can never fire.
+    static func primaryDeadline(waypoints: Int) -> TimeInterval {
+        min(20, baseDeadline + deadlinePerWaypoint * Double(max(0, waypoints - 2)))
+    }
 
     private var primaryDownSince: Date?
 
@@ -47,7 +66,7 @@ actor OSRMClient {
     ) async throws -> (distance: Double, duration: Double, geometry: [[Double]]) {
         let path = "/route/v1/driving/\(Self.coordString([a, b]))"
             + "?overview=full&geometries=geojson"
-        let resp: RouteResponse = try await get(path)
+        let resp: RouteResponse = try await get(path, waypoints: 2)
         guard resp.code == "Ok" else {
             throw Self.failure(code: resp.code)
         }
@@ -91,7 +110,7 @@ actor OSRMClient {
             + "?source=\(fixFirst ? "first" : "any")"
             + "&destination=\(fixLast ? "last" : "any")"
             + "&roundtrip=false&overview=full&geometries=geojson"
-        let resp: TripResponse = try await get(path)
+        let resp: TripResponse = try await get(path, waypoints: coords.count)
         guard resp.code == "Ok" else {
             throw Self.failure(code: resp.code)
         }
@@ -225,7 +244,9 @@ actor OSRMClient {
     /// instance is speed and not sharing the public server's quota, not
     /// availability — an outage there should not take routing down entirely
     /// when the public server can still answer the same request.
-    private func get<T: Decodable & Sendable>(_ pathAndQuery: String) async throws -> T {
+    private func get<T: Decodable & Sendable>(
+        _ pathAndQuery: String, waypoints: Int
+    ) async throws -> T {
         let primary = Upstreams.current.osrm
         let fallback = Upstreams.publicOSRMFallback
         let primaryIsFallback = primary == fallback
@@ -239,7 +260,9 @@ actor OSRMClient {
 
         if !skipPrimary {
             do {
-                let value: T = try await withDeadline(Self.primaryDeadline) {
+                let value: T = try await withDeadline(
+                    Self.primaryDeadline(waypoints: waypoints)
+                ) {
                     try await Self.fetch(self.session, base: primary, path: pathAndQuery)
                 }
                 // Recovered (or never down) — clear the earlier verdict so the
