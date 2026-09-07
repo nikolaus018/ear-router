@@ -1,22 +1,26 @@
 import SwiftUI
 import SwiftData
 
-/// The four destinations.
+/// Three destinations, and the tour is not one of them.
 ///
-/// Three of them are the same three the app has always had. What changed is
-/// which one you land on and what the last one holds.
+/// It briefly was. "Heute" was added as a front door because the app opened on
+/// a list of tours — a document browser for a filing cabinet holding one live
+/// document — so the screen the driver spends the whole shift on cost a tap
+/// every launch. But Heute rendered `TourView` for the newest active tour, and
+/// tapping the one row in Touren rendered `TourView` for that same tour: two
+/// tabs, one screen, and no way for anybody to tell them apart because there
+/// was nothing to tell.
 ///
-/// **Heute** is new, and it is the front door: the tour being driven, with
-/// nothing in front of it. The app used to open on a list of tours — a document
-/// browser for a filing cabinet that holds one live document — so the screen
-/// the driver spends the entire shift on was one tap in, every launch, all day.
+/// The tap was never a missing destination. It was the app forgetting where it
+/// had been — so `ToursTab` reopens the tour it was last on, and the driver
+/// lands on it with a Back button that leads somewhere real.
 ///
-/// **Touren** is the old Routen and Verlauf, merged. Finishing a tour is a
+/// **Touren** is also the old Routen and Verlauf merged. Finishing a tour is a
 /// change of state, not a change of filing cabinet, and two tabs meant two
 /// places to look for something that is only ever in one of them — with the
 /// second empty on a new phone and thin for weeks after. One list with an
-/// "Aktiv" section and an "Erledigt" section is how iOS files things
-/// everywhere it can.
+/// "Aktiv" section and an "Erledigt" section is how iOS files things everywhere
+/// it can.
 ///
 /// Deliberately *not* `tabBarMinimizeBehavior(.onScrollDown)`: that is meant
 /// for immersive, content-first screens (Music, Safari), where chrome getting
@@ -31,19 +35,14 @@ struct RootView: View {
         @Bindable var focus = focus
 
         TabView(selection: $focus.tab) {
-            Tab("Heute", systemImage: "checklist", value: RouteFocus.Tab.today) {
-                NavigationStack {
-                    TodayTab()
+            Tab("Touren", systemImage: "shippingbox", value: RouteFocus.Tab.tours) {
+                NavigationStack(path: $focus.toursPath) {
+                    ToursTab()
                 }
             }
             Tab("Karte", systemImage: "map", value: RouteFocus.Tab.map) {
                 NavigationStack {
                     MapTab()
-                }
-            }
-            Tab("Touren", systemImage: "calendar", value: RouteFocus.Tab.tours) {
-                NavigationStack(path: $focus.toursPath) {
-                    ToursTab()
                 }
             }
             Tab("Mehr", systemImage: "ellipsis", value: RouteFocus.Tab.more) {

@@ -20,8 +20,10 @@ import UniformTypeIdentifiers
 /// pattern this phone has always used for "the thing you are doing, while you
 /// look at something else".
 ///
-/// Reached two ways and identical in both: it is the root of Heute for the tour
-/// being driven, and the pushed detail for any tour picked out of Touren.
+/// One screen, one way in: pushed from Touren. On launch that push happens for
+/// you, onto the tour the app was last on — which is what a short-lived "Heute"
+/// tab was trying to buy, at the price of a second tab rendering this same
+/// view.
 struct TourView: View {
     @Bindable var route: Route
     @Environment(\.modelContext) private var context

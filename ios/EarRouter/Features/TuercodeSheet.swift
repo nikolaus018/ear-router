@@ -17,14 +17,15 @@ struct TuercodeSheet: View {
         NavigationStack {
             VStack(spacing: 20) {
                 Text(
-                    "Buchstaben aus der Notiz eingeben. Zeichen ohne eigene Ziffer "
-                        + "(z. B. X oder ein Bindestrich) bleiben unverändert — die gehören "
-                        + "dann schon direkt zum Code.")
+                    "Zeichen aus der Notiz eingeben — auch das Fragezeichen, das für die "
+                        + "7 steht. Zeichen ohne eigene Ziffer (z. B. X oder ein "
+                        + "Bindestrich) bleiben unverändert — die gehören dann schon "
+                        + "direkt zum Code.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                TextField("z. B. ENVV", text: $input)
+                TextField("z. B. EN?V", text: $input)
                     .font(.system(size: 24, weight: .semibold, design: .monospaced))
                     .multilineTextAlignment(.center)
                     .textInputAutocapitalization(.characters)
@@ -78,15 +79,20 @@ struct TuercodeSheet: View {
 }
 
 enum Tuercode {
-    private static let letterToDigit: [Character: Character] = [
+    /// The office's cipher sheet. Note that seven is a question mark and not a
+    /// letter — the table ran C, E, Z, D, V, F, S, A, N and simply had no seven
+    /// in it, so a code containing one came back with the "?" still in it and
+    /// the driver standing at a keypad with eight digits and a punctuation
+    /// mark.
+    private static let symbolToDigit: [Character: Character] = [
         "C": "0", "E": "1", "Z": "2", "D": "3", "V": "4",
-        "F": "5", "S": "6", "A": "8", "N": "9",
+        "F": "5", "S": "6", "?": "7", "A": "8", "N": "9",
     ]
 
     /// A character with no entry in the table (an X, a hyphen, a space) is
     /// passed through unchanged rather than dropped or flagged — those are
     /// not encoded, they are written straight into the result as-is.
     static func decode(_ letters: String) -> String {
-        String(letters.uppercased().map { letterToDigit[$0] ?? $0 })
+        String(letters.uppercased().map { symbolToDigit[$0] ?? $0 })
     }
 }

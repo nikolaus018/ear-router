@@ -1,7 +1,8 @@
 import SwiftUI
 import SwiftData
 
-/// Every tour there has ever been, in one list.
+/// Every tour there has ever been, in one list — and, on launch, the one the
+/// driver was last on, already open.
 ///
 /// This used to be two tabs — "Routen" for the active ones and "Verlauf" for
 /// the finished ones — which is two places to look for a thing that is only
@@ -10,8 +11,11 @@ import SwiftData
 /// filing cabinet; iOS files by section, not by tab, everywhere it can (Mail's
 /// mailboxes, Reminders' completed items, Files' recents), and so does this.
 ///
-/// The tab it freed up went to `TodayTab`, which is the screen the driver is
-/// actually on all day.
+/// The restore is the other half. A driver opens this app to work a tour, not
+/// to browse a list of one, so landing on the list every launch charged a tap
+/// for nothing — and answering that with a separate "Heute" tab just built a
+/// second door onto the same room. Reopening where you were costs no tab, no
+/// screen, and leaves the Back button meaning what it says.
 struct ToursTab: View {
     @Environment(\.modelContext) private var context
     @Environment(RouteFocus.self) private var focus
@@ -36,6 +40,10 @@ struct ToursTab: View {
     @State private var newName = ""
     @State private var error: AppError?
     @State private var pendingDeletion = PendingRouteDeletion()
+    /// Once per launch. Without the flag the restore would fire again every
+    /// time the driver deliberately went Back to the list and then switched
+    /// tabs, which would put them straight back where they had just left.
+    @State private var didRestore = false
 
     var body: some View {
         Group {
@@ -76,6 +84,16 @@ struct ToursTab: View {
             }
         }
         .navigationTitle("Touren")
+        // Reopens the tour the app was last on. Only an *active* one: a tour
+        // that has been finished is something the driver went to look at, not
+        // somewhere to be put back on a week later.
+        .task {
+            guard !didRestore else { return }
+            didRestore = true
+            guard focus.toursPath.isEmpty, let route = routeToReopen() else { return }
+            focus.focus(route)
+            focus.toursPath.append(route.id)
+        }
         .navigationDestination(for: UUID.self) { id in
             if let route = allRoutes.first(where: { $0.id == id }) {
                 TourView(route: route)
@@ -104,6 +122,18 @@ struct ToursTab: View {
         .confirmRouteDeletion($pendingDeletion, in: context, error: $error)
     }
 
+    /// The last tour opened, if it is still active, and otherwise the newest
+    /// active one. The fallback matters on the day the driver finishes a tour
+    /// and creates the next one on a different device — or simply the first
+    /// time, when nothing has been remembered yet.
+    private func routeToReopen() -> Route? {
+        if let id = RouteFocus.lastOpenedRouteID,
+           let remembered = active.first(where: { $0.id == id }) {
+            return remembered
+        }
+        return active.first
+    }
+
     private func startCreate() {
         newName = ""
         creating = true
@@ -112,12 +142,10 @@ struct ToursTab: View {
     private func create() {
         do {
             let route = try RouteStore.createRoute(name: newName, in: context)
-            // Focused, not pushed. A tour you have just created is the tour you
-            // are about to drive, so it belongs on Heute — and pushing a detail
-            // screen here as well would leave the driver two taps deep in a
-            // stack they never asked for.
+            // Straight into it. A tour you have just named is a tour with no
+            // stops on it, and the next thing to do is put some there.
             focus.focus(route)
-            focus.tab = .today
+            focus.toursPath.append(route.id)
         } catch {
             self.error = AppError.message("Tour konnte nicht angelegt werden.")
         }

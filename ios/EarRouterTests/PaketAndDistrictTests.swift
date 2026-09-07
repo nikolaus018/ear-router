@@ -86,7 +86,7 @@ struct TuercodeTests {
 
     @Test func mapsTheCipherSheet() {
         #expect(Tuercode.decode("ENVV") == "1944")
-        #expect(Tuercode.decode("CEZDVFSAN") == "012345689")
+        #expect(Tuercode.decode("CEZDVFS?AN") == "0123456789")
     }
 
     @Test func isCaseInsensitive() {
@@ -96,5 +96,13 @@ struct TuercodeTests {
     @Test func passesUnmappedCharactersThrough() {
         // An X or a hyphen is already part of the code, not something encoded.
         #expect(Tuercode.decode("EN-X") == "19-X")
+    }
+
+    /// Seven is the one digit the cipher sheet writes as punctuation, and the
+    /// table simply did not have it — so a code with a seven in it came back
+    /// with the question mark still in place, and the driver was left at the
+    /// keypad holding eight digits and a "?".
+    @Test func decodesTheQuestionMarkAsSeven() {
+        #expect(Tuercode.decode("E?N") == "179")
     }
 }

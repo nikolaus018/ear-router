@@ -118,22 +118,19 @@ struct StoreFailureView: View {
     }
 }
 
-/// Which route is "in focus" app-wide, shared across tabs — Heute and Karte
-/// both show this one, whichever tab it was chosen from.
+/// Which route is "in focus" app-wide — the Karte tab shows this one, and it is
+/// the one the app reopens on.
 ///
-/// There is one navigation path now rather than two. Routen and Verlauf used to
+/// There is one navigation path rather than two. Routen and Verlauf used to
 /// keep a stack each so that a tour pushed from one list did not appear on top
 /// of the other; they are one list with two sections now, so there is one stack
 /// and nothing to keep apart.
 @Observable
 @MainActor
 final class RouteFocus {
-    enum Tab: Hashable { case today, map, tours, more }
+    enum Tab: Hashable { case tours, map, more }
 
-    /// Heute, because that is the tour being driven. The app used to open on
-    /// the list of tours, which put a document browser in front of a driver who
-    /// has exactly one document.
-    var tab: Tab = .today
+    var tab: Tab = .tours
     var currentRouteID: UUID?
     var toursPath = NavigationPath()
 
@@ -148,7 +145,24 @@ final class RouteFocus {
 
     func focus(_ route: Route) {
         currentRouteID = route.id
+        UserDefaults.standard.set(route.id.uuidString, forKey: Self.lastOpenedKey)
     }
+
+    /// The tour the app was last looking at, remembered across launches.
+    ///
+    /// This is what makes a second tab unnecessary. The app used to forget, so
+    /// every launch put the driver on a list of tours with one row on it and
+    /// charged them a tap to get to the screen they spend the shift on — and
+    /// the answer to that was briefly a whole "Heute" tab, which rendered the
+    /// same view as tapping that row and so was two tabs for one screen. What
+    /// was actually missing was not a destination. It was the app remembering
+    /// where it was.
+    static var lastOpenedRouteID: UUID? {
+        UserDefaults.standard.string(forKey: lastOpenedKey)
+            .flatMap(UUID.init(uuidString:))
+    }
+
+    private static let lastOpenedKey = "lastOpenedRouteID"
 
     /// Takes the driver from a row in the stop list to that stop's pin on the
     /// map — the other half of `reveal(stop:of:)`.
@@ -158,7 +172,7 @@ final class RouteFocus {
     /// around it" meant switching tabs and then hunting for the right pin among
     /// thirty identical ones.
     func showOnMap(stop: Stop, of route: Route) {
-        currentRouteID = route.id
+        focus(route)
         mapStopID = stop.id
         tab = .map
     }
@@ -166,21 +180,13 @@ final class RouteFocus {
     /// Opens the route's stop list and scrolls to one stop — what the map's
     /// preview card does when you want to see a pin in context.
     ///
-    /// An active tour is the one Heute is already showing, so that is where it
-    /// goes, with no stack to push. A finished tour has no home but the archive,
-    /// so that one is pushed onto Touren.
+    /// Assigned rather than appended: the stack may already be showing a
+    /// different tour, and pushing a second one onto it would put two tour
+    /// screens in a row behind one Back button.
     func reveal(stop: Stop, of route: Route) {
-        currentRouteID = route.id
+        focus(route)
         revealStopID = stop.id
-        if route.status == .completed {
-            toursPath = NavigationPath([route.id])
-            tab = .tours
-        } else {
-            // Cleared, not pushed. Heute renders the focused active tour at the
-            // root of its own tab; leaving a stale detail screen on the Touren
-            // stack would mean the driver's Back button led somewhere they had
-            // never been.
-            tab = .today
-        }
+        toursPath = NavigationPath([route.id])
+        tab = .tours
     }
 }
