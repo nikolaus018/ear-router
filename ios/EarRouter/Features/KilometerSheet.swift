@@ -83,12 +83,20 @@ struct KilometerSheet: View {
 
     // MARK: - Pieces
 
+    /// Wide enough for the longest of the two field names at whatever size
+    /// they are drawn.
+    @ScaledMetric(relativeTo: .subheadline) private var titleWidth: CGFloat = 34
+
     private func field(_ title: String, text: Binding<String>, field: Field) -> some View {
         HStack(spacing: 12) {
             Text(title)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 34, alignment: .leading)
+                // Scaled, not a fixed 34: at an accessibility text size the
+                // word did not come close to fitting, and the label naming
+                // which odometer reading this is was clipped to its first
+                // letter or two.
+                .frame(width: titleWidth, alignment: .leading)
 
             TextField("0", text: text)
                 .font(.system(size: 22, weight: .semibold, design: .monospaced))
@@ -106,14 +114,23 @@ struct KilometerSheet: View {
         .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 14))
     }
 
+    /// The answer, at a size that follows the user's text setting. It was a
+    /// hard-coded 40pt, so on a phone where every other word had grown by half
+    /// the one number the screen exists to show had not moved at all.
+    @ScaledMetric(relativeTo: .largeTitle) private var readoutBase: CGFloat = 40
+    private var readoutSize: CGFloat { min(readoutBase, 64) }
+
     private var result: some View {
         VStack(spacing: 6) {
-            Text("GEFAHREN")
-                .font(.caption2.weight(.semibold))
+            // Sentence case, no tracking. Tracked all-caps is a web idiom;
+            // nothing on this phone labels a readout that way, and the app
+            // stopped doing it on the tour card for the same reason.
+            Text("Gefahren")
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(.secondary)
 
             Text(drivenLabel)
-                .font(.system(size: 40, weight: .bold, design: .monospaced))
+                .font(.system(size: readoutSize, weight: .bold, design: .monospaced))
                 .foregroundStyle(driven == nil ? Color.secondary : Color.accentColor)
                 .textSelection(.enabled)
                 .contentTransition(.numericText())

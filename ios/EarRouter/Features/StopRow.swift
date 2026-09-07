@@ -231,7 +231,12 @@ struct StopRow: View {
 
     @ViewBuilder
     private var control: some View {
-        let target = min(42 * controlScale, 58)
+        // 44, not 42. Apple's minimum touch target is 44×44 points, and this
+        // is the app's most-pressed control — thirty times a tour, one-handed,
+        // in the rain. It had been trimmed to 42 to buy the address two more
+        // points of width, which is exactly the trade the guideline exists to
+        // stop you making.
+        let target = min(44 * controlScale, 60)
         let disc = min(27 * controlScale, 36)
 
         if let onToggleDelivered {

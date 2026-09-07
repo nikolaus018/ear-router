@@ -125,13 +125,19 @@ struct SettingsRow: View {
     let title: String
     var detail: String?
 
+    /// The tile grows with the text, the way Settings.app's does. Held at a
+    /// fixed 29 it turned into a speck beside 34pt type at an accessibility
+    /// size — and the tile is the thing a driver aims at after the first week,
+    /// so it is the last part of the row that should shrink away.
+    @ScaledMetric(relativeTo: .body) private var tile: CGFloat = 29
+
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: tile * 0.52, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 29, height: 29)
-                .background(tint, in: .rect(cornerRadius: 7))
+                .frame(width: tile, height: tile)
+                .background(tint, in: .rect(cornerRadius: tile * 0.24))
 
             VStack(alignment: .leading, spacing: 1) {
                 // `Color.primary`, not `.primary`. The hierarchical styles

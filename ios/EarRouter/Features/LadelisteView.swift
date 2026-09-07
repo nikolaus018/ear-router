@@ -68,6 +68,9 @@ struct LadelisteView: View {
         }
     }
 
+    /// Wide enough for a two-digit count at whatever size the digits are drawn.
+    @ScaledMetric(relativeTo: .title3) private var qtyWidth: CGFloat = 40
+
     private func row(_ item: PaketItem) -> some View {
         let on = isOn(item)
         return Button {
@@ -77,7 +80,11 @@ struct LadelisteView: View {
                 Text("\(item.qty)")
                     .font(.title3.bold().monospacedDigit())
                     .foregroundStyle(on ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.accentColor))
-                    .frame(width: 40, alignment: .leading)
+                    // Scaled, not a fixed 40. The column holds `.title3` digits,
+                    // which are half again as wide at an accessibility text
+                    // size — so a van carrying twelve of something showed a
+                    // clipped "1" where the count should be.
+                    .frame(width: qtyWidth, alignment: .leading)
 
                 Text(item.label)
                     .font(.body.weight(.medium))

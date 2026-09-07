@@ -208,8 +208,11 @@ struct StockwerkForm: View {
         } label: {
             Text(value)
                 .font(.subheadline.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
+                // 44 points tall at the smallest, which is Apple's minimum
+                // touch target. Sized by its padding alone it came out at about
+                // 40 — and this is the button a driver presses in a stairwell,
+                // one-handed, immediately after carrying a meal up it.
+                .frame(maxWidth: .infinity, minHeight: 44)
                 .foregroundStyle(picked ? Color.accentColor : Color.primary)
                 .background(quickPickFill(picked), in: .rect(cornerRadius: 10))
         }

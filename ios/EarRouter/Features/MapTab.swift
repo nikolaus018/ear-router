@@ -373,9 +373,17 @@ struct MapTab: View {
                 Button {
                     LocationAuthorization.shared.openSettings()
                 } label: {
-                    MapNotice(text: "Standort aus — in Einstellungen erlauben", busy: false)
+                    MapNotice(
+                        text: "Standort aus — in Einstellungen erlauben",
+                        compact: "Standort aus",
+                        busy: false)
                 }
                 .buttonStyle(.plain)
+                // The full sentence, whichever one is drawn: the short form
+                // exists to keep the pill off the map, not to tell a VoiceOver
+                // user less about what tapping it does.
+                .accessibilityLabel("Standort aus")
+                .accessibilityHint("Doppeltippen, um den Standort in den Einstellungen zu erlauben")
             }
         }
         .padding(.top, 8)
@@ -679,12 +687,12 @@ private struct RouteMapCanvas: View {
             }
         }
         .mapStyle(style.mapStyle)
-        // System blue, not the app tint. `UserAnnotation` and the location
-        // button inherit the app tint, which would make the driver's own
-        // position indigo on a map where every other indigo thing is a stop or
-        // the route. Blue is what a user-location dot is on every map anyone
-        // has ever used, and the markers set their own tint so nothing else
-        // moves.
+        // Explicitly blue rather than inherited, even though the app's accent
+        // is now blue too. This is the colour a user-location dot is on every
+        // map anyone has ever used — the same pairing Apple Maps ships, where
+        // the route and the dot are both blue and the white ring is what tells
+        // them apart — and stating it here means a future change of accent
+        // cannot quietly recolour the driver's own position.
         .tint(.blue)
         .mapControls {
             MapUserLocationButton()
@@ -791,7 +799,15 @@ struct MapFocusRequest: Equatable {
 /// interrupt it, and only for something the driver can act on or is waiting for.
 private struct MapNotice: View {
     let text: String
+    /// The short form, used once the driver's text size makes the long one a
+    /// blob. This pill sits over the map and sizes to its sentence, so at an
+    /// accessibility size the permission notice grew to four lines and covered
+    /// a quarter of the tour — a banner about a button the driver is not using
+    /// hiding the route they are.
+    var compact: String?
     let busy: Bool
+
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         HStack(spacing: 8) {
@@ -801,9 +817,10 @@ private struct MapNotice: View {
                 Image(systemName: "location.slash.fill")
                     .foregroundStyle(Color.attention)
             }
-            Text(text)
+            Text(typeSize.isAccessibilitySize ? (compact ?? text) : text)
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(Color.primary)
+                .lineLimit(3)
                 // Wraps inside the space it is given rather than pushing the
                 // pill wider than that space — which is the whole point of the
                 // insets the caller puts around it.

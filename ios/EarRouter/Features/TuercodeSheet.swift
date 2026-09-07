@@ -13,6 +13,15 @@ struct TuercodeSheet: View {
     @State private var input = ""
     @FocusState private var focused: Bool
 
+    /// Both the field and the answer follow the user's text setting. They were
+    /// hard-coded point sizes, so on a phone with the text turned up the one
+    /// screen whose entire content is two strings of characters was the one
+    /// screen that ignored the setting.
+    @ScaledMetric(relativeTo: .title2) private var inputBase: CGFloat = 24
+    @ScaledMetric(relativeTo: .largeTitle) private var readoutBase: CGFloat = 40
+    private var inputSize: CGFloat { min(inputBase, 40) }
+    private var readoutSize: CGFloat { min(readoutBase, 64) }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 20) {
@@ -26,7 +35,7 @@ struct TuercodeSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 TextField("z. B. EN?V", text: $input)
-                    .font(.system(size: 24, weight: .semibold, design: .monospaced))
+                    .font(.system(size: inputSize, weight: .semibold, design: .monospaced))
                     .multilineTextAlignment(.center)
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
@@ -37,11 +46,12 @@ struct TuercodeSheet: View {
                     .focused($focused)
 
                 VStack(spacing: 6) {
-                    Text("CODE")
-                        .font(.caption2.weight(.semibold))
+                    // Sentence case: see `KilometerSheet`.
+                    Text("Code")
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Text(output)
-                        .font(.system(size: 40, weight: .bold, design: .monospaced))
+                        .font(.system(size: readoutSize, weight: .bold, design: .monospaced))
                         .foregroundStyle(Color.accentColor)
                         .textSelection(.enabled)
                         .contentTransition(.numericText())
