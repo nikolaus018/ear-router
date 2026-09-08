@@ -51,6 +51,22 @@ struct StopRow: View {
     var stockwerk: String?
     /// The stop the driver is on: the one row in the list with a solid badge.
     var isNext: Bool = false
+    /// This stop is the one the card at the bottom of the screen is spelling
+    /// out in full — so the row stops spelling it out a second time.
+    ///
+    /// The card is not a summary of this row; it is the same six facts in the
+    /// same order, set in the same fonts, floating a few points below it. On a
+    /// tour where the next stop happens to be in view, the screen showed one
+    /// customer's name, address, Paket, Stockwerk and Notiz twice, the upper
+    /// copy sliced off mid-row by the lower one — and the two copies did not
+    /// even break their lines in the same places, because the row keeps 90
+    /// points back for its two controls and the card does not.
+    ///
+    /// So the row keeps what only a row can say — where this stop sits in the
+    /// sequence, and how far it is to the next one — and hands the errand
+    /// itself to the card. Everything comes back the moment the card is not
+    /// there: a filtered list, or a tour already finished.
+    var onCard: Bool = false
     var onToggleDelivered: (() -> Void)?
     /// Switches a fixed point in or out of this tour. `nil` on a customer,
     /// which is not something a tour can decide to skip.
@@ -178,20 +194,20 @@ struct StopRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let paket = StopFacts.paket(stop.paket, dimmed: dimmed) {
+            if !cardHasErrand, let paket = StopFacts.paket(stop.paket, dimmed: dimmed) {
                 paket
                     .font(.subheadline)
                     .padding(.top, 2)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let floor = StopFacts.floor(stockwerk, dimmed: dimmed) {
+            if !cardHasErrand, let floor = StopFacts.floor(stockwerk, dimmed: dimmed) {
                 floor
                     .font(.subheadline)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let notiz = stop.notiz?.trimmed, !notiz.isEmpty {
+            if !cardHasSmallPrint, let notiz = stop.notiz?.trimmed, !notiz.isEmpty {
                 StopFacts.note(notiz)
                     .font(.subheadline)
                     .padding(.top, 2)
@@ -218,11 +234,11 @@ struct StopRow: View {
     private var meta: Text? {
         var runs: [Text] = []
 
-        if sameDoorCount > 1 {
+        if sameDoorCount > 1, !cardHasSmallPrint {
             runs.append(StopFacts.run("person.2.fill", "\(sameDoorCount) an dieser Tür"))
         }
 
-        if let precision = stop.precision {
+        if let precision = stop.precision, !cardHasSmallPrint {
             // The short form — "≈ Straße" — not the full sentence. The sentence
             // explaining what an approximate pin means belongs where the driver
             // does something about it: the card at the bottom, and the editor.
@@ -333,6 +349,23 @@ struct StopRow: View {
         stop.excluded || (stop.delivered && stop.kind == .customer)
     }
 
+    /// The errand itself — the Paket and the Stockwerk — is the card's to say.
+    /// It says both at every text size.
+    private var cardHasErrand: Bool { onCard }
+
+    /// The rest of what the card carries — the note, the door count, the
+    /// approximate-pin warning — is the card's only while the card is willing
+    /// to hold it.
+    ///
+    /// At an accessibility text size the card goes brief and keeps just the two
+    /// questions it cannot delegate, on the stated understanding that the
+    /// address, the note, the door count and the precision warning "stay on the
+    /// row directly above it" (see `NowCard.details`). If the row also dropped
+    /// them, the driver who has turned the type up would be the one driver for
+    /// whom "wenn Kd nicht anwesend, abgeben bei Sonja DOMBROWSKI (Tuer 7)" is
+    /// on no screen at all.
+    private var cardHasSmallPrint: Bool { onCard && !typeSize.isAccessibilitySize }
+
     private var title: String {
         stop.kind == .customer ? (stop.kunde ?? "Stopp") : stop.fixedTitle
     }
@@ -375,6 +408,7 @@ struct StopListRow: View {
     var number: Int?
     var stockwerk: String?
     var isNext: Bool = false
+    var onCard: Bool = false
     let onTap: () -> Void
     let onToggleDelivered: () -> Void
     let onDelete: () -> Void
@@ -394,6 +428,7 @@ struct StopListRow: View {
             number: number,
             stockwerk: stockwerk,
             isNext: isNext,
+            onCard: onCard,
             onToggleDelivered: isCustomer ? onToggleDelivered : nil,
             onToggleExcluded: isCustomer ? nil : onToggleExcluded,
             onNavigate: onNavigate)

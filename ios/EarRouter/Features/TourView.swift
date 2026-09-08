@@ -296,6 +296,7 @@ struct TourView: View {
             number: snapshot.number(stop),
             stockwerk: floors[stop.id],
             isNext: snapshot.nextOpen?.id == stop.id,
+            onCard: cardStop(snapshot)?.id == stop.id,
             onTap: { tapped(stop) },
             onToggleDelivered: { setDelivered(stop, !stop.delivered) },
             onDelete: { deletingStop = stop },
@@ -311,6 +312,18 @@ struct TourView: View {
 
     // MARK: - What to do now
 
+    /// The stop the card is holding, or `nil` when there is no card.
+    ///
+    /// Asked in two places that must never disagree: the card itself, and the
+    /// row for that same stop — which drops the errand from its own text
+    /// precisely because the card is about to repeat it. Read from one function
+    /// so a filtered list cannot end up with a stripped row and no card under
+    /// it to hold what was stripped.
+    private func cardStop(_ snapshot: RouteSnapshot) -> Stop? {
+        guard search.isEmpty, route.status == .active else { return nil }
+        return snapshot.nextOpen
+    }
+
     /// The bottom slot: the stop being delivered, or the button that ends the
     /// tour, or nothing at all.
     ///
@@ -319,14 +332,7 @@ struct TourView: View {
     /// card would cover a third of the results they came for.
     @ViewBuilder
     private func bottomAction(_ snapshot: RouteSnapshot, floors: [UUID: String]) -> some View {
-        if !search.isEmpty || route.status != .active {
-            // Nothing at all on a finished tour. The slot is "what to do now",
-            // and a tour in the archive is not something to do — it showed a
-            // live "Navigation / Geliefert" card for a day's work already done,
-            // over a list already struck through, because it was gated on there
-            // being an undelivered stop rather than on the tour being open.
-            EmptyView()
-        } else if let next = snapshot.nextOpen {
+        if let next = cardStop(snapshot) {
             NowCard(
                 stop: next,
                 number: snapshot.number(next),
@@ -335,7 +341,14 @@ struct TourView: View {
                 onNavigate: { open(next) },
                 onDelivered: { setDelivered(next, true) },
                 onOpen: { editingStop = next },
-                width: max(0, screenSize.width - 24))
+                width: max(0, screenSize.width - NowCard.screenInset * 2))
+        } else if !search.isEmpty || route.status != .active {
+            // Nothing at all on a finished tour. The slot is "what to do now",
+            // and a tour in the archive is not something to do — it showed a
+            // live "Navigation / Geliefert" card for a day's work already done,
+            // over a list already struck through, because it was gated on there
+            // being an undelivered stop rather than on the tour being open.
+            EmptyView()
         } else if snapshot.isComplete && route.status == .active {
             // Finishing the tour is deliberately still the driver's call (see
             // `RouteStore.setDelivered`), but the moment it becomes the only

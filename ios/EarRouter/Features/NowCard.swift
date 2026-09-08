@@ -9,11 +9,20 @@ import SwiftUI
 /// above a list row describing the same customer, so the screen showed the same
 /// stop twice, four rows apart, in two different sizes.
 ///
-/// Pinning it to the bottom fixes both at once and is how this phone has always
-/// handled "the thing you are doing now, while you look at something else":
-/// the Now Playing bar, the route card in Maps, the call banner. The list above
-/// goes back to being one uninterrupted sequence — which is what a tour is —
-/// and the card becomes chrome rather than a row that got promoted.
+/// Pinning it to the bottom is how this phone has always handled "the thing you
+/// are doing now, while you look at something else": the Now Playing bar, the
+/// route card in Maps, the call banner. The list above goes back to being one
+/// uninterrupted sequence — which is what a tour is — and the card becomes
+/// chrome rather than a row that got promoted.
+///
+/// It did not, on its own, fix the double. It moved it: the card came to rest
+/// directly *over* the row for the same customer, name above name and address
+/// above address, the row sliced off mid-sentence by the card's top edge — and
+/// the two copies broke their lines in different places, because the row holds
+/// 90 points back for its two controls and the card holds none. That is
+/// `StopRow.onCard`: the row for the stop this card is holding stops repeating
+/// the errand, and keeps only what a row can say that a card cannot — where the
+/// stop sits in the sequence, and how far it is to the next one.
 ///
 /// It also stopped asking for the floor. That question is asked automatically
 /// the moment a delivery is ticked off (see `StockwerkStore.shouldAsk`), which
@@ -41,9 +50,33 @@ struct NowCard: View {
     /// card sizes to whichever customer happens to have the longest name.
     var width: CGFloat = 320
 
-    /// The badge grows with the user's text size. A driver who has turned the
-    /// type up is usually the same driver who wants a bigger target.
-    @ScaledMetric(relativeTo: .headline) private var badge: CGFloat = 30
+    /// How far the card is held off each edge of the screen, and how much room
+    /// it keeps inside its own border.
+    ///
+    /// Both are the list's numbers rather than numbers of the card's own. An
+    /// inset-grouped `List` draws its block 16 points off each edge of the
+    /// screen and sets its rows 16 points inside that, so a card at 16/16 has
+    /// its border exactly over the block's border and its badge exactly over
+    /// the badges in the column above it.
+    ///
+    /// At 12 and 14 it had neither: the card stood four points proud of the
+    /// block on both sides, and its number sat two points to the right of every
+    /// number in the list. Two rounded rectangles missing each other by a hair,
+    /// and two blue discs bearing the same digit in not quite the same column —
+    /// which is the kind of thing that reads as wrong long before anybody can
+    /// say what it is.
+    static let screenInset: CGFloat = 16
+    private static let contentInset: CGFloat = 16
+
+    /// The same badge the row draws, at the same size, tracking the same text
+    /// metric.
+    ///
+    /// It was 30 against the row's 26, which put two blue discs bearing the
+    /// same number in the same column at two sizes with their left edges five
+    /// points apart. The card is already distinguished from the row by
+    /// everything else it does — a material, a shadow, a headline, two buttons.
+    /// It does not also need a bigger number.
+    @ScaledMetric(relativeTo: .body) private var badge: CGFloat = 26
 
     /// The two buttons do not survive an accessibility text size side by side —
     /// they had half a phone each for a word and an icon — so they stack.
@@ -66,7 +99,7 @@ struct NowCard: View {
             headline
             actions
         }
-        .padding(14)
+        .padding(Self.contentInset)
         .frame(width: width, alignment: .leading)
         .symbolRenderingMode(.monochrome)
         // A material and a shadow, not glass. Glass is the right treatment for
@@ -81,7 +114,7 @@ struct NowCard: View {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.14), radius: 14, y: 4)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, Self.screenInset)
     }
 
     // MARK: - Who, where, and what to carry
@@ -89,7 +122,7 @@ struct NowCard: View {
     private var headline: some View {
         HStack(alignment: .top, spacing: 10) {
             Text(number.map(String.init) ?? "•")
-                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .font(.footnote.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.white)
                 .frame(width: badge, height: badge)
                 .background(Circle().fill(Color.accentColor))
