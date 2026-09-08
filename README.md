@@ -19,8 +19,9 @@ third-party dependencies.
 | | |
 |---|---|
 | `Model/` | `Route` and `Stop` — the whole persistent store — plus its versioned schema |
+| `Model/Districts` | Vienna's 23 districts, and `Postcodes` — any Austrian PLZ is a valid stop |
 | `Services/AddressText` | Address normalisation, Stiege/Parzelle sub-addresses, match keys |
-| `Services/Geocoder` | Wien OGD → Nominatim cascade, throttled, with wrong-district detection |
+| `Services/Geocoder` | Wien OGD → Nominatim cascade, throttled, with wrong-district detection. The city register is only asked about Vienna postcodes; anywhere else in Austria is Nominatim alone |
 | `Services/GeocodeCache` | Resolved addresses, and the addresses known not to exist |
 | `Services/OSRMClient` | `/route` and `/trip`, with a public-server fallback |
 | `Services/RouteOptimizer` | Stop ordering and route geometry |

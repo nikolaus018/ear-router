@@ -48,8 +48,11 @@ struct StopEditorSheet: View {
     @State private var loaded = false
 
     @FocusState private var focusedField: Field?
+    /// What the postcode field held when the driver tapped into it — see
+    /// `plzField`.
+    @State private var plzBeforeEditing = ""
 
-    private enum Field: Hashable { case kunde, strasse, paket, notiz }
+    private enum Field: Hashable { case kunde, strasse, plz, paket, notiz }
 
     private var isEditing: Bool { stop != nil }
 
@@ -77,14 +80,9 @@ struct StopEditorSheet: View {
                         .autocorrectionDisabled()
                         .submitLabel(.next)
                         .focused($focusedField, equals: .strasse)
-                        .onSubmit { focusedField = .paket }
+                        .onSubmit { focusedField = .plz }
                         .limited(to: FieldLimits.strasse, text: $strasse)
-                    Picker("Bezirk", selection: $plz) {
-                        Text("Bitte wählen").tag("")
-                        ForEach(Districts.all) { d in
-                            Text("\(d.plz) — \(d.label)").tag(d.plz)
-                        }
-                    }
+                    plzField
                 } header: {
                     Text("Adresse")
                 } footer: {
@@ -239,6 +237,64 @@ struct StopEditorSheet: View {
         }
     }
 
+    /// The postcode: typed, with the 23 Vienna districts one tap away.
+    ///
+    /// This was a `Picker` over those 23 and nothing else, which is what made
+    /// the app Vienna-only from the driver's side — there was no way to *enter*
+    /// a Gerasdorf address, whatever the geocoder might have done with one. A
+    /// plain field takes any Austrian postcode, and the menu keeps the tour's
+    /// everyday districts to a single tap rather than four digits.
+    ///
+    /// The district's name is echoed beside the field rather than left to the
+    /// footer: a mistyped "1120" for "1210" is two real districts on opposite
+    /// sides of the city, and "12. Meidling" appearing where the driver
+    /// expected Floridsdorf is the only thing on this screen that catches it.
+    private var plzField: some View {
+        LabeledContent("PLZ") {
+            HStack(spacing: 10) {
+                if let name = Districts.name(for: plz) {
+                    Text(name)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                TextField("1210", text: $plz)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.trailing)
+                    .focused($focusedField, equals: .plz)
+                    .limited(to: 4, text: $plz)
+                    .frame(width: 58)
+                    // Emptied on focus, put back if nothing was typed.
+                    //
+                    // The field arrives prefilled with four digits and is
+                    // capped at four, so tapping it and typing "2201" did
+                    // nothing at all — every keystroke was over the limit, and
+                    // the driver had to work out that four backspaces came
+                    // first. Clearing on focus is what a stepper-sized numeric
+                    // field does everywhere else; restoring on an untouched
+                    // blur is what keeps a stray tap from wiping the district.
+                    .onChange(of: focusedField) { was, now in
+                        if now == .plz {
+                            plzBeforeEditing = plz
+                            plz = ""
+                        } else if was == .plz, plz.isEmpty {
+                            plz = plzBeforeEditing
+                        }
+                    }
+                Menu {
+                    ForEach(Districts.all) { d in
+                        Button("\(d.plz) — \(d.label)") { plz = d.plz }
+                    }
+                } label: {
+                    Image(systemName: "list.bullet")
+                        .frame(width: 30, height: 30)
+                        .contentShape(.rect)
+                }
+                .accessibilityLabel("Wiener Bezirk wählen")
+            }
+        }
+    }
+
     @ViewBuilder
     private var addressFooter: some View {
         if droppedPin != nil {
@@ -260,7 +316,7 @@ struct StopEditorSheet: View {
     }
 
     private var canSave: Bool {
-        !kunde.trimmed.isEmpty && !strasse.trimmed.isEmpty && Districts.isValid(plz)
+        !kunde.trimmed.isEmpty && !strasse.trimmed.isEmpty && Postcodes.isValid(plz)
     }
 
     private func load() {

@@ -19,6 +19,11 @@ struct GeocodeResult: Sendable {
 /// caught up on. Nominatim stays as the fallback for anything it does not
 /// recognize. An address neither can find falls through to manual pin-drop.
 ///
+/// Only for a Vienna postcode, though. A tour that runs past the Stadtgrenze
+/// — Gerasdorf, Schwechat, Klosterneuburg — is geocoded by Nominatim alone,
+/// because the city register has never heard of those streets and asking it
+/// costs three round trips to be told so.
+///
 /// An actor because of the Nominatim throttle: the usage policy is one request
 /// per second from a *client*, and a bulk import firing thirty concurrent
 /// lookups would blow straight through it.
@@ -48,13 +53,19 @@ actor Geocoder {
     /// which is by far the likeliest reason a lookup fails, and turns a vague
     /// pin into a one-tap fix.
     func geocode(strasse: String, plz: String) async throws -> GeocodeResult {
-        let originalQuery = "\(strasse.trimmed), \(plz) Wien, Österreich"
+        // "1210 Wien, Österreich" inside the city, "2201 Österreich" outside
+        // it. Not cosmetic: Nominatim's search is fuzzy and "Wien" is a strong
+        // enough token to carry a query on its own, so a Gerasdorf address
+        // asked for with "Wien" on the end came back as a confident pin in
+        // Vienna. See `Postcodes.placeSuffix`.
+        let place = Postcodes.placeSuffix(for: plz)
+        let originalQuery = "\(strasse.trimmed), \(place)"
         // Cached on the *normalized* form, not the raw input: "Hauptstr. 5",
         // "Hauptstrasse 5" and "Hauptstraße  5" are one address written three
         // ways and all resolve identically, so keying on the raw text would
         // pay a throttled round trip again for each spelling.
         let normalized = AddressText.normalize(strasse)
-        let key = "\(normalized.lowercased()), \(plz) wien, österreich"
+        let key = "\(normalized.lowercased()), \(place.lowercased())"
 
         if let hit = await GeocodeCache.shared.lookup(key) {
             // A cached *district centroid* is the app admitting it never found
@@ -85,22 +96,31 @@ actor Geocoder {
         // throwing when a call fails. A cancelled lookup would otherwise walk
         // straight past them into the throttled Nominatim calls it was
         // cancelled to avoid.
-        try Task.checkCancellation()
-        if let hit = await wienOGDGeocode(strasse: strasse, plz: plz) {
-            await GeocodeCache.shared.store(
-                key, lat: hit.lat, lon: hit.lon,
-                displayName: hit.displayName, precision: hit.precision)
-            return hit
-        }
+        // Both register phases are skipped outside the city. `data.wien.gv.at`
+        // is the *city's* building register: it has never heard of Gerasdorf,
+        // so asking is three round trips that can only answer "no" — and
+        // `districtHint`, which asks the register the same question without
+        // the postcode, would answer them with whichever Viennese street
+        // happens to share the name.
+        if Postcodes.isVienna(plz) {
+            try Task.checkCancellation()
+            if let hit = await wienOGDGeocode(strasse: strasse, plz: plz) {
+                await GeocodeCache.shared.store(
+                    key, lat: hit.lat, lon: hit.lon,
+                    displayName: hit.displayName, precision: hit.precision)
+                return hit
+            }
 
-        // The register did not have this address in the district it was filed
-        // under. Before spending throttled Nominatim calls — and before ending
-        // up at a district-centre pin the driver cannot explain — ask the
-        // register the same question without the district.
-        try Task.checkCancellation()
-        if let actual = await districtHint(normalized: normalized, plz: plz) {
-            log.info("address exists in a different district: \(plz) → \(actual)")
-            throw AppError.wrongDistrict(strasse.trimmed, actualPlz: actual)
+            // The register did not have this address in the district it was
+            // filed under. Before spending throttled Nominatim calls — and
+            // before ending up at a district-centre pin the driver cannot
+            // explain — ask the register the same question without the
+            // district.
+            try Task.checkCancellation()
+            if let actual = await districtHint(normalized: normalized, plz: plz) {
+                log.info("address exists in a different district: \(plz) → \(actual)")
+                throw AppError.wrongDistrict(strasse.trimmed, actualPlz: actual)
+            }
         }
 
         // Try the "{street} {housenumber}" form first — Viennese addresses are
@@ -113,12 +133,12 @@ actor Geocoder {
 
         try Task.checkCancellation()
         var result = try await nominatimSearchOne(
-            query: "\(simplified), \(plz) Wien, Österreich",
+            query: "\(simplified), \(place)",
             wantedStreet: wantedStreet, plz: plz)
 
         if result == nil, simplified != normalized {
             result = try await nominatimSearchOne(
-                query: "\(normalized), \(plz) Wien, Österreich",
+                query: "\(normalized), \(place)",
                 wantedStreet: wantedStreet, plz: plz)
         }
 
@@ -260,8 +280,9 @@ actor Geocoder {
         // `crs=EPSG:4326` is requested, but a service that ever ignored it
         // would hand back projected metres that look nothing like degrees —
         // fall through to Nominatim rather than storing a point in the middle
-        // of the ocean as a confident "exact" match.
-        guard Coordinates.isPlausible(lat: lat, lon: lon) else {
+        // of the ocean as a confident "exact" match. The tight box, not the
+        // country-wide one: this register only answers for Vienna.
+        guard Coordinates.isInVienna(lat: lat, lon: lon) else {
             log.warning("OGD returned out-of-range coordinates, ignoring")
             return nil
         }
@@ -510,11 +531,19 @@ actor Geocoder {
         // Nominatim's search is fuzzy and country-wide (`countrycodes=at` is
         // as narrow as it gets): a Viennese street name that also exists in
         // Graz or Linz can come back as a confident top hit hundreds of
-        // kilometres away. Treat anything outside the Vienna box as no match,
-        // so the caller falls through to its next strategy instead of pinning
-        // a stop in the wrong federal state.
-        guard Coordinates.isPlausible(lat: lat, lon: lon) else {
-            log.warning("Nominatim hit outside the Vienna area, ignoring")
+        // kilometres away. Treat anything outside the box as no match, so the
+        // caller falls through to its next strategy instead of pinning a stop
+        // in the wrong federal state.
+        //
+        // Which box depends on the postcode. A stop filed under 1210 is in
+        // Vienna or it is a mistake, and the tight box is what catches that;
+        // a stop filed under 2201 is legitimately somewhere this app cannot
+        // narrow down further than Austria, and the only sanity left to check
+        // is that the answer is on the right continent. The postcode is
+        // already verified against the hit's own `postcode` in `hitMatches`,
+        // which is the real filter outside the city.
+        guard Coordinates.isPlausible(lat: lat, lon: lon, forPlz: plz) else {
+            log.warning("Nominatim hit outside the expected area, ignoring")
             return nil
         }
 
@@ -537,17 +566,18 @@ actor Geocoder {
     /// silently. Requiring Nominatim's own structured `postcode` to equal what
     /// we asked for is what actually tells a real Vienna PLZ apart from that.
     private func districtCentroid(plz: String) async throws -> GeocodeResult? {
-        guard let hit = try await nominatimRawSearch("\(plz) Wien, Österreich") else {
-            return nil
-        }
+        let place = Postcodes.placeSuffix(for: plz)
+        guard let hit = try await nominatimRawSearch(place) else { return nil }
         guard hit.address?.postcode == plz,
               let lat = Double(hit.lat), let lon = Double(hit.lon),
-              Coordinates.isPlausible(lat: lat, lon: lon)
+              Coordinates.isPlausible(lat: lat, lon: lon, forPlz: plz)
         else { return nil }
 
         return GeocodeResult(
             lat: lat, lon: lon,
-            displayName: "\(plz) Wien (nur Bezirk, Adresse unbekannt)",
+            displayName: Postcodes.isVienna(plz)
+                ? "\(plz) Wien (nur Bezirk, Adresse unbekannt)"
+                : "\(plz) (nur Ort, Adresse unbekannt)",
             precision: .district)
     }
 

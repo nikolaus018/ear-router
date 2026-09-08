@@ -71,7 +71,7 @@ struct ImportReviewView: View {
             if kunde.isEmpty { return "Kein Kunde" }
             if strasse.isEmpty { return "Keine Straße" }
             if plz.isEmpty { return "Kein Bezirk" }
-            if !Districts.isValid(plz) { return "\(plz) ist kein Wiener Bezirk" }
+            if !Postcodes.isValid(plz) { return "\(plz) ist keine gültige PLZ" }
             do {
                 try RouteStore.validateCustomerFields(
                     kunde: kunde, strasse: strasse, paket: paket.nilIfEmpty,
@@ -354,7 +354,7 @@ struct ImportEntryEditor: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Field?
 
-    private enum Field: Hashable { case kunde, strasse, paket, notiz }
+    private enum Field: Hashable { case kunde, strasse, plz, paket, notiz }
 
     init(entry: ImportReviewView.Entry, onSave: @escaping (ImportReviewView.Entry) -> Void) {
         _entry = State(initialValue: entry)
@@ -378,19 +378,37 @@ struct ImportEntryEditor: View {
                         .autocorrectionDisabled()
                         .submitLabel(.next)
                         .focused($focused, equals: .strasse)
-                        .onSubmit { focused = .paket }
+                        .onSubmit { focused = .plz }
                         .limited(to: FieldLimits.strasse, text: $entry.strasse)
-                    Picker("Bezirk", selection: $entry.plz) {
-                        Text("Bitte wählen").tag("")
-                        // The file's own postcode, when it is not one of the 23.
-                        // Offered rather than silently dropped, so the picker
-                        // shows what is actually stored and the driver can see
-                        // what they are correcting.
-                        if !entry.plz.isEmpty && !Districts.isValid(entry.plz) {
-                            Text("\(entry.plz) — kein Wiener Bezirk").tag(entry.plz)
-                        }
-                        ForEach(Districts.all) { d in
-                            Text("\(d.plz) — \(d.label)").tag(d.plz)
+                    // A field rather than the picker over the 23 districts
+                    // this used to be: the office's list runs past the
+                    // Stadtgrenze, and a postcode it carries that the picker
+                    // had no row for could only be corrected by choosing a
+                    // Viennese district that was not where the customer lives.
+                    LabeledContent("PLZ") {
+                        HStack(spacing: 10) {
+                            if let name = Districts.name(for: entry.plz) {
+                                Text(name)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                            }
+                            TextField("1210", text: $entry.plz)
+                                .keyboardType(.numberPad)
+                                .multilineTextAlignment(.trailing)
+                                .focused($focused, equals: .plz)
+                                .limited(to: 4, text: $entry.plz)
+                                .frame(width: 58)
+                            Menu {
+                                ForEach(Districts.all) { d in
+                                    Button("\(d.plz) — \(d.label)") { entry.plz = d.plz }
+                                }
+                            } label: {
+                                Image(systemName: "list.bullet")
+                                    .frame(width: 30, height: 30)
+                                    .contentShape(.rect)
+                            }
+                            .accessibilityLabel("Wiener Bezirk wählen")
                         }
                     }
                 } header: {

@@ -125,8 +125,14 @@ extension Stop {
     /// arriving from a future schema migration would carry. That row used to
     /// put a marker in the Gulf of Guinea, drag the map's whole-route framing
     /// out to fit it, and hand the same point to the navigation app.
+    ///
+    /// Measured against the box the stop's own postcode implies, which for a
+    /// Vienna postcode is still the tight one. A stop filed under 1210 whose
+    /// point is in Graz is a bad row however wide the app's reach has become,
+    /// and now that the general box covers all of Austria this is the only
+    /// place left that says so.
     var coordinate: CLLocationCoordinate2D {
-        guard Coordinates.isPlausible(lat: lat, lon: lon) else {
+        guard Coordinates.isPlausible(lat: lat, lon: lon, forPlz: plz ?? "") else {
             return CLLocationCoordinate2D(
                 latitude: Coordinates.viennaCenter.lat,
                 longitude: Coordinates.viennaCenter.lon)
@@ -135,18 +141,27 @@ extension Stop {
     }
 
     /// "Straße, PLZ Wien" — the form handed to a maps app for navigation.
+    ///
+    /// "Wien" only where the postcode says Vienna. Appended to every address
+    /// whatever it carried, it sent Apple Maps looking for a Gerasdorf street
+    /// in the wrong municipality — and a maps app given a city has no reason
+    /// to doubt it. Outside the city the postcode goes on alone, which is what
+    /// the search field wants anyway.
     var fullAddress: String {
         let street = strasse?.trimmed ?? ""
         guard let plz, !plz.isEmpty else { return street }
-        return street.isEmpty ? "\(plz) Wien" : "\(street), \(plz) Wien"
+        let place = Postcodes.isVienna(plz) ? "\(plz) Wien" : plz
+        return street.isEmpty ? place : "\(street), \(place)"
     }
 
     /// "Straße, PLZ" — the address as the stop list shows it.
     ///
-    /// The city is dropped on purpose. Every stop on every tour is in Vienna,
-    /// so "Wien" carries no information here, and the six characters it costs
-    /// are exactly what pushed an ordinary address onto a second line beside
-    /// the row's two buttons. `fullAddress` keeps it, because a navigation app
+    /// The city is dropped on purpose. Nearly every stop on every tour is in
+    /// Vienna, so "Wien" carries no information here, and the six characters
+    /// it costs are exactly what pushed an ordinary address onto a second line
+    /// beside the row's two buttons. The postcode is what tells the handful
+    /// that are not apart — 2201 reads as "not in town" to anybody who drives
+    /// this round. `fullAddress` keeps the city, because a navigation app
     /// handed a bare street and postcode is a navigation app guessing.
     var listAddress: String {
         let street = strasse?.trimmed ?? ""

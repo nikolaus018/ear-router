@@ -185,8 +185,8 @@ enum RouteStore {
     ) async throws -> Stop {
         try validateCustomerFields(
             kunde: kunde, strasse: strasse, paket: paket, notiz: notiz)
-        guard Districts.isValid(plz) else {
-            throw AppError.message("Kein gültiger Wiener Bezirk: \(plz)")
+        guard Postcodes.isValid(plz) else {
+            throw AppError.message("Keine gültige Postleitzahl: \(plz)")
         }
         // `customerCount`, not `customerStops.count`: the answer is a number,
         // and going through the ordered list sorted the whole route to get it.
@@ -242,8 +242,8 @@ enum RouteStore {
     ) async throws {
         try validateCustomerFields(
             kunde: kunde, strasse: strasse, paket: paket, notiz: notiz)
-        guard Districts.isValid(plz) else {
-            throw AppError.message("Kein gültiger Wiener Bezirk: \(plz)")
+        guard Postcodes.isValid(plz) else {
+            throw AppError.message("Keine gültige Postleitzahl: \(plz)")
         }
 
         let addressChanged =
@@ -554,10 +554,10 @@ enum RouteStore {
 
         // --- geocode whatever is left ---
         // Invalid postcodes are split off first: no network call is worth
-        // spending on a PLZ that cannot possibly be a Vienna address.
+        // spending on a PLZ that cannot possibly be an Austrian address.
         var needsGeocode: [(CustomerJSON, Stop?)] = []
         for u in unresolved {
-            guard Districts.isValid(u.entry.plz) else {
+            guard Postcodes.isValid(u.entry.plz) else {
                 result.geocodeFailures.append(
                     (u.entry.kunde, u.entry.strasse, u.entry.plz))
                 continue

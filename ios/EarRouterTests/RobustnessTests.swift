@@ -53,9 +53,19 @@ struct UnusableCoordinateTests {
 
     @Test func aPointOutsideTheBoxFallsBackToo() {
         // Graz — a real place, and a real Nominatim answer for a Viennese
-        // street name that also exists there.
+        // street name that also exists there. Still a bad row, because this
+        // stop's own postcode says 1210.
         let c = stop(lat: 47.0707, lon: 15.4395).coordinate
         #expect(c.latitude == Coordinates.viennaCenter.lat)
+    }
+
+    /// The same point under a Graz postcode is simply a stop in Graz. The
+    /// tight box belongs to the postcode, not to the app.
+    @Test func aPointOutsideViennaUnderItsOwnPostcodeIsKept() {
+        let s = Stop(kind: .customer, kunde: "Test", strasse: "Teststraße 1", plz: "8010",
+                     lat: 47.0707, lon: 15.4395)
+        #expect(s.coordinate.latitude == 47.0707)
+        #expect(s.coordinate.longitude == 15.4395)
     }
 
     @Test func aRealViennaPointIsKept() {

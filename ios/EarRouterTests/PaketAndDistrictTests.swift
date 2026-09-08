@@ -53,6 +53,9 @@ struct DistrictTests {
         }
     }
 
+    /// `Districts.isValid` still means "is one of the 23" — it is what decides
+    /// whether the city's own register is worth asking. What it no longer
+    /// decides is whether a stop may be saved: see `PostcodeTests`.
     @Test func rejectsPostcodesThatAreNotVienna() {
         #expect(!Districts.isValid("8010"))   // Graz
         #expect(!Districts.isValid("1240"))   // does not exist
@@ -63,8 +66,8 @@ struct DistrictTests {
     @Test func everyDistrictCentreIsInsideTheViennaBox() {
         for d in Districts.all {
             #expect(
-                Coordinates.isPlausible(lat: d.lat, lon: d.lon),
-                "\(d.plz) \(d.name) is outside the plausible box")
+                Coordinates.isInVienna(lat: d.lat, lon: d.lon),
+                "\(d.plz) \(d.name) is outside the Vienna box")
         }
     }
 
@@ -78,7 +81,59 @@ struct DistrictTests {
         #expect(!Coordinates.isPlausible(lat: 16.37, lon: 48.20))   // swapped
         #expect(!Coordinates.isPlausible(lat: .nan, lon: 16.37))
         #expect(!Coordinates.isPlausible(lat: .infinity, lon: 16.37))
-        #expect(!Coordinates.isPlausible(lat: 47.07, lon: 15.44))   // Graz
+        #expect(!Coordinates.isPlausible(lat: 38.72, lon: -9.14))   // Lisbon
+    }
+
+    /// The country-wide box is what a stop outside Vienna is checked against,
+    /// and it has to actually contain the country: a Bregenz or Klagenfurt
+    /// address rejected here is one the driver cannot enter at all.
+    @Test func theRestOfAustriaIsPlausible() {
+        #expect(Coordinates.isPlausible(lat: 47.5031, lon: 9.7471))   // Bregenz
+        #expect(Coordinates.isPlausible(lat: 46.6247, lon: 14.3050))  // Klagenfurt
+        #expect(Coordinates.isPlausible(lat: 48.9767, lon: 14.9800))  // Gmünd, on the border
+        #expect(Coordinates.isPlausible(lat: 47.0707, lon: 15.4395))  // Graz
+    }
+}
+
+struct PostcodeTests {
+
+    @Test func acceptsEveryAustrianPostcodeShape() {
+        #expect(Postcodes.isValid("1210"))   // Floridsdorf
+        #expect(Postcodes.isValid("2201"))   // Gerasdorf bei Wien
+        #expect(Postcodes.isValid("8010"))   // Graz — no longer refused
+        #expect(Postcodes.isValid("9999"))
+    }
+
+    @Test func rejectsWhatCannotBeAPostcode() {
+        #expect(!Postcodes.isValid(""))
+        #expect(!Postcodes.isValid("0123"))    // no Austrian code starts with 0
+        #expect(!Postcodes.isValid("121"))
+        #expect(!Postcodes.isValid("12100"))
+        #expect(!Postcodes.isValid("1010 "))   // untrimmed
+        #expect(!Postcodes.isValid("12a0"))
+    }
+
+    @Test func viennaIsStillToldApart() {
+        #expect(Postcodes.isVienna("1210"))
+        #expect(!Postcodes.isVienna("2201"))
+        // A code in Vienna's own 1xxx block that is not one of the 23.
+        #expect(!Postcodes.isVienna("1240"))
+        #expect(Postcodes.isValid("1240"))
+    }
+
+    /// The suffix is what stops a Gerasdorf address being asked for "in Wien"
+    /// and answered with a confident pin in the 2nd district.
+    @Test func onlyViennaQueriesSayWien() {
+        #expect(Postcodes.placeSuffix(for: "1210") == "1210 Wien, Österreich")
+        #expect(Postcodes.placeSuffix(for: "2201") == "2201, Österreich")
+    }
+
+    @Test func theSanityBoxFollowsThePostcode() {
+        // Graz coordinates under a Vienna postcode: still a mistake.
+        #expect(!Coordinates.isPlausible(lat: 47.0707, lon: 15.4395, forPlz: "1210"))
+        // The same coordinates under Graz's own postcode: fine.
+        #expect(Coordinates.isPlausible(lat: 47.0707, lon: 15.4395, forPlz: "8010"))
+        #expect(Coordinates.isPlausible(lat: 48.2540, lon: 16.4000, forPlz: "1210"))
     }
 }
 

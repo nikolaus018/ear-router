@@ -142,7 +142,7 @@ struct AppError: LocalizedError, Sendable {
         let name = Districts.name(for: actualPlz) ?? actualPlz
         return AppError(
             message: "„\(query)“ liegt laut Adressregister in \(actualPlz) (\(name)), "
-                + "nicht im gewählten Bezirk.",
+                + "nicht in der gewählten PLZ.",
             recovery: .wrongDistrict(actualPlz: actualPlz))
     }
 }
