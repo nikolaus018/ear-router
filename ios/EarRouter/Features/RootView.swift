@@ -34,7 +34,10 @@ struct RootView: View {
     var body: some View {
         @Bindable var focus = focus
 
-        TabView(selection: $focus.tab) {
+        // Selection routed through `focus.select` rather than straight into
+        // `focus.tab`: choosing Karte is a request to be shown where you are,
+        // and that is not something a tab value can carry. See `RouteFocus`.
+        TabView(selection: Binding(get: { focus.tab }, set: { focus.select($0) })) {
             // `truck.box`, not `shippingbox`: a tour is a delivery *run*, and
             // `shippingbox` is already the glyph for the Lager stop in the list
             // and for the empty state. One symbol doing three jobs teaches the

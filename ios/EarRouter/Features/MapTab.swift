@@ -334,6 +334,7 @@ struct MapTab: View {
             style: style,
             selection: $selectedStopID,
             fitToken: fitToken,
+            followToken: focus.mapFollowToken,
             pointAt: $pointAt)
             .onChange(of: shapeKey, initial: true) { reconcile(route) }
             .onChange(of: styleKey) { rebuildPins(for: route) }
@@ -651,12 +652,24 @@ private struct RouteMapCanvas: View {
     /// Changes whenever the route's shape has been rebuilt and the view should
     /// frame the whole thing again.
     let fitToken: Int
+    /// Changes every time the driver chooses Karte from the tab bar — the cue
+    /// to put the camera back on them. See `RouteFocus.select`.
+    let followToken: Int
     /// One stop to zoom to, or `nil` for the ordinary "show the whole tour"
     /// behaviour. Cleared from in here when the driver asks for the whole route
     /// again — that button is how they take the camera back.
     @Binding var pointAt: MapFocusRequest?
 
     @State private var camera: MapCameraPosition = .automatic
+    /// The driver has not yet sent the camera anywhere of their own — so as
+    /// soon as Core Location has something to say, it belongs on them.
+    ///
+    /// Needed because the permission prompt and the first open of this tab are
+    /// the same moment on a fresh install: aiming at the driver right then aims
+    /// at nothing, and without this the map would settle on the whole tour and
+    /// stay there for the one session where the driver was told the app wanted
+    /// their location.
+    @State private var wantsDriver = true
 
     var body: some View {
         Map(position: $camera, selection: $selection) {
@@ -716,10 +729,44 @@ private struct RouteMapCanvas: View {
                 pointAt = nil
                 return
             }
+            // The camera is on the driver — because they opened this tab, or
+            // because they pressed the location button. Re-framing the tour
+            // would take it straight back off them, and the line finishes
+            // simplifying a moment after this tab opens, so that is exactly
+            // what it did. Unlike the stop request above this does not stand
+            // down after one: it lasts precisely as long as the camera is
+            // actually following, and the first pan ends it.
+            guard !camera.followsUserLocation else { return }
+            // And the same again for the half-second before the camera gets
+            // there. The first fix and the finished polyline arrive within a
+            // moment of each other in either order, so on the open where the
+            // line won the race it re-framed the tour *after* the camera had
+            // been put on the driver — and the driver got the whole of Vienna,
+            // intermittently, for no reason they could see.
+            guard !(wantsDriver && LocationAuthorization.shared.hasFix) else { return }
             fit()
+        }
+        // Choosing Karte from the tab bar. The map is opened standing in front
+        // of a Gemeindebau, to work out which of its four sides the entrance is
+        // on; the shape of the tour is not the question, and having to find and
+        // press the location button first is the difference between an answer
+        // and a fumble in the rain.
+        .onChange(of: followToken) {
+            wantsDriver = true
+            aimAtDriver()
+        }
+        // A fresh install answers the permission prompt *after* the map is
+        // already up, so the first fix arrives with nobody left asking for it.
+        // This is that ask, still standing — and it waits for the fix rather
+        // than for the permission, because a camera aimed at the driver the
+        // instant they tap "Allow" is aimed at nothing and stays that way.
+        .onChange(of: LocationAuthorization.shared.hasFix, initial: true) {
+            guard wantsDriver else { return }
+            aimAtDriver()
         }
         .onChange(of: pointAt, initial: true) { _, request in
             guard let request else { return }
+            wantsDriver = false
             // Close enough to read the street the door is on, wide enough to
             // see the stops either side of it.
             let span = 0.006
@@ -746,6 +793,7 @@ private struct RouteMapCanvas: View {
         .overlay(alignment: .bottomTrailing) {
             Button {
                 pointAt = nil
+                wantsDriver = false
                 fit()
             } label: {
                 // The `contentShape` is the whole 44pt disc, not just the
@@ -763,6 +811,23 @@ private struct RouteMapCanvas: View {
             .padding(.bottom, 14)
             .safeAreaPadding(.bottom)
         }
+    }
+
+    /// Puts the camera on the driver, if there is a driver to put it on.
+    ///
+    /// Gated on there being a fix rather than left to `fallback:` to sort out.
+    /// A `.userLocation` position reports itself as following whether or not
+    /// Core Location will ever answer it, so on a phone where the permission
+    /// was refused an ungated one would both sit on its fallback *and* switch
+    /// off the whole-route re-frame above — leaving the driver looking at
+    /// whatever `.automatic` makes of an empty map, permanently.
+    private func aimAtDriver() {
+        guard LocationAuthorization.shared.hasFix else { return }
+        // Assigned flat, not inside `withAnimation`. A tracking position is a
+        // *mode*, not a place, and there is nothing for SwiftUI to interpolate
+        // towards: wrapped in an animation the assignment was accepted —
+        // `followsUserLocation` came back true — and the map never moved.
+        camera = .userLocation(fallback: .automatic)
     }
 
     /// Frames the whole tour. Prefers the driven line over the pins, so the

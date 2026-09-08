@@ -23,6 +23,16 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
 
     private(set) var status: CLAuthorizationStatus = .notDetermined
 
+    /// Core Location has answered at least once this launch.
+    ///
+    /// The map needs this and not just `status`. A `.userLocation` camera
+    /// position resolves once, against whatever Core Location can say at that
+    /// instant — and the instant the driver taps "Allow While Using App" there
+    /// is no fix yet, so the camera quietly settles on its fallback and stays
+    /// there. Granting the permission is not the moment there is somewhere to
+    /// point the map; the first fix is.
+    private(set) var hasFix = false
+
     @ObservationIgnored private let manager = CLLocationManager()
 
     private override init() {
@@ -37,8 +47,32 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
     /// that could drift out of step with the real setting.
     func requestIfNeeded() {
         status = manager.authorizationStatus
-        guard status == .notDetermined else { return }
+        guard status == .notDetermined else {
+            askForAFix()
+            return
+        }
         manager.requestWhenInUseAuthorization()
+    }
+
+    /// One fix, not a stream. Nothing in this app tracks the driver as they
+    /// drive — `UserAnnotation` keeps the dot current on its own — this exists
+    /// only so that something is known to be *there*, for the map to point at.
+    ///
+    /// `startUpdatingLocation` and an immediate stop, rather than the
+    /// one-shot `requestLocation`: asked in the same breath as the permission
+    /// was granted, `requestLocation` regularly answers `locationUnknown`
+    /// instead of a fix and does not try again, so `hasFix` stayed false for
+    /// the whole session that needed it most.
+    private func askForAFix() {
+        guard !hasFix else { return }
+        guard status == .authorizedWhenInUse || status == .authorizedAlways else { return }
+        manager.startUpdatingLocation()
+    }
+
+    /// The first fix is in: nothing else in the app needs Core Location running.
+    private func stopWaiting() {
+        manager.stopUpdatingLocation()
+        hasFix = true
     }
 
     /// The driver said no, or the device will not allow it. Worth saying out
@@ -60,6 +94,24 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
         let updated = manager.authorizationStatus
         Task { @MainActor [weak self] in
             self?.status = updated
+            self?.askForAFix()
         }
     }
+
+    nonisolated func locationManager(
+        _ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]
+    ) {
+        guard !locations.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            self?.stopWaiting()
+        }
+    }
+
+    /// Required alongside `requestLocation()`, and deliberately silent. A fix
+    /// that does not arrive leaves `hasFix` false, which is exactly what the
+    /// map should act on — there is nothing to say to the driver that the
+    /// location button does not already say by refusing to light up.
+    nonisolated func locationManager(
+        _ manager: CLLocationManager, didFailWithError error: Error
+    ) {}
 }
