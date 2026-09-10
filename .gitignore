@@ -10,3 +10,7 @@ ios/build/
 ios/DerivedData/
 **/xcuserdata/
 .DS_Store
+
+# Local-only debug credentials for the Zusteller-Portal (Simulator/Debug
+# fallback in GourmetCredentialsStore) — never committed.
+.gourmet-debug-credentials

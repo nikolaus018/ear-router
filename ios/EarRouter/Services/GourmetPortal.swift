@@ -367,12 +367,31 @@ enum GourmetCredentialsStore {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
             let data = result as? Data,
             let stored = try? JSONDecoder().decode(Stored.self, from: data)
-        else { return nil }
-        return GourmetPortal.Credentials(username: stored.username, password: stored.password)
+        {
+            return GourmetPortal.Credentials(username: stored.username, password: stored.password)
+        }
+        return debugFallback
     }
+
+    #if targetEnvironment(simulator) && DEBUG
+    /// A login to fall back to when the Keychain has none — read from a local
+    /// file this repo's `.gitignore` excludes, so a Simulator debugging
+    /// session never means retyping a password by hand, and never means one
+    /// ends up in a tracked file or a commit. Compiled out entirely in the
+    /// `EarRouter (Fahrbetrieb)` release the driver's phone actually runs.
+    private static var debugFallback: GourmetPortal.Credentials? {
+        let path = "/Users/nikolaus/Documents/ear-router/.gourmet-debug-credentials"
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        guard lines.count >= 2 else { return nil }
+        return GourmetPortal.Credentials(username: lines[0], password: lines[1])
+    }
+    #else
+    private static var debugFallback: GourmetPortal.Credentials? { nil }
+    #endif
 
     static func save(_ credentials: GourmetPortal.Credentials) {
         let stored = Stored(username: credentials.username, password: credentials.password)
