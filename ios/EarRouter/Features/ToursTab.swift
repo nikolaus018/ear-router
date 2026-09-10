@@ -38,6 +38,7 @@ struct ToursTab: View {
 
     @State private var creating = false
     @State private var newName = ""
+    @State private var showingGourmetImport = false
     @State private var error: AppError?
     @State private var pendingDeletion = PendingRouteDeletion()
     /// Once per launch. Without the flag the restore would fire again every
@@ -55,6 +56,7 @@ struct ToursTab: View {
                 } actions: {
                     Button("Neue Tour") { startCreate() }
                         .buttonStyle(.borderedProminent)
+                    Button("Vom Zusteller-Portal") { showingGourmetImport = true }
                 }
             } else {
                 List {
@@ -103,7 +105,23 @@ struct ToursTab: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button("Neue Tour", systemImage: "plus") { startCreate() }
+                Menu {
+                    Button("Neue Tour", systemImage: "plus") { startCreate() }
+                    Button("Vom Zusteller-Portal", systemImage: "arrow.down.circle") {
+                        showingGourmetImport = true
+                    }
+                } label: {
+                    Label("Neue Tour", systemImage: "plus")
+                }
+            }
+        }
+        .sheet(isPresented: $showingGourmetImport) {
+            GourmetImportSheet(mode: .newRoute) { route in
+                // Straight into it, the same as a route just named by hand —
+                // except this one already has its stops, ready to check over
+                // rather than to start typing in.
+                focus.focus(route)
+                focus.toursPath.append(route.id)
             }
         }
         .alert("Neue Tour", isPresented: $creating) {

@@ -1,15 +1,33 @@
 import SwiftUI
+import SwiftData
 
 /// Pulls a day's tour straight from the Zusteller-Portal instead of the
 /// office's list being typed or pasted in by hand.
 ///
 /// Three steps, one screen: sign in once (the Keychain remembers it after
 /// that), pick the date and the matching tour, then load. What comes back
-/// goes to the same `ImportReviewView` a JSON paste or a file does — nothing
-/// here writes to the route directly, so a wrong tour picked by mistake is
-/// still just a list on screen, not a changed tour.
+/// goes to the same `ImportReviewView` a JSON paste or a file does — reviewed,
+/// corrected and only then saved, exactly like every other bulk import this
+/// app has. Nothing here writes to a route directly.
+///
+/// Two ways in, one screen for both. From an existing tour's own menu this
+/// adds to it — the same route the driver was already looking at. From
+/// Touren's "+" there is no route yet: `.newRoute` creates one only once
+/// there is something real to put on it, names it after the tour, and hands
+/// it back through `onRouteCreated` so the caller can jump straight to it. A
+/// route created that way and then abandoned mid-review — the driver picked
+/// the wrong tour, or just backed out — is deleted again on the way out
+/// rather than left behind as an empty tour nobody asked for.
 struct GourmetImportSheet: View {
-    let route: Route
+    enum Mode {
+        case existing(Route)
+        case newRoute
+    }
+
+    let mode: Mode
+    var onRouteCreated: ((Route) -> Void)?
+
+    @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
 
     @State private var username = ""
@@ -25,7 +43,27 @@ struct GourmetImportSheet: View {
     @State private var busy: String?
     @State private var loadTask: Task<Void, Never>?
     @State private var error: AppError?
-    @State private var review: JSONEditorSheet.ReviewPayload?
+    @State private var review: ReviewContext?
+    /// Only ever set in `.newRoute` mode — the empty shell `load()` created to
+    /// have something to hand `ImportReviewView`. Cleared, and the route with
+    /// it, unless the review actually saves.
+    @State private var createdRoute: Route?
+    @State private var imported = false
+
+    /// What `ImportReviewView` needs, bundled so the sheet always presents
+    /// the route the entries were actually fetched for — `.newRoute` creates
+    /// that route only at `load()` time, so it cannot be fixed ahead of time
+    /// the way `.existing` already has it.
+    struct ReviewContext: Identifiable {
+        let id = UUID()
+        let route: Route
+        let entries: [CustomerJSON]
+    }
+
+    init(mode: Mode, onRouteCreated: ((Route) -> Void)? = nil) {
+        self.mode = mode
+        self.onRouteCreated = onRouteCreated
+    }
 
     var body: some View {
         NavigationStack {
@@ -69,9 +107,28 @@ struct GourmetImportSheet: View {
             }
             .onChange(of: date) { _, _ in selectedTourID = nil }
         }
-        .sheet(item: $review) { payload in
-            ImportReviewView(route: route, entries: payload.entries)
+        .sheet(item: $review, onDismiss: reviewDismissed) { ctx in
+            ImportReviewView(route: ctx.route, entries: ctx.entries) { imported = true }
         }
+    }
+
+    /// Runs once the review sheet is gone, whichever way it went. Both
+    /// branches only matter in `.newRoute` mode — `.existing` never sets
+    /// `createdRoute`, so this is a no-op there beyond closing the sheet.
+    private func reviewDismissed() {
+        defer { imported = false }
+        if let createdRoute {
+            if imported {
+                onRouteCreated?(createdRoute)
+            } else {
+                // Nothing was saved — a route the driver never asked to
+                // create should not be the one thing this screen leaves
+                // behind.
+                try? RouteStore.delete(createdRoute, in: context)
+            }
+            self.createdRoute = nil
+        }
+        if imported { dismiss() }
     }
 
     // MARK: - Login
@@ -206,12 +263,24 @@ struct GourmetImportSheet: View {
             ) { progress in
                 Task { @MainActor in busy = progress }
             }
-            if entries.isEmpty {
+            guard !entries.isEmpty else {
                 error = AppError.message(
                     "Für \"\(tour.name)\" wurden an diesem Tag keine offenen Lieferungen "
                         + "gefunden.")
-            } else {
-                review = JSONEditorSheet.ReviewPayload(entries: entries)
+                return
+            }
+
+            switch mode {
+            case .existing(let route):
+                review = ReviewContext(route: route, entries: entries)
+            case .newRoute:
+                // Created only now that there is something real to put on
+                // it — a failed or empty fetch above never leaves a stray
+                // route behind.
+                let name = GourmetPortal.suggestedRouteName(tour: tour, date: date)
+                let route = try RouteStore.createRoute(name: name, in: context)
+                createdRoute = route
+                review = ReviewContext(route: route, entries: entries)
             }
         } catch is CancellationError {
             // The driver stopped it on purpose — nothing to report.

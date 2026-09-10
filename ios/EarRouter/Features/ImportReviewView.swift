@@ -26,6 +26,12 @@ struct ImportReviewView: View {
     /// What the paste or the file was understood to say. Owned from here on:
     /// the driver's edits are theirs, and nothing writes back to the source.
     @State var entries: [Entry]
+    /// Fired once the entries have actually been written to `route` — after
+    /// that, `route` is no longer the empty shell a caller may have created
+    /// just to hand to this screen. Nil for every caller that had a real
+    /// route already, which is why this stays an afterthought parameter
+    /// rather than a required one.
+    var onImported: (() -> Void)?
 
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -85,9 +91,10 @@ struct ImportReviewView: View {
         }
     }
 
-    init(route: Route, entries: [CustomerJSON]) {
+    init(route: Route, entries: [CustomerJSON], onImported: (() -> Void)? = nil) {
         self.route = route
         _entries = State(initialValue: entries.map(Entry.init))
+        self.onImported = onImported
     }
 
     private var problems: Int { entries.count { $0.problem != nil } }
@@ -292,6 +299,11 @@ struct ImportReviewView: View {
             ) { done, total in
                 progress = "Adresse \(done + 1) von \(total) wird gesucht …"
             }
+            // Even a partial, cancelled-partway import already wrote
+            // something real to `route` — a caller waiting to find out
+            // whether the shell it created is still empty needs to hear
+            // about that case too, not just a clean finish.
+            onImported?()
             if r.hasProblems {
                 result = ImportReport(result: r)
             } else {

@@ -255,6 +255,20 @@ enum GourmetPortal {
         return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 1)
     }
 
+    private static let routeNameDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "de_AT")
+        f.dateFormat = "dd.MM.yyyy"
+        return f
+    }()
+
+    /// A new route's name when it comes from a Gourmet tour rather than the
+    /// "Neue Tour" prompt — the tour's own name, which is already how a
+    /// driver picking it from the list a moment ago recognised it.
+    static func suggestedRouteName(tour: Tour, date: Date) -> String {
+        "\(tour.name) – \(routeNameDateFormatter.string(from: date))"
+    }
+
     // MARK: - Fetching one tour's day
 
     /// Logs in, fetches every open delivery for `date`, keeps the ones

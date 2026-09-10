@@ -172,7 +172,7 @@ struct TourView: View {
             JSONEditorSheet(route: route)
         }
         .sheet(isPresented: $showingGourmetImport) {
-            GourmetImportSheet(route: route)
+            GourmetImportSheet(mode: .existing(route))
         }
         // A file and a paste are two ways of saying the same thing, so they
         // arrive at the same screen: the list, as understood, before any of it
