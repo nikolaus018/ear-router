@@ -8,11 +8,11 @@ import Security
 /// standing tours, and a paginated list of that day's deliveries.
 ///
 /// The one surprise worth writing down: `/supplier/deliveries?tour_id=`
-/// does not actually filter on the server — a request for one tour still
-/// comes back with deliveries belonging to a dozen others. The portal's own
-/// web app copes with this by filtering the page it already has, client-side,
-/// against each delivery's `tours` list — so that is what `fetchTourEntries`
-/// does too, rather than trusting the query parameter.
+/// does not reliably filter on the server — sending it can come back with
+/// fewer deliveries than the tour actually has. The portal's own web app
+/// copes with this by filtering the page it already has, client-side,
+/// against each delivery's `tours` list — so that is what
+/// `matchingDeliveries` does too, rather than trusting the query parameter.
 enum GourmetPortal {
     static let base = URL(string: "https://odoo.gourmet.at/api")!
 
@@ -271,13 +271,15 @@ enum GourmetPortal {
 
     // MARK: - Fetching one tour's day
 
-    /// Logs in, fetches every open delivery for `date`, keeps the ones
-    /// belonging to `tour`, then fetches each one's detail for its Paket —
-    /// one request per stop, since the list endpoint never carries it.
-    static func fetchTourEntries(
+    /// Logs in and fetches every open delivery for `date`, keeping only the
+    /// ones belonging to `tour` — list data alone, no per-stop Paket detail
+    /// yet. Split off from the detail fetch so the driver can be shown the
+    /// list and asked which of them to actually keep before paying for the
+    /// (slow, one-request-per-stop) detail fetch.
+    static func matchingDeliveries(
         tour: Tour, date: Date, credentials: Credentials,
         onProgress: @escaping @Sendable (String) -> Void = { _ in }
-    ) async throws -> [CustomerJSON] {
+    ) async throws -> (token: String, deliveries: [Delivery]) {
         onProgress("Anmelden …")
         let token = try await login(credentials)
 
@@ -294,11 +296,20 @@ enum GourmetPortal {
         }
 
         let matching = all.filter { delivery in delivery.tours.contains { $0.id == tour.id } }
+        return (token, matching)
+    }
 
+    /// The second half of the old `fetchTourEntries` — once the driver has
+    /// said which of `matchingDeliveries`' results to keep, fetches each
+    /// one's detail for its Paket and maps it to the app's own shape.
+    static func fetchDetails(
+        for deliveries: [Delivery], token: String,
+        onProgress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }
+    ) async throws -> [CustomerJSON] {
         var entries: [CustomerJSON] = []
-        for (index, delivery) in matching.enumerated() {
+        for (index, delivery) in deliveries.enumerated() {
             try Task.checkCancellation()
-            onProgress("Paket \(index + 1) von \(matching.count) wird geladen …")
+            onProgress(index + 1, deliveries.count)
             let detail = try await deliveryDetail(id: delivery.id, token: token)
             entries.append(customerJSON(from: detail))
         }
@@ -307,16 +318,25 @@ enum GourmetPortal {
 
     // MARK: - Mapping to the app's own shape
 
-    /// The same "{Straße} {Hausnummer}/{Stiege}/{Tür}" convention
-    /// `AddressText` reads back out of a free-text address — built here from
-    /// the portal's separate fields instead of parsed from one string.
-    static func customerJSON(from delivery: Delivery) -> CustomerJSON {
-        let address = delivery.deliveryAddress
-        let name = [delivery.customer.firstname, delivery.customer.lastname]
+    /// Name and address alone — what the list endpoint already carries,
+    /// without waiting on a detail fetch. Used to let the driver pick which
+    /// stops to keep from `matchingDeliveries`' results before any of them
+    /// pay for a `fetchDetails` round trip.
+    static func summary(_ delivery: Delivery) -> (name: String, address: String) {
+        (customerName(delivery.customer), streetLine(delivery.deliveryAddress))
+    }
+
+    private static func customerName(_ customer: Customer) -> String {
+        [customer.firstname, customer.lastname]
             .compactMap { $0?.trimmed }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
 
+    /// The same "{Straße} {Hausnummer}/{Stiege}/{Tür}" convention
+    /// `AddressText` reads back out of a free-text address — built here from
+    /// the portal's separate fields instead of parsed from one string.
+    private static func streetLine(_ address: Address) -> String {
         var strasse = address.street?.trimmed ?? ""
         let suffixes = [address.street2, address.staircase, address.flatNumber]
             .compactMap { $0?.trimmed }
@@ -328,14 +348,18 @@ enum GourmetPortal {
             // looks for when it reads a Stiege or Tür back out of the string.
             strasse += (strasse.isEmpty ? "" : "/") + suffixes.joined(separator: "/")
         }
+        return strasse
+    }
 
+    static func customerJSON(from delivery: Delivery) -> CustomerJSON {
+        let address = delivery.deliveryAddress
         let notiz = [address.comment, delivery.customer.comment]
             .compactMap { $0?.trimmed }
             .first { !$0.isEmpty }
 
         return CustomerJSON(
-            kunde: name, strasse: strasse, plz: address.zip?.trimmed ?? "",
-            paket: paketText(from: delivery), notiz: notiz)
+            kunde: customerName(delivery.customer), strasse: streetLine(address),
+            plz: address.zip?.trimmed ?? "", paket: paketText(from: delivery), notiz: notiz)
     }
 
     private static func paketText(from delivery: Delivery) -> String? {

@@ -43,6 +43,7 @@ struct GourmetImportSheet: View {
     @State private var busy: String?
     @State private var loadTask: Task<Void, Never>?
     @State private var error: AppError?
+    @State private var pendingSelection: PendingSelection?
     @State private var review: ReviewContext?
     /// Only ever set in `.newRoute` mode — the empty shell `load()` created to
     /// have something to hand `ImportReviewView`. Cleared, and the route with
@@ -58,6 +59,17 @@ struct GourmetImportSheet: View {
         let id = UUID()
         let route: Route
         let entries: [CustomerJSON]
+    }
+
+    /// The tour's deliveries, list data only — handed to
+    /// `GourmetStopSelectionView` so the driver can say which of them to
+    /// actually keep before any of them pay for a detail fetch. Carries the
+    /// login token along so picking stops doesn't cost a second login.
+    struct PendingSelection: Identifiable {
+        let id = UUID()
+        let tour: GourmetPortal.Tour
+        let token: String
+        let deliveries: [GourmetPortal.Delivery]
     }
 
     init(mode: Mode, onRouteCreated: ((Route) -> Void)? = nil) {
@@ -106,6 +118,12 @@ struct GourmetImportSheet: View {
                 if hasCredentials { await loadTours() }
             }
             .onChange(of: date) { _, _ in selectedTourID = nil }
+        }
+        .sheet(item: $pendingSelection) { pending in
+            GourmetStopSelectionView(deliveries: pending.deliveries) { chosen in
+                pendingSelection = nil
+                loadTask = Task { await loadDetails(tour: pending.tour, token: pending.token, deliveries: chosen) }
+            }
         }
         .sheet(item: $review, onDismiss: reviewDismissed) { ctx in
             ImportReviewView(route: ctx.route, entries: ctx.entries) { imported = true }
@@ -251,6 +269,10 @@ struct GourmetImportSheet: View {
         }
     }
 
+    /// First half: log in, fetch the tour's deliveries (list data only), and
+    /// hand them to `GourmetStopSelectionView` for the driver to narrow down.
+    /// Nothing is created yet — `.newRoute`'s empty shell still only appears
+    /// once `loadDetails` below has something real to put on it.
     private func load() async {
         guard let selectedTourID, let tour = tours.first(where: { $0.id == selectedTourID }),
             let credentials = GourmetCredentialsStore.load()
@@ -258,16 +280,39 @@ struct GourmetImportSheet: View {
         busy = "Anmelden …"
         defer { busy = nil }
         do {
-            let entries = try await GourmetPortal.fetchTourEntries(
+            let (token, deliveries) = try await GourmetPortal.matchingDeliveries(
                 tour: tour, date: date, credentials: credentials
             ) { progress in
                 Task { @MainActor in busy = progress }
             }
-            guard !entries.isEmpty else {
+            guard !deliveries.isEmpty else {
                 error = AppError.message(
                     "Für \"\(tour.name)\" wurden an diesem Tag keine offenen Lieferungen "
                         + "gefunden.")
                 return
+            }
+            pendingSelection = PendingSelection(tour: tour, token: token, deliveries: deliveries)
+        } catch is CancellationError {
+            // The driver stopped it on purpose — nothing to report.
+        } catch let e as AppError {
+            error = e
+        } catch {
+            self.error = AppError.message("Lieferungen konnten nicht geladen werden.")
+        }
+    }
+
+    /// Second half: once the driver has picked which stops to keep, fetch
+    /// each one's Paket and go to the same review screen every other import
+    /// ends up on.
+    private func loadDetails(
+        tour: GourmetPortal.Tour, token: String, deliveries: [GourmetPortal.Delivery]
+    ) async {
+        busy = "Details werden geladen …"
+        defer { busy = nil }
+        do {
+            let entries = try await GourmetPortal.fetchDetails(for: deliveries, token: token) {
+                done, total in
+                Task { @MainActor in busy = "Paket \(done) von \(total) wird geladen …" }
             }
 
             switch mode {
@@ -275,8 +320,8 @@ struct GourmetImportSheet: View {
                 review = ReviewContext(route: route, entries: entries)
             case .newRoute:
                 // Created only now that there is something real to put on
-                // it — a failed or empty fetch above never leaves a stray
-                // route behind.
+                // it — a cancelled fetch above never leaves a stray route
+                // behind.
                 let name = GourmetPortal.suggestedRouteName(tour: tour, date: date)
                 let route = try RouteStore.createRoute(name: name, in: context)
                 createdRoute = route
@@ -289,5 +334,105 @@ struct GourmetImportSheet: View {
         } catch {
             self.error = AppError.message("Lieferungen konnten nicht geladen werden.")
         }
+    }
+}
+
+// MARK: - Choosing which stops to keep
+
+/// Between the tour's full delivery list and the review screen: a
+/// searchable checklist so the driver can drop stops that are not theirs to
+/// drive before any of them pay for a detail fetch — every entry starts
+/// selected, since keeping everything is the common case.
+struct GourmetStopSelectionView: View {
+    let deliveries: [GourmetPortal.Delivery]
+    var onContinue: ([GourmetPortal.Delivery]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Set<Int>
+    @State private var search = ""
+
+    init(deliveries: [GourmetPortal.Delivery], onContinue: @escaping ([GourmetPortal.Delivery]) -> Void) {
+        self.deliveries = deliveries
+        self.onContinue = onContinue
+        _selected = State(initialValue: Set(deliveries.map(\.id)))
+    }
+
+    private var filtered: [GourmetPortal.Delivery] {
+        let q = search.trimmed.lowercased()
+        guard !q.isEmpty else { return deliveries }
+        return deliveries.filter { delivery in
+            let (name, address) = GourmetPortal.summary(delivery)
+            return name.lowercased().contains(q) || address.lowercased().contains(q)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(filtered, id: \.id) { delivery in
+                        row(delivery)
+                    }
+                } footer: {
+                    if filtered.isEmpty {
+                        Text("Keine Treffer.")
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .searchable(text: $search, prompt: "Name oder Adresse")
+            .navigationTitle("Stopps wählen")
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom) {
+                Text("\(selected.count) von \(deliveries.count) ausgewählt")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(.bar)
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Abbrechen") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(selected.count == deliveries.count ? "Keine" : "Alle") {
+                        selected = selected.count == deliveries.count
+                            ? [] : Set(deliveries.map(\.id))
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Weiter") {
+                        onContinue(deliveries.filter { selected.contains($0.id) })
+                    }
+                    .disabled(selected.isEmpty)
+                }
+            }
+        }
+    }
+
+    private func row(_ delivery: GourmetPortal.Delivery) -> some View {
+        let (name, address) = GourmetPortal.summary(delivery)
+        let isSelected = selected.contains(delivery.id)
+        return Button {
+            if isSelected { selected.remove(delivery.id) } else { selected.insert(delivery.id) }
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name.isEmpty ? "Ohne Namen" : name)
+                        .foregroundStyle(.primary)
+                    Text(address.isEmpty ? "Keine Adresse" : address)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .font(.title3)
+                    .symbolRenderingMode(.hierarchical)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
     }
 }
