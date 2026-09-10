@@ -75,7 +75,16 @@ actor Geocoder {
             // the mystery behind it) alive for the whole TTL. Exact and
             // street-level hits are served straight from the cache, so this
             // costs nothing on the common path.
-            if hit.precision == .district,
+            //
+            // Inside the city only, for the same reason the fresh lookup below
+            // skips both register phases outside it: `districtHint` asks the
+            // *city's* register, which has never heard of Gerasdorf and answers
+            // with whichever Viennese street happens to share the name. Without
+            // this guard a Gerasdorf address that had once fallen back to a
+            // district centroid was told, on every lookup after the first, that
+            // it "really" belongs to a Vienna district — and offered a one-tap
+            // button to move it there.
+            if hit.precision == .district, Postcodes.isVienna(plz),
                let actual = await districtHint(normalized: normalized, plz: plz) {
                 throw AppError.wrongDistrict(strasse.trimmed, actualPlz: actual)
             }

@@ -167,7 +167,14 @@ struct GourmetImportSheet: View {
                         + "verschlüsselt auf diesem Gerät gespeichert.")
             }
             Section {
-                Button("Anmelden") { Task { await signIn() } }
+                // Held in `loadTask` like every other job on this screen, so
+                // the "Stoppen" button the banner puts in the toolbar has
+                // something to cancel. Started as a loose task — which is what
+                // this did — the sheet spent a slow login showing a stop button
+                // that cancelled nothing, over a swipe-down that `busy` had
+                // already disabled: no way out at all until the request timed
+                // out.
+                Button("Anmelden") { loadTask = Task { await signIn() } }
                     .disabled(username.trimmed.isEmpty || password.isEmpty || busy != nil)
             }
         }
@@ -189,6 +196,9 @@ struct GourmetImportSheet: View {
             hasCredentials = true
             editingCredentials = false
             await loadTours()
+        } catch is CancellationError {
+            // Stopped from the banner. The form is still standing with both
+            // fields filled in, which says it better than an alert would.
         } catch let e as AppError {
             error = e
         } catch {
@@ -262,6 +272,8 @@ struct GourmetImportSheet: View {
         do {
             let token = try await GourmetPortal.login(credentials)
             tours = try await GourmetPortal.tours(token: token)
+        } catch is CancellationError {
+            // Stopped from the banner — the driver already knows.
         } catch let e as AppError {
             error = e
         } catch {

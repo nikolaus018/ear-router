@@ -148,6 +148,49 @@ enum GourmetPortal {
         }
     }
 
+    /// One request, its status check, and the one thing `URLSession` gets wrong
+    /// about cancellation.
+    ///
+    /// A request cancelled along with its task is reported as a `URLError`, not
+    /// as a `CancellationError` — so left as it comes, a driver pressing
+    /// "Stoppen" on the import banner was answered with "Lieferungen konnten
+    /// nicht geladen werden", an error alert for something they did on purpose.
+    /// `OSRMClient` and `Geocoder` both make this same conversion.
+    private static func send(_ request: URLRequest) async throws -> Data {
+        let data: Data, response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch let e as URLError where e.code == .cancelled {
+            throw CancellationError()
+        }
+        try checkOK(response)
+        return data
+    }
+
+    /// `application/x-www-form-urlencoded`, encoded by hand rather than through
+    /// `URLComponents`.
+    ///
+    /// `URLComponents` percent-encodes for a *query*, where `+` is a legal
+    /// character and is left alone — but this body is read by a form parser,
+    /// and there a literal `+` means a space. A portal password carrying one
+    /// therefore arrived with a hole in it, the login came back 403, and the
+    /// driver was told to check credentials that were correct and worked in the
+    /// browser, with no way to ever get in. Everything outside the unreserved
+    /// set is escaped, which is also exactly what the portal's own web app
+    /// sends.
+    static func formEncoded(_ fields: [(name: String, value: String)]) -> Data? {
+        var unreserved = CharacterSet.alphanumerics
+        unreserved.insert(charactersIn: "-._~")
+        let pairs = fields.map { field in
+            let name = field.name.addingPercentEncoding(withAllowedCharacters: unreserved)
+                ?? field.name
+            let value = field.value.addingPercentEncoding(withAllowedCharacters: unreserved)
+                ?? field.value
+            return "\(name)=\(value)"
+        }
+        return pairs.joined(separator: "&").data(using: .utf8)
+    }
+
     /// Logs in and hands back the bearer token — good for a very long time
     /// (the portal itself issues tokens valid for months), but fetched fresh
     /// every time here rather than cached, so there is no separate token
@@ -159,20 +202,17 @@ enum GourmetPortal {
             "application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         commonHeaders(&request)
 
-        var form = URLComponents()
-        form.queryItems = [
-            URLQueryItem(name: "username", value: credentials.username),
-            URLQueryItem(name: "password", value: credentials.password),
-            URLQueryItem(name: "rememberMe", value: "true"),
+        request.httpBody = formEncoded([
+            (name: "username", value: credentials.username),
+            (name: "password", value: credentials.password),
+            (name: "rememberMe", value: "true"),
             // Fixed values the portal's own login always sends, independent
             // of which brand's supplier is logging in.
-            URLQueryItem(name: "host", value: "https://staging.essen-fuer-daheim.at"),
-            URLQueryItem(name: "check_role", value: "supplier"),
-        ]
-        request.httpBody = form.percentEncodedQuery?.data(using: .utf8)
+            (name: "host", value: "https://staging.essen-fuer-daheim.at"),
+            (name: "check_role", value: "supplier"),
+        ])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkOK(response)
+        let data = try await send(request)
 
         struct LoginResponse: Decodable { var access_token: String }
         guard let decoded = try? decoder.decode(LoginResponse.self, from: data) else {
@@ -184,8 +224,7 @@ enum GourmetPortal {
     static func tours(token: String) async throws -> [Tour] {
         var request = URLRequest(url: base.appendingPathComponent("supplier/tours"))
         commonHeaders(&request, token: token)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkOK(response)
+        let data = try await send(request)
         guard let tours = try? decoder.decode([Tour].self, from: data) else {
             throw AppError.message("Tourenliste des Zusteller-Portals nicht verstanden.")
         }
@@ -208,8 +247,7 @@ enum GourmetPortal {
 
         var request = URLRequest(url: comps.url!)
         commonHeaders(&request, token: token)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkOK(response)
+        let data = try await send(request)
         guard let page = try? decoder.decode(DeliveryPage.self, from: data) else {
             throw AppError.message("Lieferliste des Zusteller-Portals nicht verstanden.")
         }
@@ -220,8 +258,7 @@ enum GourmetPortal {
         var request = URLRequest(
             url: base.appendingPathComponent("supplier/deliveries/\(id)"))
         commonHeaders(&request, token: token)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkOK(response)
+        let data = try await send(request)
         guard let delivery = try? decoder.decode(Delivery.self, from: data) else {
             throw AppError.message("Lieferdaten des Zusteller-Portals nicht verstanden.")
         }

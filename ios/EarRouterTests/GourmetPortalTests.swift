@@ -213,6 +213,34 @@ struct GourmetPortalTests {
         #expect(!GourmetPortal.runs(tour, on: date("2026-09-10")))
     }
 
+    // MARK: - The login body
+
+    /// The one character that decides whether a driver can log in at all.
+    ///
+    /// The body is `application/x-www-form-urlencoded`, where a literal `+`
+    /// means a space. `URLComponents` — which this used to be built with —
+    /// encodes for a *query* instead and leaves `+` alone, so a password
+    /// carrying one arrived at the server with a hole in it and the portal
+    /// answered 403 for credentials that were correct.
+    @Test func aPlusInThePasswordIsEscapedRatherThanLeftToMeanASpace() {
+        let body = GourmetPortal.formEncoded([(name: "password", value: "Som+mer26")])
+        #expect(String(decoding: body ?? Data(), as: UTF8.self) == "password=Som%2Bmer26")
+    }
+
+    /// The separators, and the `@` every one of these usernames carries.
+    @Test func formEncodingEscapesEverythingOutsideTheUnreservedSet() {
+        let body = GourmetPortal.formEncoded([
+            (name: "username", value: "paul.leiner@samariterbund.net"),
+            (name: "host", value: "https://staging.essen-fuer-daheim.at"),
+            (name: "password", value: "a&b=c d?e"),
+        ])
+        #expect(
+            String(decoding: body ?? Data(), as: UTF8.self)
+                == "username=paul.leiner%40samariterbund.net"
+                    + "&host=https%3A%2F%2Fstaging.essen-fuer-daheim.at"
+                    + "&password=a%26b%3Dc%20d%3Fe")
+    }
+
     // MARK: - Route naming
 
     @Test func suggestedNameCombinesTheTourAndTheDate() {
