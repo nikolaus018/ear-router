@@ -7,12 +7,15 @@ import Security
 /// network traffic: a login that hands back a bearer token, a list of
 /// standing tours, and a paginated list of that day's deliveries.
 ///
-/// The one surprise worth writing down: `/supplier/deliveries?tour_id=`
-/// does not reliably filter on the server — sending it can come back with
-/// fewer deliveries than the tour actually has. The portal's own web app
-/// copes with this by filtering the page it already has, client-side,
-/// against each delivery's `tours` list — so that is what
-/// `matchingDeliveries` does too, rather than trusting the query parameter.
+/// The one surprise worth writing down: a delivery's `tours` list is its
+/// *eligible* standing tours, not necessarily today's actual one — a
+/// customer can be down for both their usual weekly tour and a daily
+/// Anstalt/institution tour, and which one they are really served on today
+/// is a server-side decision `/supplier/deliveries?tour_id=` already makes
+/// correctly. Fetching everyone's whole day and keeping only the deliveries
+/// whose `tours` list *contains* the chosen tour over-counts for exactly
+/// that reason — it was tried and measured 47 real VM4 stops coming back as
+/// 53. So `tour_id` is sent and trusted; see `matchingDeliveries`.
 enum GourmetPortal {
     static let base = URL(string: "https://odoo.gourmet.at/api")!
 
@@ -190,7 +193,7 @@ enum GourmetPortal {
     }
 
     private static func deliveries(
-        date: String, page: Int, pageSize: Int, token: String
+        date: String, page: Int, pageSize: Int, tourID: Int, token: String
     ) async throws -> DeliveryPage {
         var comps = URLComponents(
             url: base.appendingPathComponent("supplier/deliveries"), resolvingAgainstBaseURL: false)!
@@ -198,6 +201,7 @@ enum GourmetPortal {
             URLQueryItem(name: "delivery_date", value: date),
             URLQueryItem(name: "page", value: String(page)),
             URLQueryItem(name: "page_size", value: String(pageSize)),
+            URLQueryItem(name: "tour_id", value: String(tourID)),
         ]
         items.append(contentsOf: openStates.map { URLQueryItem(name: "state", value: $0) })
         comps.queryItems = items
@@ -271,11 +275,19 @@ enum GourmetPortal {
 
     // MARK: - Fetching one tour's day
 
-    /// Logs in and fetches every open delivery for `date`, keeping only the
-    /// ones belonging to `tour` — list data alone, no per-stop Paket detail
-    /// yet. Split off from the detail fetch so the driver can be shown the
-    /// list and asked which of them to actually keep before paying for the
-    /// (slow, one-request-per-stop) detail fetch.
+    /// Logs in and fetches `tour`'s open deliveries for `date` — list data
+    /// alone, no per-stop Paket detail yet. Split off from the detail fetch
+    /// so the driver can be shown the list and asked which of them to
+    /// actually keep before paying for the (slow, one-request-per-stop)
+    /// detail fetch.
+    ///
+    /// The `tour.tours.contains { $0.id == tour.id }` check after the fetch
+    /// looks redundant with the `tour_id` query parameter, but it is not: a
+    /// delivery can be eligible for more than one standing tour (a backup
+    /// Anstalt tour alongside its usual one, say), and the server's own
+    /// filter already resolves that down to whichever tour the delivery is
+    /// actually being served on today — this only guards against that
+    /// filter ever regressing to not filtering at all.
     static func matchingDeliveries(
         tour: Tour, date: Date, credentials: Credentials,
         onProgress: @escaping @Sendable (String) -> Void = { _ in }
@@ -289,7 +301,8 @@ enum GourmetPortal {
         var page = 1
         while true {
             try Task.checkCancellation()
-            let result = try await deliveries(date: dateString, page: page, pageSize: 100, token: token)
+            let result = try await deliveries(
+                date: dateString, page: page, pageSize: 100, tourID: tour.id, token: token)
             all.append(contentsOf: result.items)
             if page >= result.totalPages || result.items.isEmpty { break }
             page += 1
