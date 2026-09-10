@@ -322,7 +322,11 @@ enum GourmetPortal {
             .compactMap { $0?.trimmed }
             .filter { !$0.isEmpty }
         if !suffixes.isEmpty {
-            strasse += (strasse.isEmpty ? "" : " ") + suffixes.joined(separator: "/")
+            // No space before the slash: "Gentzgasse 129/1/23", not
+            // "Gentzgasse 129 1/23" — the housenumber is already the tail of
+            // `street`, and this is the one delimiter `AddressText` actually
+            // looks for when it reads a Stiege or Tür back out of the string.
+            strasse += (strasse.isEmpty ? "" : "/") + suffixes.joined(separator: "/")
         }
 
         let notiz = [address.comment, delivery.customer.comment]
