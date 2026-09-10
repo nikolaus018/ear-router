@@ -34,6 +34,7 @@ struct TourView: View {
     @State private var editingStop: Stop?
     @State private var addingStop = false
     @State private var showingJSON = false
+    @State private var showingGourmetImport = false
     /// The office's own file, on its way to being checked over.
     @State private var pickingFile = false
     @State private var fileReview: [CustomerJSON]?
@@ -169,6 +170,9 @@ struct TourView: View {
         .stockwerkPrompt(for: $stockwerkStop)
         .sheet(isPresented: $showingJSON) {
             JSONEditorSheet(route: route)
+        }
+        .sheet(isPresented: $showingGourmetImport) {
+            GourmetImportSheet(route: route)
         }
         // A file and a paste are two ways of saying the same thing, so they
         // arrive at the same screen: the list, as understood, before any of it
@@ -391,6 +395,9 @@ struct TourView: View {
                 }
                 Button("JSON einsetzen", systemImage: "curlybraces") {
                     showingJSON = true
+                }
+                Button("Vom Zusteller-Portal laden", systemImage: "arrow.down.circle") {
+                    showingGourmetImport = true
                 }
                 Divider()
                 Button("Neu optimieren", systemImage: "arrow.triangle.2.circlepath") {
