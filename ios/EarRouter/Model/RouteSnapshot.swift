@@ -119,3 +119,35 @@ struct RouteSnapshot {
         self.doorCounts = SameDoor.counts(for: ordered)
     }
 }
+
+extension RouteSnapshot {
+    /// The line under a tour's name: what is still ahead of the driver.
+    ///
+    /// "Noch 22 Stopps · 18,2 km" rather than "12 von 34 geliefert" — both are
+    /// the same fact, but only one of them is the question anybody has at half
+    /// past eleven. The progress count has its own place, over the list.
+    ///
+    /// Here rather than on either screen because two screens show it: the
+    /// tour's own and Jetzt put the same tour under the same title, and must
+    /// not describe it two ways.
+    func summary(of route: Route) -> String {
+        guard customerCount > 0 else { return "Noch keine Stopps" }
+        // A finished tour is history, and history has no "still to drive". It
+        // was answering "Noch 4 Stopps · 11,7 km" under a tour filed in
+        // Erledigt — a forecast about a day that is over.
+        guard route.status == .active else {
+            let day = route.completedAt ?? route.createdAt
+            let parts = [Format.date(day), Format.stops(customerCount), Format.km(totalKm)]
+                .compactMap { $0 }
+            return parts.joined(separator: " · ")
+        }
+        guard openCount > 0 else {
+            guard let back = Format.km(remainingKm), remainingKm >= 0.05
+            else { return "Alle geliefert" }
+            return "Alle geliefert · Rückfahrt \(back)"
+        }
+        let stops = "Noch \(Format.stops(openCount))"
+        guard let km = Format.km(remainingKm), remainingKm >= 0.05 else { return stops }
+        return "\(stops) · \(km)"
+    }
+}

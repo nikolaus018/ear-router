@@ -357,15 +357,22 @@ struct TageslisteFileTests {
         let text = rows.joined(separator: "\r\n")
         // Excel's plain CSV on a German Windows. Not UTF-8.
         let data = text.data(using: .windowsCP1252)!
-        let url = FileManager.default.temporaryDirectory
-            .appending(path: "Tour VM5 FR 04.09.2026.csv")
+        // A folder of its own per call. Both tests in this suite write this
+        // fixture and Swift Testing runs them in parallel; at one shared path,
+        // each test's cleanup could delete the other's file between its write
+        // and its read, and the suite failed now and then for no reason of its
+        // own.
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "Tour VM5 FR 04.09.2026.csv")
         try data.write(to: url, options: .atomic)
         return url
     }
 
     @Test func readsTheOfficesFileOffDiskExactlyAsItArrives() throws {
         let url = try writeFixture()
-        defer { try? FileManager.default.removeItem(at: url) }
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
         let data = try Data(contentsOf: url)
         let list = try Tagesliste.parse(data, filename: url.lastPathComponent)
@@ -394,7 +401,7 @@ struct TageslisteFileTests {
     /// promise the review screen makes when it shows a row without a warning.
     @Test func everyEntryIsReadyForTheImport() throws {
         let url = try writeFixture()
-        defer { try? FileManager.default.removeItem(at: url) }
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let list = try Tagesliste.parse(try Data(contentsOf: url))
 
         for entry in list {

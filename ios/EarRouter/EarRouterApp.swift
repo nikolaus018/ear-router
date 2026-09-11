@@ -8,8 +8,30 @@ private let log = Logger(subsystem: "win.ringtwo.EarRouter", category: "app")
 struct EarRouterApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
-    private let store = Store()
-    @State private var focus = RouteFocus()
+    private let store: Store
+    @State private var focus: RouteFocus
+
+    init() {
+        let store = Store()
+        self.store = store
+        _focus = State(initialValue: RouteFocus(tab: Self.launchTab(store.container)))
+    }
+
+    /// Jetzt when a delivery is waiting, Touren otherwise.
+    ///
+    /// Picked up mid-shift, the app is opened to see the next door, and that is
+    /// what Jetzt is. Opened with nothing to deliver — a new install, a day off,
+    /// a tour already done — Jetzt would only say there is nothing to do, and
+    /// the next thing to do is in Touren.
+    private static func launchTab(_ container: ModelContainer?) -> RouteFocus.Tab {
+        guard let container else { return .tours }
+        let open = FetchDescriptor<Route>(predicate: #Predicate { $0.statusRaw == "active" })
+        let routes = (try? container.mainContext.fetch(open)) ?? []
+        let waiting = routes.contains { route in
+            route.stops.contains { $0.kind == .customer && !$0.delivered }
+        }
+        return waiting ? .now : .tours
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -128,9 +150,13 @@ struct StoreFailureView: View {
 @Observable
 @MainActor
 final class RouteFocus {
-    enum Tab: Hashable { case tours, map, more }
+    enum Tab: Hashable { case now, tours, map, more }
 
-    var tab: Tab = .tours
+    var tab: Tab
+
+    init(tab: Tab = .tours) {
+        self.tab = tab
+    }
     var currentRouteID: UUID?
     var toursPath = NavigationPath()
 
@@ -208,6 +234,15 @@ final class RouteFocus {
     func reveal(stop: Stop, of route: Route) {
         focus(route)
         revealStopID = stop.id
+        toursPath = NavigationPath([route.id])
+        tab = .tours
+    }
+
+    /// Opens a tour's stop list — what Jetzt's "Zur Tour" does for a tour with
+    /// no stops on it yet.
+    /// Assigned rather than appended, for the reason `reveal` gives.
+    func open(_ route: Route) {
+        focus(route)
         toursPath = NavigationPath([route.id])
         tab = .tours
     }

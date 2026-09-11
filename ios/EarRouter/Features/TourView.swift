@@ -4,26 +4,21 @@ import UniformTypeIdentifiers
 
 /// One tour: its stops in driving order, and everything you can do to them.
 ///
-/// The screen is two things stacked, and the split is the whole idea.
-///
 /// **The list is the tour** — an uninterrupted sequence from the depot to the
-/// finish flag, in the order it will be driven, with nothing wedged into the
-/// middle of it. It used to have a card for the current stop sitting between
-/// the fixed points and the customers, which meant the same customer appeared
-/// twice on one screen four rows apart, at two different sizes.
+/// finish flag, in the order it will be driven, with nothing wedged into it and
+/// nothing floating over it. The stop the driver is on is the one row with a
+/// solid badge; the stop itself, set large with its two buttons, is the Jetzt
+/// tab's. It used to be a card here — first wedged between the fixed points and
+/// the customers, then pinned over the bottom of the list — and in both places
+/// it showed one customer twice on one screen and hid part of the list it was
+/// about.
 ///
-/// **The bottom of the screen is what to do now.** It holds exactly one thing
-/// at a time and it never scrolls away: the card for the stop the driver is on
-/// while there are meals left, the button that finishes the tour once there are
-/// not, and the progress banner over the top of either while a long job runs.
-/// That is the Now Playing bar, the Maps route card, the call banner — the
-/// pattern this phone has always used for "the thing you are doing, while you
-/// look at something else".
+/// The bottom of the screen holds only what is transient: the progress banner
+/// while a long job runs, and the button that files the tour once every meal is
+/// handed over.
 ///
-/// One screen, one way in: pushed from Touren. On launch that push happens for
-/// you, onto the tour the app was last on — which is what a short-lived "Heute"
-/// tab was trying to buy, at the price of a second tab rendering this same
-/// view.
+/// Pushed from Touren. On launch that push happens for you, onto the tour the
+/// app was last on.
 struct TourView: View {
     @Bindable var route: Route
     @Environment(\.modelContext) private var context
@@ -70,11 +65,6 @@ struct TourView: View {
     /// The stop whose floor is being asked about — set by ticking a delivery
     /// off at a door nothing is known about yet, or from the row's own menu.
     @State private var stockwerkStop: Stop?
-    /// How wide this screen is, so the card at the bottom of it can be given a
-    /// real width. Measured rather than assumed: `safeAreaInset` proposes an
-    /// unspecified width to its content, and everything inside the card then
-    /// negotiates against nothing.
-    @State private var screenSize: CGSize = .zero
 
     /// Every door ever answered for. Queried whole rather than per row: this is
     /// a few thousand short rows after years of tours, one pass turns it into
@@ -126,32 +116,23 @@ struct TourView: View {
                 stops(snapshot, visible: visible, floors: floors)
             }
         }
-        // The one slot on this screen for "what to do now", and it holds one
-        // thing at a time. `safeAreaInset`, not an overlay: the list runs
-        // underneath the floating tab bar, so anything pinned to the bottom of
-        // its frame would be drawn behind it. An inset is placed *inside* the
-        // safe area, above the bar, and takes up no room at all when there is
-        // nothing to put in it.
-        .background {
-            GeometryReader { geo in
-                Color.clear
-                    .onAppear { screenSize = geo.size }
-                    .onChange(of: geo.size) { _, new in screenSize = new }
-            }
-        }
+        // `safeAreaInset`, not an overlay: the list runs underneath the
+        // floating tab bar, so anything pinned to the bottom of its frame would
+        // be drawn behind it. An inset is placed *inside* the safe area, above
+        // the bar, and takes up no room at all when there is nothing in it.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
                 if let busy {
                     BusyBanner(text: busy, onCancel: busyTask.map { task in { task.cancel() } })
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                bottomAction(snapshot, floors: floors)
+                finishButton(snapshot)
             }
             .padding(.bottom, 8)
         }
         .animation(.snappy, value: busy)
         .navigationTitle(route.name)
-        .navigationSubtitle(subtitle(snapshot))
+        .navigationSubtitle(snapshot.summary(of: route))
         // Default placement, which on iOS 26 is a search button in the toolbar
         // that opens the field. Pinned into the title's drawer it was a bar
         // permanently parked under the tour's name — a control the driver uses
@@ -305,8 +286,11 @@ struct TourView: View {
         // The moment the last meal is ticked off. Every individual tick already
         // gives its own impact; this is the one that says the tour is done, and
         // it is worth feeling through a coat pocket without looking.
+        //
+        // Only while this is the screen in use: Jetzt gives its own for the
+        // same last tick, and this view stays alive behind it in Touren.
         .sensoryFeedback(.success, trigger: snapshot.isComplete) { was, now in
-            !was && now
+            !was && now && focus.tab == .tours
         }
     }
 
@@ -322,7 +306,6 @@ struct TourView: View {
             number: snapshot.number(stop),
             stockwerk: floors[stop.id],
             isNext: snapshot.nextOpen?.id == stop.id,
-            onCard: cardStop(snapshot)?.id == stop.id,
             onTap: { tapped(stop) },
             onToggleDelivered: { setDelivered(stop, !stop.delivered) },
             onDelete: { deletingStop = stop },
@@ -336,50 +319,18 @@ struct TourView: View {
                 highlighted == stop.id ? Color.accentColor.opacity(0.12) : nil)
     }
 
-    // MARK: - What to do now
+    // MARK: - Finishing
 
-    /// The stop the card is holding, or `nil` when there is no card.
+    /// The button that files the tour, once every meal is handed over.
     ///
-    /// Asked in two places that must never disagree: the card itself, and the
-    /// row for that same stop — which drops the errand from its own text
-    /// precisely because the card is about to repeat it. Read from one function
-    /// so a filtered list cannot end up with a stripped row and no card under
-    /// it to hold what was stripped.
-    private func cardStop(_ snapshot: RouteSnapshot) -> Stop? {
-        guard search.isEmpty, route.status == .active else { return nil }
-        return snapshot.nextOpen
-    }
-
-    /// The bottom slot: the stop being delivered, or the button that ends the
-    /// tour, or nothing at all.
-    ///
-    /// Hidden while the list is filtered. A driver typing a name into the
-    /// search field is looking something up, not standing at a door, and the
-    /// card would cover a third of the results they came for.
+    /// Finishing is deliberately the driver's call (see
+    /// `RouteStore.setDelivered`), but the moment it becomes the only thing left
+    /// to do it should not be buried in an overflow menu. Not on a tour already
+    /// filed, and not while the list is filtered, where it would cover the
+    /// results the driver is looking for.
     @ViewBuilder
-    private func bottomAction(_ snapshot: RouteSnapshot, floors: [UUID: String]) -> some View {
-        if let next = cardStop(snapshot) {
-            NowCard(
-                stop: next,
-                number: snapshot.number(next),
-                stockwerk: floors[next.id],
-                sameDoorCount: snapshot.doorCount(next),
-                onNavigate: { open(next) },
-                onDelivered: { setDelivered(next, true) },
-                onOpen: { editingStop = next },
-                width: max(0, screenSize.width - NowCard.screenInset * 2))
-        } else if !search.isEmpty || route.status != .active {
-            // Nothing at all on a finished tour. The slot is "what to do now",
-            // and a tour in the archive is not something to do — it showed a
-            // live "Navigation / Geliefert" card for a day's work already done,
-            // over a list already struck through, because it was gated on there
-            // being an undelivered stop rather than on the tour being open.
-            EmptyView()
-        } else if snapshot.isComplete && route.status == .active {
-            // Finishing the tour is deliberately still the driver's call (see
-            // `RouteStore.setDelivered`), but the moment it becomes the only
-            // thing left to do it should not be buried in an overflow menu —
-            // and this slot has just been vacated by the last stop.
+    private func finishButton(_ snapshot: RouteSnapshot) -> some View {
+        if search.isEmpty, route.status == .active, snapshot.isComplete {
             Button {
                 save("Die Tour konnte nicht abgeschlossen werden.") {
                     try RouteStore.toggleStatus(route, in: context)
@@ -458,35 +409,6 @@ struct TourView: View {
     }
 
     // MARK: - Text
-
-    /// The line under the tour's name: what is still ahead of the driver.
-    ///
-    /// "Noch 22 Stopps · 18,2 km" rather than "12 von 34 geliefert" — both are
-    /// the same fact, but only one of them is the question anybody has at half
-    /// past eleven. The list's own section header still counts the deliveries,
-    /// for the times the other framing is the one wanted.
-    private func subtitle(_ snapshot: RouteSnapshot) -> String {
-        guard snapshot.customerCount > 0 else { return "Noch keine Stopps" }
-        // A finished tour is history, and history has no "still to drive". It
-        // was answering "Noch 4 Stopps · 11,7 km" under a tour filed in
-        // Erledigt — a forecast about a day that is over, and one that goes on
-        // being wrong for as long as the tour is kept.
-        guard route.status == .active else {
-            let day = route.completedAt ?? route.createdAt
-            let parts = [Format.date(day), Format.stops(snapshot.customerCount),
-                         Format.km(snapshot.totalKm)].compactMap { $0 }
-            return parts.joined(separator: " · ")
-        }
-        guard snapshot.openCount > 0 else {
-            guard let back = Format.km(snapshot.remainingKm), snapshot.remainingKm >= 0.05
-            else { return "Alle geliefert" }
-            return "Alle geliefert · Rückfahrt \(back)"
-        }
-        let stops = "Noch \(Format.stops(snapshot.openCount))"
-        guard let km = Format.km(snapshot.remainingKm), snapshot.remainingKm >= 0.05
-        else { return stops }
-        return "\(stops) · \(km)"
-    }
 
     private func listHeader(_ snapshot: RouteSnapshot, visible: [Stop]) -> String {
         if !search.isEmpty {

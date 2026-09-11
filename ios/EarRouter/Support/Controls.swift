@@ -51,3 +51,45 @@ extension View {
         }
     }
 }
+
+/// A customer's number in a disc — one mark for one stop, the same in the stop
+/// list and on Jetzt, so a number is read the same way on every screen it
+/// appears on.
+///
+/// Three states and one of them loud: the stop the driver is on is a solid
+/// accent disc, every other open stop the same disc at 12%, a delivered one
+/// grey. That gradient is what makes the finished half of a tour recede
+/// without hiding it.
+struct StopNumberBadge: View {
+    enum Kind { case current, open, done }
+
+    let number: Int?
+    let kind: Kind
+    var size: CGFloat = 26
+    var font: Font = .footnote.weight(.semibold).monospacedDigit()
+
+    var body: some View {
+        Text(number.map(String.init) ?? "•")
+            .font(font)
+            .foregroundStyle(foreground)
+            .frame(width: size, height: size)
+            .background(Circle().fill(fill))
+            .accessibilityHidden(true)
+    }
+
+    private var foreground: AnyShapeStyle {
+        switch kind {
+        case .current: AnyShapeStyle(Color.white)
+        case .open: AnyShapeStyle(Color.accentColor)
+        case .done: AnyShapeStyle(.secondary)
+        }
+    }
+
+    private var fill: AnyShapeStyle {
+        switch kind {
+        case .current: AnyShapeStyle(Color.accentColor)
+        case .open: AnyShapeStyle(Color.accentColor.opacity(0.12))
+        case .done: AnyShapeStyle(.quaternary)
+        }
+    }
+}

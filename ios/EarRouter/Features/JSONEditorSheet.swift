@@ -23,6 +23,12 @@ struct JSONEditorSheet: View {
     /// now happens one screen further on, after the driver has actually seen
     /// what the paste was understood to say.
     @State private var review: ReviewPayload?
+    /// Set once the review has written stops to the tour. From then on the
+    /// paste has done its job, and closing the review closes this too — the
+    /// same way the portal import closes itself. Left open, a finished import
+    /// dropped the driver back into a screen of raw JSON with nothing left to
+    /// do on it but find "Schließen".
+    @State private var imported = false
 
     var body: some View {
         NavigationStack {
@@ -65,7 +71,10 @@ struct JSONEditorSheet: View {
                     // Text, not glyphs. Rendered icon-only in the bottom bar,
                     // "copy" and "paste" are two near-identical sheets of paper
                     // and the driver has to guess which is which.
+                    // Greyed out, like Leeren, while there is nothing to act
+                    // on: live over an empty editor they both did nothing.
                     Button("Kopieren") { UIPasteboard.general.string = text }
+                        .disabled(text.isEmpty)
                     // The system paste control rather than reading the
                     // pasteboard ourselves: touching `UIPasteboard.general`
                     // raises iOS's "would like to paste from…" alert every
@@ -86,6 +95,7 @@ struct JSONEditorSheet: View {
                     // placeholder back; a driver who really means to clear the
                     // round can still type the two brackets, and is asked.
                     Button("Leeren", role: .destructive) { text = "" }
+                        .disabled(text.isEmpty)
                 }
             }
             .errorAlert($error)
@@ -109,8 +119,8 @@ struct JSONEditorSheet: View {
         }
         // The parsed list, before any of it is applied. Full screen, because
         // checking thirty stops is the job it is there for.
-        .sheet(item: $review) { payload in
-            ImportReviewView(route: route, entries: payload.entries)
+        .sheet(item: $review, onDismiss: { if imported { dismiss() } }) { payload in
+            ImportReviewView(route: route, entries: payload.entries) { imported = true }
         }
     }
 
