@@ -8,10 +8,16 @@ import Foundation
 /// "+43 1 234 56 78", "01 234 5678", "0043 664 …" — and the detector already
 /// knows all of them.
 ///
-/// Seven digits at the least. The notes are full of short numbers that are not
-/// telephone numbers — a door code, "Tür 14", "Stiege 3", "2. Stock", a
-/// four-digit postcode — and the shortest real Austrian number, a Vienna
-/// landline without its area code, is seven.
+/// Two rules on top of the detector, because the detector is generous:
+///
+/// * **Seven digits at the least.** The notes are full of short numbers that
+///   are not telephone numbers — a door code, "Tür 14", "Stiege 3", "2. Stock",
+///   a four-digit postcode.
+/// * **A leading 0, or a "+".** Every number that can be dialled from an
+///   Austrian mobile starts with one or the other — "0664 …", "01 …",
+///   "+43 …", "0043 …". A customer number or an order reference does not, and
+///   on the phone the detector happily offered "KDNr 26064642" as a number to
+///   call.
 enum PhoneNumbers {
     struct Found: Hashable, Identifiable {
         /// As written in the note, so the button shows the number the driver
@@ -39,7 +45,9 @@ enum PhoneNumbers {
             guard let range = Range(match.range, in: text) else { continue }
             let written = (match.phoneNumber ?? String(text[range])).trimmed
             let digits = written.filter(\.isNumber)
-            guard (7...15).contains(digits.count) else { continue }
+            guard (7...15).contains(digits.count),
+                  written.hasPrefix("+") || digits.hasPrefix("0")
+            else { continue }
             let found = Found(
                 display: written,
                 dial: (written.hasPrefix("+") ? "+" : "") + digits)

@@ -146,7 +146,7 @@ extension Stop {
     /// Trimmed to street and housenumber. Stiege, Tür and Parzelle are things
     /// the city's register knows and no navigation app does, so
     /// "Gentzgasse 129/1/2/23" sent whole is a search that either fails or
-    /// quietly guesses. The Stiege stays on the row and on the card, which is
+    /// quietly guesses. The Stiege stays on the row and on Jetzt, which is
     /// where the driver reads it — at the door, not at the wheel. `normalize`
     /// first, so a typed "Hauptstr. 5" arrives as "Hauptstraße 5".
     ///

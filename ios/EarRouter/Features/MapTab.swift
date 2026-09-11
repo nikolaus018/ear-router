@@ -120,7 +120,7 @@ struct MapTab: View {
     /// What changes only the *colour* of a pin: a delivery ticked off, a fixed
     /// stop switched out, an address re-checked into a better precision. These
     /// rebuild the pins but deliberately leave the camera alone — a tick in the
-    /// Routen tab must not yank the map the driver is looking at.
+    /// Touren or Jetzt tab must not yank the map the driver is looking at.
     ///
     /// An explicit per-stop key rather than a count, so swapping which stop is
     /// delivered still registers. Reading these properties here is what
@@ -454,7 +454,7 @@ struct MapTab: View {
         let shape = shapeKey
         guard shape != builtShape, shape != pendingShape else {
             // The line is current. Colours may still have moved — a delivery
-            // ticked off in the Routen tab is exactly the change that reaches
+            // ticked off in Touren or Jetzt is exactly the change that reaches
             // here without altering the shape of anything.
             rebuildPins(for: route)
             return

@@ -32,6 +32,23 @@ struct PhoneNumberTests {
         #expect(PhoneNumbers.find(in: "Abgeben bei 1210 Wien, Tür 7").isEmpty)
     }
 
+    /// What else a note is full of that is long enough to be mistaken for a
+    /// telephone number: a date, a time, a customer number, an IBAN. The
+    /// detector leaves every one of them alone, and this pins that it does.
+    @Test func ignoresDatesTimesAndAccountNumbers() {
+        #expect(PhoneNumbers.find(in: "Ab 04.09.2026 im Urlaub").isEmpty)
+        #expect(PhoneNumbers.find(in: "Nicht vor 11:30 läuten").isEmpty)
+        #expect(PhoneNumbers.find(in: "KDNr 26064642").isEmpty)
+        #expect(PhoneNumbers.find(in: "IBAN AT61 1904 3002 3457 3201").isEmpty)
+    }
+
+    /// "+43 (0) 664 …" is how a number is written for people both in and out
+    /// of the country; the bracketed trunk zero must not be dialled.
+    @Test func dropsTheBracketedTrunkZero() throws {
+        let found = try #require(PhoneNumbers.find(in: "Sohn: +43 (0) 664 7654321").first)
+        #expect(found.dial == "+436647654321")
+    }
+
     @Test func aNoteWithNoDigitsHasNoNumbers() {
         #expect(PhoneNumbers.find(in: "Hund im Hof, bitte laut klingeln").isEmpty)
         #expect(PhoneNumbers.find(in: nil).isEmpty)

@@ -76,7 +76,7 @@ struct RouteSnapshot {
                     // made *out* of order drag the mark forward past doors that
                     // are still owed. A customer met on the street and handed
                     // their meal twenty stops early used to move it to their
-                    // position, so the card paired "Noch 22 Stopps" with the
+                    // position, so the screen paired "Noch 22 Stopps" with the
                     // four kilometres between stop 25 and the depot — a
                     // distance twenty-two doors cannot fit in, on the one line
                     // a driver plans the next hour from.

@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The handful of sentences this app writes about a stop, in one place.
 ///
-/// The stop row, the card at the bottom of the tour, the map's callout and the
+/// The stop row, the Jetzt tab, the map's callout and the
 /// import review all describe the same customer, and they had each grown their
 /// own way of saying it — one set them as filled chips, one as coloured
 /// sentences, one as plain `Label`s. A driver reading the same fact in three

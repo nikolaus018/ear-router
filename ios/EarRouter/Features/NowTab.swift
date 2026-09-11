@@ -8,7 +8,7 @@ import SwiftData
 /// It repeated the row directly above it, so the row had to strip itself to
 /// make room. And it had no ceiling of its own, so at a large text size it had
 /// to go brief and hand half its facts back to that row. A tab of its own ends
-/// all three: the errand gets big type, the whole note and two buttons a thumb
+/// all three: the errand gets room for the whole note and two buttons a thumb
 /// cannot miss, and the tour list goes back to being only a list.
 ///
 /// It is not the "Heute" tab this app once had and dropped. That rendered the
@@ -270,6 +270,10 @@ struct NowTab: View {
     private func offerUndo(_ tick: DeliveredTick) {
         undoTask?.cancel()
         undo = tick
+        // Said out loud as well: VoiceOver does not notice a banner arriving
+        // at the bottom of the screen on its own, and the stop it was on has
+        // just been replaced by the next one.
+        AccessibilityNotification.Announcement("„\(tick.name)“ zugestellt").post()
         if stockwerkStop == nil { startUndoCountdown() }
     }
 
@@ -331,6 +335,15 @@ private struct NowStopCard: View {
 
     @ScaledMetric(relativeTo: .body) private var badge: CGFloat = 28
     @Environment(\.openURL) private var openURL
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// How far the lines under the name are set in — to the name's own column,
+    /// except at an accessibility text size. There the badge has grown too,
+    /// and an indent its width cost the address and the note a fifth of the
+    /// card: "1 Stunde / vorher anrufen" broke over two lines and pushed
+    /// "Geliefert" below the fold. The full width goes back to the words, the
+    /// same trade the stop row makes at those sizes.
+    private var indent: CGFloat { typeSize.isAccessibilitySize ? 0 : badge + 12 }
     /// Briefly true after the address was copied, so the copy button can say
     /// so in place. The card is rebuilt for every stop, so this never carries
     /// over to the next one.
@@ -360,6 +373,7 @@ private struct NowStopCard: View {
                 Text(stop.kunde ?? "Stopp")
                     .font(.title2.bold())
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -370,7 +384,9 @@ private struct NowStopCard: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        copyButton
+                        // Only with a street to copy: a stop carrying a
+                        // postcode alone would have copied an empty string.
+                        if !(stop.strasse?.trimmed ?? "").isEmpty { copyButton }
                     }
                 }
                 if sameDoorCount > 1 {
@@ -380,7 +396,7 @@ private struct NowStopCard: View {
                         .padding(.top, 2)
                 }
             }
-            .padding(.leading, badge + 12)
+            .padding(.leading, indent)
         }
     }
 
@@ -445,7 +461,7 @@ private struct NowStopCard: View {
                         .font(.footnote)
                 }
             }
-            .padding(.leading, badge + 12)
+            .padding(.leading, indent)
         }
     }
 

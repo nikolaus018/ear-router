@@ -104,10 +104,8 @@ struct BackupView: View {
             presenting: pending
         ) { archive in
             Button("Dazu laden") { apply(archive, mode: .merge) }
-            // The ellipsis is doing real work here: the app's tint is red, so
-            // a destructive role looks exactly like the safe option beside it,
-            // and this is the only thing on screen saying that one of the two
-            // buttons stops to ask again.
+            // The ellipsis is doing real work here: it is the only thing on
+            // screen saying that one of the two buttons stops to ask again.
             Button("Alles ersetzen …", role: .destructive) { confirmingReplace = true }
             Button("Abbrechen", role: .cancel) { pending = nil }
         } message: { archive in
