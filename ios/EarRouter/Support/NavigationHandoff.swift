@@ -13,6 +13,14 @@ import Foundation
 /// This used to send an exactly-known stop as a point. It is the address now
 /// for every stop; the point is kept only as the fallback for a stop that has
 /// no address text at all — see `url(for:)`.
+///
+/// Sending the register's own point for a Stiege was weighed and turned down.
+/// The register does place each Stiege of a Gemeindebau separately — up to
+/// half a kilometre apart under one address at Rennbahnweg 27 — but a Stiege
+/// is just as often an internal staircase of one building whose only way in
+/// is the street door at the address, and a point drives the driver round to
+/// the wrong side of it. The address is right far more often, so it is the
+/// only thing sent.
 enum NavigationHandoff {
 
     enum Provider: String, CaseIterable, Identifiable {
