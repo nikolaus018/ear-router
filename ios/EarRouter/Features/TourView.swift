@@ -1,6 +1,5 @@
 import SwiftUI
 import SwiftData
-import UniformTypeIdentifiers
 
 /// One tour: its stops in driving order, and everything you can do to them.
 ///
@@ -30,9 +29,6 @@ struct TourView: View {
     @State private var addingStop = false
     @State private var showingJSON = false
     @State private var showingGourmetImport = false
-    /// The office's own file, on its way to being checked over.
-    @State private var pickingFile = false
-    @State private var fileReview: [CustomerJSON]?
     @State private var showingLadeliste = false
     @State private var renaming = false
     @State private var newName = ""
@@ -163,33 +159,6 @@ struct TourView: View {
         .sheet(isPresented: $showingGourmetImport) {
             GourmetImportSheet(mode: .existing(route))
         }
-        // A file and a paste are two ways of saying the same thing, so they
-        // arrive at the same screen: the list, as understood, before any of it
-        // touches the tour.
-        .sheet(item: fileReviewBinding) { payload in
-            ImportReviewView(route: route, entries: payload.entries)
-        }
-        .fileImporter(
-            isPresented: $pickingFile,
-            // Broad on purpose. A file arriving by mail or AirDrop is regularly
-            // typed as plain `data` or `text` whatever its extension says, and a
-            // picker that greys out the one file the driver came to open is
-            // worse than one that opens it and explains what it found. The
-            // format is decided on the bytes in `Tagesliste`, not on the type.
-            allowedContentTypes: [
-                .commaSeparatedText, .tabSeparatedText, .delimitedText,
-                .plainText, .text, .spreadsheet, .data,
-            ],
-            allowsMultipleSelection: false
-        ) { outcome in
-            switch outcome {
-            case .success(let urls):
-                if let url = urls.first { readList(url) }
-            case .failure(let failure):
-                error = AppError.message(
-                    "Die Datei konnte nicht geöffnet werden. \(failure.localizedDescription)")
-            }
-        }
         .sheet(isPresented: $showingLadeliste) {
             LadelisteView(route: route)
         }
@@ -278,7 +247,6 @@ struct TourView: View {
                     EmptyStopsPrompt(
                         onAdd: { addingStop = true },
                         onPortal: { showingGourmetImport = true },
-                        onImportFile: { pickingFile = true },
                         onPaste: { showingJSON = true })
                 }
             }
@@ -358,14 +326,6 @@ struct TourView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("Ladeliste", systemImage: "checklist") { showingLadeliste = true }
-                // Two names for two things. These were "Tagesliste aus Datei"
-                // and "Tagesliste einsetzen", which read as one feature worded
-                // twice — and the driver has to pick between them at the moment
-                // they are holding one or the other. What actually tells them
-                // apart is the format, so that is what they are called.
-                Button("Tabelle importieren", systemImage: "tablecells") {
-                    pickingFile = true
-                }
                 Button("JSON einsetzen", systemImage: "curlybraces") {
                     showingJSON = true
                 }
@@ -637,41 +597,6 @@ struct TourView: View {
         }
     }
 
-    /// `sheet(item:)` needs an identity, and a bare array has none.
-    private struct FileReview: Identifiable {
-        let id = UUID()
-        let entries: [CustomerJSON]
-    }
-
-    private var fileReviewBinding: Binding<FileReview?> {
-        Binding(
-            get: { fileReview.map { FileReview(entries: $0) } },
-            set: { if $0 == nil { fileReview = nil } })
-    }
-
-    /// Reads the office's file and hands what it says to the review screen.
-    ///
-    /// Nothing is written and no address is looked up here: this is a decode,
-    /// and the driver sees the result before any of it becomes a stop.
-    private func readList(_ url: URL) {
-        // A file from the document picker lives outside this app's sandbox and
-        // the permission to read it has to be taken and given back explicitly —
-        // without this the read fails on anything in iCloud Drive, which is
-        // exactly where a file mailed to a phone ends up.
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-
-        do {
-            let data = try Data(contentsOf: url)
-            fileReview = try Tagesliste.parse(data, filename: url.lastPathComponent)
-        } catch let failure as AppError {
-            error = failure
-        } catch {
-            self.error = AppError.message(
-                "Die Datei konnte nicht gelesen werden. \(error.localizedDescription)")
-        }
-    }
-
     private func open(_ stop: Stop) {
         guard let url = NavigationHandoff.url(for: stop) else { return }
         openURL(url)
@@ -708,7 +633,6 @@ struct EmptyStopsPrompt: View {
     /// list most often arrives, and the one path the tour's menu had and this
     /// prompt, the screen a new tour opens on, did not.
     let onPortal: () -> Void
-    let onImportFile: () -> Void
     let onPaste: () -> Void
 
     var body: some View {
@@ -718,7 +642,7 @@ struct EmptyStopsPrompt: View {
                     .font(.headline)
                 Text(
                     "Einzeln hinzufügen, oder die ganze Tagesliste auf einmal — vom "
-                        + "Zusteller-Portal, als Excel-Tabelle vom Büro oder als JSON-Liste.")
+                        + "Zusteller-Portal oder als JSON-Liste.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -730,16 +654,9 @@ struct EmptyStopsPrompt: View {
                 }
                 .buttonStyle(.borderedProminent)
 
-                // Both secondary paths bordered, and the style set on the stack
-                // rather than on the last button in it — written per-button it
-                // landed on "JSON einsetzen" alone, so the two ways of doing
-                // the same thing came out wearing different buttons.
                 VStack(spacing: 8) {
                     Button(action: onPortal) {
                         WideButtonLabel("Vom Zusteller-Portal", systemImage: "arrow.down.circle")
-                    }
-                    Button(action: onImportFile) {
-                        WideButtonLabel("Tabelle importieren", systemImage: "tablecells")
                     }
                     Button(action: onPaste) {
                         WideButtonLabel("JSON einsetzen", systemImage: "curlybraces")

@@ -186,10 +186,7 @@ struct JSONEditorSheet: View {
     /// has typed or pasted text and the only honest next step is showing them
     /// what it was understood to mean.
     ///
-    /// This screen takes a JSON list and nothing else. A table from the office
-    /// is a file, and files are `Tagesliste aus Datei` — a different action,
-    /// with a file picker, because they are two different things a driver
-    /// reaches for on two different days.
+    /// This screen takes a JSON list and nothing else.
     private func submit() {
         do {
             review = ReviewPayload(entries: try RouteStore.parseImport(text))

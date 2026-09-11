@@ -6,7 +6,7 @@ import SwiftData
 ///
 /// Three steps, one screen: sign in once (the Keychain remembers it after
 /// that), pick the date and the matching tour, then load. What comes back
-/// goes to the same `ImportReviewView` a JSON paste or a file does — reviewed,
+/// goes to the same `ImportReviewView` a JSON paste does — reviewed,
 /// corrected and only then saved, exactly like every other bulk import this
 /// app has. Nothing here writes to a route directly.
 ///

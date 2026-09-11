@@ -3,15 +3,15 @@ import SwiftData
 
 /// The day's list, as understood, before any of it touches the tour.
 ///
-/// Every way stops arrive in bulk goes through here — a pasted JSON list and a
-/// file from the office both end up on this screen — and nothing is written,
+/// Every way stops arrive in bulk goes through here — a pasted JSON list and
+/// the Zusteller-Portal import both end up on this screen — and nothing is written,
 /// looked up or reordered until the driver says so. That ordering is the whole
 /// point of the screen.
 ///
 /// Before it, the sequence was: paste, wait out thirty throttled address
 /// lookups, and *then* read a report saying three entries were rejected and two
 /// resolved somewhere approximate. The corrections had to be made by editing
-/// raw JSON — or, from a file, by going back to a computer — and the thirty
+/// raw JSON — and the thirty
 /// lookups paid for again. Everything that report could say about an entry is
 /// knowable here, before a single request goes out: a missing name, an address
 /// with no street, a postcode that is not a Vienna district. So it is said
@@ -20,10 +20,10 @@ import SwiftData
 /// It is also the answer to the plainer problem, which is that a list from
 /// somebody else is not always right. A customer who cancelled this morning, a
 /// name spelled two ways, a Hinweis that belongs on the stop below — this is
-/// where a driver fixes those, on their own list, without touching the file.
+/// where a driver fixes those, on their own list.
 struct ImportReviewView: View {
     let route: Route
-    /// What the paste or the file was understood to say. Owned from here on:
+    /// What the import was understood to say. Owned from here on:
     /// the driver's edits are theirs, and nothing writes back to the source.
     @State var entries: [Entry]
     /// Fired once the entries have actually been written to `route` — after
