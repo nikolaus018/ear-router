@@ -229,7 +229,7 @@ enum RouteStore {
             precision: precision, pinned: pinned)
         stop.route = route
         context.insert(stop)
-        route.needsOptimize = true
+        route.markRoutingStale()
         try context.save()
 
         await RouteOptimizer.optimizeBestEffort(route, in: context)
@@ -288,7 +288,7 @@ enum RouteStore {
         stop.telefon = telefon?.trimmed.nilIfEmpty
 
         if moved, let route = stop.route {
-            route.needsOptimize = true
+            route.markRoutingStale()
             try context.save()
             await RouteOptimizer.optimizeBestEffort(route, in: context)
         } else {
@@ -299,7 +299,7 @@ enum RouteStore {
     static func deleteStop(_ stop: Stop, in context: ModelContext) async throws {
         let route = stop.route
         context.delete(stop)
-        route?.needsOptimize = true
+        route?.markRoutingStale()
         try context.save()
         if let route {
             await RouteOptimizer.optimizeBestEffort(route, in: context)
@@ -326,7 +326,7 @@ enum RouteStore {
         guard stop.kind.isFixed else { return }
         stop.excluded = excluded
         guard let route = stop.route else { return try context.save() }
-        route.needsOptimize = true
+        route.markRoutingStale()
         try context.save()
         await RouteOptimizer.optimizeBestEffort(route, in: context)
     }
@@ -344,7 +344,7 @@ enum RouteStore {
         stop.precision = nil
         stop.pinned = true
         guard let route = stop.route else { return try context.save() }
-        route.needsOptimize = true
+        route.markRoutingStale()
         try context.save()
         await RouteOptimizer.optimizeBestEffort(route, in: context)
     }
@@ -421,7 +421,7 @@ enum RouteStore {
 
         guard moved else { return (improved, unchanged, failed, true) }
 
-        route.needsOptimize = true
+        route.markRoutingStale()
         do {
             try context.save()
         } catch {
@@ -671,7 +671,7 @@ enum RouteStore {
         }
 
         if moved {
-            route.needsOptimize = true
+            route.markRoutingStale()
         }
         try context.save()
         if moved {

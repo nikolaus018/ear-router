@@ -480,6 +480,14 @@ struct MapTab: View {
         lineGeneration += 1
         let generation = lineGeneration
 
+        // Do not leave yesterday's line on screen while its replacement is
+        // being prepared.  Besides being misleading after a deletion, MapKit
+        // can briefly reuse the old overlay's stroke during that transition,
+        // which is why the route sometimes looked grey.  Pins were already
+        // rebuilt above, so the map remains useful while the accurate line is
+        // calculated off the main actor.
+        line = []
+
         guard flat.count >= 4 else {
             line = []
             buildingLine = false
@@ -644,7 +652,11 @@ struct MapTab: View {
         guard stop.kind == .customer else { return .fixture }
         if stop.delivered { return .delivered }
         if stop.precision != nil { return .attention }
-        return .accentColor
+        // MapKit may resolve `accentColor` from a transient annotation host
+        // while it diffs a large set of markers, which falls back to grey.
+        // The app's accent is deliberately blue, so state that directly for
+        // map content rather than inheriting that host's tint.
+        return .blue
     }
 
     private static func visualState(for stop: Stop) -> Int {
@@ -712,7 +724,7 @@ private struct RouteMapCanvas: View {
                         style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
                 MapPolyline(coordinates: line)
                     .stroke(
-                        Color.accentColor,
+                        Color.blue,
                         style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
             }
 

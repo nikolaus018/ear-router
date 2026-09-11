@@ -50,6 +50,17 @@ final class Route {
 }
 
 extension Route {
+    /// Invalidates the part of a route that is only true for one particular
+    /// set of stops: its driving geometry.  A stop can disappear from the
+    /// list immediately while OSRM is still working; keeping the old geometry
+    /// in that interval made the map draw a line through a stop that no longer
+    /// exists.  Clearing it makes the map truthful straight away and lets the
+    /// fresh line arrive as one atomic replacement.
+    func markRoutingStale() {
+        needsOptimize = true
+        geometryFlat = []
+    }
+
     /// Stops in the order they are shown, which is not necessarily the order
     /// they are driven in — see `RouteOptimizer.displayOrder`.
     var orderedStops: [Stop] {
