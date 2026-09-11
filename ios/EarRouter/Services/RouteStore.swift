@@ -10,13 +10,22 @@ struct CustomerJSON: Codable, Sendable, Hashable {
     var plz: String
     var paket: String?
     var notiz: String?
+    /// The customer's own number — from the Zusteller-Portal's
+    /// `customer.phone` when the entry came from there, typed by hand
+    /// otherwise. Optional like `paket` and `notiz`: most sources this app
+    /// reads from, a pasted list included, simply do not carry one.
+    var telefon: String?
 
-    init(kunde: String, strasse: String, plz: String, paket: String?, notiz: String?) {
+    init(
+        kunde: String, strasse: String, plz: String, paket: String?, notiz: String?,
+        telefon: String? = nil
+    ) {
         self.kunde = kunde
         self.strasse = strasse
         self.plz = plz
         self.paket = paket
         self.notiz = notiz
+        self.telefon = telefon
     }
 
     /// A missing required key is a *missing field on one entry*, not a
@@ -38,6 +47,7 @@ struct CustomerJSON: Codable, Sendable, Hashable {
         plz = try c.decodeIfPresent(String.self, forKey: .plz) ?? ""
         paket = try c.decodeIfPresent(String.self, forKey: .paket)
         notiz = try c.decodeIfPresent(String.self, forKey: .notiz)
+        telefon = try c.decodeIfPresent(String.self, forKey: .telefon)
     }
 }
 
@@ -179,12 +189,12 @@ enum RouteStore {
     static func addStop(
         to route: Route,
         kunde: String, strasse: String, plz: String,
-        paket: String?, notiz: String?,
+        paket: String?, notiz: String?, telefon: String? = nil,
         coordinate: (lat: Double, lon: Double)? = nil,
         in context: ModelContext
     ) async throws -> Stop {
         try validateCustomerFields(
-            kunde: kunde, strasse: strasse, paket: paket, notiz: notiz)
+            kunde: kunde, strasse: strasse, paket: paket, notiz: notiz, telefon: telefon)
         guard Postcodes.isValid(plz) else {
             throw AppError.message("Keine gültige Postleitzahl: \(plz)")
         }
@@ -212,6 +222,7 @@ enum RouteStore {
         let stop = Stop(
             kind: .customer, kunde: kunde.trimmed, strasse: strasse.trimmed, plz: plz,
             paket: paket?.trimmed.nilIfEmpty, notiz: notiz?.trimmed.nilIfEmpty,
+            telefon: telefon?.trimmed.nilIfEmpty,
             lat: lat, lon: lon,
             // Appended at the end until the optimizer places it properly.
             orderIndex: nextOrderIndex(in: route),
@@ -235,13 +246,13 @@ enum RouteStore {
     static func updateStop(
         _ stop: Stop,
         kunde: String, strasse: String, plz: String,
-        paket: String?, notiz: String?,
+        paket: String?, notiz: String?, telefon: String? = nil,
         coordinate: (lat: Double, lon: Double)? = nil,
         forceGeocode: Bool = false,
         in context: ModelContext
     ) async throws {
         try validateCustomerFields(
-            kunde: kunde, strasse: strasse, paket: paket, notiz: notiz)
+            kunde: kunde, strasse: strasse, paket: paket, notiz: notiz, telefon: telefon)
         guard Postcodes.isValid(plz) else {
             throw AppError.message("Keine gültige Postleitzahl: \(plz)")
         }
@@ -274,6 +285,7 @@ enum RouteStore {
         stop.plz = plz
         stop.paket = paket?.trimmed.nilIfEmpty
         stop.notiz = notiz?.trimmed.nilIfEmpty
+        stop.telefon = telefon?.trimmed.nilIfEmpty
 
         if moved, let route = stop.route {
             route.needsOptimize = true
@@ -446,7 +458,7 @@ enum RouteStore {
         let payload = route.customerStops.map {
             CustomerJSON(
                 kunde: $0.kunde ?? "", strasse: $0.strasse ?? "", plz: $0.plz ?? "",
-                paket: $0.paket ?? "", notiz: $0.notiz ?? "")
+                paket: $0.paket ?? "", notiz: $0.notiz ?? "", telefon: $0.telefon ?? "")
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -510,7 +522,8 @@ enum RouteStore {
             }
             do {
                 try validateCustomerFields(
-                    kunde: kunde, strasse: strasse, paket: e.paket, notiz: e.notiz)
+                    kunde: kunde, strasse: strasse, paket: e.paket, notiz: e.notiz,
+                    telefon: e.telefon)
             } catch let err as AppError {
                 result.validationFailures.append((label, err.message))
                 continue
@@ -518,7 +531,8 @@ enum RouteStore {
             normalized.append(
                 CustomerJSON(
                     kunde: kunde, strasse: strasse, plz: plz,
-                    paket: e.paket?.trimmed.nilIfEmpty, notiz: e.notiz?.trimmed.nilIfEmpty))
+                    paket: e.paket?.trimmed.nilIfEmpty, notiz: e.notiz?.trimmed.nilIfEmpty,
+                    telefon: e.telefon?.trimmed.nilIfEmpty))
         }
 
         let existing = route.customerStops
@@ -549,6 +563,7 @@ enum RouteStore {
             if stop.plz != entry.plz { stop.plz = entry.plz; changed = true }
             if stop.paket != entry.paket { stop.paket = entry.paket; changed = true }
             if stop.notiz != entry.notiz { stop.notiz = entry.notiz; changed = true }
+            if stop.telefon != entry.telefon { stop.telefon = entry.telefon; changed = true }
             if changed { result.updated += 1 }
         }
 
@@ -607,6 +622,7 @@ enum RouteStore {
                 stop.plz = entry.plz
                 stop.paket = entry.paket
                 stop.notiz = entry.notiz
+                stop.telefon = entry.telefon
                 stop.lat = hit.lat
                 stop.lon = hit.lon
                 stop.precision = precision
@@ -616,6 +632,7 @@ enum RouteStore {
                 let stop = Stop(
                     kind: .customer, kunde: entry.kunde, strasse: entry.strasse,
                     plz: entry.plz, paket: entry.paket, notiz: entry.notiz,
+                    telefon: entry.telefon,
                     lat: hit.lat, lon: hit.lon,
                     orderIndex: nextIndex,
                     precision: precision)
@@ -669,17 +686,19 @@ enum RouteStore {
     /// service. Nominatim enforces its usage policy per *client*, so a client
     /// that sends it garbage risks the whole app getting blocked.
     nonisolated static func validateCustomerFields(
-        kunde: String, strasse: String, paket: String?, notiz: String?
+        kunde: String, strasse: String, paket: String?, notiz: String?, telefon: String? = nil
     ) throws {
         try checkLength(kunde, "Kunde", FieldLimits.kunde)
         try checkLength(strasse, "Straße", FieldLimits.strasse)
         if let paket { try checkLength(paket, "Paket", FieldLimits.paket) }
         if let notiz { try checkLength(notiz, "Notiz", FieldLimits.notiz) }
+        if let telefon { try checkLength(telefon, "Telefon", FieldLimits.telefon) }
 
         try checkNoControlChars(kunde, "Kunde", allowNewlines: false)
         try checkNoControlChars(strasse, "Straße", allowNewlines: false)
         if let paket { try checkNoControlChars(paket, "Paket", allowNewlines: false) }
         if let notiz { try checkNoControlChars(notiz, "Notiz", allowNewlines: true) }
+        if let telefon { try checkNoControlChars(telefon, "Telefon", allowNewlines: false) }
     }
 
     private nonisolated static func checkLength(
@@ -839,7 +858,8 @@ enum RouteStore {
             let plz = e.plz.trimmed
             guard !kunde.isEmpty, !strasse.isEmpty, !plz.isEmpty,
                   (try? validateCustomerFields(
-                    kunde: kunde, strasse: strasse, paket: e.paket, notiz: e.notiz)) != nil
+                    kunde: kunde, strasse: strasse, paket: e.paket, notiz: e.notiz,
+                    telefon: e.telefon)) != nil
             else {
                 anyFailed = true
                 continue
@@ -847,7 +867,8 @@ enum RouteStore {
             valid.append(
                 CustomerJSON(
                     kunde: kunde, strasse: strasse, plz: plz,
-                    paket: e.paket?.trimmed.nilIfEmpty, notiz: e.notiz?.trimmed.nilIfEmpty))
+                    paket: e.paket?.trimmed.nilIfEmpty, notiz: e.notiz?.trimmed.nilIfEmpty,
+                    telefon: e.telefon?.trimmed.nilIfEmpty))
         }
 
         // A round with any failure in it deletes nothing — the import says so

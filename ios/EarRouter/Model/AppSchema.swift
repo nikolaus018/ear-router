@@ -18,11 +18,12 @@ import SwiftData
 enum EarRouterSchemaV1: VersionedSchema {
     static var versionIdentifier: Schema.Version { Schema.Version(1, 0, 0) }
 
-    /// The two models as they were before `StockwerkNote` existed. `Route` and
-    /// `Stop` themselves did not change in V2, so this pins the live types
-    /// rather than copies of them — what makes this V1 is the entity that is
-    /// *absent* from the list.
-    static var models: [any PersistentModel.Type] { [Route.self, Stop.self] }
+    /// The two models as they were before `StockwerkNote` existed. These are
+    /// deliberately the frozen V3 copies rather than the live types: a schema
+    /// version must never silently acquire attributes added in a later build.
+    static var models: [any PersistentModel.Type] {
+        [EarRouterSchemaV3.Route.self, EarRouterSchemaV3.Stop.self]
+    }
 }
 
 /// V2 added `DoorNote` — the floor, keyed by the *front door*.
@@ -42,7 +43,7 @@ enum EarRouterSchemaV2: VersionedSchema {
     static var versionIdentifier: Schema.Version { Schema.Version(2, 0, 0) }
 
     static var models: [any PersistentModel.Type] {
-        [Route.self, Stop.self, DoorNote.self]
+        [EarRouterSchemaV3.Route.self, EarRouterSchemaV3.Stop.self, DoorNote.self]
     }
 
     /// V2's floor table, keyed per door. Nested, so it keeps the entity name
@@ -81,12 +82,128 @@ enum EarRouterSchemaV3: VersionedSchema {
     static var models: [any PersistentModel.Type] {
         [Route.self, Stop.self, StockwerkNote.self]
     }
+
+    /// The models as shipped in V3. Keep these copies frozen: the V4 phone
+    /// field belongs only to the live models, otherwise a V3 store can no
+    /// longer be identified as the source of a migration.
+    @Model
+    final class Route {
+        var id: UUID = UUID()
+        var name: String = ""
+        var statusRaw: String = RouteStatus.active.rawValue
+        var createdAt: Date = Date()
+        var completedAt: Date?
+        var geometryFlat: [Double] = []
+        var needsOptimize: Bool = false
+
+        @Relationship(deleteRule: .cascade, inverse: \Stop.route)
+        var stops: [Stop] = []
+
+        init(name: String = "") {
+            self.id = UUID()
+            self.name = name
+            self.statusRaw = RouteStatus.active.rawValue
+            self.createdAt = Date()
+            self.geometryFlat = []
+            self.needsOptimize = false
+            self.stops = []
+        }
+    }
+
+    @Model
+    final class Stop {
+        var id: UUID = UUID()
+        var kindRaw: String = StopKind.customer.rawValue
+        var kunde: String?
+        var strasse: String?
+        var plz: String?
+        var paket: String?
+        var notiz: String?
+        var lat: Double = 0
+        var lon: Double = 0
+        var orderIndex: Int = 0
+        var delivered: Bool = false
+        var nextLegKm: Double?
+        var nextLegMin: Double?
+        var createdAt: Date = Date()
+        var excluded: Bool = false
+        var pinned: Bool = false
+        var precisionRaw: String?
+        var route: Route?
+
+        init(
+            kind: StopKind = .customer,
+            kunde: String? = nil,
+            strasse: String? = nil,
+            plz: String? = nil,
+            paket: String? = nil,
+            notiz: String? = nil,
+            lat: Double = 0,
+            lon: Double = 0,
+            orderIndex: Int = 0,
+            precision: Precision? = nil,
+            pinned: Bool = false,
+            excluded: Bool = false
+        ) {
+            self.id = UUID()
+            self.kindRaw = kind.rawValue
+            self.kunde = kunde
+            self.strasse = strasse
+            self.plz = plz
+            self.paket = paket
+            self.notiz = notiz
+            self.lat = lat
+            self.lon = lon
+            self.orderIndex = orderIndex
+            self.delivered = false
+            self.createdAt = Date()
+            self.excluded = excluded
+            self.pinned = pinned
+            self.precisionRaw = precision?.rawValue
+        }
+    }
+
+    @Model
+    final class StockwerkNote {
+        var id: UUID = UUID()
+        var key: String = ""
+        var kunde: String = ""
+        var strasse: String = ""
+        var plz: String = ""
+        var stockwerk: String?
+        var dontAsk: Bool = false
+        var updatedAt: Date = Date()
+
+        init(
+            key: String = "", kunde: String = "", strasse: String = "", plz: String = "",
+            stockwerk: String? = nil, dontAsk: Bool = false
+        ) {
+            self.id = UUID()
+            self.key = key
+            self.kunde = kunde
+            self.strasse = strasse
+            self.plz = plz
+            self.stockwerk = stockwerk
+            self.dontAsk = dontAsk
+            self.updatedAt = Date()
+        }
+    }
+}
+
+/// V4 adds the optional customer phone number to `Stop`.
+enum EarRouterSchemaV4: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(4, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [Route.self, Stop.self, StockwerkNote.self]
+    }
 }
 
 /// How the store gets from one schema version to the next.
 enum EarRouterMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [EarRouterSchemaV1.self, EarRouterSchemaV2.self, EarRouterSchemaV3.self]
+        [EarRouterSchemaV1.self, EarRouterSchemaV2.self, EarRouterSchemaV3.self,
+         EarRouterSchemaV4.self]
     }
 
     /// Both lightweight, because adding and dropping a standalone entity takes
@@ -97,12 +214,13 @@ enum EarRouterMigrationPlan: SchemaMigrationPlan {
         [
             .lightweight(fromVersion: EarRouterSchemaV1.self, toVersion: EarRouterSchemaV2.self),
             .lightweight(fromVersion: EarRouterSchemaV2.self, toVersion: EarRouterSchemaV3.self),
+            .lightweight(fromVersion: EarRouterSchemaV3.self, toVersion: EarRouterSchemaV4.self),
         ]
     }
 }
 
 enum AppSchema {
-    static let current = Schema(versionedSchema: EarRouterSchemaV3.self)
+    static let current = Schema(versionedSchema: EarRouterSchemaV4.self)
 
     /// Opens the store. `url` is only for tests — the app always wants the
     /// default location, which is the same file the unversioned container used,

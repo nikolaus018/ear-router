@@ -31,20 +31,20 @@ struct SchemaMigrationTests {
         // `ModelContainer(for:configurations:)` with a bare `ModelConfiguration`
         // is the unversioned open this replaces.
         let container = try ModelContainer(
-            for: Route.self, Stop.self,
+            for: EarRouterSchemaV3.Route.self, EarRouterSchemaV3.Stop.self,
             configurations: ModelConfiguration(url: url))
         let context = ModelContext(container)
 
-        let route = Route(name: "Tour 04.09.2026")
+        let route = EarRouterSchemaV3.Route(name: "Tour 04.09.2026")
         route.needsOptimize = true
         route.geometryFlat = [48.2, 16.3, 48.21, 16.31]
         context.insert(route)
 
-        let start = Stop(
+        let start = EarRouterSchemaV3.Stop(
             kind: .start, kunde: "Start", strasse: Coordinates.startAddress,
             plz: Coordinates.startPlz,
             lat: Coordinates.start.lat, lon: Coordinates.start.lon, orderIndex: 0)
-        let delivered = Stop(
+        let delivered = EarRouterSchemaV3.Stop(
             kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 129/1",
             plz: "1180", paket: "2 Menü", notiz: "Bitte laut klingeln",
             lat: 48.2301, lon: 16.3201, orderIndex: 1,
@@ -52,7 +52,7 @@ struct SchemaMigrationTests {
         delivered.delivered = true
         delivered.nextLegKm = 3.2
         delivered.nextLegMin = 8
-        let open = Stop(
+        let open = EarRouterSchemaV3.Stop(
             kind: .customer, kunde: "Fam. Novak", strasse: "Währinger Straße 4",
             plz: "1180", lat: 48.2312, lon: 16.3222, orderIndex: 2)
 
@@ -89,6 +89,7 @@ struct SchemaMigrationTests {
         #expect(gruber.delivered)
         #expect(gruber.paket == "2 Menü")
         #expect(gruber.notiz == "Bitte laut klingeln")
+        #expect(gruber.telefon == nil)
         #expect(gruber.precision == .street)
         #expect(gruber.pinned)
         #expect(gruber.nextLegKm == 3.2)
@@ -126,8 +127,20 @@ struct SchemaMigrationTests {
         #expect(EarRouterSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
         #expect(EarRouterSchemaV2.versionIdentifier == Schema.Version(2, 0, 0))
         #expect(EarRouterSchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
-        #expect(EarRouterMigrationPlan.schemas.count == 3)
-        #expect(EarRouterMigrationPlan.stages.count == 2)
+        #expect(EarRouterSchemaV4.versionIdentifier == Schema.Version(4, 0, 0))
+        #expect(EarRouterMigrationPlan.schemas.count == 4)
+        #expect(EarRouterMigrationPlan.stages.count == 3)
+    }
+
+    /// SwiftData identifies entities by these stable names, not by the nested
+    /// Swift type used to keep a historical schema frozen. If that ever
+    /// changes, a V3 store would need an explicit renaming migration instead.
+    @Test func frozenV3ModelsKeepTheLiveEntityNames() {
+        #expect(Schema.entityName(for: EarRouterSchemaV3.Route.self) == Schema.entityName(for: Route.self))
+        #expect(Schema.entityName(for: EarRouterSchemaV3.Stop.self) == Schema.entityName(for: Stop.self))
+        #expect(
+            Schema.entityName(for: EarRouterSchemaV3.StockwerkNote.self)
+                == Schema.entityName(for: StockwerkNote.self))
     }
 
     /// V1 is the shape on a phone that has not seen the floor feature at all.
@@ -143,9 +156,9 @@ struct SchemaMigrationTests {
                 configurations: ModelConfiguration(
                     schema: Schema(versionedSchema: EarRouterSchemaV1.self), url: url))
             let context = ModelContext(v1)
-            let route = Route(name: "Tour 04.09.2026")
+            let route = EarRouterSchemaV3.Route(name: "Tour 04.09.2026")
             context.insert(route)
-            let stop = Stop(
+            let stop = EarRouterSchemaV3.Stop(
                 kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 129/1",
                 plz: "1180", lat: 48.2301, lon: 16.3201, orderIndex: 1)
             stop.delivered = true
@@ -185,9 +198,9 @@ struct SchemaMigrationTests {
                 for: schema, configurations: ModelConfiguration(schema: schema, url: url))
             let context = ModelContext(v2)
 
-            let route = Route(name: "Tour 05.09.2026")
+            let route = EarRouterSchemaV3.Route(name: "Tour 05.09.2026")
             context.insert(route)
-            let stop = Stop(
+            let stop = EarRouterSchemaV3.Stop(
                 kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 129/1",
                 plz: "1180", paket: "2 Menü", lat: 48.2301, lon: 16.3201, orderIndex: 1)
             stop.delivered = true

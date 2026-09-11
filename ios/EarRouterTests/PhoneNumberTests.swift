@@ -53,4 +53,23 @@ struct PhoneNumberTests {
         #expect(PhoneNumbers.find(in: "Hund im Hof, bitte laut klingeln").isEmpty)
         #expect(PhoneNumbers.find(in: nil).isEmpty)
     }
+
+    // MARK: - A trusted number, as stored on `Stop.telefon`
+
+    /// No detector, no digit-count floor: `telefon` is a customer's own
+    /// number straight from the Zusteller-Portal, not a heuristic guess out
+    /// of free text.
+    @Test func normalizesAPlainNumberForDialling() {
+        #expect(PhoneNumbers.normalizedDial("0664 123 45 67") == "06641234567")
+        #expect(PhoneNumbers.dialURL(for: "0664 123 45 67")?.absoluteString == "tel:06641234567")
+    }
+
+    @Test func keepsTheLeadingPlusOnATrustedNumber() {
+        #expect(PhoneNumbers.normalizedDial("+43 699 10842229") == "+4369910842229")
+    }
+
+    @Test func blankOrDigitlessGivesNoDialURL() {
+        #expect(PhoneNumbers.normalizedDial("   ") == nil)
+        #expect(PhoneNumbers.dialURL(for: "") == nil)
+    }
 }

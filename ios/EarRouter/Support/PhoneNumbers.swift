@@ -56,4 +56,21 @@ enum PhoneNumbers {
         }
         return out
     }
+
+    /// Digits only, with a leading "+" kept where the source had one — the
+    /// same normalization `find`'s `Found.dial` applies, but for a number that
+    /// is already known to be a phone number (the customer's own `telefon`)
+    /// rather than free text to run the data detector over.
+    static func normalizedDial(_ raw: String) -> String? {
+        let trimmed = raw.trimmed
+        guard !trimmed.isEmpty else { return nil }
+        let digits = trimmed.filter(\.isNumber)
+        guard !digits.isEmpty else { return nil }
+        return (trimmed.hasPrefix("+") ? "+" : "") + digits
+    }
+
+    /// What `openURL` is given to dial a trusted number directly.
+    static func dialURL(for raw: String) -> URL? {
+        normalizedDial(raw).flatMap { URL(string: "tel:\($0)") }
+    }
 }

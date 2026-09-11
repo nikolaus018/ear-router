@@ -386,6 +386,22 @@ struct DeletionPreviewTests {
         #expect(preview.names.isEmpty)
     }
 
+    /// The preview and the import must reject the same fields. In particular,
+    /// a malformed phone number must not make the preview warn about deletions
+    /// that the import will refuse before changing the route.
+    @Test func aPasteWithAnInvalidPhoneAlsoBlocksTheDeletionPreview() throws {
+        let route = try makeRoute([
+            stop("Fam. Gruber", "Gentzgasse 129", lat: 48.231),
+            stop("Hr. Novak", "Alser Straße 21", lat: 48.232),
+        ])
+        let invalid = CustomerJSON(
+            kunde: "Fam. Gruber", strasse: "Gentzgasse 129", plz: "1180",
+            paket: nil, notiz: nil, telefon: String(repeating: "1", count: FieldLimits.telefon + 1))
+        let preview = RouteStore.deletionPreview([invalid], in: route)
+        #expect(preview.blockedByFailures)
+        #expect(preview.names.isEmpty)
+    }
+
     /// Two households behind one front door: a paste listing both accounts for
     /// both, and a paste listing one accounts for one.
     @Test func twoCustomersAtOneDoorAreCountedSeparately() throws {

@@ -23,6 +23,7 @@ struct StopEditorSheet: View {
     @State private var plz = ""
     @State private var paket = ""
     @State private var notiz = ""
+    @State private var telefon = ""
     /// A pin dropped in *this* editing session.
     @State private var droppedPin: CLLocationCoordinate2D?
     /// Set by "Pin verwerfen": on save the address is looked up again even
@@ -50,7 +51,7 @@ struct StopEditorSheet: View {
     /// The five fields as they were when the sheet opened, so "Abbrechen" can
     /// tell a look from an edit.
     private struct Draft: Equatable {
-        var kunde = "", strasse = "", plz = "", paket = "", notiz = ""
+        var kunde = "", strasse = "", plz = "", paket = "", notiz = "", telefon = ""
     }
     @State private var original = Draft()
     @State private var confirmingDiscard = false
@@ -60,7 +61,7 @@ struct StopEditorSheet: View {
     /// `plzField`.
     @State private var plzBeforeEditing = ""
 
-    private enum Field: Hashable { case kunde, strasse, plz, paket, notiz }
+    private enum Field: Hashable { case kunde, telefon, strasse, plz, paket, notiz }
 
     private var isEditing: Bool { stop != nil }
 
@@ -77,7 +78,7 @@ struct StopEditorSheet: View {
         Draft(
             kunde: kunde, strasse: strasse,
             plz: focusedField == .plz && plz.isEmpty ? plzBeforeEditing : plz,
-            paket: paket, notiz: notiz)
+            paket: paket, notiz: notiz, telefon: telefon)
     }
 
     /// Anything typed or placed that closing the sheet would throw away.
@@ -94,8 +95,15 @@ struct StopEditorSheet: View {
                         .autocorrectionDisabled()
                         .submitLabel(.next)
                         .focused($focusedField, equals: .kunde)
-                        .onSubmit { focusedField = .strasse }
+                        .onSubmit { focusedField = .telefon }
                         .limited(to: FieldLimits.kunde, text: $kunde)
+                    TextField("Telefon", text: $telefon)
+                        .textContentType(.telephoneNumber)
+                        .keyboardType(.phonePad)
+                        .submitLabel(.next)
+                        .focused($focusedField, equals: .telefon)
+                        .onSubmit { focusedField = .strasse }
+                        .limited(to: FieldLimits.telefon, text: $telefon)
                 }
 
                 Section {
@@ -165,6 +173,12 @@ struct StopEditorSheet: View {
                             systemImage: "arrow.trianglehead.turn.up.right"
                         ) {
                             if let url = NavigationHandoff.url(for: stop) { openURL(url) }
+                        }
+                        // Off the field being typed here, not off the stored
+                        // value — so a number just corrected can be called
+                        // straight away, before the field is even saved.
+                        if let url = PhoneNumbers.dialURL(for: telefon) {
+                            Button("Anrufen", systemImage: "phone") { openURL(url) }
                         }
                     }
                 }
@@ -384,6 +398,7 @@ struct StopEditorSheet: View {
         plz = stop.plz ?? ""
         paket = stop.paket ?? ""
         notiz = stop.notiz ?? ""
+        telefon = stop.telefon ?? ""
         original = draft
     }
 
@@ -426,12 +441,13 @@ struct StopEditorSheet: View {
             if let stop {
                 try await RouteStore.updateStop(
                     stop, kunde: kunde, strasse: strasse, plz: plz,
-                    paket: paket, notiz: notiz, coordinate: coordinate,
+                    paket: paket, notiz: notiz, telefon: telefon, coordinate: coordinate,
                     forceGeocode: discardStoredPin, in: context)
             } else {
                 try await RouteStore.addStop(
                     to: route, kunde: kunde, strasse: strasse, plz: plz,
-                    paket: paket, notiz: notiz, coordinate: coordinate, in: context)
+                    paket: paket, notiz: notiz, telefon: telefon, coordinate: coordinate,
+                    in: context)
             }
             dismiss()
         } catch {

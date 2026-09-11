@@ -481,21 +481,45 @@ private struct NowStopCard: View {
             .buttonStyle(.bordered)
             .tint(.delivered)
 
-            // A number written into the note — a daughter to call when nobody
-            // answers, "1 Stunde vorher anrufen" — becomes a button, one per
-            // number. Smaller than the two above: it is the exception at a
-            // door, not the errand. iOS asks once more before it dials.
-            ForEach(PhoneNumbers.find(in: stop.notiz)) { phone in
+            // The customer's own number from the Zusteller-Portal — same
+            // height as Navigation and Geliefert above it. It used to be
+            // smaller, on the theory that a call is the exception at a door
+            // rather than the errand, but that read as a broken layout rather
+            // than a deliberate one: three buttons a thumb reaches for in a
+            // row, one of them a different size for no reason it could see.
+            if let telefonURL {
+                Button {
+                    openURL(telefonURL)
+                } label: {
+                    WideButtonLabel("Anrufen", systemImage: "phone.fill")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            // A number written into the note instead — a daughter to call
+            // when nobody answers, "1 Stunde vorher anrufen" — becomes a
+            // button of its own, one per number. Filtered against the
+            // customer's own number above so the same digits never get two
+            // buttons. iOS asks once more before it dials.
+            ForEach(notizPhones) { phone in
                 Button {
                     if let url = phone.url { openURL(url) }
                 } label: {
                     WideButtonLabel("\(phone.display) anrufen", systemImage: "phone.fill")
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.regular)
             }
         }
         .controlSize(.large)
+    }
+
+    private var telefonURL: URL? {
+        stop.telefon?.trimmed.nilIfEmpty.flatMap(PhoneNumbers.dialURL(for:))
+    }
+
+    private var notizPhones: [PhoneNumbers.Found] {
+        let telefonDial = stop.telefon?.trimmed.nilIfEmpty.flatMap(PhoneNumbers.normalizedDial)
+        return PhoneNumbers.find(in: stop.notiz).filter { $0.dial != telefonDial }
     }
 }
 

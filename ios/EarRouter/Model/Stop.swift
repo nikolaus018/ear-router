@@ -47,6 +47,12 @@ final class Stop {
     var plz: String?
     var paket: String?
     var notiz: String?
+    /// The customer's own number, from the Zusteller-Portal's `customer.phone`
+    /// or typed in by hand — distinct from a number merely *mentioned* in
+    /// `notiz`, which `PhoneNumbers.find` still reads separately. `nil` on
+    /// every stop this app already had before this field existed, and on any
+    /// import that carries none.
+    var telefon: String?
 
     var lat: Double = 0
     var lon: Double = 0
@@ -89,6 +95,7 @@ final class Stop {
         plz: String? = nil,
         paket: String? = nil,
         notiz: String? = nil,
+        telefon: String? = nil,
         lat: Double,
         lon: Double,
         orderIndex: Int = 0,
@@ -103,6 +110,7 @@ final class Stop {
         self.plz = plz
         self.paket = paket
         self.notiz = notiz
+        self.telefon = telefon
         self.lat = lat
         self.lon = lon
         self.orderIndex = orderIndex

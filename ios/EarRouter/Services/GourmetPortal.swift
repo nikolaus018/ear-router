@@ -58,6 +58,10 @@ enum GourmetPortal {
         var firstname: String?
         var lastname: String?
         var comment: String?
+        /// E.164-ish, straight from Odoo — "+4369910842229". Always on
+        /// `customer`, never on `delivery_address` in real captures, so this
+        /// is the only place worth reading it from.
+        var phone: String? = nil
     }
 
     struct TourRef: Decodable, Sendable {
@@ -420,7 +424,8 @@ enum GourmetPortal {
 
         return CustomerJSON(
             kunde: customerName(delivery.customer), strasse: streetLine(address),
-            plz: address.zip?.trimmed ?? "", paket: paketText(from: delivery), notiz: notiz)
+            plz: address.zip?.trimmed ?? "", paket: paketText(from: delivery), notiz: notiz,
+            telefon: delivery.customer.phone?.trimmed.nilIfEmpty)
     }
 
     private static func paketText(from delivery: Delivery) -> String? {

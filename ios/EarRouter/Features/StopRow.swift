@@ -427,9 +427,20 @@ struct StopListRow: View {
             }
             .swipeActions(edge: .trailing) {
                 if isCustomer {
-                    Button(role: .destructive, action: onDelete) {
+                    // Not `role: .destructive`. That role tells the list to
+                    // play its own delete animation — the row collapsing away
+                    // — the instant the button is tapped, on the assumption
+                    // that the action removes the row synchronously. This one
+                    // does not: `onDelete` only stages a confirmation dialog,
+                    // so the row was still on the route a moment later and
+                    // popped straight back, mid-collapse, with the dialog now
+                    // up over a list that had visibly flinched for nothing.
+                    // Manual red styling gets the destructive *look* without
+                    // the premature animation.
+                    Button(action: onDelete) {
                         Label("Löschen", systemImage: "trash")
                     }
+                    .tint(.red)
                 }
             }
             .contextMenu { menu }
@@ -456,7 +467,13 @@ struct StopListRow: View {
         }
 
         if isCustomer {
-            ForEach(PhoneNumbers.find(in: stop.notiz)) { phone in
+            if let telefon = stop.telefon?.trimmed.nilIfEmpty,
+               let url = PhoneNumbers.dialURL(for: telefon)
+            {
+                Button("Anrufen", systemImage: "phone") { openURL(url) }
+            }
+            let telefonDial = stop.telefon?.trimmed.nilIfEmpty.flatMap(PhoneNumbers.normalizedDial)
+            ForEach(PhoneNumbers.find(in: stop.notiz).filter { $0.dial != telefonDial }) { phone in
                 Button("\(phone.display) anrufen", systemImage: "phone") {
                     if let url = phone.url { openURL(url) }
                 }

@@ -59,6 +59,7 @@ struct ImportReviewView: View {
         var plz: String
         var paket: String
         var notiz: String
+        var telefon: String
 
         init(_ json: CustomerJSON) {
             kunde = json.kunde.trimmed
@@ -66,12 +67,13 @@ struct ImportReviewView: View {
             plz = json.plz.trimmed
             paket = json.paket?.trimmed ?? ""
             notiz = json.notiz?.trimmed ?? ""
+            telefon = json.telefon?.trimmed ?? ""
         }
 
         var json: CustomerJSON {
             CustomerJSON(
                 kunde: kunde, strasse: strasse, plz: plz,
-                paket: paket.nilIfEmpty, notiz: notiz.nilIfEmpty)
+                paket: paket.nilIfEmpty, notiz: notiz.nilIfEmpty, telefon: telefon.nilIfEmpty)
         }
 
         /// What the import would refuse this entry for, said now rather than
@@ -85,7 +87,7 @@ struct ImportReviewView: View {
             do {
                 try RouteStore.validateCustomerFields(
                     kunde: kunde, strasse: strasse, paket: paket.nilIfEmpty,
-                    notiz: notiz.nilIfEmpty)
+                    notiz: notiz.nilIfEmpty, telefon: telefon.nilIfEmpty)
             } catch let e as AppError {
                 return e.message
             } catch {
@@ -402,7 +404,7 @@ struct ImportEntryEditor: View {
     @State private var plzBeforeEditing = ""
     @State private var confirmingDiscard = false
 
-    private enum Field: Hashable { case kunde, strasse, plz, paket, notiz }
+    private enum Field: Hashable { case kunde, telefon, strasse, plz, paket, notiz }
 
     init(entry: ImportReviewView.Entry, onSave: @escaping (ImportReviewView.Entry) -> Void) {
         _entry = State(initialValue: entry)
@@ -428,8 +430,15 @@ struct ImportEntryEditor: View {
                         .autocorrectionDisabled()
                         .submitLabel(.next)
                         .focused($focused, equals: .kunde)
-                        .onSubmit { focused = .strasse }
+                        .onSubmit { focused = .telefon }
                         .limited(to: FieldLimits.kunde, text: $entry.kunde)
+                    TextField("Telefon", text: $entry.telefon)
+                        .textContentType(.telephoneNumber)
+                        .keyboardType(.phonePad)
+                        .submitLabel(.next)
+                        .focused($focused, equals: .telefon)
+                        .onSubmit { focused = .strasse }
+                        .limited(to: FieldLimits.telefon, text: $entry.telefon)
                 }
 
                 Section {

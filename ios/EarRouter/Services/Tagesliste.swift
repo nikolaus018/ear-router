@@ -238,6 +238,7 @@ enum Tagesliste {
         var plz: Int?
         var paket: Int?
         var notiz: Int?
+        var telefon: Int?
 
         /// Enough to build a stop from. A name alone is not a delivery and an
         /// address alone is not a customer.
@@ -278,6 +279,9 @@ enum Tagesliste {
                 columns.paket = columns.paket ?? index
             case "hinweis", "notiz", "anmerkung", "bemerkung", "info", "kommentar":
                 columns.notiz = columns.notiz ?? index
+            case "telefon", "telefonnummer", "tel", "handy", "mobil", "mobilnummer",
+                 "rufnummer", "telnr":
+                columns.telefon = columns.telefon ?? index
             default:
                 continue
             }
@@ -311,7 +315,8 @@ enum Tagesliste {
                     strasse: strasse,
                     plz: postcode(clean(cell(row, columns.plz))),
                     paket: clean(cell(row, columns.paket)).nilIfEmpty,
-                    notiz: clean(cell(row, columns.notiz)).nilIfEmpty))
+                    notiz: clean(cell(row, columns.notiz)).nilIfEmpty,
+                    telefon: clean(cell(row, columns.telefon)).nilIfEmpty))
         }
         return out
     }

@@ -24,9 +24,11 @@ struct GourmetPortalTests {
     }
 
     private func customer(
-        firstname: String? = "Fam.", lastname: String? = "Gruber", comment: String? = nil
+        firstname: String? = "Fam.", lastname: String? = "Gruber", comment: String? = nil,
+        phone: String? = nil
     ) -> GourmetPortal.Customer {
-        GourmetPortal.Customer(firstname: firstname, lastname: lastname, comment: comment)
+        GourmetPortal.Customer(
+            firstname: firstname, lastname: lastname, comment: comment, phone: phone)
     }
 
     private func line(_ name: String, quantity: Double = 1) -> GourmetPortal.DeliveryLine {
@@ -170,6 +172,18 @@ struct GourmetPortalTests {
     @Test func noCommentAnywhereGivesNoNotiz() {
         let d = delivery(customer: customer(comment: nil), address: address(comment: nil))
         #expect(GourmetPortal.customerJSON(from: d).notiz == nil)
+    }
+
+    // MARK: - Telefon
+
+    @Test func theCustomersPhoneBecomesTelefon() {
+        let d = delivery(customer: customer(phone: "+4369910842229"))
+        #expect(GourmetPortal.customerJSON(from: d).telefon == "+4369910842229")
+    }
+
+    @Test func noPhoneOnTheCustomerGivesNoTelefon() {
+        let d = delivery(customer: customer(phone: nil))
+        #expect(GourmetPortal.customerJSON(from: d).telefon == nil)
     }
 
     // MARK: - Which tours run on a given day

@@ -94,6 +94,7 @@ enum FieldLimits {
     static let strasse = 200
     static let paket = 200
     static let notiz = 1000
+    static let telefon = 40
     static let routeName = 200
 }
 
