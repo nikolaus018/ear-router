@@ -140,16 +140,17 @@ struct StopEditorSheet: View {
                         showingPinDrop = true
                     }
                     if hasManualPin {
-                        Button(
-                            "Pin verwerfen, Adresse suchen",
-                            systemImage: "arrow.uturn.backward", role: .destructive
-                        ) {
+                        Button(role: .destructive) {
                             droppedPin = nil
                             // A pin already on the stop needs the *lookup* to be
                             // forced on save; simply forgetting it here would
                             // leave the hand-placed coordinates in place with
                             // nothing having changed to trigger a re-geocode.
                             if stop?.pinned == true { discardStoredPin = true }
+                        } label: {
+                            // Red on the glyph too — see "Stopp löschen" below.
+                            Label("Pin verwerfen, Adresse suchen", systemImage: "arrow.uturn.backward")
+                                .foregroundStyle(.red)
                         }
                     }
                 }
@@ -170,15 +171,18 @@ struct StopEditorSheet: View {
 
                 if isEditing, let onDelete {
                     Section {
-                        Button("Stopp löschen", systemImage: "trash", role: .destructive) {
+                        // The role colours the *title* red and leaves the glyph
+                        // on the sheet's accent, so the destructive button came
+                        // out half blue and half red. `.tint(.red)` was the old
+                        // cure and no longer reaches the icon on iOS 26; a
+                        // foreground style on the label itself colours both.
+                        Button(role: .destructive) {
                             confirmingDelete = true
+                        } label: {
+                            Label("Stopp löschen", systemImage: "trash")
+                                .foregroundStyle(.red)
                         }
                         .frame(maxWidth: .infinity)
-                        // The role colours the *title* red and leaves the glyph
-                        // on the sheet's accent, so the one destructive button
-                        // in the app came out half indigo and half red. The
-                        // tint is what carries the role through to the icon.
-                        .tint(.red)
                         .confirmationDialog(
                             "Stopp löschen?", isPresented: $confirmingDelete,
                             titleVisibility: .visible
