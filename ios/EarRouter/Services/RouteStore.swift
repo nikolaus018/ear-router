@@ -505,7 +505,7 @@ enum RouteStore {
 
             guard !kunde.isEmpty, !strasse.isEmpty, !plz.isEmpty else {
                 result.validationFailures.append(
-                    (label, "Kunde, Straße und Bezirk sind Pflichtfelder."))
+                    (label, "Kunde, Straße und PLZ sind Pflichtfelder."))
                 continue
             }
             do {

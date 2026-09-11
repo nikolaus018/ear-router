@@ -299,15 +299,26 @@ enum GourmetPortal {
     private static let routeNameDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "de_AT")
-        f.dateFormat = "dd.MM.yyyy"
+        f.dateFormat = "dd.MM."
         return f
     }()
 
     /// A new route's name when it comes from a Gourmet tour rather than the
     /// "Neue Tour" prompt — the tour's own name, which is already how a
     /// driver picking it from the list a moment ago recognised it.
-    static func suggestedRouteName(tour: Tour, date: Date) -> String {
-        "\(tour.name) – \(routeNameDateFormatter.string(from: date))"
+    ///
+    /// The name alone, with a short date only to tell it apart from an active
+    /// tour already called that. "VM 4 DO Vormittag – 10.09.2026" is too long
+    /// for the tour screen's large title, which cut it to "VM 4 DO Vormittag –
+    /// 1…": the screen the driver looks at all day, titled with a date that
+    /// stops at its first digit. The weekday is already in the name — the
+    /// "DO" — and a finished tour's row and subtitle show the day it was
+    /// driven, so the date only ever earned its place when two of the same
+    /// tour were open at once.
+    static func suggestedRouteName(tour: Tour, date: Date, taken: Set<String> = []) -> String {
+        let name = tour.name.trimmed
+        guard taken.contains(name) else { return name }
+        return "\(name) – \(routeNameDateFormatter.string(from: date))"
     }
 
     // MARK: - Fetching one tour's day

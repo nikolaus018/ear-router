@@ -243,12 +243,25 @@ struct GourmetPortalTests {
 
     // MARK: - Route naming
 
-    @Test func suggestedNameCombinesTheTourAndTheDate() {
-        let tour = GourmetPortal.Tour(
+    private var vm4: GourmetPortal.Tour {
+        GourmetPortal.Tour(
             id: 20, name: "VM 4 DO Vormittag", catalogueType: "week", weekday: "donnerstag",
             weekdays: [])
+    }
+
+    /// The tour's own name, and nothing that would push it past the large
+    /// title on the tour screen.
+    @Test func suggestedNameIsTheTourAlone() {
         #expect(
-            GourmetPortal.suggestedRouteName(tour: tour, date: date("2026-09-10"))
-                == "VM 4 DO Vormittag – 10.09.2026")
+            GourmetPortal.suggestedRouteName(tour: vm4, date: date("2026-09-10"))
+                == "VM 4 DO Vormittag")
+    }
+
+    /// A date only where it tells two open tours apart.
+    @Test func suggestedNameAddsTheDateOnlyToTellTwoApart() {
+        #expect(
+            GourmetPortal.suggestedRouteName(
+                tour: vm4, date: date("2026-09-10"), taken: ["VM 4 DO Vormittag"])
+                == "VM 4 DO Vormittag – 10.09.")
     }
 }

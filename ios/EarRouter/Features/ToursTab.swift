@@ -267,14 +267,22 @@ struct TourRow: View {
 /// thing a line is, and the words stay words. Written inline that is a `Label`
 /// with an explicit `icon:` closure every time, which is four lines to say one
 /// thing, so it is a style.
+///
+/// Laid out by hand rather than by handing the parts to a second `Label`. That
+/// inner `Label` took whatever style the surroundings gave it, and inside a
+/// `List` row that is the list's own: the glyph set in a wide icon column,
+/// scaled up to a list icon, with a gutter after it. The same Notiz was then
+/// "📝 1 Stunde vorher anrufen" on the card and "📝    1 Stunde / vorher
+/// anrufen", broken over two lines, in the row directly above it. Baseline
+/// aligned, so the glyph sits on the first line of a note that wraps and the
+/// lines after it hang under the words rather than under the glyph.
 struct TintedIconLabelStyle: LabelStyle {
     let tint: Color
 
     func makeBody(configuration: Configuration) -> some View {
-        Label {
-            configuration.title
-        } icon: {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             configuration.icon.foregroundStyle(tint)
+            configuration.title
         }
     }
 }

@@ -43,6 +43,10 @@ struct ImportReviewView: View {
     @State private var pendingDeletions: PendingDeletions?
     @State private var result: ImportReport?
     @State private var error: AppError?
+    /// Set by the first correction or removal. From then on the list on this
+    /// screen is the driver's own work, and closing it asks first.
+    @State private var edited = false
+    @State private var confirmingDiscard = false
 
     /// One row. A `UUID` of its own rather than the entry's contents, because
     /// the contents are not unique: a real list carries five consecutive meals
@@ -76,7 +80,7 @@ struct ImportReviewView: View {
         var problem: String? {
             if kunde.isEmpty { return "Kein Kunde" }
             if strasse.isEmpty { return "Keine Straße" }
-            if plz.isEmpty { return "Kein Bezirk" }
+            if plz.isEmpty { return "Keine PLZ" }
             if !Postcodes.isValid(plz) { return "\(plz) ist keine gültige PLZ" }
             do {
                 try RouteStore.validateCustomerFields(
@@ -131,8 +135,10 @@ struct ImportReviewView: View {
             .animation(.snappy, value: progress)
             .sheet(item: $editing) { entry in
                 ImportEntryEditor(entry: entry) { updated in
-                    if let index = entries.firstIndex(where: { $0.id == updated.id }) {
+                    if let index = entries.firstIndex(where: { $0.id == updated.id }),
+                       entries[index] != updated {
                         entries[index] = updated
+                        edited = true
                     }
                 }
             }
@@ -157,7 +163,7 @@ struct ImportReviewView: View {
                     .presentationDetents([.medium, .large])
             }
             .errorAlert($error)
-            .interactiveDismissDisabled(busy)
+            .interactiveDismissDisabled(busy || edited)
         }
     }
 
@@ -169,7 +175,10 @@ struct ImportReviewView: View {
                 ForEach($entries) { $entry in
                     row(entry)
                 }
-                .onDelete { entries.remove(atOffsets: $0) }
+                .onDelete {
+                    entries.remove(atOffsets: $0)
+                    edited = true
+                }
             } header: {
                 Text(header)
             } footer: {
@@ -249,8 +258,28 @@ struct ImportReviewView: View {
         ToolbarItem(placement: .cancellationAction) {
             // Stays live and calls the import off, the same as every other long
             // job in this app. What has already resolved is kept.
+            //
+            // Asks before walking away from corrections. Fixing a postcode or
+            // deleting a cancelled customer here is work on a list nothing
+            // else has saved, and one tap on the button nearest the thumb
+            // threw all of it away.
             Button(busy ? "Stoppen" : "Abbrechen") {
-                if busy { importTask?.cancel() } else { dismiss() }
+                if busy {
+                    importTask?.cancel()
+                } else if edited {
+                    confirmingDiscard = true
+                } else {
+                    dismiss()
+                }
+            }
+            .confirmationDialog(
+                "Korrekturen verwerfen?", isPresented: $confirmingDiscard,
+                titleVisibility: .visible
+            ) {
+                Button("Verwerfen", role: .destructive) { dismiss() }
+                Button("Weiter prüfen", role: .cancel) {}
+            } message: {
+                Text("Die Liste wird nicht übernommen, und deine Änderungen daran gehen verloren.")
             }
         }
         ToolbarItem(placement: .confirmationAction) {
@@ -361,17 +390,35 @@ struct ImportReviewView: View {
 /// to delete. It is a text correction on a list that has not been applied yet.
 struct ImportEntryEditor: View {
     @State private var entry: ImportReviewView.Entry
+    /// The entry as it arrived, so "Abbrechen" can tell a look from an edit.
+    private let original: ImportReviewView.Entry
     let onSave: (ImportReviewView.Entry) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Field?
+    /// What the postcode field held when the driver tapped into it — the same
+    /// clear-on-focus the stop editor does, for the same reason. See
+    /// `StopEditorSheet.plzField`.
+    @State private var plzBeforeEditing = ""
+    @State private var confirmingDiscard = false
 
     private enum Field: Hashable { case kunde, strasse, plz, paket, notiz }
 
     init(entry: ImportReviewView.Entry, onSave: @escaping (ImportReviewView.Entry) -> Void) {
         _entry = State(initialValue: entry)
+        original = entry
         self.onSave = onSave
     }
+
+    /// The entry as it would be saved: a postcode emptied for typing and left
+    /// untouched is the postcode it was, not a blank one.
+    private var result: ImportReviewView.Entry {
+        var out = entry
+        if focused == .plz && out.plz.isEmpty { out.plz = plzBeforeEditing }
+        return out
+    }
+
+    private var hasChanges: Bool { result != original }
 
     var body: some View {
         NavigationStack {
@@ -411,6 +458,19 @@ struct ImportEntryEditor: View {
                                 .focused($focused, equals: .plz)
                                 .limited(to: 4, text: $entry.plz)
                                 .frame(width: 58)
+                                // Emptied on focus, put back if nothing was
+                                // typed. Prefilled and capped at four digits,
+                                // the field swallowed every keystroke of a
+                                // corrected postcode until the driver thought
+                                // to delete the old one first.
+                                .onChange(of: focused) { was, now in
+                                    if now == .plz {
+                                        plzBeforeEditing = entry.plz
+                                        entry.plz = ""
+                                    } else if was == .plz, entry.plz.isEmpty {
+                                        entry.plz = plzBeforeEditing
+                                    }
+                                }
                             Menu {
                                 ForEach(Districts.all) { d in
                                     Button("\(d.plz) — \(d.label)") { entry.plz = d.plz }
@@ -426,7 +486,10 @@ struct ImportEntryEditor: View {
                 } header: {
                     Text("Adresse")
                 } footer: {
-                    if let problem = entry.problem {
+                    // Judged on what would be saved, so tapping into the
+                    // postcode does not flash "Keine PLZ" while the field is
+                    // emptied for typing.
+                    if let problem = result.problem {
                         Label(problem, systemImage: "exclamationmark.triangle.fill")
                             .labelStyle(TintedIconLabelStyle(tint: .attention))
                             .foregroundStyle(.secondary)
@@ -455,15 +518,25 @@ struct ImportEntryEditor: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Abbrechen") { dismiss() }
+                    Button("Abbrechen") {
+                        if hasChanges { confirmingDiscard = true } else { dismiss() }
+                    }
+                    .confirmationDialog(
+                        "Änderungen verwerfen?", isPresented: $confirmingDiscard,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Änderungen verwerfen", role: .destructive) { dismiss() }
+                        Button("Weiter bearbeiten", role: .cancel) {}
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Fertig") {
-                        onSave(entry)
+                        onSave(result)
                         dismiss()
                     }
                 }
             }
+            .interactiveDismissDisabled(hasChanges)
         }
     }
 }

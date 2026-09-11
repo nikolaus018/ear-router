@@ -83,9 +83,12 @@ struct UnusableCoordinateTests {
         #expect(NavigationHandoff.url(for: broken)?.absoluteString.contains("Teststra") == true)
     }
 
-    @Test func navigationSendsARealExactStopAsAPoint() {
-        let good = stop(lat: 48.2354, lon: 16.3298)
-        #expect(NavigationHandoff.url(for: good)?.absoluteString.contains("48.235400") == true)
+    /// The in-app map draws the register's point; the navigation app is handed
+    /// the address, even for a stop the register placed exactly.
+    @Test func navigationSendsEvenAnExactStopAsItsAddress() {
+        let url = NavigationHandoff.url(for: stop(lat: 48.2354, lon: 16.3298))?.absoluteString
+        #expect(url?.contains("Teststra") == true)
+        #expect(url?.contains("48.235400") == false)
     }
 
     /// Route planning was the last consumer taking the stored pair at face

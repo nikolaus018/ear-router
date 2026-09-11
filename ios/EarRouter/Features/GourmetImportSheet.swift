@@ -34,6 +34,12 @@ struct GourmetImportSheet: View {
     @State private var password = ""
     @State private var hasCredentials = false
     @State private var editingCredentials = false
+    /// Return in the username field moves to the password, and Return there
+    /// signs in — the way every login form on this phone behaves. Without it
+    /// the keyboard's own key did nothing, and the driver had to dismiss the
+    /// keyboard to find a button it was covering.
+    @FocusState private var loginField: LoginField?
+    private enum LoginField: Hashable { case username, password }
 
     @State private var date = Date()
     @State private var tours: [GourmetPortal.Tour] = []
@@ -117,7 +123,7 @@ struct GourmetImportSheet: View {
                 hasCredentials = GourmetCredentialsStore.load() != nil
                 if hasCredentials { await loadTours() }
             }
-            .onChange(of: date) { _, _ in selectedTourID = nil }
+            .onChange(of: date) { _, _ in reconcileSelection() }
         }
         .sheet(item: $pendingSelection) { pending in
             GourmetStopSelectionView(deliveries: pending.deliveries) { chosen in
@@ -159,8 +165,14 @@ struct GourmetImportSheet: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .keyboardType(.emailAddress)
+                    .submitLabel(.next)
+                    .focused($loginField, equals: .username)
+                    .onSubmit { loginField = .password }
                 SecureField("Passwort", text: $password)
                     .textContentType(.password)
+                    .submitLabel(.go)
+                    .focused($loginField, equals: .password)
+                    .onSubmit(startSignIn)
             } footer: {
                 Text(
                     "Dieselben Zugangsdaten wie im Zusteller-Portal im Browser. Sie werden "
@@ -174,10 +186,20 @@ struct GourmetImportSheet: View {
                 // that cancelled nothing, over a swipe-down that `busy` had
                 // already disabled: no way out at all until the request timed
                 // out.
-                Button("Anmelden") { loadTask = Task { await signIn() } }
-                    .disabled(username.trimmed.isEmpty || password.isEmpty || busy != nil)
+                Button("Anmelden", action: startSignIn)
+                    .disabled(!canSignIn)
             }
         }
+    }
+
+    private var canSignIn: Bool {
+        !username.trimmed.isEmpty && !password.isEmpty && busy == nil
+    }
+
+    private func startSignIn() {
+        guard canSignIn else { return }
+        loginField = nil
+        loadTask = Task { await signIn() }
     }
 
     private func signIn() async {
@@ -265,6 +287,17 @@ struct GourmetImportSheet: View {
         tours.filter { GourmetPortal.runs($0, on: date) }
     }
 
+    /// Keeps the chosen tour while it still runs on the chosen day, and picks
+    /// it for the driver when there is only one it could be — which, for a
+    /// driver on the same round every weekday, is most days. Changing the date
+    /// used to clear the choice outright, so stepping a day forward to load
+    /// tomorrow's list meant choosing the same tour again from a menu of one.
+    private func reconcileSelection() {
+        let candidates = candidateTours
+        if let id = selectedTourID, candidates.contains(where: { $0.id == id }) { return }
+        selectedTourID = candidates.count == 1 ? candidates[0].id : nil
+    }
+
     private func loadTours() async {
         guard let credentials = GourmetCredentialsStore.load() else { return }
         loadingTours = true
@@ -272,6 +305,7 @@ struct GourmetImportSheet: View {
         do {
             let token = try await GourmetPortal.login(credentials)
             tours = try await GourmetPortal.tours(token: token)
+            reconcileSelection()
         } catch is CancellationError {
             // Stopped from the banner — the driver already knows.
         } catch let e as AppError {
@@ -299,7 +333,7 @@ struct GourmetImportSheet: View {
             }
             guard !deliveries.isEmpty else {
                 error = AppError.message(
-                    "Für \"\(tour.name)\" wurden an diesem Tag keine offenen Lieferungen "
+                    "Für „\(tour.name)“ wurden an diesem Tag keine offenen Lieferungen "
                         + "gefunden.")
                 return
             }
@@ -334,7 +368,10 @@ struct GourmetImportSheet: View {
                 // Created only now that there is something real to put on
                 // it — a cancelled fetch above never leaves a stray route
                 // behind.
-                let name = GourmetPortal.suggestedRouteName(tour: tour, date: date)
+                let open = FetchDescriptor<Route>(
+                    predicate: #Predicate { $0.statusRaw == "active" })
+                let taken = Set(((try? context.fetch(open)) ?? []).map(\.name))
+                let name = GourmetPortal.suggestedRouteName(tour: tour, date: date, taken: taken)
                 let route = try RouteStore.createRoute(name: name, in: context)
                 createdRoute = route
                 review = ReviewContext(route: route, entries: entries)
@@ -369,49 +406,67 @@ struct GourmetStopSelectionView: View {
         _selected = State(initialValue: Set(deliveries.map(\.id)))
     }
 
+    private var allSelected: Bool { selected.count == deliveries.count }
+
+    /// Folded and tokenised the way the tour's own search is, so "Doebling"
+    /// finds "Döbling" and "gruber gentz" finds Fam. Gruber in the Gentzgasse.
+    /// A plain lowercased `contains` was the one search in the app that did
+    /// neither — and it is the one used on a list from somebody else's system.
     private var filtered: [GourmetPortal.Delivery] {
-        let q = search.trimmed.lowercased()
-        guard !q.isEmpty else { return deliveries }
+        let tokens = AddressText.matchKey(search)
+            .split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        guard !tokens.isEmpty else { return deliveries }
         return deliveries.filter { delivery in
             let (name, address) = GourmetPortal.summary(delivery)
-            return name.lowercased().contains(q) || address.lowercased().contains(q)
+            let haystack = AddressText.matchKey("\(name) \(address)")
+            return tokens.allSatisfy { haystack.contains($0) }
         }
     }
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    ForEach(filtered, id: \.id) { delivery in
-                        row(delivery)
-                    }
-                } footer: {
-                    if filtered.isEmpty {
-                        Text("Keine Treffer.")
-                    }
+                ForEach(filtered, id: \.id) { delivery in
+                    row(delivery)
                 }
             }
             .listStyle(.insetGrouped)
+            // Over the list rather than a footer inside it, the same as every
+            // other search in the app: "Keine Treffer." set in footnote grey
+            // under an empty inset block read as a list that had failed to
+            // load.
+            .overlay {
+                if filtered.isEmpty && !search.isEmpty {
+                    ContentUnavailableView.search(text: search)
+                }
+            }
             .searchable(text: $search, prompt: "Name oder Adresse")
             .navigationTitle("Stopps wählen")
             .navigationBarTitleDisplayMode(.inline)
+            // The count and the one bulk action beside it, where the thumb
+            // already is. "Alle"/"Keine" used to share the top-leading corner
+            // with "Abbrechen": two bare words crowding one corner, one of
+            // which threw the whole selection away.
             .safeAreaInset(edge: .bottom) {
-                Text("\(selected.count) von \(deliveries.count) ausgewählt")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(.bar)
+                HStack(spacing: 12) {
+                    Text("\(selected.count) von \(deliveries.count) ausgewählt")
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .contentTransition(.numericText())
+                        .animation(.snappy, value: selected.count)
+                    Spacer(minLength: 8)
+                    Button(allSelected ? "Keine auswählen" : "Alle auswählen") {
+                        selected = allSelected ? [] : Set(deliveries.map(\.id))
+                    }
+                    .font(.footnote.weight(.semibold))
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(.bar)
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Abbrechen") { dismiss() }
-                }
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(selected.count == deliveries.count ? "Keine" : "Alle") {
-                        selected = selected.count == deliveries.count
-                            ? [] : Set(deliveries.map(\.id))
-                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Weiter") {
@@ -446,5 +501,6 @@ struct GourmetStopSelectionView: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

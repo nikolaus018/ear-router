@@ -140,17 +140,25 @@ extension Stop {
         return CLLocationCoordinate2D(latitude: lat, longitude: lon)
     }
 
-    /// "Straße, PLZ Wien" — the form handed to a maps app for navigation.
+    /// "Gentzgasse 129, 1180 Wien, Österreich" — what a navigation app is
+    /// handed. Always this, never the stored point: see `NavigationHandoff`.
     ///
-    /// "Wien" only where the postcode says Vienna. Appended to every address
-    /// whatever it carried, it sent Apple Maps looking for a Gerasdorf street
-    /// in the wrong municipality — and a maps app given a city has no reason
-    /// to doubt it. Outside the city the postcode goes on alone, which is what
-    /// the search field wants anyway.
-    var fullAddress: String {
-        let street = strasse?.trimmed ?? ""
-        guard let plz, !plz.isEmpty else { return street }
-        let place = Postcodes.isVienna(plz) ? "\(plz) Wien" : plz
+    /// Trimmed to street and housenumber. Stiege, Tür and Parzelle are things
+    /// the city's register knows and no navigation app does, so
+    /// "Gentzgasse 129/1/2/23" sent whole is a search that either fails or
+    /// quietly guesses. The Stiege stays on the row and on the card, which is
+    /// where the driver reads it — at the door, not at the wheel. `normalize`
+    /// first, so a typed "Hauptstr. 5" arrives as "Hauptstraße 5".
+    ///
+    /// The place is `Postcodes.placeSuffix`, the anchor the geocoder already
+    /// uses: "Wien" only where the postcode says Vienna — appended to a
+    /// Gerasdorf street it sent the maps app looking in the wrong municipality
+    /// — and the country on both, so a search cannot wander off to a 2201 in
+    /// Germany.
+    var navigationAddress: String {
+        let street = AddressText.simplifyHousenumber(AddressText.normalize(strasse ?? ""))
+        guard let plz = plz?.trimmed, !plz.isEmpty else { return street }
+        let place = Postcodes.placeSuffix(for: plz)
         return street.isEmpty ? place : "\(street), \(place)"
     }
 
@@ -161,8 +169,8 @@ extension Stop {
     /// it costs are exactly what pushed an ordinary address onto a second line
     /// beside the row's two buttons. The postcode is what tells the handful
     /// that are not apart — 2201 reads as "not in town" to anybody who drives
-    /// this round. `fullAddress` keeps the city, because a navigation app
-    /// handed a bare street and postcode is a navigation app guessing.
+    /// this round. `navigationAddress` keeps the city, because a navigation
+    /// app handed a bare street and postcode is a navigation app guessing.
     var listAddress: String {
         let street = strasse?.trimmed ?? ""
         guard let plz, !plz.isEmpty else { return street }

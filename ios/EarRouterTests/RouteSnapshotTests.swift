@@ -359,11 +359,21 @@ struct HandoffAndUpstreamTests {
         #expect(!url.absoluteString.contains("+"))
     }
 
-    @Test func sendsAnExactlyKnownStopAsAPoint() {
+    /// Even an exactly-known stop goes over as its address — street and
+    /// housenumber, without the Stiege no navigation app can search for.
+    @Test func sendsAnExactlyKnownStopAsItsAddress() {
         let stop = Stop(
             kind: .customer, kunde: "Fam. A", strasse: "Gentzgasse 129/1", plz: "1180",
             lat: 48.2301, lon: 16.3201)
-        let url = NavigationHandoff.Provider.apple.point(lat: stop.lat, lon: stop.lon)
+        let url = NavigationHandoff.url(for: stop)?.absoluteString ?? ""
+        #expect(url.contains("Gentzgasse%20129,%201180%20Wien"))
+        #expect(!url.contains("129/1"))
+        #expect(!url.contains("48.230100"))
+    }
+
+    /// The fallback for a stop with no address text: a point, to six places.
+    @Test func thePointFallbackKeepsSixPlaces() {
+        let url = NavigationHandoff.Provider.apple.point(lat: 48.2301, lon: 16.3201)
         #expect(url?.absoluteString.contains("48.230100,16.320100") == true)
     }
 }

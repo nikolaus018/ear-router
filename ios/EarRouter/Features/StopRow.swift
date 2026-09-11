@@ -42,6 +42,15 @@ struct StopRow: View {
     /// becomes two rows. See `body`.
     @Environment(\.dynamicTypeSize) private var typeSize
 
+    /// Presses of this row's own tick, and nothing else — it drives the haptic.
+    ///
+    /// Keyed on `stop.delivered`, the haptic also fired whenever the value
+    /// changed from somewhere else: on top of the card's own when "Geliefert"
+    /// was pressed there, so one press was two thumps — and once per visible
+    /// row when the tour's whole status was reset. The same fix, for the same
+    /// reason, as `NowCard.ticks`.
+    @State private var ticks = 0
+
     let stop: Stop
     /// How many customers share this front door, this one included.
     var sameDoorCount: Int = 1
@@ -308,7 +317,10 @@ struct StopRow: View {
     @ViewBuilder
     private func stateButton(disc: CGFloat, target: CGFloat) -> some View {
         if let onToggleDelivered {
-            Button(action: onToggleDelivered) {
+            Button {
+                ticks += 1
+                onToggleDelivered()
+            } label: {
                 Image(systemName: stop.delivered ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: disc, weight: .regular))
                     .foregroundStyle(stop.delivered ? Color.delivered : Color.secondary)
@@ -320,7 +332,7 @@ struct StopRow: View {
             .buttonStyle(.borderless)
             .accessibilityLabel(
                 stop.delivered ? "Zustellung zurücknehmen" : "Als zugestellt markieren")
-            .sensoryFeedback(.impact(weight: .medium), trigger: stop.delivered)
+            .sensoryFeedback(.impact(weight: .medium), trigger: ticks)
         } else if let onToggleExcluded {
             // The affordance this action never had before it was a control:
             // switching Start, Lager or Ziel out of a tour was a plain tap on
@@ -389,7 +401,9 @@ struct StopRow: View {
         if sameDoorCount > 1 { parts.append("\(sameDoorCount) Kunden an dieser Tür") }
         if let precision = stop.precision { parts.append(precision.label) }
         if stop.excluded { parts.append("für diese Tour ausgelassen") }
-        if let leg = Format.leg(km: stop.nextLegKm, minutes: stop.nextLegMin) {
+        // Only while the stop is still ahead, the same as the strip on screen:
+        // VoiceOver read out the leg of a drive the van had already made.
+        if !dimmed, let leg = Format.leg(km: stop.nextLegKm, minutes: stop.nextLegMin) {
             parts.append("\(leg) bis zum nächsten Stopp")
         }
         return parts.joined(separator: ", ")

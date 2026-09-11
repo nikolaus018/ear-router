@@ -2,23 +2,17 @@ import Foundation
 
 /// Hands a stop to whichever navigation app the driver uses.
 ///
-/// There are two genuinely different kinds of destination to hand over: a
-/// point, or a string to look up — and which one is right depends on how well
-/// this app actually knows the address.
+/// Always as an address, never as a point — the driver's call, and the split
+/// is deliberate. The *map in this app* is drawn from the register's own
+/// coordinates, because that is what shows which side of a Gemeindebau the
+/// door is on. The *navigation app* gets the address, because a point is
+/// something it routes to the nearest bit of road it happens to know, while an
+/// address is something it has indexed, can show as a street name the driver
+/// recognises, and plans a sensible arrival for.
 ///
-/// An exactly-known stop is sent as a *point*, which is the whole value of
-/// having resolved it against Vienna's address register: that register pins the
-/// registered position of *that* door, including the ones no navigation app can
-/// find. Waze has no Kleingarten-Parzellen and no Stiegen, so handing it
-/// "Großfeldstraße 9/Parz.68" drops the driver at the colony gate, 130 m and a
-/// walk from the plot. There is precedent for the text failing outright too —
-/// the warehouse was once stored as "Oberlaa Straße 298", which the app
-/// displayed happily and the phone's Maps app searched for in vain.
-///
-/// An *approximate* stop (the "≈" badge — nearest known housenumber, or
-/// district centre) is sent as text on purpose: our point is an admitted guess
-/// there, and driving someone confidently to a guess is worse than letting
-/// their own navigation app take its own shot at the address.
+/// This used to send an exactly-known stop as a point. It is the address now
+/// for every stop; the point is kept only as the fallback for a stop that has
+/// no address text at all — see `url(for:)`.
 enum NavigationHandoff {
 
     enum Provider: String, CaseIterable, Identifiable {
@@ -88,17 +82,19 @@ enum NavigationHandoff {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: providerKey) }
     }
 
+    /// The address — see `Stop.navigationAddress` for the form it takes.
+    ///
+    /// The stored point only for a stop with no address text at all, which no
+    /// screen in this app can create but a hand-edited backup could. Even then
+    /// through the postcode's own box, not `isFinite`: an unusable row's
+    /// stored `0, 0` is finite, and handing that over would navigate the
+    /// driver confidently into the Atlantic.
     static func url(for stop: Stop) -> URL? {
         let p = provider
-        // `isPlausible`, not `isFinite`: an unusable row's stored `0, 0` is
-        // finite, and handing it over as a *point* would navigate the driver
-        // confidently into the Atlantic. Failing the check falls through to the
-        // address, which is the honest answer for a stop we cannot place.
-        let isExact = stop.precision == nil
-            && Coordinates.isPlausible(lat: stop.lat, lon: stop.lon)
-        if isExact {
-            return p.point(lat: stop.lat, lon: stop.lon)
-        }
-        return p.address(stop.fullAddress)
+        let address = stop.navigationAddress
+        if !address.isEmpty { return p.address(address) }
+        guard Coordinates.isPlausible(lat: stop.lat, lon: stop.lon, forPlz: stop.plz ?? "")
+        else { return nil }
+        return p.point(lat: stop.lat, lon: stop.lon)
     }
 }

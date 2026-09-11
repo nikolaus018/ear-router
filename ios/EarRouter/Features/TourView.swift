@@ -61,6 +61,12 @@ struct TourView: View {
     /// Briefly tinted after arriving from a map pin, so the driver's eye lands
     /// on the row that was tapped rather than on the middle of a list.
     @State private var highlighted: UUID?
+    /// The pending fade of that highlight. Cancelled when a second reveal
+    /// arrives inside the first one's 1.6 seconds, so the older timer cannot
+    /// clear the row the driver has just been sent to.
+    @State private var highlightTask: Task<Void, Never>?
+    /// "Lieferstatus zurücksetzen", waiting to be confirmed — see the menu.
+    @State private var confirmingReset = false
     /// The stop whose floor is being asked about — set by ticking a delivery
     /// off at a door nothing is known about yet, or from the row's own menu.
     @State private var stockwerkStop: Stop?
@@ -87,8 +93,10 @@ struct TourView: View {
                     search = ""
                     highlighted = id
                     withAnimation { proxy.scrollTo(id, anchor: .center) }
-                    Task {
+                    highlightTask?.cancel()
+                    highlightTask = Task {
                         try? await Task.sleep(for: .seconds(1.6))
+                        guard !Task.isCancelled else { return }
                         withAnimation { highlighted = nil }
                     }
                 }
@@ -233,6 +241,19 @@ struct TourView: View {
         } message: { stop in
             Text("„\(stop.kunde ?? "Dieser Stopp")“ wird aus der Tour entfernt.")
         }
+        .confirmationDialog(
+            "Lieferstatus zurücksetzen?", isPresented: $confirmingReset,
+            titleVisibility: .visible
+        ) {
+            Button("Zurücksetzen", role: .destructive) {
+                save("Der Lieferstatus konnte nicht zurückgesetzt werden.") {
+                    try RouteStore.resetDelivered(route, in: context)
+                }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text(resetMessage)
+        }
         .errorAlert($error)
         // An alert only where there is something to report. "Route optimiert"
         // gets none: the amber banner disappearing and the distances updating
@@ -275,6 +296,7 @@ struct TourView: View {
                 Section {
                     EmptyStopsPrompt(
                         onAdd: { addingStop = true },
+                        onPortal: { showingGourmetImport = true },
                         onImportFile: { pickingFile = true },
                         onPaste: { showingJSON = true })
                 }
@@ -411,11 +433,15 @@ struct TourView: View {
                     newName = route.name
                     renaming = true
                 }
+                // Asks first. It is one tap in a menu and it clears every tick
+                // of the day at once — the doors a driver has already handed a
+                // meal over at by midday are not something to lose to a thumb
+                // that was aiming for "Umbenennen". Deleting one stop asks;
+                // this took all of them back without a word.
                 Button("Lieferstatus zurücksetzen", systemImage: "arrow.counterclockwise") {
-                    save("Der Lieferstatus konnte nicht zurückgesetzt werden.") {
-                        try RouteStore.resetDelivered(route, in: context)
-                    }
+                    confirmingReset = true
                 }
+                .disabled(route.deliveredCount == 0)
                 Button(
                     route.status == .active ? "Als erledigt markieren" : "Wieder aktivieren",
                     systemImage: route.status == .active ? "checkmark.seal" : "arrow.uturn.backward"
@@ -470,6 +496,17 @@ struct TourView: View {
         // is a progress report on nothing.
         if snapshot.customerCount == 0 { return "Fixpunkte" }
         return "\(snapshot.deliveredCount) von \(snapshot.customerCount) geliefert"
+    }
+
+    /// Says what is at stake, counted at the moment of asking.
+    private var resetMessage: String {
+        let n = route.deliveredCount
+        let what = n == 1
+            ? "1 zugestellter Stopp wird wieder auf offen gesetzt"
+            : "\(n) zugestellte Stopps werden wieder auf offen gesetzt"
+        return route.status == .completed
+            ? "\(what), und die Tour wird wieder aktiviert."
+            : "\(what)."
     }
 
     private var recheckAlert: Binding<Bool> {
@@ -745,6 +782,10 @@ struct RouteFooter: View {
 /// onto it, rather than three grey fixed rows and no next step.
 struct EmptyStopsPrompt: View {
     let onAdd: () -> Void
+    /// The day's tour straight from the Zusteller-Portal — the way a whole
+    /// list most often arrives, and the one path the tour's menu had and this
+    /// prompt, the screen a new tour opens on, did not.
+    let onPortal: () -> Void
     let onImportFile: () -> Void
     let onPaste: () -> Void
 
@@ -754,8 +795,8 @@ struct EmptyStopsPrompt: View {
                 Text("Noch keine Kundenstopps")
                     .font(.headline)
                 Text(
-                    "Einzeln hinzufügen, oder die ganze Tagesliste auf einmal — als "
-                        + "Excel-Tabelle vom Büro, oder als JSON-Liste.")
+                    "Einzeln hinzufügen, oder die ganze Tagesliste auf einmal — vom "
+                        + "Zusteller-Portal, als Excel-Tabelle vom Büro oder als JSON-Liste.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -772,6 +813,9 @@ struct EmptyStopsPrompt: View {
                 // landed on "JSON einsetzen" alone, so the two ways of doing
                 // the same thing came out wearing different buttons.
                 VStack(spacing: 8) {
+                    Button(action: onPortal) {
+                        WideButtonLabel("Vom Zusteller-Portal", systemImage: "arrow.down.circle")
+                    }
                     Button(action: onImportFile) {
                         WideButtonLabel("Tabelle importieren", systemImage: "tablecells")
                     }

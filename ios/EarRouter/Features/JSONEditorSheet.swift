@@ -136,7 +136,7 @@ struct JSONEditorSheet: View {
     private var placeholder: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(
-                "Die Tagesliste hier einsetzen — „Kunde“, „Straße“ und „Bezirk“ muss jeder "
+                "Die Tagesliste hier einsetzen — „Kunde“, „Straße“ und „PLZ“ muss jeder "
                     + "Eintrag haben, „Paket“ und „Notiz“ sind freiwillig.")
                 .font(.footnote)
             Text(Self.exampleJSON)

@@ -47,6 +47,14 @@ struct StopEditorSheet: View {
     @State private var error: AppError?
     @State private var loaded = false
 
+    /// The five fields as they were when the sheet opened, so "Abbrechen" can
+    /// tell a look from an edit.
+    private struct Draft: Equatable {
+        var kunde = "", strasse = "", plz = "", paket = "", notiz = ""
+    }
+    @State private var original = Draft()
+    @State private var confirmingDiscard = false
+
     @FocusState private var focusedField: Field?
     /// What the postcode field held when the driver tapped into it — see
     /// `plzField`.
@@ -60,6 +68,21 @@ struct StopEditorSheet: View {
     /// dropped, or one already stored and not discarded.
     private var hasManualPin: Bool {
         droppedPin != nil || (stop?.pinned == true && !discardStoredPin)
+    }
+
+    /// What the fields say now. The postcode as it was before the field was
+    /// emptied for typing — see `plzField` — so tapping into it is not itself
+    /// an edit.
+    private var draft: Draft {
+        Draft(
+            kunde: kunde, strasse: strasse,
+            plz: focusedField == .plz && plz.isEmpty ? plzBeforeEditing : plz,
+            paket: paket, notiz: notiz)
+    }
+
+    /// Anything typed or placed that closing the sheet would throw away.
+    private var hasChanges: Bool {
+        loaded && (draft != original || droppedPin != nil || discardStoredPin)
     }
 
     var body: some View {
@@ -133,8 +156,11 @@ struct StopEditorSheet: View {
 
                 if let stop, stop.kind == .customer {
                     Section {
+                        // "Navigation starten", as it is everywhere else in the
+                        // app. "In Karten öffnen" named Apple's app — and on a
+                        // phone set to Waze it opened Waze.
                         Button(
-                            "In Karten öffnen",
+                            "Navigation starten",
                             systemImage: "arrow.trianglehead.turn.up.right"
                         ) {
                             if let url = NavigationHandoff.url(for: stop) { openURL(url) }
@@ -181,9 +207,27 @@ struct StopEditorSheet: View {
                     // left the sheet with no way out at all for as long as the
                     // lookup took — the driver's only remaining move was to
                     // force-quit the app.
+                    //
+                    // And asks before throwing work away, the question every
+                    // editing sheet on this phone asks. A Notiz can be a
+                    // paragraph typed at a door with one thumb, and it went
+                    // with a single tap on the button nearest that thumb.
                     Button("Abbrechen") {
-                        saveTask?.cancel()
-                        dismiss()
+                        if saving {
+                            saveTask?.cancel()
+                            dismiss()
+                        } else if hasChanges {
+                            confirmingDiscard = true
+                        } else {
+                            dismiss()
+                        }
+                    }
+                    .confirmationDialog(
+                        "Änderungen verwerfen?", isPresented: $confirmingDiscard,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Änderungen verwerfen", role: .destructive) { dismiss() }
+                        Button("Weiter bearbeiten", role: .cancel) {}
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -202,8 +246,11 @@ struct StopEditorSheet: View {
                 }
             }
             // A swipe would leave the work running with nothing left to report
-            // to. Abbrechen is the deliberate way out, and it cancels.
-            .interactiveDismissDisabled(saving)
+            // to. Abbrechen is the deliberate way out, and it cancels. Held
+            // too while there is anything unsaved, for the same reason
+            // Abbrechen asks: a swipe is the easiest gesture there is to make
+            // by accident.
+            .interactiveDismissDisabled(saving || hasChanges)
             .sheet(isPresented: $showingPinDrop) {
                 PinDropSheet(
                     initial: droppedPin
@@ -325,6 +372,7 @@ struct StopEditorSheet: View {
             // tour is usually a handful of neighbouring districts, so this is
             // right far more often than not.
             plz = route.customerStops.last?.plz ?? ""
+            original = draft
             return
         }
         kunde = stop.kunde ?? ""
@@ -332,6 +380,7 @@ struct StopEditorSheet: View {
         plz = stop.plz ?? ""
         paket = stop.paket ?? ""
         notiz = stop.notiz ?? ""
+        original = draft
     }
 
     /// How long a driver is asked to wait for an address before the app gives

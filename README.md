@@ -4,7 +4,8 @@ Delivery route planner for *Essen auf Rädern* (Meals on Wheels) in Vienna,
 for the Arbeiter-Samariter-Bund Österreichs.
 
 A native iOS app. Tours, stops and delivery status live on the phone; the
-network is needed only to look an address up and to optimise the route.
+network is needed only to load a day's tour from the Zusteller-Portal, to look
+an address up and to optimise the route.
 
 ```
 ios/            The app. Open ios/EarRouter.xcodeproj in Xcode.
@@ -29,12 +30,15 @@ third-party dependencies.
 | `Services/Tagesliste` | The office's daily list: CSV/TSV and `.xlsx`, mapped by column name |
 | `Services/XLSX` | A ZIP reader and an OOXML reader, for the workbook case |
 | `Services/SameDoor` | Which stops share a front door |
+| `Services/GourmetPortal` | The Zusteller-Portal: login, the day's tours and their deliveries; the login lives in the Keychain |
+| `Support/NavigationHandoff` | Hands a stop to Apple Maps, Waze or Google Maps — always as its address, never as a point |
 | `Support/Theme` | The palette, and why each colour is the colour it is |
 
 ### External services
 
 | Service | Used for |
 |---|---|
+| Zusteller-Portal (`odoo.gourmet.at`) | Loading a day's tour instead of typing it in |
 | [Adressservice Wien](https://digitales.wien.gv.at/adressservice-doku) | Primary geocoder — the city's own building register |
 | [Nominatim](https://nominatim.openstreetmap.org) | Fallback geocoder. Rate-limited to 1 req/s in `Geocoder` |
 | `osrm.ringtwo.win` | Routing and stop-order optimisation. Configurable in Mehr; falls back to the public OSRM demo server |

@@ -22,6 +22,10 @@ struct KilometerSheet: View {
     /// Bumped on every save, purely to drive the haptic and the confirmation
     /// line. A `Bool` would not fire twice for two saves in a row.
     @State private var saveCount = 0
+    /// "Gemerkten Stand löschen", waiting to be confirmed. The reading is the
+    /// one number this tool exists to remember for tomorrow, and it sat one
+    /// tap from gone under a footnote.
+    @State private var confirmingForget = false
     @FocusState private var focus: Field?
 
     private enum Field { case old, new }
@@ -170,9 +174,18 @@ struct KilometerSheet: View {
             .animation(.default, value: footnoteText)
 
         if hasStoredReading {
-            Button("Gemerkten Stand löschen", role: .destructive) { forget() }
+            Button("Gemerkten Stand löschen", role: .destructive) { confirmingForget = true }
                 .font(.footnote)
                 .padding(.top, 2)
+                .confirmationDialog(
+                    "Gemerkten Stand löschen?", isPresented: $confirmingForget,
+                    titleVisibility: .visible
+                ) {
+                    Button("Löschen", role: .destructive) { forget() }
+                    Button("Abbrechen", role: .cancel) {}
+                } message: {
+                    Text("„Alt“ muss danach wieder von Hand eingetragen werden.")
+                }
         }
     }
 

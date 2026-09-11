@@ -174,7 +174,7 @@ struct MapTab: View {
             } else {
                 ContentUnavailableView(
                     "Keine Tour ausgewählt", systemImage: "map",
-                    description: Text("Leg im Tab „Routen“ eine Tour an."))
+                    description: Text("Leg unter „Touren“ eine Tour an."))
             }
         }
         .navigationTitle(route?.name ?? "Karte")
@@ -203,9 +203,25 @@ struct MapTab: View {
                     }
                     if routes.count > 1 {
                         Divider()
+                        // Active tours, then the few most recently finished.
+                        // Flat, this was every tour ever driven, newest first
+                        // by creation — a menu that grew by a row a day, with
+                        // today's tour one entry in a scrolling month of them.
+                        let choices = pickerRoutes
                         Picker("Tour", selection: routeBinding) {
-                            ForEach(routes) { r in
-                                Text(r.name).tag(Optional(r.id))
+                            if !choices.active.isEmpty {
+                                Section("Aktiv") {
+                                    ForEach(choices.active) { r in
+                                        Text(r.name).tag(Optional(r.id))
+                                    }
+                                }
+                            }
+                            if !choices.recent.isEmpty {
+                                Section("Erledigt") {
+                                    ForEach(choices.recent) { r in
+                                        Text(r.name).tag(Optional(r.id))
+                                    }
+                                }
                             }
                         }
                     }
@@ -318,6 +334,19 @@ struct MapTab: View {
 
     private var sheetStop: Binding<Stop?> {
         Binding(get: { selectedStop }, set: { if $0 == nil { selectedStopID = nil } })
+    }
+
+    /// What the tour picker offers: every active tour and the five most
+    /// recently created finished ones — plus whichever tour the map is showing,
+    /// so the picker always has a tick to put somewhere.
+    private var pickerRoutes: (active: [Route], recent: [Route]) {
+        let active = routes.filter { $0.status == .active }
+        var recent = Array(routes.filter { $0.status == .completed }.prefix(5))
+        if let shown = route, shown.status == .completed,
+           !recent.contains(where: { $0.id == shown.id }) {
+            recent.append(shown)
+        }
+        return (active, recent)
     }
 
     private var routeBinding: Binding<UUID?> {
@@ -764,6 +793,14 @@ private struct RouteMapCanvas: View {
             guard wantsDriver else { return }
             aimAtDriver()
         }
+        // A pin the driver tapped is a place they chose to look at, and it
+        // outranks the standing "show me where I am" exactly the way a stop
+        // sent over from the list does. Left armed, the first fix arriving a
+        // second after the tap swung the camera off to the driver — leaving
+        // the card open on a customer whose pin was now off the screen.
+        .onChange(of: selection) { _, picked in
+            if picked != nil { wantsDriver = false }
+        }
         .onChange(of: pointAt, initial: true) { _, request in
             guard let request else { return }
             wantsDriver = false
@@ -1095,7 +1132,7 @@ struct StopPreviewSheet: View {
                         .font(.subheadline)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if let notiz = stop.notiz, !notiz.isEmpty {
+                if let notiz = stop.notiz?.trimmed, !notiz.isEmpty {
                     StopFacts.note(notiz).font(.subheadline)
                 }
                 if let p = stop.precision {
@@ -1103,6 +1140,11 @@ struct StopPreviewSheet: View {
                 }
             }
             .symbolRenderingMode(.monochrome)
+            // Under the name rather than under the badge — the column the
+            // next-stop card sets these same lines in. Flush left, the glyphs
+            // sat beneath the number disc and the words started a badge's
+            // width before the name they belong to.
+            .padding(.leading, number == nil ? 0 : badgeSize + 12)
         }
     }
 
@@ -1135,9 +1177,12 @@ struct StopPreviewSheet: View {
         .controlSize(.large)
     }
 
+    /// Trimmed, the same as the lines themselves: a Notiz of nothing but a
+    /// newline used to open an empty details block, an amber note glyph beside
+    /// no words, and eight points of gap under the address.
     private var hasDetails: Bool {
-        !(stop.paket ?? "").isEmpty || !(stop.notiz ?? "").isEmpty || stop.precision != nil
-            || !(stockwerk ?? "").isEmpty
+        !(stop.paket?.trimmed ?? "").isEmpty || !(stop.notiz?.trimmed ?? "").isEmpty
+            || stop.precision != nil || !(stockwerk?.trimmed ?? "").isEmpty
     }
 }
 

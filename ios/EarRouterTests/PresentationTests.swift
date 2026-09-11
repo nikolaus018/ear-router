@@ -53,10 +53,23 @@ struct ListAddressTests {
         #expect(stop("Gentzgasse 129/1", "1180").listAddress == "Gentzgasse 129/1, 1180")
     }
 
-    /// The handoff to a navigation app keeps it: a bare street and postcode is
-    /// a navigation app guessing.
-    @Test func theNavigationFormKeepsTheCity() {
-        #expect(stop("Gentzgasse 129/1", "1180").fullAddress == "Gentzgasse 129/1, 1180 Wien")
+    /// The handoff to a navigation app keeps the city and the country — a bare
+    /// street and postcode is a navigation app guessing — and drops the
+    /// Stiege, which no navigation app can search for.
+    @Test func theNavigationFormKeepsTheCityAndDropsTheStiege() {
+        #expect(
+            stop("Gentzgasse 129/1", "1180").navigationAddress
+                == "Gentzgasse 129, 1180 Wien, Österreich")
+    }
+
+    @Test func theNavigationFormNamesNoCityOutsideVienna() {
+        #expect(
+            stop("Kirchenplatz 3", "2201").navigationAddress == "Kirchenplatz 3, 2201, Österreich")
+    }
+
+    @Test func theNavigationFormSpellsTheStreetOut() {
+        #expect(
+            stop("Hauptstr. 5", "1140").navigationAddress == "Hauptstraße 5, 1140 Wien, Österreich")
     }
 
     @Test func survivesEitherHalfBeingMissing() {

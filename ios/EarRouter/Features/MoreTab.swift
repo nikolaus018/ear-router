@@ -92,7 +92,10 @@ struct MoreTab: View {
                 NavigationLink {
                     AboutView()
                 } label: {
-                    SettingsRow(icon: "info.circle.fill", tint: .secondary, title: "Über EAR Router")
+                    // `.gray`, not `.secondary`: the hierarchical grey is a
+                    // translucent *label* colour, and in dark mode it resolves
+                    // to a pale tile the white glyph all but disappears into.
+                    SettingsRow(icon: "info.circle.fill", tint: .gray, title: "Über EAR Router")
                 }
             }
 
@@ -391,6 +394,7 @@ struct AboutView: View {
             }
 
             Section {
+                LabeledContent("Tourdaten", value: "Zusteller-Portal")
                 LabeledContent("Karten", value: "Apple Maps")
                 LabeledContent("Adressregister", value: "Stadt Wien")
                 LabeledContent("Geocoder", value: "Nominatim")
@@ -407,7 +411,8 @@ struct AboutView: View {
             } footer: {
                 Text(
                     "Touren, Stopps und Lieferstatus werden nirgends hochgeladen. Internet "
-                        + "braucht nur die Adresssuche und die Routenoptimierung.")
+                        + "braucht nur das Laden vom Zusteller-Portal, die Adresssuche und "
+                        + "die Routenoptimierung.")
             }
         }
         .navigationTitle("Über")

@@ -4,9 +4,11 @@
 <dict>
 	<!--
 	  Nothing about a tour leaves the phone. Routes, stops and delivery status
-	  live in the app's own store; the network is used only to look an address
-	  up and to optimise the driving order, and neither call carries anything
-	  that identifies the driver.
+	  live in the app's own store; the network is used to look an address up,
+	  to optimise the driving order, and to load a day's tour from the
+	  Zusteller-Portal. Only that last one identifies the driver, and only to
+	  the portal they already log in to — the login is theirs, kept in the
+	  Keychain, and nothing is sent back.
 	-->
 	<key>NSPrivacyTracking</key>
 	<false/>
@@ -20,7 +22,8 @@
 		<dict>
 			<!--
 			  `UserDefaults` holds the navigation-app preference, the OSRM
-			  override, and which lines of a tour's packing list are ticked off.
+			  override, the remembered odometer reading, the tour the app last
+			  had open, and which lines of a tour's packing list are ticked off.
 			  All of it is this app's own settings, read back only by this app —
 			  reason CA92.1.
 			-->
