@@ -7,8 +7,3 @@ ios/DerivedData/
 # Local-only debug credentials for the Zusteller-Portal (Simulator/Debug
 # fallback in GourmetCredentialsStore) — never committed.
 .gourmet-debug-credentials
-
-# Browser network captures. A HAR of the Zusteller-Portal holds the login form
-# — username and password in the clear — and the name and address of every
-# customer on the day it was recorded.
-*.har
