@@ -184,3 +184,34 @@ struct SearchTests {
         #expect(AddressText.Search("gruber dachgeschoss").matches(key, or: floor))
     }
 }
+
+/// An address whose sub-address is nothing at all.
+///
+/// `housenumberWithSub` exists to ask the register about a *particular*
+/// staircase or garden plot, and it verifies the answer against a key made from
+/// what the driver wrote. A key with nothing alphanumeric in it can never
+/// verify anything — so the whole attempt is worth skipping rather than sending
+/// a query that will be checked against nothing.
+struct EmptySubAddressTests {
+
+    @Test func aTrailingSeparatorIsNotASubAddress() {
+        #expect(AddressText.housenumberWithSub("Gentzgasse 129/ ") == nil)
+        #expect(AddressText.housenumberWithSub("Hauptstraße 12 ") == nil)
+        #expect(AddressText.housenumberWithSub("Hauptstraße 12") == nil)
+    }
+
+    @Test func arealSubAddressStillComesBackWithAKeyToCheckItAgainst() throws {
+        let stiege = try #require(AddressText.housenumberWithSub("Gentzgasse 129/1"))
+        #expect(stiege.query == "Gentzgasse 129/1")
+        #expect(stiege.key == "1")
+
+        let parzelle = try #require(AddressText.housenumberWithSub("Großfeldstraße 9/Parz.68"))
+        #expect(parzelle.query == "Großfeldstraße 9/Parz.68")
+        #expect(parzelle.key == "parz68")
+
+        // Never an empty key, whatever the separator was.
+        for written in ["Gentzgasse 129/1/2/23", "Großfeldstraße 9 Parz. 68"] {
+            #expect(AddressText.housenumberWithSub(written)?.key.isEmpty == false)
+        }
+    }
+}

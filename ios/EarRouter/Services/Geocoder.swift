@@ -525,15 +525,20 @@ actor Geocoder {
     ///
     /// Absent fields are not failures: a hit with no `road` cannot be verified
     /// against a street, and is only ever accepted as `.district` anyway.
-    private static func hitMatches(
-        _ hit: NominatimHit, wantedStreet: String, plz: String
+    ///
+    /// Takes the two fields it judges rather than the hit itself, so the wire
+    /// type stays private and the rule can be tested without inventing one —
+    /// the same reason `pickFeature` above is not private either. A hit that
+    /// carries neither field is a hit there is nothing to check, and those are
+    /// only ever accepted as `.district` anyway.
+    static func hitMatches(
+        postcode: String?, road: String?, wantedStreet: String, plz: String
     ) -> Bool {
-        guard let address = hit.address else { return true }
-        if let postcode = address.postcode?.trimmed, postcode != plz {
+        if let postcode = postcode?.trimmed, postcode != plz {
             log.debug("Nominatim hit is in a different district, ignoring")
             return false
         }
-        if let road = address.road, AddressText.matchKey(road) != wantedStreet {
+        if let road, AddressText.matchKey(road) != wantedStreet {
             log.debug("Nominatim hit is a different street, ignoring")
             return false
         }
@@ -544,7 +549,10 @@ actor Geocoder {
         query: String, wantedStreet: String, plz: String
     ) async throws -> GeocodeResult? {
         guard let top = try await nominatimRawSearch(query) else { return nil }
-        guard Self.hitMatches(top, wantedStreet: wantedStreet, plz: plz) else { return nil }
+        guard Self.hitMatches(
+            postcode: top.address?.postcode, road: top.address?.road,
+            wantedStreet: wantedStreet, plz: plz)
+        else { return nil }
         guard let lat = Double(top.lat), let lon = Double(top.lon) else {
             throw AppError.message("Geocoding-Dienst: ungültige Koordinaten in der Antwort")
         }

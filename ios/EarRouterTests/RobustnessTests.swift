@@ -304,6 +304,68 @@ struct OGDFeaturePickingTests {
 /// right building. Comparing the two spellings without folding rejects the
 /// register's own exact answer and drops the lookup through to an approximate
 /// Nominatim pin.
+/// The check that stops Nominatim's free-text search pinning a customer on the
+/// wrong street or in the wrong district.
+///
+/// It always returns *something* plausible — that is what free-text search
+/// does — so without this the fallback accepted the right street name in a
+/// different district (Vienna has a Hauptstraße in several, and the postcode in
+/// the query is a hint, not a filter), and a different street entirely matched
+/// by string similarity: "Gentzstraße" offered for "Gentzgasse". Both produce a
+/// confident, precise, wrong pin, which is the one kind of answer worse than no
+/// answer at all.
+struct NominatimHitCheckTests {
+
+    private func matches(
+        postcode: String?, road: String?, asking street: String, _ plz: String
+    ) -> Bool {
+        Geocoder.hitMatches(
+            postcode: postcode, road: road,
+            wantedStreet: AddressText.matchKey(street), plz: plz)
+    }
+
+    @Test func theRightStreetInTheRightDistrictIsAccepted() {
+        #expect(matches(postcode: "1180", road: "Gentzgasse", asking: "Gentzgasse", "1180"))
+    }
+
+    /// The one that actually happened.
+    @Test func aStreetMatchedByStringSimilarityIsRefused() {
+        #expect(!matches(postcode: "1180", road: "Gentzstraße", asking: "Gentzgasse", "1180"))
+        #expect(!matches(postcode: "1180", road: "Gentzgasse", asking: "Gentzstraße", "1180"))
+    }
+
+    /// Vienna has a Hauptstraße in several districts, and the postcode in the
+    /// query is a hint rather than a filter.
+    @Test func theRightStreetInTheWrongDistrictIsRefused() {
+        #expect(!matches(postcode: "1030", road: "Hauptstraße", asking: "Hauptstraße", "1230"))
+    }
+
+    /// The register is canonical on output and the driver is not. An address
+    /// typed without umlauts, or with spaces where the register writes
+    /// hyphens, is the same street — the same fold `matchKey` applies
+    /// everywhere else.
+    @Test func theRegistersOwnSpellingOfAStreetIsStillThatStreet() {
+        #expect(matches(postcode: "1190", road: "Döblinger Hauptstraße",
+                        asking: "Doeblinger Hauptstrasse", "1190"))
+        #expect(matches(postcode: "1010", road: "Dr.-Karl-Lueger-Platz",
+                        asking: "Dr. Karl Lueger-Platz", "1010"))
+    }
+
+    /// A field the hit does not carry is a field there is nothing to check —
+    /// and such a hit is only ever accepted as `.district` anyway.
+    @Test func absentFieldsAreNotFailures() {
+        #expect(matches(postcode: nil, road: nil, asking: "Gentzgasse", "1180"))
+        #expect(matches(postcode: "1180", road: nil, asking: "Gentzgasse", "1180"))
+        #expect(matches(postcode: nil, road: "Gentzgasse", asking: "Gentzgasse", "1180"))
+    }
+
+    /// The postcode comes back as the underlying OSM tag holds it, which is
+    /// the same reason `districtCentroid` trims before comparing.
+    @Test func aPostcodeWithWhitespaceAroundItStillMatches() {
+        #expect(matches(postcode: " 1180 ", road: "Gentzgasse", asking: "Gentzgasse", "1180"))
+    }
+}
+
 struct GermanSpellingFoldTests {
 
     private func sameStreet(_ typed: String, _ register: String) -> Bool {
