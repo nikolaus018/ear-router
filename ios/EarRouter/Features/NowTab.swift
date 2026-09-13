@@ -289,9 +289,8 @@ struct NowTab: View {
     private func takeBack(_ tick: DeliveredTick, in route: Route) {
         undoTask?.cancel()
         undo = nil
-        guard let stop = route.stops.first(where: { $0.id == tick.id }) else { return }
         do {
-            try RouteStore.setDelivered(stop, false, in: context)
+            try RouteStore.undoDelivery(tick.id, on: route, in: context)
         } catch {
             self.error = AppError.message("Konnte den Lieferstatus nicht speichern.")
         }

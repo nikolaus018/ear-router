@@ -330,6 +330,31 @@ enum RouteStore {
         try context.save()
     }
 
+    /// Takes one delivery back, found by the id the undo banner is holding.
+    ///
+    /// By id rather than by keeping hold of the `Stop`, because the banner
+    /// outlives the card it was made from: Jetzt has already moved on to the
+    /// next door by the time it appears, and the tour behind it may have been
+    /// re-optimised in between. An id still means the same stop afterwards.
+    ///
+    /// `false` for an id this route no longer has — a stop deleted from
+    /// another screen inside the banner's few seconds. Nothing to take back,
+    /// and nothing worth telling the driver either: the delivery they were
+    /// undoing went with the stop.
+    ///
+    /// Here rather than in the view so that the rule this screen's one
+    /// irreversible-looking action depends on can be tested. The banner is
+    /// alive for six seconds, which is long enough for a driver and too short
+    /// to drive from a test.
+    @discardableResult
+    static func undoDelivery(
+        _ id: UUID, on route: Route, in context: ModelContext
+    ) throws -> Bool {
+        guard let stop = route.stops.first(where: { $0.id == id }) else { return false }
+        try setDelivered(stop, false, in: context)
+        return true
+    }
+
     /// Switches a fixed stop off (or back on) for this route.
     static func setExcluded(
         _ stop: Stop, _ excluded: Bool, in context: ModelContext

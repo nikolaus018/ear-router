@@ -444,3 +444,115 @@ struct StopSearchFoldingTests {
         #expect(!matches("gruber alser", ["Fam. Gruber", "Gentzgasse 129", "1180"]))
     }
 }
+
+/// Taking a delivery back.
+///
+/// Jetzt's undo banner is the only way back from a thumb that caught
+/// "Geliefert" while reaching for "Navigation": the stop leaves the screen the
+/// moment it is pressed, and the banner is what puts it back. It lives for six
+/// seconds, which is long enough for a driver at a door and far too short to
+/// drive from a test — so the rule behind the button is tested here instead.
+@MainActor
+struct UndoDeliveryTests {
+
+    private func makeContext() throws -> ModelContext {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self, StockwerkNote.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        return ModelContext(container)
+    }
+
+    private func seed(_ context: ModelContext) throws -> (Route, Stop, Stop) {
+        let route = try RouteStore.createRoute(name: "Tour", in: context)
+        let first = Stop(
+            kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 129", plz: "1180",
+            lat: 48.2301, lon: 16.3201, orderIndex: 3)
+        let second = Stop(
+            kind: .customer, kunde: "Hr. Novak", strasse: "Alser Straße 21", plz: "1080",
+            lat: 48.2154, lon: 16.3470, orderIndex: 4)
+        for s in [first, second] {
+            s.route = route
+            context.insert(s)
+        }
+        try context.save()
+        return (route, first, second)
+    }
+
+    @Test func putsTheStopBackOnTheList() throws {
+        let context = try makeContext()
+        let (route, gruber, _) = try seed(context)
+        try RouteStore.setDelivered(gruber, true, in: context)
+        #expect(RouteSnapshot(route).deliveredCount == 1)
+
+        #expect(try RouteStore.undoDelivery(gruber.id, on: route, in: context))
+
+        #expect(!gruber.delivered)
+        let snapshot = RouteSnapshot(route)
+        #expect(snapshot.deliveredCount == 0)
+        // And it is the next door again, which is the whole point: the driver
+        // is standing in front of it.
+        #expect(snapshot.nextOpen?.id == gruber.id)
+    }
+
+    /// By id, not by the object the tick was made against. The banner outlives
+    /// the card it came from, so what it carries has to still mean the same
+    /// stop several seconds and a re-render later.
+    @Test func takesBackTheStopItNamesAndNoOther() throws {
+        let context = try makeContext()
+        let (route, gruber, novak) = try seed(context)
+        try RouteStore.setDelivered(gruber, true, in: context)
+        try RouteStore.setDelivered(novak, true, in: context)
+
+        #expect(try RouteStore.undoDelivery(novak.id, on: route, in: context))
+
+        #expect(gruber.delivered)
+        #expect(!novak.delivered)
+    }
+
+    /// A stop deleted from another screen inside the banner's few seconds.
+    /// Nothing to take back — and nothing to report, because the delivery went
+    /// with the stop.
+    @Test func anIdTheRouteNoLongerHasIsANoOp() throws {
+        let context = try makeContext()
+        let (route, gruber, _) = try seed(context)
+        try RouteStore.setDelivered(gruber, true, in: context)
+        let goneID = gruber.id
+        context.delete(gruber)
+        try context.save()
+
+        #expect(try RouteStore.undoDelivery(goneID, on: route, in: context) == false)
+        #expect(try RouteStore.undoDelivery(UUID(), on: route, in: context) == false)
+    }
+
+    /// Undoing the tick that finished the tour reopens it, rather than leaving
+    /// a route that says "Alle geliefert" over a door still owed a meal.
+    @Test func reopensATourTheTickHadCompleted() throws {
+        let context = try makeContext()
+        let (route, gruber, novak) = try seed(context)
+        try RouteStore.setDelivered(gruber, true, in: context)
+        try RouteStore.setDelivered(novak, true, in: context)
+        #expect(RouteSnapshot(route).isComplete)
+
+        #expect(try RouteStore.undoDelivery(novak.id, on: route, in: context))
+
+        let snapshot = RouteSnapshot(route)
+        #expect(!snapshot.isComplete)
+        #expect(snapshot.openCount == 1)
+        // The tour was never auto-completed by the tick — see `setDelivered` —
+        // so there is no status to wind back either.
+        #expect(route.status == .active)
+    }
+
+    /// It survives the round trip: taken back, ticked again, taken back again.
+    /// The banner offers this after *every* tick, so it is not a one-shot.
+    @Test func canBeTakenBackMoreThanOnce() throws {
+        let context = try makeContext()
+        let (route, gruber, _) = try seed(context)
+        for _ in 0..<3 {
+            try RouteStore.setDelivered(gruber, true, in: context)
+            #expect(gruber.delivered)
+            #expect(try RouteStore.undoDelivery(gruber.id, on: route, in: context))
+            #expect(!gruber.delivered)
+        }
+    }
+}
