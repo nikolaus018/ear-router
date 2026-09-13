@@ -108,12 +108,20 @@ enum SameDoor {
         firstByPoint.reserveCapacity(customers.count)
 
         for (i, s) in customers.enumerated() {
-            let address = AddressDoor(
-                street: AddressText.matchKey(s.strasse ?? ""), plz: s.plz ?? "")
-            if let first = firstByAddress[address] {
-                union(first, i)
-            } else {
-                firstByAddress[address] = i
+            // A stop with no street is not at a door anything can share. No
+            // screen in this app can create one, but a hand-edited backup can,
+            // and every one of them keys to the same empty address — so a
+            // second such row used to make both of them read "2 an dieser Tür"
+            // about two customers with nothing in common. The same guard
+            // `StockwerkKey.make` already applies for the same reason.
+            let street = AddressText.matchKey(s.strasse ?? "")
+            if !street.isEmpty {
+                let address = AddressDoor(street: street, plz: s.plz?.trimmed ?? "")
+                if let first = firstByAddress[address] {
+                    union(first, i)
+                } else {
+                    firstByAddress[address] = i
+                }
             }
 
             if s.precision == nil, let point = PointDoor(lat: s.lat, lon: s.lon) {

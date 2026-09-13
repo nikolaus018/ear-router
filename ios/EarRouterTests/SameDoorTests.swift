@@ -86,4 +86,28 @@ struct SameDoorTests {
         let groups = SameDoor.groups(for: [start, end])
         #expect(groups.isEmpty)
     }
+
+    /// An address nobody wrote is not an address two people share.
+    ///
+    /// No screen in the app can produce a customer stop with no street, but a
+    /// hand-edited backup can — and every one of them keyed to the same empty
+    /// address, so two unrelated customers came back as "2 an dieser Tür".
+    /// Their points are the unusable default, which `PointDoor` already
+    /// refuses, so the address was the only thing joining them.
+    @Test func stopsWithNoStreetAreNotAllOneDoor() {
+        let a = makeStop("Fam. A", "", "1210", lat: 0, lon: 0)
+        let b = makeStop("Fam. B", "", "1210", lat: 0, lon: 0)
+        let counts = SameDoor.counts(for: [a, b])
+        #expect(counts[a.id] == 1)
+        #expect(counts[b.id] == 1)
+    }
+
+    /// Even where such a row does have a real point, it still groups by that
+    /// point and not by its missing address — so a genuine shared door is not
+    /// lost with the fix above.
+    @Test func aStopWithNoStreetStillSharesARealPoint() {
+        let a = makeStop("Fam. A", "", "1180", lat: 48.2301, lon: 16.3201)
+        let b = makeStop("Fam. B", "", "1180", lat: 48.2301, lon: 16.3201)
+        #expect(SameDoor.counts(for: [a, b])[a.id] == 2)
+    }
 }
