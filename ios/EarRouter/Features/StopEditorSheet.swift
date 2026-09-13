@@ -361,16 +361,42 @@ struct StopEditorSheet: View {
         }
     }
 
+    /// Whether saving would look the address up again — which is the same
+    /// question `RouteStore.updateStop` asks, asked through the same rule so
+    /// the two cannot answer it differently.
+    ///
+    /// Off `draft.plz` rather than `plz`, so a postcode field emptied for
+    /// typing does not read as a move that is not being made.
+    private var addressMoved: Bool {
+        guard let stop else { return false }
+        return RouteStore.addressMoved(stop, toStrasse: strasse, plz: draft.plz)
+    }
+
     @ViewBuilder
     private var addressFooter: some View {
         if droppedPin != nil {
+            // A pin dropped in this session outranks everything, an edited
+            // address included — `updateStop` takes the coordinate before it
+            // looks at whether the address moved.
             Label(
                 "Pin von Hand gesetzt — die Adresse wird nicht neu gesucht.",
                 systemImage: "hand.point.up.left.fill")
         } else if stop?.pinned == true && !discardStoredPin {
-            Label(
-                "Position von Hand gesetzt — die Adresse wird nicht neu gesucht.",
-                systemImage: "hand.point.up.left.fill")
+            // The stored pin survives only while the address under it does.
+            // Said the other way round — which is what this did — the footer
+            // promised "die Adresse wird nicht neu gesucht" to a driver in the
+            // middle of typing a corrected street, and the save then threw the
+            // pin away and geocoded after all.
+            if addressMoved {
+                Label(
+                    "Adresse geändert — der Pin wird beim Sichern verworfen und die "
+                        + "neue Adresse gesucht.",
+                    systemImage: "magnifyingglass")
+            } else {
+                Label(
+                    "Position von Hand gesetzt — die Adresse wird nicht neu gesucht.",
+                    systemImage: "hand.point.up.left.fill")
+            }
         } else if discardStoredPin {
             Label(
                 "Der Pin wird beim Sichern verworfen und die Adresse neu gesucht.",

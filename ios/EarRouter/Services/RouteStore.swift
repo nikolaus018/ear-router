@@ -255,9 +255,7 @@ enum RouteStore {
             throw AppError.message("Keine gültige Postleitzahl: \(plz)")
         }
 
-        let addressChanged =
-            AddressText.matchKey(stop.strasse ?? "") != AddressText.matchKey(strasse)
-            || stop.plz != plz
+        let addressChanged = Self.addressMoved(stop, toStrasse: strasse, plz: plz)
         var moved = false
 
         if let coordinate {
@@ -695,6 +693,27 @@ enum RouteStore {
         if let paket { try checkNoControlChars(paket, "Paket", allowNewlines: false) }
         if let notiz { try checkNoControlChars(notiz, "Notiz", allowNewlines: true) }
         if let telefon { try checkNoControlChars(telefon, "Telefon", allowNewlines: false) }
+    }
+
+    /// Whether an edit moves the stop to a different address.
+    ///
+    /// The one thing that makes `updateStop` look the address up again — and
+    /// therefore the one thing that decides whether a hand-placed pin survives
+    /// the save, because a pin belongs to the building it was dropped on and
+    /// not to whatever address is typed over it afterwards.
+    ///
+    /// Not private, because the stop editor's footer is in the business of
+    /// telling the driver which of those is about to happen, and it had its own
+    /// copy of the answer: "Position von Hand gesetzt — die Adresse wird nicht
+    /// neu gesucht", still on screen while the driver was busy typing the very
+    /// change that would discard that pin. One rule, read by the screen that
+    /// promises it and the code that keeps the promise.
+    ///
+    /// Through `matchKey`, so re-typing "Hauptstr. 5" as "Hauptstraße 5" is not
+    /// a move: it is the same door, spelled the way this app spells it.
+    static func addressMoved(_ stop: Stop, toStrasse strasse: String, plz: String) -> Bool {
+        AddressText.matchKey(stop.strasse ?? "") != AddressText.matchKey(strasse)
+            || stop.plz != plz
     }
 
     /// Refuses a hand-placed pin the app would not read back.

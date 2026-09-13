@@ -36,6 +36,61 @@ struct RecheckPrecisionTests {
     }
 }
 
+/// Whether an edit moves the stop to a different address is the one thing that
+/// decides two separate outcomes: `updateStop` looking the address up again,
+/// and a hand-placed pin surviving the save. The stop editor's footer tells the
+/// driver which is about to happen, so it has to be the same answer — it had
+/// its own, and went on promising "die Adresse wird nicht neu gesucht" while
+/// the driver was typing the very change that discards the pin.
+@MainActor
+struct AddressMovedTests {
+
+    private func stop(_ strasse: String, _ plz: String) -> Stop {
+        Stop(kind: .customer, kunde: "Fam. Gruber", strasse: strasse, plz: plz,
+             lat: 48.2301, lon: 16.3201, pinned: true)
+    }
+
+    @Test func aDifferentStreetIsAMove() {
+        let s = stop("Gentzgasse 129/1", "1180")
+        #expect(RouteStore.addressMoved(s, toStrasse: "Gentzgasse 131/1", plz: "1180"))
+        #expect(RouteStore.addressMoved(s, toStrasse: "Alser Straße 21", plz: "1180"))
+    }
+
+    @Test func aDifferentPostcodeIsAMove() {
+        let s = stop("Hauptstraße 5", "1180")
+        #expect(RouteStore.addressMoved(s, toStrasse: "Hauptstraße 5", plz: "1030"))
+    }
+
+    /// A different Stiege at one housenumber is a different front door — see
+    /// `AddressText.housenumberWithSub` — so it is a move, and the pin that was
+    /// dropped at the other staircase does not come with it.
+    @Test func aDifferentStiegeIsAMove() {
+        let s = stop("Gentzgasse 129/1", "1180")
+        #expect(RouteStore.addressMoved(s, toStrasse: "Gentzgasse 129/2", plz: "1180"))
+    }
+
+    /// Re-spelling is not moving. This is what keeps a driver who tidies
+    /// "Hauptstr. 5" into "Hauptstraße 5" from losing the pin they placed at
+    /// that door — and, in `updateStop`, from paying a throttled round trip
+    /// for an address that has not changed.
+    @Test func respellingTheSameDoorIsNotAMove() {
+        let s = stop("Hauptstr. 5", "1180")
+        #expect(!RouteStore.addressMoved(s, toStrasse: "Hauptstraße 5", plz: "1180"))
+        #expect(!RouteStore.addressMoved(s, toStrasse: "Hauptstrasse 5", plz: "1180"))
+        #expect(!RouteStore.addressMoved(s, toStrasse: "  Hauptstr. 5 ", plz: "1180"))
+    }
+
+    @Test func umlautsTypedOutAreNotAMove() {
+        let s = stop("Großfeldstraße 9/Parz.68", "1210")
+        #expect(!RouteStore.addressMoved(s, toStrasse: "Grossfeldstrasse 9 Parz. 68", plz: "1210"))
+    }
+
+    @Test func nothingChangedIsNotAMove() {
+        let s = stop("Gentzgasse 129/1", "1180")
+        #expect(!RouteStore.addressMoved(s, toStrasse: "Gentzgasse 129/1", plz: "1180"))
+    }
+}
+
 /// `0, 0` is a finite coordinate in the Gulf of Guinea, and it is what every
 /// unset row carries. Nothing that draws or navigates may take it at face value.
 struct UnusableCoordinateTests {
