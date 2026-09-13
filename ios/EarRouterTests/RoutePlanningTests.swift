@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import SwiftData
+import Foundation
 @testable import EarRouter
 
 /// The most intricate code in the app, and the code whose failures are hardest
@@ -372,5 +374,158 @@ struct OSRMDeadlineTests {
     @Test func neverOutlivesTheRequestTimeout() {
         #expect(OSRMClient.primaryDeadline(waypoints: osrmMaxTripCoords) <= 20)
         #expect(OSRMClient.primaryDeadline(waypoints: 10_000) <= 20)
+    }
+}
+
+/// Writing one finished solution back onto the route.
+///
+/// This is what the driver actually reads: the order the rows appear in, the
+/// "→ 3,2 km · 8 min" under each one, and whether the amber "Route nicht
+/// aktuell" banner is still there. All of it sat behind seconds of OSRM calls
+/// where no test could reach it.
+@MainActor
+struct OptimizerWriteBackTests {
+
+    private func makeRoute() throws -> (Route, ModelContext, [Stop]) {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self, StockwerkNote.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let route = try RouteStore.createRoute(name: "Tour", in: context)
+        var customers: [Stop] = []
+        for (i, name) in ["Fam. Gruber", "Hr. Novak", "Fr. Huber"].enumerated() {
+            let stop = Stop(
+                kind: .customer, kunde: name, strasse: "Gasse \(i)", plz: "1180",
+                lat: 48.23 + Double(i) / 1000, lon: 16.32, orderIndex: 99)
+            stop.route = route
+            context.insert(stop)
+            customers.append(stop)
+        }
+        try context.save()
+        return (route, context, customers)
+    }
+
+    /// The whole thing, driven the way `run` drives it: snapshot, plan, walk
+    /// OSRM's answer back, write.
+    private func optimize(
+        _ route: Route, in context: ModelContext,
+        order: [Int]? = nil, legs: [(Double, Double)]? = nil,
+        plannedFrom: RouteOptimizer.Fingerprint? = nil
+    ) throws {
+        let (nodes, taken) = RouteOptimizer.snapshot(route)
+        let plan = RouteOptimizer.plan(nodes)
+        let solved = order ?? Array(plan.tripNodes.indices)
+        let routed = RouteOptimizer.drivingOrder(plan, solvedOrder: solved)
+        var madeUpLegs: [(Double, Double)] = legs ?? []
+        if legs == nil {
+            let gaps: Int = max(0, routed.count - 1)
+            for i in 0..<gaps {
+                let metres = Double(i + 1) * 1000.0
+                let seconds = Double(i + 1) * 60.0
+                madeUpLegs.append((metres, seconds))
+            }
+        }
+        try RouteOptimizer.apply(
+            nodes, routed: routed, legs: madeUpLegs, geometry: [[48.2, 16.3], [48.3, 16.4]],
+            plannedFrom: plannedFrom ?? taken, to: route, in: context)
+    }
+
+    @Test func theRowsAreNumberedFromTheTopWithNoGaps() throws {
+        let (route, context, _) = try makeRoute()
+        try optimize(route, in: context)
+
+        let indices = route.orderedStops.map(\.orderIndex)
+        #expect(indices == Array(0..<route.stops.count))
+        // Start and Lager at the top, Ziel at the bottom — a fixed point keeps
+        // its place in the list whatever the solve did with the customers.
+        #expect(route.orderedStops.first?.kind == .start)
+        #expect(route.orderedStops.last?.kind == .end)
+    }
+
+    /// A leg belongs to the drive *out* of a stop, so the last one has none.
+    @Test func theLastStopCarriesNoLeg() throws {
+        let (route, context, _) = try makeRoute()
+        try optimize(route, in: context)
+
+        let last = try #require(route.orderedStops.last)
+        #expect(last.nextLegKm == nil)
+        #expect(last.nextLegMin == nil)
+        #expect(route.orderedStops.dropLast().allSatisfy { $0.nextLegKm != nil })
+    }
+
+    /// Metres and seconds in, kilometres and minutes out.
+    @Test func theLegsArriveInTheUnitsTheRowShows() throws {
+        let (route, context, _) = try makeRoute()
+        try optimize(route, in: context, legs: [
+            (3_250, 510), (1_000, 60), (2_000, 120), (4_000, 240), (5_000, 300),
+        ])
+        let first = try #require(route.orderedStops.first)
+        #expect(first.nextLegKm == 3.25)
+        #expect(first.nextLegMin == 8.5)
+    }
+
+    /// Stale distances are cleared rather than left behind — a stop switched
+    /// out of the tour must not keep the leg it used to drive.
+    @Test func aStopThatIsNoLongerDrivenLosesItsOldLeg() throws {
+        let (route, context, _) = try makeRoute()
+        try optimize(route, in: context)
+        let via = try #require(route.stops.first { $0.kind == .via })
+        #expect(via.nextLegKm != nil)
+
+        via.excluded = true
+        try context.save()
+        try optimize(route, in: context)
+
+        #expect(via.nextLegKm == nil)
+        #expect(via.nextLegMin == nil)
+        // And it keeps its place in the list rather than being flushed to the end.
+        #expect(route.orderedStops.map(\.kind).prefix(2) == [.start, .via])
+    }
+
+    // MARK: - The flag
+
+    @Test func aSolutionThatStillDescribesTheRouteClearsTheBanner() throws {
+        let (route, context, _) = try makeRoute()
+        route.needsOptimize = true
+        try optimize(route, in: context)
+        #expect(!route.needsOptimize)
+        #expect(!route.geometryFlat.isEmpty)
+    }
+
+    /// The one that is not self-correcting. A stop added while OSRM was
+    /// answering means this solution is already stale; its order and geometry
+    /// are still worth writing, but clearing the flag would leave the route
+    /// claiming to be current — and if the next run then fails, there is no
+    /// banner and no retry, with wrong distances all day.
+    @Test func aRouteThatChangedWhileSolvingStaysFlagged() throws {
+        let (route, context, _) = try makeRoute()
+        let plannedFrom = RouteOptimizer.snapshot(route).1
+
+        // The edit that lands mid-solve.
+        let late = Stop(
+            kind: .customer, kunde: "Fam. Wagner", strasse: "Spätgasse 1", plz: "1180",
+            lat: 48.26, lon: 16.32)
+        late.route = route
+        context.insert(late)
+        try context.save()
+
+        try optimize(route, in: context, plannedFrom: plannedFrom)
+
+        #expect(route.needsOptimize)
+        // Written anyway: a fresher-than-nothing solution beats the old one.
+        #expect(!route.geometryFlat.isEmpty)
+    }
+
+    /// Moving a stop counts; editing a note does not, or every tour would sit
+    /// permanently flagged over a corrected spelling.
+    @Test func onlyAMoveLeavesTheRouteFlagged() throws {
+        let (route, context, customers) = try makeRoute()
+        let plannedFrom = RouteOptimizer.snapshot(route).1
+        customers[0].notiz = "Bitte laut klingeln"
+        customers[0].kunde = "Familie Gruber"
+        try context.save()
+
+        try optimize(route, in: context, plannedFrom: plannedFrom)
+        #expect(!route.needsOptimize)
     }
 }

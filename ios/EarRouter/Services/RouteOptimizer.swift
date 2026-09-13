@@ -166,25 +166,45 @@ enum RouteOptimizer {
         // is lost by dropping this answer on the floor.
         try Task.checkCancellation()
 
+        try Self.apply(
+            nodes, routed: routed, legs: legs, geometry: geometry,
+            plannedFrom: plannedFrom, to: route, in: context)
+    }
+
+    /// Writes one finished solution back onto the route.
+    ///
+    /// Separated from the request for the reason every other piece of this file
+    /// is: what happens here is pure, it is what the driver actually reads off
+    /// the screen, and it cannot be reached from a test while it sits behind
+    /// seconds of OSRM calls. Three things get decided, and all three have been
+    /// wrong at some point.
+    ///
+    /// Leg distances belong to the *driving* order and are written onto rows
+    /// found by id, so the display order can differ from the driving order
+    /// without the two drifting apart. A stop that is not driven — the last
+    /// one, or one switched out — has its stale distances cleared rather than
+    /// left behind.
+    ///
+    /// And `needsOptimize`: edits commit and *then* queue an optimization, so
+    /// two edits in quick succession produce two runs, and the first plans from
+    /// a route that no longer exists by the time it writes. Its order and
+    /// geometry are merely stale, which the second run corrects. What is not
+    /// self-correcting is clearing the flag: the first run would clear what the
+    /// second edit set, and if that second run then fails — OSRM unreachable,
+    /// the whole reason best-effort exists — the route is left claiming to be
+    /// current while its geometry is missing a stop. No banner, no retry
+    /// offered, wrong distances all day. So the order and geometry are written
+    /// either way, because a fresher-than-nothing solution beats the old one,
+    /// but the flag clears only when this solution really describes the route
+    /// on disk.
+    static func apply(
+        _ nodes: Nodes, routed: [StopCoord], legs: [(Double, Double)],
+        geometry: [[Double]], plannedFrom: Fingerprint,
+        to route: Route, in context: ModelContext
+    ) throws {
         let legFor = Self.legIndex(routed: routed, legs: legs)
 
-        // Did the route change while this solution was being computed?
-        //
-        // Edits commit and *then* queue an optimization, so two edits in quick
-        // succession produce two runs, and the first planned from a route that
-        // no longer exists by the time it writes. Its stop order and geometry
-        // are simply stale, which the second run corrects. What is not
-        // self-correcting is clearing `needsOptimize`: the first run would
-        // clear the flag the second edit had set, and if that second run then
-        // fails (OSRM unreachable — the whole reason best-effort exists), the
-        // route is left claiming to be current while its geometry is missing a
-        // stop. No banner, no retry offered, wrong distances all day.
-        //
-        // The order and geometry are written either way — a fresher-than-
-        // nothing solution beats leaving the old one — but the flag only
-        // clears when this solution actually describes the route on disk.
-        let current = fingerprint(route)
-        let stillCurrent = current == plannedFrom
+        let stillCurrent = fingerprint(route) == plannedFrom
         if !stillCurrent {
             log.info("route changed while being optimized — writing this solution but leaving it flagged")
         }
