@@ -209,9 +209,7 @@ enum RouteStore {
         let lat: Double, lon: Double, precision: Precision?, pinned: Bool
 
         if let coordinate {
-            guard Coordinates.isPlausible(lat: coordinate.lat, lon: coordinate.lon) else {
-                throw AppError.message("Ungültige Koordinaten (außerhalb des erwarteten Bereichs).")
-            }
+            try checkPin(coordinate, plz: plz)
             (lat, lon, precision, pinned) = (coordinate.lat, coordinate.lon, nil, true)
         } else {
             let hit = try await Geocoder.shared.geocode(strasse: strasse, plz: plz)
@@ -263,9 +261,9 @@ enum RouteStore {
         var moved = false
 
         if let coordinate {
-            guard Coordinates.isPlausible(lat: coordinate.lat, lon: coordinate.lon) else {
-                throw AppError.message("Ungültige Koordinaten (außerhalb des erwarteten Bereichs).")
-            }
+            // Against the postcode being written, not the one the stop still
+            // carries: the driver may be moving both in the same edit.
+            try checkPin(coordinate, plz: plz)
             stop.lat = coordinate.lat
             stop.lon = coordinate.lon
             stop.precision = nil
@@ -336,9 +334,7 @@ enum RouteStore {
         _ stop: Stop, to coordinate: (lat: Double, lon: Double),
         in context: ModelContext
     ) async throws {
-        guard Coordinates.isPlausible(lat: coordinate.lat, lon: coordinate.lon) else {
-            throw AppError.message("Ungültige Koordinaten (außerhalb des erwarteten Bereichs).")
-        }
+        try checkPin(coordinate, plz: stop.plz ?? "")
         stop.lat = coordinate.lat
         stop.lon = coordinate.lon
         stop.precision = nil
@@ -699,6 +695,34 @@ enum RouteStore {
         if let paket { try checkNoControlChars(paket, "Paket", allowNewlines: false) }
         if let notiz { try checkNoControlChars(notiz, "Notiz", allowNewlines: true) }
         if let telefon { try checkNoControlChars(telefon, "Telefon", allowNewlines: false) }
+    }
+
+    /// Refuses a hand-placed pin the app would not read back.
+    ///
+    /// Measured against the box the stop's own postcode implies, because that
+    /// is the box everything downstream reads it through: `Stop.coordinate`
+    /// falls back to the centre of Vienna for a point outside it, and the map,
+    /// the route planning and the navigation handoff all go through there.
+    ///
+    /// Checked against the country-wide box instead — which is what this did —
+    /// the two disagreed for exactly one kind of input: a pin dropped far from
+    /// a Vienna address. A stop filed under 1210 with a pin in Graz was
+    /// *accepted*, stored, and then silently drawn, planned and navigated to at
+    /// Stephansplatz, with the row still wearing the "von Hand gesetzt" mark.
+    /// A point the app will not use is one to refuse while the driver is still
+    /// looking at the map they placed it on.
+    nonisolated static func checkPin(
+        _ coordinate: (lat: Double, lon: Double), plz: String
+    ) throws {
+        guard Coordinates.isPlausible(
+            lat: coordinate.lat, lon: coordinate.lon, forPlz: plz)
+        else {
+            throw AppError.message(
+                plz.isEmpty
+                    ? "Ungültige Koordinaten (außerhalb des erwarteten Bereichs)."
+                    : "Der Pin liegt zu weit von der PLZ \(plz) entfernt. Bitte ihn "
+                        + "bei der Adresse setzen.")
+        }
     }
 
     private nonisolated static func checkLength(

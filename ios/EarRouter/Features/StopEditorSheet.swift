@@ -279,7 +279,8 @@ struct StopEditorSheet: View {
                         ?? CLLocationCoordinate2D(
                             latitude: Coordinates.viennaCenter.lat,
                             longitude: Coordinates.viennaCenter.lon),
-                    label: kunde.isEmpty ? strasse : kunde
+                    label: kunde.isEmpty ? strasse : kunde,
+                    plz: plz
                 ) { coordinate in
                     droppedPin = coordinate
                     discardStoredPin = false
@@ -497,6 +498,11 @@ extension View {
 struct PinDropSheet: View {
     let initial: CLLocationCoordinate2D
     let label: String
+    /// The stop's postcode, which is what decides how far the pin may be
+    /// dropped from it — the same rule `RouteStore.checkPin` applies on save.
+    /// Passed in so "Hier setzen" greys out where the save would refuse,
+    /// rather than taking the pin and failing a screen later.
+    var plz: String = ""
     let onPick: (CLLocationCoordinate2D) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -563,7 +569,8 @@ struct PinDropSheet: View {
 
     private var isPlausible: Bool {
         guard let center else { return false }
-        return Coordinates.isPlausible(lat: center.latitude, lon: center.longitude)
+        return Coordinates.isPlausible(
+            lat: center.latitude, lon: center.longitude, forPlz: plz)
     }
 
     private var coordinateLabel: String {

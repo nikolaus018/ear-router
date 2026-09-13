@@ -137,6 +137,68 @@ struct PostcodeTests {
     }
 }
 
+/// A hand-placed pin has to be one the app will still be using afterwards.
+///
+/// `Stop.coordinate` measures a stored point against the box its *postcode*
+/// implies and falls back to the centre of Vienna for anything outside it — and
+/// the map, the route planning and the navigation handoff all read through
+/// there. The pin-drop path checked the country-wide box instead, so it
+/// accepted points that reader then threw away: the stop was stored with the
+/// pin, marked "von Hand gesetzt", and drawn, planned and navigated to at
+/// Stephansplatz.
+struct PinPlausibilityTests {
+
+    @Test func refusesAPinFarFromAViennaAddress() {
+        // Graz, on a stop filed under 1210 — inside the country-wide box the
+        // old check used, and outside the one that reads it back.
+        #expect(throws: AppError.self) {
+            try RouteStore.checkPin((lat: 47.0707, lon: 15.4395), plz: "1210")
+        }
+    }
+
+    /// What the old check was for, and still is.
+    @Test func refusesTheUnusableDefaultsAndASwappedPair() throws {
+        #expect(throws: AppError.self) {
+            try RouteStore.checkPin((lat: 0, lon: 0), plz: "1210")
+        }
+        #expect(throws: AppError.self) {
+            try RouteStore.checkPin((lat: 16.37, lon: 48.20), plz: "1210")
+        }
+        #expect(throws: AppError.self) {
+            try RouteStore.checkPin((lat: 38.72, lon: -9.14), plz: "2201")  // Lisbon
+        }
+    }
+
+    /// The point of the whole postcode-aware box: a tour that runs past the
+    /// Stadtgrenze is still a tour, and its pins are not mistakes.
+    @Test func acceptsAPinAtTheAddressItBelongsTo() throws {
+        try RouteStore.checkPin((lat: 48.2540, lon: 16.4000), plz: "1210")
+        try RouteStore.checkPin((lat: 47.0707, lon: 15.4395), plz: "8010")  // Graz, filed in Graz
+        try RouteStore.checkPin((lat: 48.2932, lon: 16.4715), plz: "2201")  // Gerasdorf
+    }
+
+    /// Whatever is accepted here is what `Stop.coordinate` hands back — which
+    /// is the invariant the two checks disagreeing had broken.
+    @Test func anAcceptedPinIsThePointTheStopReadsBack() throws {
+        let pin = (lat: 48.2540, lon: 16.4000)
+        try RouteStore.checkPin(pin, plz: "1210")
+        let stop = Stop(
+            kind: .customer, kunde: "Test", strasse: "Teststraße 1", plz: "1210",
+            lat: pin.lat, lon: pin.lon, pinned: true)
+        #expect(stop.coordinate.latitude == pin.lat)
+        #expect(stop.coordinate.longitude == pin.lon)
+    }
+
+    /// A stop with no postcode at all keeps the old, country-wide behaviour —
+    /// there is no tighter box to measure it against.
+    @Test func withNoPostcodeTheCountryWideBoxStillApplies() throws {
+        try RouteStore.checkPin((lat: 47.0707, lon: 15.4395), plz: "")
+        #expect(throws: AppError.self) {
+            try RouteStore.checkPin((lat: 38.72, lon: -9.14), plz: "")
+        }
+    }
+}
+
 struct TuercodeTests {
 
     @Test func mapsTheCipherSheet() {
