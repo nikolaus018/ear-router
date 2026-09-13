@@ -65,19 +65,32 @@ actor GeocodeCache {
     private var loaded = false
     private var dirty = false
 
-    private var fileURL: URL {
-        let dir = URL.applicationSupportDirectory.appending(path: "EarRouter", directoryHint: .isDirectory)
+    private let fileURL: URL
+
+    /// `directory` is only for tests — the app always wants the default
+    /// location, the same reason and the same shape as `AppSchema.container`'s
+    /// `url`. Resolved once here rather than recomputed per access, which also
+    /// stops the directory being re-created on every single read.
+    init(directory: URL? = nil) {
+        let dir = directory
+            ?? URL.applicationSupportDirectory.appending(
+                path: "EarRouter", directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appending(path: "geocode-cache.json")
+        fileURL = dir.appending(path: "geocode-cache.json")
     }
 
     // MARK: - Lookup
 
-    func lookup(_ key: String) -> CachedGeocode? {
-        load()
+    /// `now` is only for tests, the same way `SideloadExpiry.remaining` takes
+    /// one: the two things this table promises are both about the passage of
+    /// time — an exact hit that never goes stale and an approximation that
+    /// does — and a test that had to wait thirty days to say so would not be
+    /// written at all.
+    func lookup(_ key: String, now: Date = Date()) -> CachedGeocode? {
+        load(now: now)
         guard let hit = hits[key] else { return nil }
         if hit.precision != .exact,
-           Date().timeIntervalSince(hit.cachedAt) > Self.approxTTL {
+           now.timeIntervalSince(hit.cachedAt) > Self.approxTTL {
             hits.removeValue(forKey: key)
             dirty = true
             return nil
@@ -117,10 +130,10 @@ actor GeocodeCache {
     /// True when this exact query was recently confirmed unresolvable. Only
     /// ever records a *definitive* negative — never an upstream outage, which
     /// is a temporary condition and must be retried.
-    func isKnownMiss(_ key: String) -> Bool {
-        load()
+    func isKnownMiss(_ key: String, now: Date = Date()) -> Bool {
+        load(now: now)
         guard let at = misses[key] else { return false }
-        if Date().timeIntervalSince(at) > Self.missTTL {
+        if now.timeIntervalSince(at) > Self.missTTL {
             misses.removeValue(forKey: key)
             dirty = true
             return false
@@ -158,7 +171,7 @@ actor GeocodeCache {
         var misses: [String: Date]
     }
 
-    private func load() {
+    private func load(now: Date = Date()) {
         guard !loaded else { return }
         loaded = true
         guard let data = try? Data(contentsOf: fileURL) else { return }
@@ -190,7 +203,7 @@ actor GeocodeCache {
         // And marked dirty when the broom actually swept something, or the
         // pruning only ever happened in memory: the rows came back off disk on
         // the next launch, and were dropped again, for the life of the install.
-        let cutoff = Date().addingTimeInterval(-Self.missTTL)
+        let cutoff = now.addingTimeInterval(-Self.missTTL)
         let live = payload.misses.filter { $0.value > cutoff }
         if live.count != payload.misses.count { dirty = true }
         misses = live
