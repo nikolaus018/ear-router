@@ -356,6 +356,34 @@ struct BackupTests {
         }
     }
 
+    /// The case the format name actually exists for.
+    ///
+    /// Both files above are refused before the name is ever looked at — one is
+    /// an array and one is not JSON, so neither decodes. But this reader is
+    /// deliberately lenient about missing keys, so a JSON *object* that is not
+    /// a backup decodes perfectly happily into an empty one, and the only thing
+    /// standing between that and "0 Touren wiederhergestellt" is the name.
+    @Test func refusesAJSONObjectThatDecodesButIsNotABackup() throws {
+        for notABackup in [
+            #"{"hello":"world"}"#,
+            #"{"routes":[],"stockwerke":[]}"#,            // the right shape, no name
+            #"{"format":"ear-router-export","version":1}"#, // a name, the wrong one
+            #"{}"#,
+        ] {
+            #expect(throws: AppError.self) {
+                try BackupArchive.decode(Data(notABackup.utf8))
+            }
+        }
+
+        // And the name on its own is enough to be read, however little else
+        // the file carries — a backup is read on the day something has already
+        // gone wrong.
+        let bare = #"{"format":"ear-router-backup","version":1}"#
+        let archive = try BackupArchive.decode(Data(bare.utf8))
+        #expect(archive.routeCount == 0)
+        #expect(archive.stockwerkCount == 0)
+    }
+
     @Test func refusesABackupFromANewerApp() throws {
         var archive = BackupArchive()
         archive.version = BackupArchive.currentVersion + 1

@@ -1,4 +1,5 @@
 import Testing
+import SwiftData
 @testable import EarRouter
 
 /// The Ladeliste is what the driver loads the van from. A miscount here means
@@ -134,6 +135,15 @@ struct PostcodeTests {
         // The same coordinates under Graz's own postcode: fine.
         #expect(Coordinates.isPlausible(lat: 47.0707, lon: 15.4395, forPlz: "8010"))
         #expect(Coordinates.isPlausible(lat: 48.2540, lon: 16.4000, forPlz: "1210"))
+
+        // The box is two ranges, and a point can leave it by either. Checked
+        // one at a time: Graz is out on longitude alone, so a latitude range
+        // quietly widened to the whole country would still look right here.
+        #expect(!Coordinates.isInVienna(lat: 49.0, lon: 16.4))   // north, into Czechia
+        #expect(!Coordinates.isInVienna(lat: 46.6, lon: 16.4))   // south, past Graz
+        #expect(!Coordinates.isInVienna(lat: 48.2, lon: 15.0))   // west, past St. Pölten
+        #expect(!Coordinates.isInVienna(lat: 48.2, lon: 17.2))   // east, into Slovakia
+        #expect(Coordinates.isInVienna(lat: 48.2, lon: 16.4))
     }
 }
 
@@ -221,5 +231,66 @@ struct TuercodeTests {
     /// keypad holding eight digits and a "?".
     @Test func decodesTheQuestionMarkAsSeven() {
         #expect(Tuercode.decode("E?N") == "179")
+    }
+}
+
+/// The packing checklist: what actually has to go into the van before setting
+/// off, rather than a per-customer list nobody can load from.
+@MainActor
+struct LadelisteTests {
+
+    private func route(_ pakete: [String]) throws -> Route {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self, StockwerkNote.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let route = try RouteStore.createRoute(name: "Tour", in: context)
+        for (i, paket) in pakete.enumerated() {
+            let stop = Stop(
+                kind: .customer, kunde: "Kunde \(i)", strasse: "Gasse \(i)", plz: "1180",
+                paket: paket, lat: 48.23, lon: 16.32, orderIndex: 10 + i)
+            stop.route = route
+            context.insert(stop)
+        }
+        try context.save()
+        return route
+    }
+
+    /// Busiest first — the list is read while loading the van, and the line
+    /// with twelve of something is the one that decides whether it fits.
+    @Test func theBusiestLineComesFirst() throws {
+        let items = PaketParser.items(for: try route(["1x Suppe", "5x Menü", "2x Diät"]))
+        #expect(items.map(\.qty) == [5, 2, 1])
+        #expect(items.first?.label == "Menü")
+    }
+
+    /// Summed across the tour, not listed per customer.
+    @Test func thesameThingAtThreeDoorsIsOneLine() throws {
+        let items = PaketParser.items(for: try route(["2x Menü", "1x Menü", "3x Menü"]))
+        #expect(items.count == 1)
+        #expect(items.first?.qty == 6)
+    }
+
+    /// The identity used for grouping — and for remembering which lines are
+    /// ticked — ignores case and spacing, because the same meal is typed a
+    /// dozen ways across a tour.
+    @Test func oneMealSpelledSeveralWaysIsStillOneLine() throws {
+        let items = PaketParser.items(for: try route(["2x Menü", "1x  MENÜ", "1x menü "]))
+        #expect(items.count == 1)
+        #expect(items.first?.qty == 4)
+        // The first spelling is what the driver reads back.
+        #expect(items.first?.label == "Menü")
+    }
+
+    /// Two genuinely different things stay two lines.
+    @Test func differentMealsStayApart() throws {
+        let items = PaketParser.items(for: try route(["2x Menü", "2x Diätmenü"]))
+        #expect(items.count == 2)
+        #expect(Set(items.map(\.label)) == ["Menü", "Diätmenü"])
+    }
+
+    @Test func aTourWithNothingToCarryHasNoList() throws {
+        #expect(PaketParser.items(for: try route([])).isEmpty)
+        #expect(PaketParser.items(for: try route(["", "  "])).isEmpty)
     }
 }
