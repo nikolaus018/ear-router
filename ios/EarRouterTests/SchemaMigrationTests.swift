@@ -135,6 +135,91 @@ struct SchemaMigrationTests {
     /// SwiftData identifies entities by these stable names, not by the nested
     /// Swift type used to keep a historical schema frozen. If that ever
     /// changes, a V3 store would need an explicit renaming migration instead.
+    /// No superseded version may name a *live* model.
+    ///
+    /// This is the discipline the frozen copies in `AppSchema` exist for, and
+    /// until now it was kept by a comment alone. The newest version is allowed
+    /// to name the live types — it *is* them. Every older one has to name its
+    /// own frozen copy, because the moment a live model gains a field, a
+    /// version still pointing at it silently gains that field too. A phone
+    /// holding a store written at that version can then no longer be
+    /// identified as the source of a migration, the open fails with "unknown
+    /// model version", and `Store`'s recovery path moves the driver's tours
+    /// aside and brings the app up empty — which is the exact outcome
+    /// versioning the schema exists to avoid.
+    ///
+    /// It costs nothing today and everything on the morning someone adds a
+    /// field for V5 and forgets to freeze V4 first. That is the morning this
+    /// fails.
+    @Test func onlySupersededVersionsAreFrozen() throws {
+        let live: Set<ObjectIdentifier> = [
+            ObjectIdentifier(Route.self),
+            ObjectIdentifier(Stop.self),
+            ObjectIdentifier(StockwerkNote.self),
+        ]
+
+        for schema in EarRouterMigrationPlan.schemas.dropLast() {
+            for model in schema.models {
+                #expect(
+                    !live.contains(ObjectIdentifier(model)),
+                    """
+                    \(schema.versionIdentifier) still names a live model. Freeze a \
+                    copy of it inside that version before changing the live one.
+                    """)
+            }
+        }
+
+        // And the current one names exactly the live models, so the store the
+        // app opens is the store these tests describe.
+        let current = try #require(EarRouterMigrationPlan.schemas.last)
+        #expect(Set(current.models.map(ObjectIdentifier.init)) == live)
+        #expect(current.versionIdentifier == AppSchema.current.version)
+    }
+
+    /// The frozen V3 models, property by property.
+    ///
+    /// `frozenV3ModelsKeepTheLiveEntityNames` pins that they are still *called*
+    /// the same thing, which is what makes a V3 store recognisable. This pins
+    /// that they still *contain* the same thing — the other half, and the half
+    /// that drifts, because adding a field to a model is the ordinary act and
+    /// copying it into a frozen version is the easy one to do by accident.
+    ///
+    /// Updating this list is meant to be deliberate: a frozen version's shape
+    /// is a fact about stores that already exist on phones, not a preference.
+    @Test func theFrozenV3ModelsStillHoldExactlyWhatV3Held() {
+        let v3 = Schema(versionedSchema: EarRouterSchemaV3.self)
+        func properties(_ name: String) -> [String] {
+            (v3.entities.first { $0.name == name }?.properties ?? []).map(\.name).sorted()
+        }
+
+        #expect(properties("Route") == [
+            "completedAt", "createdAt", "geometryFlat", "id", "name",
+            "needsOptimize", "statusRaw", "stops",
+        ])
+        #expect(properties("Stop") == [
+            "createdAt", "delivered", "excluded", "id", "kindRaw", "kunde",
+            "lat", "lon", "nextLegKm", "nextLegMin", "notiz", "orderIndex",
+            "paket", "pinned", "plz", "precisionRaw", "route", "strasse",
+        ])
+        #expect(properties("StockwerkNote") == [
+            "dontAsk", "id", "key", "kunde", "plz", "stockwerk", "strasse",
+            "updatedAt",
+        ])
+    }
+
+    /// The one field V4 added, and the proof that freezing V3 actually froze
+    /// it: the same entity, in the two versions, is not the same shape.
+    @Test func v4AddedThePhoneNumberAndV3DidNotFollow() {
+        let v3Stop = Schema(versionedSchema: EarRouterSchemaV3.self)
+            .entities.first { $0.name == "Stop" }?.properties.map(\.name) ?? []
+        let v4Stop = Schema(versionedSchema: EarRouterSchemaV4.self)
+            .entities.first { $0.name == "Stop" }?.properties.map(\.name) ?? []
+
+        #expect(!v3Stop.contains("telefon"))
+        #expect(v4Stop.contains("telefon"))
+        #expect(Set(v4Stop).subtracting(v3Stop) == ["telefon"])
+    }
+
     @Test func frozenV3ModelsKeepTheLiveEntityNames() {
         #expect(Schema.entityName(for: EarRouterSchemaV3.Route.self) == Schema.entityName(for: Route.self))
         #expect(Schema.entityName(for: EarRouterSchemaV3.Stop.self) == Schema.entityName(for: Stop.self))
