@@ -3,9 +3,9 @@
 Delivery route planner for *Essen auf Rädern* (Meals on Wheels) in Vienna,
 for the Arbeiter-Samariter-Bund Österreichs.
 
-A native iOS app. Tours, stops and delivery status live on the phone; the
-network is needed only to load a day's tour from the Zusteller-Portal, to look
-an address up and to optimise the route.
+A native iOS app. Tours, stops, delivery status and every floor ever learned
+live on the phone; the network is needed only to load a day's tour from the
+Zusteller-Portal, to look an address up and to optimise the route.
 
 ```
 ios/            The app. Open ios/EarRouter.xcodeproj in Xcode.
@@ -19,15 +19,18 @@ third-party dependencies.
 
 | | |
 |---|---|
-| `Model/` | `Route` and `Stop` — the whole persistent store — plus its versioned schema |
+| `Model/` | `Route`, `Stop` and `StockwerkNote` — the whole persistent store — plus its versioned schema and the migrations between versions |
+| `Model/RouteSnapshot` | Everything one pass of a stop list needs to know about a tour, worked out in a single walk of its stops |
 | `Model/Districts` | Vienna's 23 districts, and `Postcodes` — any Austrian PLZ is a valid stop |
-| `Services/AddressText` | Address normalisation, Stiege/Parzelle sub-addresses, match keys |
+| `Services/AddressText` | Address normalisation, Stiege/Parzelle sub-addresses, match keys — and `Search`, the one rule every search field in the app answers to |
 | `Services/Geocoder` | Wien OGD → Nominatim cascade, throttled, with wrong-district detection. The city register is only asked about Vienna postcodes; anywhere else in Austria is Nominatim alone |
 | `Services/GeocodeCache` | Resolved addresses, and the addresses known not to exist |
 | `Services/OSRMClient` | `/route` and `/trip`, with a public-server fallback |
 | `Services/RouteOptimizer` | Stop ordering and route geometry |
 | `Services/RouteStore` | Every mutation, plus the JSON bulk import |
+| `Services/BackupArchive` | The whole store out to one readable JSON file, and back again. Everything here lives on one phone, which is the point of it and also the risk; this is the other half of that deal |
 | `Services/SameDoor` | Which stops share a front door |
+| `Services/StockwerkStore` | Which floor each customer lives on. The one thing about a delivery that never changes and that no list the office sends ever carries — asked once, in the stairwell, and on the row from then on |
 | `Services/GourmetPortal` | The Zusteller-Portal: login, the day's tours and their deliveries; the login lives in the Keychain |
 | `Support/NavigationHandoff` | Hands a stop to Apple Maps, Waze or Google Maps — always as its address, never as a point |
 | `Support/Theme` | The palette, and why each colour is the colour it is |
