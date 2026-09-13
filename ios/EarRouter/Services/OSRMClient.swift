@@ -123,14 +123,7 @@ actor OSRMClient {
             waypointIndices: resp.waypoints.map(\.waypointIndex),
             count: coords.count, fixFirst: fixFirst, fixLast: fixLast)
 
-        // A non-roundtrip trip over n waypoints has exactly n-1 legs. Anything
-        // else and the caller's `legs[pos - 1]` indexing would silently pair
-        // each stop with the wrong leg's distance — a route that looks
-        // entirely normal on screen while telling the driver the wrong
-        // "x km to the next stop" for every single row.
-        guard trip.legs.count + 1 == coords.count else {
-            throw AppError.message("OSRM: unerwartete Antwort (Etappen-Anzahl stimmt nicht)")
-        }
+        try Self.checkLegCount(trip.legs.count, waypoints: coords.count)
 
         return (order, trip.legs.map { ($0.distance, $0.duration) },
                 Self.toPolyline(trip.geometry))
@@ -178,6 +171,20 @@ actor OSRMClient {
             throw AppError.message("OSRM: unerwartete Antwort (Zielpunkt wurde verschoben)")
         }
         return order
+    }
+
+    /// A non-roundtrip trip over n waypoints has exactly n-1 legs.
+    ///
+    /// Anything else and the caller's per-position indexing silently pairs each
+    /// stop with the wrong leg's distance — a route that looks entirely normal
+    /// on screen while telling the driver the wrong "x km to the next stop" for
+    /// every single row. Separated from the request for the same reason
+    /// `visitingOrder` is: it is a check, and a check nothing exercises is a
+    /// check that has already stopped working.
+    static func checkLegCount(_ legs: Int, waypoints: Int) throws {
+        guard legs + 1 == waypoints else {
+            throw AppError.message("OSRM: unerwartete Antwort (Etappen-Anzahl stimmt nicht)")
+        }
     }
 
     /// Turns an OSRM status code into something a driver can act on.

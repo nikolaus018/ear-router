@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftData
 @testable import EarRouter
 
 /// The decisions the two upstream clients make about an answer once it has
@@ -255,5 +256,141 @@ struct RouteGeometryJoinTests {
         var empty: [[Double]] = []
         RouteOptimizer.append(&empty, [[48.1, 16.1]])
         #expect(empty == [[48.1, 16.1]])
+    }
+}
+
+/// What the optimizer plans from, and what it considers a change.
+///
+/// Both of these sit either side of seconds of network calls: the snapshot is
+/// taken before, the comparison is made after, and a route that changed in
+/// between must stay flagged. The reads themselves are pure.
+@MainActor
+struct OptimizerSnapshotTests {
+
+    private func route(_ build: (Route, ModelContext) throws -> Void = { _, _ in }) throws -> Route {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self, StockwerkNote.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let route = try RouteStore.createRoute(name: "Tour", in: context)
+        try build(route, context)
+        try context.save()
+        return route
+    }
+
+    private func customer(_ name: String, lat: Double = 48.23) -> Stop {
+        Stop(kind: .customer, kunde: name, strasse: "Gasse 1", plz: "1180",
+             lat: lat, lon: 16.32)
+    }
+
+    /// `excluded` is only ever written to a fixed stop, and a customer row
+    /// carrying it anyway must not silently disappear from the tour — which is
+    /// why the snapshot switches on the *kind* rather than on the flag.
+    @Test func aCustomerCarryingTheExcludedFlagIsStillPlanned() throws {
+        let route = try route { route, context in
+            let stop = customer("Fam. Gruber")
+            stop.excluded = true          // nothing in the app writes this
+            stop.route = route
+            context.insert(stop)
+        }
+        let (nodes, _) = RouteOptimizer.snapshot(route)
+        #expect(nodes.customers.count == 1)
+    }
+
+    /// A switched-off fixed point is a different matter: it stays on the route
+    /// and is left out of the solve.
+    @Test func aSwitchedOffFixedPointIsNotDrivenButIsStillThere() throws {
+        let route = try route { route, _ in
+            route.stops.first { $0.kind == .via }?.excluded = true
+        }
+        let (nodes, _) = RouteOptimizer.snapshot(route)
+        #expect(nodes.via?.excluded == true)
+        #expect(nodes.via?.active == nil)
+        #expect(nodes.head.count == 1)     // start only
+    }
+
+    /// The fingerprint is which stops exist, where they are, and which are
+    /// skipped — deliberately not the whole row. A customer's name or note
+    /// changing between the read and the write does not make the computed order
+    /// or geometry wrong, and treating it as if it did would leave routes
+    /// perpetually flagged over an edited Notiz.
+    @Test func editingANoteIsNotAChangeWorthReoptimising() throws {
+        let route = try route { route, context in
+            let stop = customer("Fam. Gruber")
+            stop.route = route
+            context.insert(stop)
+        }
+        let before = RouteOptimizer.snapshot(route).1
+
+        let stop = try #require(route.customerStops.first)
+        stop.kunde = "Familie Gruber"
+        stop.notiz = "Bitte laut klingeln"
+        stop.paket = "2x Menü"
+        stop.telefon = "+4369910842229"
+        stop.delivered = true
+
+        #expect(RouteOptimizer.snapshot(route).1 == before)
+    }
+
+    /// Moving one is.
+    @Test func movingAStopIsAChangeWorthReoptimising() throws {
+        let route = try route { route, context in
+            let stop = customer("Fam. Gruber")
+            stop.route = route
+            context.insert(stop)
+        }
+        let before = RouteOptimizer.snapshot(route).1
+        try #require(route.customerStops.first).lat = 48.24
+        #expect(RouteOptimizer.snapshot(route).1 != before)
+    }
+
+    /// So is adding one, removing one, or switching a fixed point out — the
+    /// three things that happen while an optimization is in flight.
+    @Test func addingRemovingAndSkippingAreAllChanges() throws {
+        let route = try route { route, context in
+            let stop = customer("Fam. Gruber")
+            stop.route = route
+            context.insert(stop)
+        }
+        let container = route.modelContext
+        let before = RouteOptimizer.snapshot(route).1
+
+        let added = customer("Hr. Novak", lat: 48.25)
+        added.route = route
+        container?.insert(added)
+        let afterAdding = RouteOptimizer.snapshot(route).1
+        #expect(afterAdding != before)
+
+        route.stops.first { $0.kind == .end }?.excluded = true
+        #expect(RouteOptimizer.snapshot(route).1 != afterAdding)
+    }
+}
+
+/// The shape of the answer, before any of it is believed.
+struct TripShapeTests {
+
+    /// A non-roundtrip trip over n waypoints has exactly n-1 legs. Anything
+    /// else and each stop is paired with the wrong leg's distance — a route
+    /// that looks entirely normal while telling the driver the wrong
+    /// "x km to the next stop" on every row.
+    @Test func alegPerGapBetweenWaypointsAndNoOther() throws {
+        try OSRMClient.checkLegCount(4, waypoints: 5)
+        try OSRMClient.checkLegCount(1, waypoints: 2)
+
+        #expect(throws: AppError.self) { try OSRMClient.checkLegCount(5, waypoints: 5) }
+        #expect(throws: AppError.self) { try OSRMClient.checkLegCount(3, waypoints: 5) }
+        #expect(throws: AppError.self) { try OSRMClient.checkLegCount(0, waypoints: 5) }
+    }
+
+    /// And what it says is not a protocol word.
+    @Test func theMismatchIsReportedInWordsTheDriverReads() {
+        #expect(throws: AppError.self) { try OSRMClient.checkLegCount(2, waypoints: 5) }
+        do {
+            try OSRMClient.checkLegCount(2, waypoints: 5)
+        } catch let error as AppError {
+            #expect(error.message.contains("Etappen"))
+        } catch {
+            Issue.record("expected an AppError")
+        }
     }
 }

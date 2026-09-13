@@ -95,11 +95,13 @@ struct SameDoorTests {
     /// next door — and "2 an dieser Tür" is a claim the driver acts on by
     /// carrying two meals to one bell.
     @Test func neighbouringBuildingsAreNotOneDoor() {
-        // ~8 m apart in latitude, which is inside a ten-metre bucket and
-        // outside a one-metre one. Different addresses, so only the point
-        // could join them.
-        let a = makeStop("Fam. A", "Gentzgasse 129", "1180", lat: 48.23010, lon: 16.3201)
-        let b = makeStop("Fam. B", "Gentzgasse 131", "1180", lat: 48.23017, lon: 16.3201)
+        // ~3 m apart in latitude: two distinct buckets at five decimal places
+        // and one shared bucket at four. Different addresses, so the point is
+        // the only thing that could join them. (Picked deliberately — eight
+        // metres apart still straddles a four-decimal boundary, so a test
+        // built on that would pass at either tolerance.)
+        let a = makeStop("Fam. A", "Gentzgasse 129", "1180", lat: 48.23011, lon: 16.3201)
+        let b = makeStop("Fam. B", "Gentzgasse 131", "1180", lat: 48.23014, lon: 16.3201)
         let counts = SameDoor.counts(for: [a, b])
         #expect(counts[a.id] == 1)
         #expect(counts[b.id] == 1)
