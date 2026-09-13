@@ -531,6 +531,176 @@ struct BackupTests {
         #expect(defaults.bool(forKey: Kilometerstand.hasLastKey))
     }
 
+    // MARK: - Every field, and every field that is ever added
+
+    /// The bug this file exists to stop happening twice.
+    ///
+    /// `StopBackup` once had no `telefon`, so every backup written omitted the
+    /// number the Anrufen button runs on and every restore lost it for good.
+    /// That shipped, and nothing in this suite noticed — the round-trip test
+    /// above spot-checks a handful of fields, and a field nobody thought to
+    /// name is exactly the field that goes missing.
+    ///
+    /// So this names all of them, with a distinct value each, so a field that
+    /// is dropped *or* wired to the wrong neighbour fails here.
+    @Test func everyFieldOfAStopSurvivesTheFile() throws {
+        let source = try makeContext()
+        let route = try RouteStore.createRoute(name: "Tour", in: source)
+        let stop = Stop(
+            kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 129/1",
+            plz: "1180", paket: "2x Menü", notiz: "Bitte laut klingeln",
+            telefon: "+4369910842229",
+            lat: 48.2301, lon: 16.3201, orderIndex: 7,
+            precision: .street, pinned: true, excluded: false)
+        stop.delivered = true
+        stop.nextLegKm = 3.25
+        stop.nextLegMin = 8.5
+        stop.createdAt = Date(timeIntervalSince1970: 1_757_000_123)
+        stop.route = route
+        source.insert(stop)
+        try source.save()
+
+        let archive = try roundTrip(BackupArchive.make(from: source))
+        let fresh = try makeContext()
+        try BackupRestore.apply(archive, mode: .replace, in: fresh)
+
+        let restoredRoute = try #require(try fresh.fetch(FetchDescriptor<Route>()).first)
+        let back = try #require(restoredRoute.customerStops.first { $0.kunde == "Fam. Gruber" })
+
+        #expect(back.id == stop.id)
+        #expect(back.kind == .customer)
+        #expect(back.kunde == "Fam. Gruber")
+        #expect(back.strasse == "Gentzgasse 129/1")
+        #expect(back.plz == "1180")
+        #expect(back.paket == "2x Menü")
+        #expect(back.notiz == "Bitte laut klingeln")
+        #expect(back.telefon == "+4369910842229")
+        #expect(back.lat == 48.2301)
+        #expect(back.lon == 16.3201)
+        #expect(back.orderIndex == 7)
+        #expect(back.delivered)
+        #expect(back.nextLegKm == 3.25)
+        #expect(back.nextLegMin == 8.5)
+        #expect(back.createdAt == Date(timeIntervalSince1970: 1_757_000_123))
+        #expect(back.excluded == false)
+        #expect(back.pinned)
+        #expect(back.precision == .street)
+        // The relationship is the nesting itself, so it is not a field in the
+        // file — but it has to come back, or the stop belongs to no tour.
+        #expect(back.route?.id == route.id)
+    }
+
+    /// The same, for a switched-off fixed point, which is the one place
+    /// `excluded` is ever true.
+    @Test func aSwitchedOffFixedPointComesBackSwitchedOff() throws {
+        let source = try makeContext()
+        let route = try RouteStore.createRoute(name: "Tour", in: source)
+        let via = try #require(route.stops.first { $0.kind == .via })
+        via.excluded = true
+        try source.save()
+
+        let archive = try roundTrip(BackupArchive.make(from: source))
+        let fresh = try makeContext()
+        try BackupRestore.apply(archive, mode: .replace, in: fresh)
+
+        let back = try #require(try fresh.fetch(FetchDescriptor<Route>()).first)
+        #expect(back.stops.first { $0.kind == .via }?.excluded == true)
+        #expect(back.stops.first { $0.kind == .start }?.excluded == false)
+    }
+
+    @Test func everyFieldOfARouteSurvivesTheFile() throws {
+        let source = try makeContext()
+        let route = try RouteStore.createRoute(name: "VM 4 DO Vormittag", in: source)
+        route.status = .completed
+        route.completedAt = Date(timeIntervalSince1970: 1_757_000_456)
+        route.createdAt = Date(timeIntervalSince1970: 1_756_000_000)
+        try source.save()
+
+        let archive = try roundTrip(BackupArchive.make(from: source))
+        let fresh = try makeContext()
+        try BackupRestore.apply(archive, mode: .replace, in: fresh)
+
+        let back = try #require(try fresh.fetch(FetchDescriptor<Route>()).first)
+        #expect(back.id == route.id)
+        #expect(back.name == "VM 4 DO Vormittag")
+        #expect(back.status == .completed)
+        #expect(back.createdAt == Date(timeIntervalSince1970: 1_756_000_000))
+        #expect(back.completedAt == Date(timeIntervalSince1970: 1_757_000_456))
+        // The two deliberate deviations, both documented in `make`: the driven
+        // line is derived and is left out, and what comes back is therefore
+        // flagged for reoptimising however it was flagged when it was written.
+        #expect(back.geometryFlat.isEmpty)
+        #expect(back.needsOptimize)
+    }
+
+    @Test func everyFieldOfAFloorSurvivesTheFile() throws {
+        let source = try makeContext()
+        let route = try RouteStore.createRoute(name: "Tour", in: source)
+        let stop = Stop(
+            kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 129/1",
+            plz: "1180", lat: 48.2301, lon: 16.3201)
+        stop.route = route
+        source.insert(stop)
+        try StockwerkStore.save(stockwerk: "2/Tür 14", dontAsk: true, for: stop, in: source)
+        let written = try #require(try StockwerkStore.note(for: stop, in: source))
+        written.updatedAt = Date(timeIntervalSince1970: 1_757_000_789)
+        try source.save()
+
+        let archive = try roundTrip(BackupArchive.make(from: source))
+        let fresh = try makeContext()
+        try BackupRestore.apply(archive, mode: .replace, in: fresh)
+
+        let back = try #require(try StockwerkStore.all(in: fresh).first)
+        #expect(back.key == written.key)
+        #expect(back.kunde == "Fam. Gruber")
+        #expect(back.strasse == "Gentzgasse 129/1")
+        #expect(back.plz == "1180")
+        #expect(back.stockwerk == "2/Tür 14")
+        #expect(back.dontAsk)
+        #expect(back.updatedAt == Date(timeIntervalSince1970: 1_757_000_789))
+    }
+
+    /// And the guard for the *next* field somebody adds.
+    ///
+    /// The tests above pin the fields that exist today; this one fails the
+    /// moment a new one appears on a model, whether or not anybody thought
+    /// about the backup. Every stored property has to be listed here as either
+    /// carried by the file or deliberately left out — and choosing between
+    /// those two is the decision that was missed last time.
+    @Test func everyStoredPropertyIsEitherCarriedOrDeliberatelyLeftOut() throws {
+        let live = Schema(versionedSchema: EarRouterSchemaV4.self)
+        func properties(_ entity: String) -> Set<String> {
+            Set((live.entities.first { $0.name == entity }?.properties ?? []).map(\.name))
+        }
+
+        #expect(properties("Stop") == [
+            // Carried, field for field — see `everyFieldOfAStopSurvivesTheFile`.
+            "id", "kindRaw", "kunde", "strasse", "plz", "paket", "notiz", "telefon",
+            "lat", "lon", "orderIndex", "delivered", "nextLegKm", "nextLegMin",
+            "createdAt", "excluded", "pinned", "precisionRaw",
+            // Left out on purpose: the tour a stop belongs to is the nesting.
+            "route",
+        ])
+
+        #expect(properties("Route") == [
+            "id", "name", "statusRaw", "createdAt", "completedAt",
+            // Left out on purpose: derived, several thousand doubles per route,
+            // and one "Neu optimieren" rebuilds it. See `BackupArchive.make`.
+            "geometryFlat",
+            // Written as true regardless, for the same reason.
+            "needsOptimize",
+            // The nesting again, in the other direction.
+            "stops",
+        ])
+
+        #expect(properties("StockwerkNote") == [
+            "key", "kunde", "strasse", "plz", "stockwerk", "dontAsk", "updatedAt",
+            // Left out on purpose: a floor is identified by its key across
+            // phones, and a restore makes a fresh row for it.
+            "id",
+        ])
+    }
+
     /// A setting the driver never touched is not carried at all, rather than
     /// carried as a zero that would then overwrite the new phone's own.
     @Test func anUnsetSettingIsNotCaptured() throws {
