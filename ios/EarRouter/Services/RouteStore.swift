@@ -217,6 +217,16 @@ enum RouteStore {
             precision = hit.precision == .exact ? nil : hit.precision
         }
 
+        // The driver pressed Abbrechen while the address was being looked up,
+        // or the editor's own 30-second budget ran out. Either way the answer
+        // arrived after it stopped being wanted: a lookup that resolves from
+        // the cache, or a register that answers just as the cancel propagates,
+        // reaches here with a perfectly good result and no reason left to
+        // write it. Adding the stop anyway is the one outcome the editor's
+        // Abbrechen promises will not happen — and the obvious response to a
+        // stop that appeared after cancelling is to delete it again.
+        try Task.checkCancellation()
+
         let stop = Stop(
             kind: .customer, kunde: kunde.trimmed, strasse: strasse.trimmed, plz: plz,
             paket: paket?.trimmed.nilIfEmpty, notiz: notiz?.trimmed.nilIfEmpty,
@@ -269,6 +279,11 @@ enum RouteStore {
             moved = true
         } else if addressChanged || forceGeocode {
             let hit = try await Geocoder.shared.geocode(strasse: strasse, plz: plz)
+            // Before the row is touched at all — see `addStop`. This is the
+            // only suspension point in the whole edit, so throwing here leaves
+            // the stop exactly as the driver found it rather than half-written
+            // with a position they cancelled out of.
+            try Task.checkCancellation()
             stop.lat = hit.lat
             stop.lon = hit.lon
             stop.precision = hit.precision == .exact ? nil : hit.precision
