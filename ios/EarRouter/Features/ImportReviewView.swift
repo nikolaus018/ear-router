@@ -46,6 +46,16 @@ struct ImportReviewView: View {
     /// Set by the first correction or removal. From then on the list on this
     /// screen is the driver's own work, and closing it asks first.
     @State private var edited = false
+    /// Set once an import has actually written to the tour.
+    ///
+    /// The screen stays open after a run that had anything to report — an
+    /// address that would not resolve, a stop that came back approximate, a
+    /// run the driver stopped part-way — because the list is still worth
+    /// something: fix the failures, press Übernehmen again, and it carries on.
+    /// But by then part of it is already on the tour, and the discard question
+    /// was still saying "Die Liste wird nicht übernommen", which had stopped
+    /// being true the moment the first stop was written.
+    @State private var applied = false
     @State private var confirmingDiscard = false
 
     /// One row. A `UUID` of its own rather than the entry's contents, because
@@ -275,13 +285,19 @@ struct ImportReviewView: View {
                 }
             }
             .confirmationDialog(
-                "Korrekturen verwerfen?", isPresented: $confirmingDiscard,
+                applied ? "Prüfen beenden?" : "Korrekturen verwerfen?",
+                isPresented: $confirmingDiscard,
                 titleVisibility: .visible
             ) {
-                Button("Verwerfen", role: .destructive) { dismiss() }
+                Button(applied ? "Beenden" : "Verwerfen", role: .destructive) { dismiss() }
                 Button("Weiter prüfen", role: .cancel) {}
             } message: {
-                Text("Die Liste wird nicht übernommen, und deine Änderungen daran gehen verloren.")
+                Text(
+                    applied
+                        ? "Was schon übernommen wurde, bleibt auf der Tour. Der Rest der "
+                            + "Liste und deine Änderungen daran gehen verloren."
+                        : "Die Liste wird nicht übernommen, und deine Änderungen daran "
+                            + "gehen verloren.")
             }
         }
         ToolbarItem(placement: .confirmationAction) {
@@ -335,6 +351,7 @@ struct ImportReviewView: View {
             // whether the shell it created is still empty needs to hear
             // about that case too, not just a clean finish.
             onImported?()
+            applied = true
             if r.hasProblems {
                 result = ImportReport(result: r)
             } else {
