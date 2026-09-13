@@ -556,3 +556,227 @@ struct UndoDeliveryTests {
         }
     }
 }
+
+/// The two lines the tour screens put under a tour's name.
+struct TourSummaryTests {
+
+    private func makeContext() throws -> ModelContext {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self, StockwerkNote.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        return ModelContext(container)
+    }
+
+    @MainActor
+    private func tour(delivered: Int, of total: Int, km: Double = 4.0) throws -> Route {
+        let context = try makeContext()
+        let route = try RouteStore.createRoute(name: "Tour", in: context)
+        for fixed in route.stops where fixed.kind.isFixed { fixed.excluded = true }
+        for i in 0..<total {
+            let stop = Stop(
+                kind: .customer, kunde: "Kunde \(i)", strasse: "Gasse \(i)", plz: "1180",
+                lat: 48.23, lon: 16.32, orderIndex: 10 + i)
+            stop.delivered = i < delivered
+            stop.nextLegKm = km
+            stop.nextLegMin = 8
+            stop.route = route
+            context.insert(stop)
+        }
+        try context.save()
+        return route
+    }
+
+    /// "Noch 22 Stopps · 18,2 km" rather than "12 von 34 geliefert" — both are
+    /// the same fact, and only one of them is the question anybody has at half
+    /// past eleven.
+    @MainActor
+    @Test func arunningTourSaysWhatIsStillAhead() throws {
+        let route = try tour(delivered: 1, of: 3)
+        let summary = RouteSnapshot(route).summary(of: route)
+        #expect(summary.hasPrefix("Noch 2 Stopps"))
+        #expect(summary.contains("km"))
+    }
+
+    /// A finished tour is history, and history has no "still to drive". It was
+    /// answering "Noch 4 Stopps · 11,7 km" under a tour filed in Erledigt — a
+    /// forecast about a day that is over.
+    @MainActor
+    @Test func afinishedTourIsDescribedAsTheDayItWas() throws {
+        let route = try tour(delivered: 1, of: 3)
+        route.status = .completed
+        route.completedAt = Date(timeIntervalSince1970: 1_757_000_000)
+
+        let summary = RouteSnapshot(route).summary(of: route)
+        #expect(!summary.contains("Noch"))
+        #expect(summary.contains("3 Stopps"))
+        // The day it was driven, not a forecast about it.
+        #expect(summary.contains(Format.date(Date(timeIntervalSince1970: 1_757_000_000))))
+    }
+
+    @MainActor
+    @Test func atourWithNothingOnItSaysSo() throws {
+        let route = try tour(delivered: 0, of: 0)
+        #expect(RouteSnapshot(route).summary(of: route) == "Noch keine Stopps")
+    }
+
+    @MainActor
+    @Test func everyMealHandedOverLeavesOnlyTheDriveBack() throws {
+        let route = try tour(delivered: 2, of: 2)
+        let summary = RouteSnapshot(route).summary(of: route)
+        #expect(summary.hasPrefix("Alle geliefert"))
+        #expect(summary.contains("Rückfahrt"))
+    }
+}
+
+/// What the three fixed points are called in the list.
+struct FixedStopTitleTests {
+
+    @Test func eachFixedPointHasItsOwnName() {
+        let names = [StopKind.start, .via, .end].map {
+            Stop(kind: $0, lat: 48.2, lon: 16.3).fixedTitle
+        }
+        #expect(names == ["Start", "Lager", "Ziel"])
+        // Three points, three names — a duplicate would put two identically
+        // labelled rows at the top of every tour.
+        #expect(Set(names).count == 3)
+    }
+
+    @Test func aCustomerIsCalledByTheirOwnName() {
+        let stop = Stop(kind: .customer, kunde: "Fam. Gruber", lat: 48.2, lon: 16.3)
+        #expect(stop.fixedTitle == "Fam. Gruber")
+        #expect(Stop(kind: .customer, lat: 48.2, lon: 16.3).fixedTitle == "Stopp")
+    }
+}
+
+/// Deleting tours, and the packing ticks that do not live in the store.
+@MainActor
+struct RouteDeletionTests {
+
+    private func makeContext() throws -> ModelContext {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self, StockwerkNote.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        return ModelContext(container)
+    }
+
+    /// Swipe-to-delete hands over row offsets into a live `@Query`, and the
+    /// save after the first deletion refreshes that array underneath the loop.
+    /// Resolving every id up front is what keeps a two-row deletion from taking
+    /// out a third tour — or, deleted by the wrong filter, all of them.
+    @Test func deletingByIDTakesExactlyThoseTours() throws {
+        let context = try makeContext()
+        let a = try RouteStore.createRoute(name: "Montag", in: context)
+        let b = try RouteStore.createRoute(name: "Dienstag", in: context)
+        let c = try RouteStore.createRoute(name: "Mittwoch", in: context)
+
+        try RouteStore.delete(ids: [a.id, c.id], in: context)
+
+        let left = try context.fetch(FetchDescriptor<Route>())
+        #expect(left.count == 1)
+        #expect(left.first?.id == b.id)
+        #expect(left.first?.name == "Dienstag")
+    }
+
+    @Test func deletingNothingDeletesNothing() throws {
+        let context = try makeContext()
+        try RouteStore.createRoute(name: "Montag", in: context)
+        try RouteStore.delete(ids: [], in: context)
+        try RouteStore.delete(ids: [UUID()], in: context)
+        #expect(try context.fetch(FetchDescriptor<Route>()).count == 1)
+    }
+
+    /// The stops go with the tour — the relationship's delete rule is cascade,
+    /// and a stop left behind unattached is a row nothing will ever show again.
+    @Test func theStopsOfADeletedTourGoWithIt() throws {
+        let context = try makeContext()
+        let route = try RouteStore.createRoute(name: "Montag", in: context)
+        let stop = Stop(
+            kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 129", plz: "1180",
+            lat: 48.23, lon: 16.32)
+        stop.route = route
+        context.insert(stop)
+        try context.save()
+
+        try RouteStore.delete(ids: [route.id], in: context)
+        #expect(try context.fetch(FetchDescriptor<Stop>()).isEmpty)
+    }
+}
+
+/// Which lines of a tour's packing list are ticked off.
+///
+/// This is the one piece of tour state that lives outside SwiftData, so nothing
+/// cascades it away and nothing scopes it for free. Both of those have to be
+/// done by hand here — and a checklist shared between tours is a driver opening
+/// Tuesday's list to find it already ticked, and driving off without loading
+/// the van.
+@MainActor
+struct LadelisteStateTests {
+
+    private func clean(_ ids: [UUID], _ body: () throws -> Void) rethrows {
+        defer { for id in ids { LadelisteState.forget(id) } }
+        try body()
+    }
+
+    @Test func eachTourHasItsOwnTicks() throws {
+        let monday = UUID(), tuesday = UUID()
+        try clean([monday, tuesday]) {
+            LadelisteState.store(["menü", "suppe"], for: monday)
+
+            #expect(LadelisteState.checked(for: monday) == ["menü", "suppe"])
+            // Tuesday's van still has to be loaded.
+            #expect(LadelisteState.checked(for: tuesday).isEmpty)
+
+            LadelisteState.store(["diät"], for: tuesday)
+            #expect(LadelisteState.checked(for: monday) == ["menü", "suppe"])
+            #expect(LadelisteState.checked(for: tuesday) == ["diät"])
+        }
+    }
+
+    @Test func aTourNobodyHasTickedAnythingOnIsEmpty() {
+        #expect(LadelisteState.checked(for: UUID()).isEmpty)
+    }
+
+    /// Storing replaces rather than merges — "Zurücksetzen" is one of the two
+    /// things that writes here, and it writes an empty set.
+    @Test func storingReplacesWhatWasThere() throws {
+        let id = UUID()
+        try clean([id]) {
+            LadelisteState.store(["menü", "suppe"], for: id)
+            LadelisteState.store(["menü"], for: id)
+            #expect(LadelisteState.checked(for: id) == ["menü"])
+            LadelisteState.store([], for: id)
+            #expect(LadelisteState.checked(for: id).isEmpty)
+        }
+    }
+
+    /// The checklist lives in `UserDefaults`, outside the store, so the cascade
+    /// delete does not reach it. Without this every deleted tour leaves its
+    /// ticks behind in the app's preferences for good.
+    @Test func forgettingOneTourLeavesTheOthersAlone() throws {
+        let monday = UUID(), tuesday = UUID()
+        try clean([monday, tuesday]) {
+            LadelisteState.store(["menü"], for: monday)
+            LadelisteState.store(["suppe"], for: tuesday)
+
+            LadelisteState.forget(monday)
+            #expect(LadelisteState.checked(for: monday).isEmpty)
+            #expect(LadelisteState.checked(for: tuesday) == ["suppe"])
+        }
+    }
+
+    /// And deleting the tour is what triggers that, which is the half that has
+    /// to be remembered by hand at every call site.
+    @Test func deletingATourForgetsItsTicks() throws {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self, StockwerkNote.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let route = try RouteStore.createRoute(name: "Montag", in: context)
+        let id = route.id
+        try clean([id]) {
+            LadelisteState.store(["menü"], for: id)
+            try RouteStore.delete(ids: [id], in: context)
+            #expect(LadelisteState.checked(for: id).isEmpty)
+        }
+    }
+}
