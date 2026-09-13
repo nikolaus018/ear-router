@@ -537,6 +537,14 @@ struct BackupTests {
     @Test func mergingAnEquallyOldAnswerWritesNothing() throws {
         let context = try makeContext()
         try seed(context)
+        // Whole seconds on purpose. The file encodes dates as ISO-8601, which
+        // drops anything finer — so a note written at a real instant comes back
+        // *older* than itself, and a test built on that would be exercising
+        // "older wins", not "equal does not". (It was, until this line.)
+        for note in try StockwerkStore.all(in: context) {
+            note.updatedAt = Date(timeIntervalSince1970: 1_757_000_000)
+        }
+        try context.save()
         let archive = try roundTrip(BackupArchive.make(from: context))
 
         // Same file, same timestamps, straight back onto the phone it came
