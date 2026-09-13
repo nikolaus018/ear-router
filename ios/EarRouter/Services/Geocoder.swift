@@ -577,7 +577,13 @@ actor Geocoder {
     private func districtCentroid(plz: String) async throws -> GeocodeResult? {
         let place = Postcodes.placeSuffix(for: plz)
         guard let hit = try await nominatimRawSearch(place) else { return nil }
-        guard hit.address?.postcode == plz,
+        // Trimmed, exactly as `hitMatches` compares the same field. Nominatim
+        // returns the postcode as the underlying OSM tag holds it, and a tag
+        // with a stray space around it made the one check that tells a real
+        // postcode from a hit on "Wien" alone fail — so the coarse pin this is
+        // the last resort for was refused, and a route with one unfindable
+        // address went back to blocking on it.
+        guard hit.address?.postcode?.trimmed == plz,
               let lat = Double(hit.lat), let lon = Double(hit.lon),
               Coordinates.isPlausible(lat: lat, lon: lon, forPlz: plz)
         else { return nil }
