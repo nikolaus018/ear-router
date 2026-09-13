@@ -320,11 +320,18 @@ enum BackupRestore {
             }
         }
 
-        let existingRouteIDs = Set(
+        // Grows as the file is read, rather than being the snapshot of the
+        // store it was. A tour already on the phone and a tour the *file* lists
+        // twice are the same question — "is this one already here?" — and the
+        // second was answered "no" both times: two Route rows carrying one id,
+        // which is one id too few for everything that then looks a tour up by
+        // it. `RouteStore.delete(ids:)` would take out both, and the map and
+        // Touren would each pick whichever came first.
+        var takenRouteIDs = Set(
             try context.fetch(FetchDescriptor<Route>()).map(\.id))
 
         for backup in archive.routes {
-            guard !existingRouteIDs.contains(backup.id) else {
+            guard takenRouteIDs.insert(backup.id).inserted else {
                 result.routesSkipped += 1
                 continue
             }

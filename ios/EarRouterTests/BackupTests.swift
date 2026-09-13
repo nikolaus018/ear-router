@@ -384,4 +384,30 @@ struct BackupTests {
         #expect(restored.geometryFlat.isEmpty)
         #expect(restored.needsOptimize)
     }
+
+    /// A file listing one tour twice restores it once.
+    ///
+    /// Nothing this app writes can produce that, but a backup is read on the
+    /// day something has already gone wrong — two files concatenated by hand,
+    /// an edit in a text editor — and "is this tour already here?" used to be
+    /// asked only of the store, never of the rest of the same file. Two Route
+    /// rows then carried one id, which is one too few for everything that looks
+    /// a tour up by it: deleting one would take out both.
+    @Test func aTourListedTwiceInOneFileIsRestoredOnce() throws {
+        let source = try makeContext()
+        try seed(source)
+
+        var archive = try roundTrip(BackupArchive.make(from: source))
+        let only = try #require(archive.routes.first)
+        archive.routes.append(only)
+
+        let fresh = try makeContext()
+        let outcome = try BackupRestore.apply(archive, mode: .replace, in: fresh)
+        #expect(outcome.routesAdded == 1)
+        #expect(outcome.routesSkipped == 1)
+
+        let restored = try fresh.fetch(FetchDescriptor<Route>())
+        #expect(restored.count == 1)
+        #expect(Set(restored.map(\.id)).count == restored.count)
+    }
 }
