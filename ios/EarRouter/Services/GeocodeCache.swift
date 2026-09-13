@@ -93,6 +93,11 @@ actor GeocodeCache {
            now.timeIntervalSince(hit.cachedAt) > Self.approxTTL {
             hits.removeValue(forKey: key)
             dirty = true
+            // Scheduled, like every other write in here. Marked dirty and left
+            // to somebody else — which is what this did — the drop reached the
+            // file only if an unrelated store or miss happened to follow it
+            // before the app was backgrounded.
+            scheduleSave()
             return nil
         }
         return hit
@@ -136,6 +141,7 @@ actor GeocodeCache {
         if now.timeIntervalSince(at) > Self.missTTL {
             misses.removeValue(forKey: key)
             dirty = true
+            scheduleSave()
             return false
         }
         return true
