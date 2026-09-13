@@ -472,8 +472,7 @@ struct StopListRow: View {
             {
                 Button("Anrufen", systemImage: "phone") { openURL(url) }
             }
-            let telefonDial = stop.telefon?.trimmed.nilIfEmpty.flatMap(PhoneNumbers.normalizedDial)
-            ForEach(PhoneNumbers.find(in: stop.notiz).filter { $0.dial != telefonDial }) { phone in
+            ForEach(PhoneNumbers.inNote(stop.notiz, besides: stop.telefon)) { phone in
                 Button("\(phone.display) anrufen", systemImage: "phone") {
                     if let url = phone.url { openURL(url) }
                 }

@@ -51,10 +51,59 @@ enum PhoneNumbers {
             let found = Found(
                 display: written,
                 dial: (written.hasPrefix("+") ? "+" : "") + digits)
-            // One button per number, however many times the note repeats it.
-            if !out.contains(where: { $0.dial == found.dial }) { out.append(found) }
+            // One button per number, however many times the note repeats it —
+            // and however it is spelled each time. Compared on `sameNumberKey`
+            // rather than on `dial`, because "0664 1234567" and
+            // "+43 664 1234567" in one note are one number written twice.
+            if !out.contains(where: { sameNumberKey($0.dial) == sameNumberKey(found.dial) }) {
+                out.append(found)
+            }
         }
         return out
+    }
+
+    /// The form two numbers are compared in when deciding whether they are the
+    /// *same* number — as opposed to `dial`, which is what actually gets
+    /// dialled and must stay exactly as written.
+    ///
+    /// Austrian numbers reach this app in three notations for one number: the
+    /// Zusteller-Portal hands over `customer.phone` as "+4369910842229", and a
+    /// driver's own note for the same household says "0699 10842229" or
+    /// "0043 699 10842229". Compared as text those are three different numbers,
+    /// which is how the customer's own "Anrufen" button and a note's
+    /// "0699 10842229 anrufen" ended up side by side on Jetzt, dialling the
+    /// same person.
+    ///
+    /// So the country code and the trunk zero — the two things that differ
+    /// between the notations and not between the numbers — are taken off, and
+    /// what is left is the national number. Nothing is stripped when that would
+    /// leave nothing behind, so a fragment cannot collapse onto the empty
+    /// string and swallow every other number with it.
+    static func sameNumberKey(_ dial: String) -> String {
+        var digits = dial.hasPrefix("+") ? String(dial.dropFirst()) : dial
+        // "0043" only ever means the international prefix: an Austrian national
+        // number has exactly one trunk zero, never two.
+        if dial.hasPrefix("+"), digits.hasPrefix("43"), digits.count > 2 {
+            digits.removeFirst(2)
+        } else if digits.hasPrefix("0043"), digits.count > 4 {
+            digits.removeFirst(4)
+        }
+        if digits.hasPrefix("0"), digits.count > 1 { digits.removeFirst() }
+        return digits
+    }
+
+    /// The numbers in a note that deserve a button of their own: everything
+    /// `find` turns up, minus the customer's own number.
+    ///
+    /// Here rather than at each call site because both screens that offer these
+    /// buttons — the stop row's menu and the Jetzt card — have to subtract the
+    /// same number, and two copies of that rule are two chances for one of them
+    /// to keep offering the duplicate.
+    static func inNote(_ notiz: String?, besides telefon: String?) -> [Found] {
+        guard let own = telefon?.trimmed.nilIfEmpty
+            .flatMap(normalizedDial).map(sameNumberKey)
+        else { return find(in: notiz) }
+        return find(in: notiz).filter { sameNumberKey($0.dial) != own }
     }
 
     /// Digits only, with a leading "+" kept where the source had one — the

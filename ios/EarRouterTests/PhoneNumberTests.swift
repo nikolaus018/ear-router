@@ -73,3 +73,74 @@ struct PhoneNumberTests {
         #expect(PhoneNumbers.dialURL(for: "") == nil)
     }
 }
+
+/// One number, one button — whichever of the three Austrian notations each
+/// side of the comparison happens to be written in.
+///
+/// The Zusteller-Portal hands over `customer.phone` as "+4369910842229"; the
+/// driver's own note for the same household says "0699 10842229". Compared as
+/// text those are two numbers, so Jetzt offered "Anrufen" and
+/// "0699 10842229 anrufen" side by side, dialling the same person.
+struct SameNumberTests {
+
+    @Test func theThreeNotationsOfOneNumberAreOneNumber() {
+        let key = PhoneNumbers.sameNumberKey
+        #expect(key("+4369910842229") == key("069910842229"))
+        #expect(key("004369910842229") == key("069910842229"))
+        #expect(key("+43664123456") == key("0664123456"))
+        // A Vienna landline, written both ways.
+        #expect(key("+43123456789") == key("0123456789"))
+    }
+
+    @Test func differentNumbersStayDifferent() {
+        let key = PhoneNumbers.sameNumberKey
+        #expect(key("+436641234567") != key("06767654321"))
+        #expect(key("06641234567") != key("06641234568"))
+    }
+
+    /// An area code that itself begins with the country code's digits — 043xx
+    /// is real (Kärnten) — must not have them mistaken for a prefix.
+    @Test func anAreaCodeThatLooksLikeAPrefixIsLeftAlone() {
+        let key = PhoneNumbers.sameNumberKey
+        #expect(key("+43431234567") == key("0431234567"))
+        #expect(key("0431234567") != key("01234567"))
+    }
+
+    /// Nothing collapses onto the empty string, which would make every
+    /// fragment equal to every other.
+    @Test func aFragmentIsNotStrippedToNothing() {
+        #expect(!PhoneNumbers.sameNumberKey("+43").isEmpty)
+        #expect(!PhoneNumbers.sameNumberKey("0").isEmpty)
+    }
+
+    // MARK: - What the two screens actually offer
+
+    @Test func theCustomersOwnNumberGetsNoSecondButtonFromTheNote() {
+        let found = PhoneNumbers.inNote(
+            "Bitte 1 Stunde vorher anrufen: 0699 10842229",
+            besides: "+4369910842229")
+        #expect(found.isEmpty)
+    }
+
+    @Test func anotherNumberInTheNoteStillGetsItsButton() throws {
+        let found = PhoneNumbers.inNote(
+            "Tochter: 0664 7654321, sonst 0699 10842229",
+            besides: "+4369910842229")
+        #expect(found.count == 1)
+        #expect(try #require(found.first).dial == "06647654321")
+    }
+
+    @Test func withNoStoredNumberEveryNumberInTheNoteIsOffered() {
+        let found = PhoneNumbers.inNote("Tochter: 0664 7654321", besides: nil)
+        #expect(found.map(\.dial) == ["06647654321"])
+        #expect(PhoneNumbers.inNote("Tochter: 0664 7654321", besides: "  ").count == 1)
+    }
+
+    /// And a note that writes one number twice, each time differently, is
+    /// still one button.
+    @Test func oneNumberWrittenTwoWaysInOneNoteIsOneButton() {
+        let found = PhoneNumbers.inNote(
+            "Mobil 0664 1234567, international +43 664 1234567", besides: nil)
+        #expect(found.count == 1)
+    }
+}

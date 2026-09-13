@@ -518,8 +518,7 @@ private struct NowStopCard: View {
     }
 
     private var notizPhones: [PhoneNumbers.Found] {
-        let telefonDial = stop.telefon?.trimmed.nilIfEmpty.flatMap(PhoneNumbers.normalizedDial)
-        return PhoneNumbers.find(in: stop.notiz).filter { $0.dial != telefonDial }
+        PhoneNumbers.inNote(stop.notiz, besides: stop.telefon)
     }
 }
 
