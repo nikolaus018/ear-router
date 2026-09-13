@@ -234,7 +234,7 @@ actor Geocoder {
 
     /// What the caller knows about the address's sub-address, and how strictly
     /// the register's answer has to honour it.
-    private enum SubCheck {
+    enum SubCheck {
         /// No sub-address; anything the register returns for the housenumber
         /// is as precise as this address gets.
         case absent
@@ -273,30 +273,28 @@ actor Geocoder {
             features, plz: plz, streetKey: ourStreet, requireSub: subCheck.required)
         else { return nil }
 
-        let props = best.properties
-        let ranking = props.ranking ?? .greatestFiniteMagnitude
-        let precision: Precision
+        return Self.result(from: best, query: query, plz: plz, subCheck: subCheck)
+    }
 
-        if props.kategorie == "Straßenname" {
-            precision = .street
-        } else if subCheck.isWrongNeighbour(props.adresse) {
-            // The register knows this housenumber, but only as somebody else's
-            // staircase or garden plot. Same street, same number, different
-            // door — reported as the approximation it is.
-            log.debug("OGD matched a neighbouring sub-address, downgrading to street precision")
-            precision = .street
-        } else if ranking < 1.0 {
-            // A genuine housenumber (and usually Stiege/Parzelle/Tür) match.
-            precision = .exact
-        } else {
-            // A real street, but the exact housenumber was not registered —
-            // matched to the nearest one instead.
-            precision = .street
-        }
+    /// Turns the one feature the register chose into an answer — the decision
+    /// about *how much to trust it*, and the coordinates that go with it.
+    ///
+    /// Separated from the request for the same reason `pickFeature` and
+    /// `visitingOrder` are: nothing here needs a network, and all of it decides
+    /// something a driver acts on. Whether a pin is `.exact` is what puts the
+    /// "≈, double check this one" warning on a row, and getting the two numbers
+    /// the wrong way round puts the stop in the ocean.
+    static func result(
+        from feature: OGDFeature, query: String, plz: String, subCheck: SubCheck
+    ) -> GeocodeResult? {
+        let props = feature.properties
+        let precision = Self.precision(
+            kategorie: props.kategorie, adresse: props.adresse,
+            ranking: props.ranking, subCheck: subCheck)
 
-        guard best.geometry.coordinates.count == 2 else { return nil }
-        let lon = best.geometry.coordinates[0]
-        let lat = best.geometry.coordinates[1]
+        guard feature.geometry.coordinates.count == 2 else { return nil }
+        let lon = feature.geometry.coordinates[0]
+        let lat = feature.geometry.coordinates[1]
         // `crs=EPSG:4326` is requested, but a service that ever ignored it
         // would hand back projected metres that look nothing like degrees —
         // fall through to Nominatim rather than storing a point in the middle
@@ -310,6 +308,25 @@ actor Geocoder {
         let displayName = props.adresse.map { "\($0), \(plz) Wien" } ?? "\(query), \(plz) Wien"
         return GeocodeResult(
             lat: lat, lon: lon, displayName: displayName, precision: precision)
+    }
+
+    /// How much the register's own answer can be trusted.
+    static func precision(
+        kategorie: String?, adresse: String?, ranking: Double?, subCheck: SubCheck
+    ) -> Precision {
+        // The register answered with a street rather than a building.
+        if kategorie == "Straßenname" { return .street }
+        // It knows this housenumber, but only as somebody else's staircase or
+        // garden plot. Same street, same number, different door — reported as
+        // the approximation it is rather than passed off as the right one.
+        if subCheck.isWrongNeighbour(adresse) {
+            log.debug("OGD matched a neighbouring sub-address, downgrading to street precision")
+            return .street
+        }
+        // A genuine housenumber (and usually Stiege/Parzelle/Tür) match. Above
+        // that the scale jumps into the hundreds for "same street, wrong
+        // housenumber", which is a street-level answer wearing a number.
+        return (ranking ?? .greatestFiniteMagnitude) < 1.0 ? .exact : .street
     }
 
     /// Picks the one usable feature out of an OGD response.
@@ -426,10 +443,25 @@ actor Geocoder {
         let ourStreet = AddressText.matchKey(AddressText.streetNameOnly(simplified))
         guard let features = await ogdFetch(simplified) else { return nil }
 
+        return Self.unanimousPostcode(features, streetKey: ourStreet, otherThan: plz)
+    }
+
+    /// The one postcode every candidate for this street agrees on, when it is
+    /// not the one the stop was filed under.
+    ///
+    /// Deliberately narrow, and separated out because the narrowness is the
+    /// whole point: a street that genuinely runs through several districts
+    /// yields several postcodes and no hint at all. Guessing between them would
+    /// be worse than the honest approximate pin the caller otherwise falls back
+    /// to — and this is what puts a one-tap "move it to 1180" in front of the
+    /// driver, so it has to be right.
+    static func unanimousPostcode(
+        _ features: [OGDFeature], streetKey: String, otherThan plz: String
+    ) -> String? {
         var postcodes = Set<String>()
         for f in features {
             guard let name = f.properties.streetName,
-                  AddressText.matchKey(name) == ourStreet
+                  AddressText.matchKey(name) == streetKey
             else { continue }
             if let code = f.properties.postalCode { postcodes.insert(code) }
         }

@@ -47,7 +47,7 @@ enum RouteOptimizer {
     /// between the read and the write does not make the computed order or
     /// geometry wrong, and treating it as if it did would leave routes
     /// perpetually flagged for re-optimization over an edited Notiz.
-    private struct Fingerprint: Equatable, Sendable {
+    struct Fingerprint: Equatable, Sendable {
         let entries: [Entry]
         struct Entry: Equatable, Sendable {
             let id: UUID
@@ -305,7 +305,7 @@ enum RouteOptimizer {
 
     // MARK: - Helpers
 
-    private static func snapshot(_ route: Route) -> (Nodes, Fingerprint) {
+    static func snapshot(_ route: Route) -> (Nodes, Fingerprint) {
         // Ordered by creation so "the first customer" means the one entered
         // first, which is what the no-fixed-points anchor rule relies on.
         let stops = route.stops.sorted(by: Stop.createdBefore)
@@ -355,7 +355,9 @@ enum RouteOptimizer {
 
     /// Joins two OSRM geometries, dropping the duplicated shared point where
     /// one leg ends and the next begins.
-    private static func append(_ acc: inout [[Double]], _ segment: [[Double]]) {
+    /// Not private: the legs of a tour are joined here and nowhere else, and a
+    /// duplicated point at every junction is a line that looks almost right.
+    static func append(_ acc: inout [[Double]], _ segment: [[Double]]) {
         if !acc.isEmpty && !segment.isEmpty { acc.removeLast() }
         acc.append(contentsOf: segment)
     }

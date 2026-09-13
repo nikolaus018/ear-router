@@ -188,7 +188,9 @@ actor OSRMClient {
     /// otherwise careful never to do that (see the Nominatim path, which logs
     /// its networking errors and shows none of them); routing was the one place
     /// that leaked. The code is still logged, because that is who it is for.
-    private static func failure(code: String) -> AppError {
+    /// Not private, for the reason `visitingOrder` is not: it is a decision,
+    /// it is pure, and it can be checked without a request.
+    static func failure(code: String) -> AppError {
         log.error("OSRM refused the request: \(code, privacy: .public)")
         switch code {
         case "NoRoute", "NoTrips", "NoSegment":
@@ -348,7 +350,9 @@ actor OSRMClient {
 
     /// OSRM takes `lon,lat` pairs, semicolon-separated — the opposite order
     /// from how the rest of this app writes a coordinate.
-    private static func coordString(_ coords: [(lat: Double, lon: Double)]) -> String {
+    /// Not private: getting this pair the wrong way round sends every tour in
+    /// the app to a different country, and it is one line that never throws.
+    static func coordString(_ coords: [(lat: Double, lon: Double)]) -> String {
         coords
             .map {
                 String(
@@ -361,7 +365,13 @@ actor OSRMClient {
 
     /// GeoJSON is `[lon, lat]`; everything downstream of here wants `[lat, lon]`.
     private static func toPolyline(_ geom: Geometry) -> [[Double]] {
-        geom.coordinates.compactMap { pair in
+        flip(geom.coordinates)
+    }
+
+    /// The same swap, taking the raw pairs — so the one line that decides
+    /// which hemisphere the route is drawn in can be checked directly.
+    static func flip(_ coordinates: [[Double]]) -> [[Double]] {
+        coordinates.compactMap { pair in
             pair.count == 2 ? [pair[1], pair[0]] : nil
         }
     }

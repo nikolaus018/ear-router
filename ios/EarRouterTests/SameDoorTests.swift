@@ -87,6 +87,33 @@ struct SameDoorTests {
         #expect(groups.isEmpty)
     }
 
+    /// Two *neighbouring* buildings are two doors.
+    ///
+    /// The point grouping quantises to about a metre, which is what lets the
+    /// same registered address survive being re-geocoded a few billionths of a
+    /// degree away. Loosened to ten metres it would start merging the house
+    /// next door — and "2 an dieser Tür" is a claim the driver acts on by
+    /// carrying two meals to one bell.
+    @Test func neighbouringBuildingsAreNotOneDoor() {
+        // ~8 m apart in latitude, which is inside a ten-metre bucket and
+        // outside a one-metre one. Different addresses, so only the point
+        // could join them.
+        let a = makeStop("Fam. A", "Gentzgasse 129", "1180", lat: 48.23010, lon: 16.3201)
+        let b = makeStop("Fam. B", "Gentzgasse 131", "1180", lat: 48.23017, lon: 16.3201)
+        let counts = SameDoor.counts(for: [a, b])
+        #expect(counts[a.id] == 1)
+        #expect(counts[b.id] == 1)
+    }
+
+    /// And the tolerance it does have still earns its keep: the same door,
+    /// re-resolved, comes back a few billionths of a degree away.
+    @Test func theSameDoorSurvivesBeingReGeocoded() {
+        let a = makeStop("Fam. A", "Gentzgasse 129", "1180", lat: 48.2301, lon: 16.3201)
+        let b = makeStop("Fam. B", "Gentzgasse 131", "1180",
+                         lat: 48.230100000003, lon: 16.320099999998)
+        #expect(SameDoor.counts(for: [a, b])[a.id] == 2)
+    }
+
     /// An address nobody wrote is not an address two people share.
     ///
     /// No screen in the app can produce a customer stop with no street, but a

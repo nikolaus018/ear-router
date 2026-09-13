@@ -147,6 +147,62 @@ struct ImportMatchingTests {
     /// matched, which looks identical to "every customer was removed from the
     /// tour" — and a round that deleted on that reading would wipe a full day of
     /// stops over one malformed paste.
+    /// Two customers with the same name, and the pass that must decline.
+    ///
+    /// Matching a moved customer by name is what keeps "Fam. Gruber moved to a
+    /// new flat" from reading as a delete plus an insert — which loses the
+    /// delivered tick. But it is deliberately conservative: a name has to be
+    /// unambiguous on *both* sides, or the pass declines. Guessing between two
+    /// households called Fam. Gruber would write one customer's address, Paket
+    /// and Notiz over the other's while the tick stayed where it was.
+    @Test func twoCustomersWithOneNameAreNotMatchedByIt() throws {
+        let (route, _) = try makeRoute([
+            stop("Fam. Gruber", "Gentzgasse 129"),
+            stop("Fam. Gruber", "Alser Straße 21"),
+        ])
+        // Both have moved, so neither matches on address. The name is the only
+        // thing left, and it names two people.
+        let paste = [
+            CustomerJSON(kunde: "Fam. Gruber", strasse: "Neubaugasse 1", plz: "1070",
+                         paket: nil, notiz: nil),
+            CustomerJSON(kunde: "Fam. Gruber", strasse: "Praterstraße 1", plz: "1020",
+                         paket: nil, notiz: nil),
+        ]
+        let match = RouteStore.match(paste, against: route.customerStops)
+
+        #expect(match.unresolved.count == 2)
+        #expect(match.unresolved.allSatisfy { $0.existing == nil })
+        #expect(match.matched.isEmpty)
+    }
+
+    /// The same rule from the other side: one on the route, two in the paste.
+    @Test func aNameThatIsAmbiguousInThePasteIsNotMatchedEither() throws {
+        let (route, _) = try makeRoute([stop("Fam. Gruber", "Gentzgasse 129")])
+        let paste = [
+            CustomerJSON(kunde: "Fam. Gruber", strasse: "Neubaugasse 1", plz: "1070",
+                         paket: nil, notiz: nil),
+            CustomerJSON(kunde: "Fam. Gruber", strasse: "Praterstraße 1", plz: "1020",
+                         paket: nil, notiz: nil),
+        ]
+        let match = RouteStore.match(paste, against: route.customerStops)
+        #expect(match.matched.isEmpty)
+        #expect(match.unresolved.allSatisfy { $0.existing == nil })
+    }
+
+    /// And when the name *is* unambiguous on both sides it still matches,
+    /// which is the whole point of the pass.
+    @Test func oneCustomerWhoMovedIsStillMatchedByName() throws {
+        let (route, _) = try makeRoute([stop("Fam. Gruber", "Gentzgasse 129")])
+        let existing = try #require(route.customerStops.first)
+        let paste = [CustomerJSON(
+            kunde: "Fam. Gruber", strasse: "Neubaugasse 1", plz: "1070",
+            paket: nil, notiz: nil)]
+        let match = RouteStore.match(paste, against: route.customerStops)
+        #expect(match.unresolved.count == 1)
+        #expect(match.unresolved.first?.existing?.id == existing.id)
+        #expect(match.matched.contains(existing.id))
+    }
+
     @Test func aPasteWhereEverythingFailsValidationDeletesNothing() async throws {
         let a = stop("Fam. Gruber", "Gentzgasse 129", delivered: true, lat: 48.231)
         let b = stop("Fam. Novak", "Währinger Straße 4", lat: 48.232)
