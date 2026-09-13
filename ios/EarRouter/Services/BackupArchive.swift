@@ -329,13 +329,20 @@ enum BackupRestore {
         // Touren would each pick whichever came first.
         var takenRouteIDs = Set(
             try context.fetch(FetchDescriptor<Route>()).map(\.id))
+        // And the same question one level down, for the same reason. A tour is
+        // skipped when its id is taken, because a tour already here *is* that
+        // tour; a stop cannot be skipped on those grounds, because the file is
+        // being read by somebody who wants their customers back. So it is kept
+        // under an id of its own instead — see `insert`.
+        var takenStopIDs = Set(
+            try context.fetch(FetchDescriptor<Stop>()).map(\.id))
 
         for backup in archive.routes {
             guard takenRouteIDs.insert(backup.id).inserted else {
                 result.routesSkipped += 1
                 continue
             }
-            insert(backup, in: context)
+            insert(backup, in: context, takenStopIDs: &takenStopIDs)
             result.routesAdded += 1
         }
 
@@ -372,7 +379,10 @@ enum BackupRestore {
         return result
     }
 
-    private static func insert(_ backup: BackupArchive.RouteBackup, in context: ModelContext) {
+    private static func insert(
+        _ backup: BackupArchive.RouteBackup, in context: ModelContext,
+        takenStopIDs: inout Set<UUID>
+    ) {
         let route = Route(name: backup.name)
         route.id = backup.id
         route.statusRaw = backup.status
@@ -393,7 +403,19 @@ enum BackupRestore {
                 lat: s.lat, lon: s.lon, orderIndex: s.orderIndex,
                 precision: s.precision.flatMap(Precision.init(rawValue:)),
                 pinned: s.pinned, excluded: s.excluded)
-            stop.id = s.id
+            // The file's own id, unless something already has it. Two rows
+            // under one id is the worse outcome by a distance: the stop list
+            // numbers them as one, the door grouping counts them as one, the
+            // optimizer writes a leg to only one of them, and the map draws two
+            // markers it cannot tell apart. A fresh id costs nothing — no floor,
+            // no checklist, nothing persistent is keyed by a stop's id, and a
+            // customer the file lists twice is visible on the tour and one swipe
+            // from gone. `Stop.init` has already assigned one, so this keeps it.
+            if takenStopIDs.insert(s.id).inserted {
+                stop.id = s.id
+            } else {
+                takenStopIDs.insert(stop.id)
+            }
             stop.delivered = s.delivered
             stop.nextLegKm = s.nextLegKm
             stop.nextLegMin = s.nextLegMin

@@ -410,4 +410,135 @@ struct BackupTests {
         #expect(restored.count == 1)
         #expect(Set(restored.map(\.id)).count == restored.count)
     }
+
+    /// A file that names one *stop* twice keeps both customers, under ids of
+    /// their own.
+    ///
+    /// The tour above is skipped on a clashing id because a tour already here
+    /// is that tour. A stop cannot be skipped on those grounds: the file is
+    /// being read by somebody who wants their customers back, and a silently
+    /// dropped one is not something they can see. Two rows under one id is the
+    /// worse outcome anyway — the list numbers them as one, the door grouping
+    /// counts them as one, and the optimizer writes a leg to only one.
+    @Test func aStopListedTwiceInOneFileKeepsBothUnderTheirOwnIDs() throws {
+        let source = try makeContext()
+        try seed(source)
+
+        var archive = try roundTrip(BackupArchive.make(from: source))
+        var route = try #require(archive.routes.first)
+        let duplicated = try #require(route.stops.first { $0.kunde == "Fam. Gruber" })
+        route.stops.append(duplicated)
+        archive.routes = [route]
+
+        let fresh = try makeContext()
+        try BackupRestore.apply(archive, mode: .replace, in: fresh)
+
+        let stops = try fresh.fetch(FetchDescriptor<Stop>())
+        #expect(Set(stops.map(\.id)).count == stops.count)
+        // Both are on the tour, and both are still Fam. Gruber.
+        #expect(stops.count { $0.kunde == "Fam. Gruber" } == 2)
+        // One of them kept the file's own id — a duplicate is not a reason to
+        // renumber the stop that was there first.
+        #expect(stops.contains { $0.id == duplicated.id })
+    }
+
+    /// The floor still lands, because nothing persistent is keyed by a stop's
+    /// id — `StockwerkKey` is the customer and their address. This is what
+    /// makes handing a duplicate a fresh id cost nothing.
+    @Test func aReIDedStopStillFindsItsFloor() throws {
+        let source = try makeContext()
+        try seed(source)
+
+        var archive = try roundTrip(BackupArchive.make(from: source))
+        var route = try #require(archive.routes.first)
+        let duplicated = try #require(route.stops.first { $0.kunde == "Fam. Gruber" })
+        route.stops.append(duplicated)
+        archive.routes = [route]
+
+        let fresh = try makeContext()
+        try BackupRestore.apply(archive, mode: .replace, in: fresh)
+
+        let restored = try #require(try fresh.fetch(FetchDescriptor<Route>()).first)
+        let notes = try StockwerkStore.all(in: fresh)
+        let floors = notes.floors(for: restored.orderedStops)
+        // Both copies of the household read the same floor.
+        for gruber in restored.customerStops where gruber.kunde == "Fam. Gruber" {
+            #expect(floors[gruber.id] == "3")
+        }
+    }
+
+    // MARK: - The settings that travel with the file
+
+    /// Captured and restored through the same list of keys, so the two halves
+    /// cannot drift. Only `restore` had a test; this is the other direction.
+    @Test func theSettingsSurviveBeingCapturedAndRestored() throws {
+        let defaults = UserDefaults.standard
+        let keys = [
+            Kilometerstand.lastKey, Kilometerstand.hasLastKey,
+            Kilometerstand.savedAtKey, NavigationHandoff.providerKey,
+            Upstreams.Keys.osrmURL,
+        ]
+        let before = keys.map { ($0, defaults.object(forKey: $0)) }
+        defer {
+            for (key, value) in before {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+
+        defaults.set(132_000.5, forKey: Kilometerstand.lastKey)
+        defaults.set(true, forKey: Kilometerstand.hasLastKey)
+        defaults.set(1_757_000_000.0, forKey: Kilometerstand.savedAtKey)
+        defaults.set("waze", forKey: NavigationHandoff.providerKey)
+        defaults.set("https://osrm.example.com", forKey: Upstreams.Keys.osrmURL)
+
+        let captured = Settings.capture()
+
+        for key in keys { defaults.removeObject(forKey: key) }
+        Settings.restore(captured)
+
+        #expect(defaults.double(forKey: Kilometerstand.lastKey) == 132_000.5)
+        #expect(defaults.bool(forKey: Kilometerstand.hasLastKey))
+        #expect(defaults.double(forKey: Kilometerstand.savedAtKey) == 1_757_000_000.0)
+        #expect(NavigationHandoff.provider == .waze)
+        #expect(Upstreams.current.osrm.absoluteString == "https://osrm.example.com")
+    }
+
+    /// A trip meter that has just been reset really does read 0, and that is a
+    /// value worth carrying like any other — which is the whole reason
+    /// `hasLastReading` is stored separately from the reading.
+    @Test func aRememberedZeroIsCarriedRatherThanTreatedAsNothing() throws {
+        let defaults = UserDefaults.standard
+        let keys = [Kilometerstand.lastKey, Kilometerstand.hasLastKey]
+        let before = keys.map { ($0, defaults.object(forKey: $0)) }
+        defer {
+            for (key, value) in before {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+
+        defaults.set(0.0, forKey: Kilometerstand.lastKey)
+        defaults.set(true, forKey: Kilometerstand.hasLastKey)
+
+        let captured = Settings.capture()
+        #expect(captured[Kilometerstand.hasLastKey] == "1")
+
+        for key in keys { defaults.removeObject(forKey: key) }
+        Settings.restore(captured)
+
+        #expect(defaults.double(forKey: Kilometerstand.lastKey) == 0)
+        #expect(defaults.bool(forKey: Kilometerstand.hasLastKey))
+    }
+
+    /// A setting the driver never touched is not carried at all, rather than
+    /// carried as a zero that would then overwrite the new phone's own.
+    @Test func anUnsetSettingIsNotCaptured() throws {
+        let defaults = UserDefaults.standard
+        let before = defaults.object(forKey: Upstreams.Keys.osrmURL)
+        defaults.removeObject(forKey: Upstreams.Keys.osrmURL)
+        defer { if let before { defaults.set(before, forKey: Upstreams.Keys.osrmURL) } }
+
+        #expect(Settings.capture()[Upstreams.Keys.osrmURL] == nil)
+    }
 }
