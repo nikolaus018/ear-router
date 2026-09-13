@@ -253,16 +253,27 @@ enum Settings {
 
     /// Values as strings, so the archive stays one flat, readable dictionary
     /// rather than a typed blob nobody can inspect in a text editor.
+    ///
+    /// Switched on the key, exactly as `restore` below is. It used to switch on
+    /// the *dynamic type* of what came back out of `UserDefaults` — which meant
+    /// asking whether an `NSNumber` is a `Bool`, a question Foundation answers
+    /// by inspecting the value rather than the type, so a stored `1.0` and a
+    /// stored `true` are the same object to it. It happened not to matter,
+    /// because both branches wrote the same digit. Keying both directions off
+    /// the same list is what makes that a fact rather than a coincidence, and it
+    /// is the only way the two halves cannot drift: a key added to `keys` and
+    /// handled in one switch is now conspicuously missing from the other.
     static func capture() -> [String: String] {
         var out: [String: String] = [:]
         let defaults = UserDefaults.standard
-        for key in keys {
-            guard let value = defaults.object(forKey: key) else { continue }
-            switch value {
-            case let s as String: out[key] = s
-            case let b as Bool where defaults.object(forKey: key) is Bool: out[key] = b ? "1" : "0"
-            case let n as NSNumber: out[key] = n.stringValue
-            default: continue
+        for key in keys where defaults.object(forKey: key) != nil {
+            switch key {
+            case Kilometerstand.lastKey, Kilometerstand.savedAtKey:
+                out[key] = String(defaults.double(forKey: key))
+            case Kilometerstand.hasLastKey:
+                out[key] = defaults.bool(forKey: key) ? "1" : "0"
+            default:
+                if let s = defaults.string(forKey: key) { out[key] = s }
             }
         }
         return out
