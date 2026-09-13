@@ -399,7 +399,10 @@ struct TourView: View {
 
     private func visibleStops(in snapshot: RouteSnapshot) -> [Stop] {
         guard !search.isEmpty else { return snapshot.ordered }
-        // Folded on both sides, not just lowercased.
+        // Folded on both sides, not just lowercased — see `AddressText.Search`,
+        // which is where that rule and the word-by-word matching now live, so
+        // this list, the portal's and the saved floors' all answer a typed
+        // query the same way.
         //
         // This app already knows that a Viennese address survives being typed
         // without its umlauts — `AddressText.germanFold` is what makes the
@@ -409,19 +412,18 @@ struct TourView: View {
         // keyboard they are holding in one hand got an empty list for a stop
         // sitting right there — and a search that finds nothing reads as a tour
         // that has lost a customer.
-        let tokens = AddressText.matchKey(search)
-            .split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-        guard !tokens.isEmpty else { return snapshot.ordered }
+        let query = AddressText.Search(search)
+        guard !query.isEmpty else { return snapshot.ordered }
         return snapshot.ordered.filter { stop in
             guard stop.kind == .customer else { return false }
             // Paket and Notiz are in here as well as the address. They are
             // where the day's real detail lives — "2x Menü", a door code, "Hund
             // im Hof" — and a driver who remembers a note but not the name had
             // no way to find that stop again short of scrolling the whole tour.
-            let haystack = AddressText.matchKey(
-                [stop.kunde, stop.strasse, stop.plz, stop.paket, stop.notiz]
-                    .compactMap { $0 }.joined(separator: " "))
-            return tokens.allSatisfy { haystack.contains($0) }
+            return query.matches(
+                AddressText.matchKey(
+                    [stop.kunde, stop.strasse, stop.plz, stop.paket, stop.notiz]
+                        .compactMap { $0 }.joined(separator: " ")))
         }
     }
 

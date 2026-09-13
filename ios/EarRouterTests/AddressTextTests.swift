@@ -109,3 +109,78 @@ struct AddressTextTests {
         #expect(AddressText.streetNameOnly("Am Hof") == "Am Hof")
     }
 }
+
+/// One rule for every search field in the app.
+///
+/// Three lists are searched — the tour's stops, the portal's deliveries, the
+/// saved floors — and a driver learns one search field, not three. These pin
+/// the two things that rule promises: a query survives a phone keyboard without
+/// umlauts, and its words may be typed in any order.
+struct SearchTests {
+
+    /// What the tour list searches over: the customer, the address, the Paket
+    /// and the Notiz, folded into one haystack.
+    private let stop = AddressText.matchKey(
+        "Fam. Gruber Gentzgasse 129/1 1180 2x Menü Bitte laut klingeln")
+
+    @Test func everyWordHasToAppearSomewhere() {
+        #expect(AddressText.Search("gruber").matches(stop))
+        #expect(AddressText.Search("gruber gentzgasse").matches(stop))
+        #expect(!AddressText.Search("gruber alserstraße").matches(stop))
+    }
+
+    /// The order words are typed in is the order they are remembered in, not
+    /// the order the row stores them.
+    @Test func theWordsMayComeInAnyOrder() {
+        #expect(AddressText.Search("gentzgasse gruber").matches(stop))
+        #expect(AddressText.Search("1180 menü gruber").matches(stop))
+    }
+
+    /// A phone keyboard held in one hand, in the rain.
+    @Test func aQuerySurvivesBeingTypedWithoutUmlauts() {
+        let doebling = AddressText.matchKey("Fam. Novak Döblinger Hauptstraße 1 1190")
+        #expect(AddressText.Search("doeblinger").matches(doebling))
+        #expect(AddressText.Search("Döblinger").matches(doebling))
+        #expect(AddressText.Search("grosse").matches(AddressText.matchKey("Große Neugasse 4")))
+    }
+
+    /// The driver can find a stop by something they only remember from its
+    /// note, which is where the day's real detail lives.
+    @Test func theNoteAndThePaketAreSearchableToo() {
+        #expect(AddressText.Search("klingeln").matches(stop))
+        #expect(AddressText.Search("menü").matches(stop))
+    }
+
+    @Test func aQueryWithNothingSearchableInItIsEmpty() {
+        #expect(AddressText.Search("").isEmpty)
+        #expect(AddressText.Search("   ").isEmpty)
+        #expect(AddressText.Search("/ - ,").isEmpty)
+        #expect(!AddressText.Search("gruber").isEmpty)
+    }
+
+    // MARK: - The saved-floor list, whose row keeps its text in two pieces
+
+    /// `StockwerkKey.make` writes the customer, street and postcode either side
+    /// of a separator — "fam gruber|gentzgasse 129 1|1180" — so a search
+    /// matched as one substring could never span two of them. That is exactly
+    /// what this list did, while the tour's own list found the same household.
+    @Test func aFloorIsFoundByCustomerAndStreetTogether() throws {
+        let key = try #require(
+            StockwerkKey.make(kunde: "Fam. Gruber", strasse: "Gentzgasse 129/1", plz: "1180"))
+        let floor = AddressText.matchKey("3")
+        #expect(AddressText.Search("gruber gentzgasse").matches(key, or: floor))
+        #expect(AddressText.Search("gruber").matches(key, or: floor))
+        #expect(AddressText.Search("1180").matches(key, or: floor))
+        #expect(!AddressText.Search("gruber alserstraße").matches(key, or: floor))
+    }
+
+    /// And the floor itself is searchable, which is the other half a single
+    /// haystack could not have covered.
+    @Test func aFloorIsAlsoFoundByWhatWasTypedIntoIt() throws {
+        let key = try #require(
+            StockwerkKey.make(kunde: "Fam. Gruber", strasse: "Gentzgasse 129/1", plz: "1180"))
+        let floor = AddressText.matchKey("Dachgeschoss")
+        #expect(AddressText.Search("dachgeschoss").matches(key, or: floor))
+        #expect(AddressText.Search("gruber dachgeschoss").matches(key, or: floor))
+    }
+}

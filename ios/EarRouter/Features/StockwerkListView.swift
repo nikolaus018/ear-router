@@ -30,14 +30,19 @@ struct StockwerkListView: View {
     @State private var error: AppError?
 
     private var visible: [StockwerkNote] {
-        let needle = AddressText.matchKey(search)
-        guard !needle.isEmpty else { return notes }
+        let query = AddressText.Search(search)
+        guard !query.isEmpty else { return notes }
         // The key already holds the customer, the street and the postcode in
         // exactly this folded form, which is what makes searching "gruber",
         // "gentzgasse" or "1180" all work off one comparison.
+        //
+        // Word by word, like every other search in the app. Matched as one
+        // substring — which is what this did — "gruber gentzgasse" found
+        // nothing here while finding the same household on the tour's own
+        // list, because the key writes the two either side of a separator:
+        // "fam gruber|gentzgasse 129 1|1180".
         return notes.filter {
-            $0.key.contains(needle)
-                || AddressText.matchKey($0.stockwerk ?? "").contains(needle)
+            query.matches($0.key, or: AddressText.matchKey($0.stockwerk ?? ""))
         }
     }
 

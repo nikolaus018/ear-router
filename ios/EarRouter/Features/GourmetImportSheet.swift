@@ -413,13 +413,11 @@ struct GourmetStopSelectionView: View {
     /// A plain lowercased `contains` was the one search in the app that did
     /// neither — and it is the one used on a list from somebody else's system.
     private var filtered: [GourmetPortal.Delivery] {
-        let tokens = AddressText.matchKey(search)
-            .split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-        guard !tokens.isEmpty else { return deliveries }
+        let query = AddressText.Search(search)
+        guard !query.isEmpty else { return deliveries }
         return deliveries.filter { delivery in
             let (name, address) = GourmetPortal.summary(delivery)
-            let haystack = AddressText.matchKey("\(name) \(address)")
-            return tokens.allSatisfy { haystack.contains($0) }
+            return query.matches(AddressText.matchKey("\(name) \(address)"))
         }
     }
 

@@ -144,6 +144,51 @@ enum AddressText {
         return out
     }
 
+    /// What the driver typed into a search field, ready to match against.
+    ///
+    /// Three lists in this app are searched — the tour's stops, the portal's
+    /// deliveries, and the saved floors — and they had grown three answers to
+    /// the same question. Two folded the query and split it into words; the
+    /// third folded it and looked for the whole thing as one substring, so
+    /// "gruber gentzgasse" found Fam. Gruber in the Gentzgasse on two screens
+    /// and nothing at all on the third. A driver does not learn a search field
+    /// per screen.
+    ///
+    /// The rule, in one place: fold both sides through `matchKey` — which is
+    /// what makes "Doebling" find "Döbling" on a one-handed phone keyboard —
+    /// then require every word to appear *somewhere*. Word by word rather than
+    /// as one string, because a search is typed in the order a person
+    /// remembers things, and that is not the order any of these lists happens
+    /// to hold them.
+    struct Search {
+        /// Already folded and split. Empty for a query with nothing searchable
+        /// in it, which every caller reads as "show everything".
+        let tokens: [String]
+
+        var isEmpty: Bool { tokens.isEmpty }
+
+        init(_ text: String) {
+            tokens = AddressText.matchKey(text)
+                .split(separator: " ", omittingEmptySubsequences: true)
+                .map(String.init)
+        }
+
+        /// `haystack` has to be in `matchKey` form already — the caller builds
+        /// it, because only the caller knows which of a row's fields are worth
+        /// searching.
+        func matches(_ haystack: String) -> Bool {
+            tokens.allSatisfy { haystack.contains($0) }
+        }
+
+        /// Two haystacks, for a row that keeps its searchable text in two
+        /// pieces. Taken separately rather than joined: this runs over every
+        /// row on every keystroke, and joining them would allocate a string per
+        /// row to answer what two `contains` answer.
+        func matches(_ first: String, or second: String) -> Bool {
+            tokens.allSatisfy { first.contains($0) || second.contains($0) }
+        }
+    }
+
     /// Compares sub-addresses the way a human would, ignoring the many ways
     /// the same one gets written: the driver types "9/Parz.68", the register
     /// answers "Großfeldstraße 9 Parz. 68", and a Stiege comes back as "/1".
