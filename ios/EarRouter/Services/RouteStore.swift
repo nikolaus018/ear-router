@@ -814,7 +814,10 @@ enum RouteStore {
     /// any case: the optimizer rewrites every `orderIndex` as soon as it has an
     /// answer, and until it does the stop belongs at the end of the list rather
     /// than wherever an unset index would sort it.
-    private static func nextOrderIndex(in route: Route) -> Int {
+    ///
+    /// Not private, for the reason `isAtLeastAsGood` is not: it is a rule with
+    /// a claim attached, and the claim is the sentence above.
+    static func nextOrderIndex(in route: Route) -> Int {
         var highest = 0
         for s in route.stops where s.orderIndex > highest { highest = s.orderIndex }
         return highest + 1

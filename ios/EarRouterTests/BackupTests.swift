@@ -531,6 +531,22 @@ struct BackupTests {
         #expect(defaults.bool(forKey: Kilometerstand.hasLastKey))
     }
 
+    /// Merging is idempotent, and the rule that makes it so is that the
+    /// *newer* answer wins — not an equally old one. Two phones asked about
+    /// the same stairwell disagree only about when.
+    @Test func mergingAnEquallyOldAnswerWritesNothing() throws {
+        let context = try makeContext()
+        try seed(context)
+        let archive = try roundTrip(BackupArchive.make(from: context))
+
+        // Same file, same timestamps, straight back onto the phone it came
+        // from. Nothing in it is newer than what is already stored.
+        let outcome = try BackupRestore.apply(archive, mode: .merge, in: context)
+        #expect(outcome.stockwerkeWritten == 0)
+        #expect(outcome.routesAdded == 0)
+        #expect(outcome.routesSkipped == 1)
+    }
+
     // MARK: - Every field, and every field that is ever added
 
     /// The bug this file exists to stop happening twice.

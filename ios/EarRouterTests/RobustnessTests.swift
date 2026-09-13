@@ -1,4 +1,6 @@
 import Testing
+import Foundation
+import SwiftData
 import CoreLocation
 @testable import EarRouter
 
@@ -349,5 +351,148 @@ struct GermanSpellingFoldTests {
         // existing customer into a delete plus an insert, which is what loses
         // the tick saying the meal was delivered.
         #expect(sameStreet("Waehringer Guertel 104", "Währinger Gürtel 104"))
+    }
+}
+
+/// Six rules the code states in prose and nothing checked.
+///
+/// Each of these survived a deliberate mutation of the line that implements it
+/// — the suite stayed green while the behaviour the comment promises was
+/// reversed. They are small, and that is the point: the large rules were all
+/// caught, and what was left was the boundaries.
+@MainActor
+struct StatedRuleTests {
+
+    private func makeContext() throws -> ModelContext {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self, StockwerkNote.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        return ModelContext(container)
+    }
+
+    // MARK: - "Where a newly added stop goes: after everything already on it"
+
+    @Test func aNewStopIsPlacedAfterEverythingAlreadyOnTheRoute() throws {
+        let context = try makeContext()
+        let route = try RouteStore.createRoute(name: "Tour", in: context)
+        let highest = route.stops.map(\.orderIndex).max() ?? 0
+        #expect(RouteStore.nextOrderIndex(in: route) > highest)
+
+        let added = Stop(
+            kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 129", plz: "1180",
+            lat: 48.2301, lon: 16.3201,
+            orderIndex: RouteStore.nextOrderIndex(in: route))
+        added.route = route
+        context.insert(added)
+        try context.save()
+
+        // Which is to say: it is last in the list, not tied with the stop that
+        // happened to be there already.
+        #expect(route.orderedStops.last?.id == added.id)
+        #expect(RouteStore.nextOrderIndex(in: route) > added.orderIndex)
+    }
+
+    // MARK: - "A list that reshuffles its own rows between two draws"
+
+    /// `orderIndex` is meant to be unique across a route and normally is — but
+    /// "normally" is not an ordering, and `sorted(by:)` promises nothing about
+    /// equal elements.
+    @Test func twoStopsSharingAnIndexStillSortTheSameWayEveryTime() throws {
+        let context = try makeContext()
+        let route = try RouteStore.createRoute(name: "Tour", in: context)
+        for name in ["A", "B", "C", "D"] {
+            let s = Stop(
+                kind: .customer, kunde: name, strasse: "Gasse 1", plz: "1180",
+                lat: 48.23, lon: 16.32, orderIndex: 9)
+            s.route = route
+            context.insert(s)
+        }
+        try context.save()
+
+        let first = route.orderedStops.map(\.id)
+        for _ in 0..<12 {
+            #expect(route.orderedStops.map(\.id) == first)
+        }
+        // And the tie is broken by something stable, not by chance.
+        let tied = route.customerStops
+        #expect(Set(tied.map(\.orderIndex)).count == 1)
+        #expect(tied.map(\.id) == tied.map(\.id).sorted(by: UUID.idOrderedBefore))
+    }
+
+    /// The same for creation order, which the optimizer sorts by twice — once
+    /// to plan and once to check whether the route it planned is still the
+    /// route on disk. Two ties ordered differently by those two sorts leave a
+    /// route flagged "nicht aktuell" with a retry that can never clear it.
+    @Test func stopsCreatedInTheSameInstantStillHaveAnOrder() throws {
+        let context = try makeContext()
+        let route = try RouteStore.createRoute(name: "Tour", in: context)
+        let sameInstant = Date(timeIntervalSince1970: 1_757_000_000)
+        for s in route.stops { s.createdAt = sameInstant }
+        try context.save()
+
+        let once = route.stops.sorted(by: Stop.createdBefore).map(\.id)
+        let twice = route.stops.sorted(by: Stop.createdBefore).map(\.id)
+        #expect(once == twice)
+        #expect(once == once.sorted(by: UUID.idOrderedBefore))
+    }
+
+    // MARK: - "Seven digits at the least"
+
+    /// The detector is generous: it really does offer five- and six-digit runs
+    /// as telephone numbers, so this floor is load-bearing rather than
+    /// belt-and-braces. The examples are ones it genuinely flags — written
+    /// first with strings it ignores, this test passed while the floor was
+    /// lowered to six, which is a guard tested with nothing.
+    @Test func aRunTooShortToBeANumberIsNotOffered() {
+        #expect(PhoneNumbers.find(in: "Tel. 05123").isEmpty)     // detected, 5 digits
+        #expect(PhoneNumbers.find(in: "Tel. 012345").isEmpty)    // detected, 6 digits
+        #expect(PhoneNumbers.find(in: "Tel 0512 34").isEmpty)    // detected, 6 digits
+        // Seven is where a real one starts, and those are still offered.
+        #expect(PhoneNumbers.find(in: "Tel. 0123456").count == 1)
+        #expect(PhoneNumbers.find(in: "01 23456").count == 1)
+    }
+
+    // MARK: - "Collapsed rather than deleted"
+
+    /// A stray character in front of an address must not make it a different
+    /// door — that is a delete-and-reinsert on the next paste, and the
+    /// delivered tick goes with it.
+    @Test func junkAroundAnAddressDoesNotMakeItANewDoor() {
+        let clean = AddressText.matchKey("Gentzgasse 129/1")
+        #expect(AddressText.matchKey("/Gentzgasse 129/1") == clean)
+        #expect(AddressText.matchKey("-Gentzgasse 129/1") == clean)
+        #expect(AddressText.matchKey("„Gentzgasse 129/1“") == clean)
+        #expect(AddressText.matchKey("  Gentzgasse 129/1  ") == clean)
+        // And a key never starts or ends with the separator it collapses to.
+        for written in ["/Gentzgasse 129/1", "Gentzgasse 129/1/", "  Gentzgasse 1 "] {
+            let key = AddressText.matchKey(written)
+            #expect(!key.hasPrefix(" "))
+            #expect(!key.hasSuffix(" "))
+        }
+    }
+
+    // MARK: - "Nothing at all for a leg that rounds away to nothing"
+
+    /// Two households in one Gemeindebau are a routed leg of zero metres, and
+    /// "Rückfahrt 0,0 km" under a finished tour reads as missing data rather
+    /// than as "you are already there". `Format.leg` says this for a stop row;
+    /// the tour's own summary has to say it too.
+    @Test func aReturnDriveThatRoundsAwayToNothingIsNotOffered() throws {
+        let context = try makeContext()
+        let route = try RouteStore.createRoute(name: "Tour", in: context)
+        let stop = Stop(
+            kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 129", plz: "1180",
+            lat: 48.2301, lon: 16.3201, orderIndex: 3)
+        stop.delivered = true
+        stop.nextLegKm = 0.001
+        stop.nextLegMin = 0.01
+        stop.route = route
+        context.insert(stop)
+        for fixed in route.stops where fixed.kind.isFixed { fixed.excluded = true }
+        try context.save()
+
+        let summary = RouteSnapshot(route).summary(of: route)
+        #expect(summary == "Alle geliefert")
+        #expect(!summary.contains("0,0"))
     }
 }
