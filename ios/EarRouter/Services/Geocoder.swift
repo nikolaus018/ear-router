@@ -84,9 +84,20 @@ actor Geocoder {
             // district centroid was told, on every lookup after the first, that
             // it "really" belongs to a Vienna district — and offered a one-tap
             // button to move it there.
-            if hit.precision == .district, Postcodes.isVienna(plz),
-               let actual = await districtHint(normalized: normalized, plz: plz) {
-                throw AppError.wrongDistrict(strasse.trimmed, actualPlz: actual)
+            if hit.precision == .district, Postcodes.isVienna(plz) {
+                // The same check the fresh lookup makes between every one of
+                // its phases, and for the same reason: `districtHint` answers
+                // `nil` rather than throwing when its call fails, so a lookup
+                // cancelled while it was in flight would read as "the register
+                // has nothing to say" and return the cached pin as though the
+                // driver had waited for it. This was the one path into
+                // `districtHint` that did not check — and it is the path a
+                // re-check of thirty approximate addresses takes, once per
+                // address, after the driver has pressed Stoppen.
+                try Task.checkCancellation()
+                if let actual = await districtHint(normalized: normalized, plz: plz) {
+                    throw AppError.wrongDistrict(strasse.trimmed, actualPlz: actual)
+                }
             }
             return GeocodeResult(
                 lat: hit.lat, lon: hit.lon,
