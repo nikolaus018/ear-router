@@ -214,6 +214,7 @@ struct AdvancedSettingsView: View {
     @State private var cacheCount = 0
     @State private var status: ConnectionStatus = .idle
     @State private var confirmingCacheClear = false
+    @State private var googleKeySaved = false
 
     enum ConnectionStatus: Equatable {
         case idle, checking, reachable(ms: Int), unreachable
@@ -274,7 +275,18 @@ struct AdvancedSettingsView: View {
                     SecureField("Routes API-Schlüssel", text: $googleRoutesAPIKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .onChange(of: googleRoutesAPIKey) { GoogleRoutesKeyStore.save(googleRoutesAPIKey) }
+                        .onChange(of: googleRoutesAPIKey) {
+                            googleKeySaved = GoogleRoutesKeyStore.save(googleRoutesAPIKey)
+                        }
+                    if !googleRoutesAPIKey.isEmpty {
+                        Label(
+                            googleKeySaved
+                                ? "Auf diesem iPhone gespeichert"
+                                : "Konnte nicht gespeichert werden",
+                            systemImage: googleKeySaved
+                                ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(googleKeySaved ? Color.delivered : Color.attention)
+                    }
                 } header: {
                     Text("Google Maps Platform")
                 } footer: {
@@ -349,6 +361,7 @@ struct AdvancedSettingsView: View {
         .task {
             cacheCount = await GeocodeCache.shared.count
             googleRoutesAPIKey = GoogleRoutesKeyStore.load() ?? ""
+            googleKeySaved = !googleRoutesAPIKey.isEmpty
         }
     }
 

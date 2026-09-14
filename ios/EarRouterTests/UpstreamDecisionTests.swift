@@ -73,6 +73,14 @@ struct UpstreamDecisionTests {
         }
     }
 
+    @Test func googleRoutesKeySurvivesAReloadFromTheKeychain() {
+        let before = GoogleRoutesKeyStore.load()
+        defer { _ = GoogleRoutesKeyStore.save(before ?? "") }
+
+        #expect(GoogleRoutesKeyStore.save("test-key"))
+        #expect(GoogleRoutesKeyStore.load() == "test-key")
+    }
+
     // MARK: - What the driver is told when the router refuses
 
     /// The codes are protocol words, and they were going straight into the
