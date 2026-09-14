@@ -69,7 +69,7 @@ struct MoreTab: View {
                     StockwerkListView()
                 } label: {
                     SettingsRow(
-                        icon: "stairs", tint: .brown, title: "Kundeninfos",
+                        icon: "stairs", tint: .brown, title: "Globale Infos",
                         detail: "Stockwerke und Notizen")
                 }
                 NavigationLink {
@@ -80,7 +80,7 @@ struct MoreTab: View {
                         detail: "Alle Daten sichern und laden")
                 }
             } footer: {
-                Text("Touren, Stopps und Kundeninfos liegen nur auf diesem Gerät.")
+                Text("Touren, Stopps und globale Infos liegen nur auf diesem Gerät.")
             }
 
             Section {

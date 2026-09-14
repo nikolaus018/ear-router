@@ -4,6 +4,12 @@ import SwiftData
 /// What this app knows about one customer, as one value: which floor they live
 /// on, and whatever else the driver wrote down.
 ///
+/// **"Globale Infos" on screen** — global because it outlives every tour that
+/// visits the customer, which is the whole distinction a driver is making when
+/// they choose this over the Notiz on the stop. The type is named for what it
+/// holds rather than for how long it lives, so both names are searchable from
+/// the other.
+///
 /// A struct rather than three arguments because these are written together or
 /// not at all: the sheet that asks about the floor is the same sheet that holds
 /// the note, and a save that carried only the field that happened to change was

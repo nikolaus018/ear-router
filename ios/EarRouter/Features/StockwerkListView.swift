@@ -4,6 +4,9 @@ import SwiftData
 /// Every customer the app has been told anything about: which floor they live
 /// on, and whatever the driver wrote down after standing at their door.
 ///
+/// "Globale Infos" to the driver — global because they outlive every tour that
+/// visits the customer, unlike the Notiz on a stop, which goes with it.
+///
 /// This is the one thing in the app that is *only* in the app — nothing in the
 /// office's list carries any of it, and after a few months there is a year of
 /// stairwells in here that exists nowhere else. So it gets a screen: somewhere
@@ -88,7 +91,7 @@ struct StockwerkListView: View {
                 }
             }
         }
-        .navigationTitle("Kundeninfos")
+        .navigationTitle("Globale Infos")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $search, prompt: "Kunde, Adresse, Stockwerk oder Notiz")
         .toolbar {
@@ -101,7 +104,7 @@ struct StockwerkListView: View {
         .sheet(item: $sharedFile) { ShareSheet(items: [$0.url]) }
         .sheet(item: $editing) { StockwerkNoteSheet(note: $0) }
         .confirmationDialog(
-            deleting.count == 1 ? "Kundeninfos löschen?" : "\(deleting.count) Einträge löschen?",
+            deleting.count == 1 ? "Globale Infos löschen?" : "\(deleting.count) Einträge löschen?",
             isPresented: Binding(
                 get: { !deleting.isEmpty },
                 set: { if !$0 { deleting = [] } }),
@@ -129,7 +132,7 @@ struct StockwerkListView: View {
 
     private var deletionMessage: String {
         guard let only = deleting.first, deleting.count == 1 else {
-            return "Die Kundeninfos werden gelöscht. Diese Kunden werden bei der "
+            return "Die globalen Infos werden gelöscht. Diese Kunden werden bei der "
                 + "nächsten Lieferung wieder gefragt."
         }
         return "Alles Gespeicherte zu „\(only.title)“ wird gelöscht. "
@@ -162,8 +165,16 @@ struct StockwerkListView: View {
                     // one there. It used to be a tinted chip — the app's last
                     // one — which made a list *of floors* spend a colour on the
                     // one thing every single row has.
+                    //
+                    // `Color.secondary` rather than the hierarchical
+                    // `.secondary`, which is what it was: inside this row's
+                    // `Button`, a hierarchical style resolves against the
+                    // button's tint, so the floor had quietly gone back to
+                    // being blue — the exact thing dropping the chip was meant
+                    // to stop. Its two neighbours on this row were already
+                    // spelling the colour out, which is why only this one was.
                     Text(Format.floor(stockwerk))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.secondary)
                         .lineLimit(1)
                         .accessibilityLabel("Stockwerk \(Format.floor(stockwerk))")
                 } else if note.dontAsk && (note.notiz?.trimmed.isEmpty ?? true) {
@@ -195,7 +206,7 @@ struct StockwerkListView: View {
             archive.stockwerke = notes.map(BackupArchive.StockwerkBackup.init)
             sharedFile = SharedFile(url: try archive.writeForSharing())
         } catch {
-            self.error = AppError.message("Die Kundeninfos konnten nicht geteilt werden.")
+            self.error = AppError.message("Die globalen Infos konnten nicht geteilt werden.")
         }
     }
 

@@ -145,7 +145,8 @@ struct StockwerkForm: View {
                 } footer: {
                     // The argument for this section existing at all, in the one
                     // place a driver is already answering a question about this
-                    // customer.
+                    // customer — and the sentence the name "Globale Infos" is
+                    // the short form of.
                     Text(
                         "Bleibt beim Kunden — auf jeder Tour, für immer. Anders als "
                             + "die Notiz beim Stopp, die mit der Tour verschwindet.")
@@ -180,7 +181,7 @@ struct StockwerkForm: View {
                     }
                 }
             }
-            .navigationTitle(askingAfterDelivery ? "Stockwerk?" : "Kundeninfos")
+            .navigationTitle(askingAfterDelivery ? "Stockwerk?" : "Globale Infos")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -293,7 +294,7 @@ struct StockwerkForm: View {
             try onSave(info)
             dismiss()
         } catch {
-            saveError = "Konnte die Kundeninfos nicht speichern."
+            saveError = "Konnte die globalen Infos nicht speichern."
         }
     }
 }

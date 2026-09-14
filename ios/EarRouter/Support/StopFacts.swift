@@ -107,7 +107,12 @@ enum StopFacts {
                 Image(systemName: "person.text.rectangle.fill")
             }
             .labelStyle(TintedIconLabelStyle(tint: .attention))
-            .foregroundStyle(.secondary)
+            // `Color.secondary`, not the hierarchical `.secondary`. This line
+            // is drawn inside the `Button` that is a row of the Globale-Infos
+            // list, and a hierarchical style resolves against that button's
+            // tint rather than against the label colour — so the note came out
+            // blue and read as a link to somewhere.
+            .foregroundStyle(Color.secondary)
             .symbolRenderingMode(.monochrome)
         }
     }

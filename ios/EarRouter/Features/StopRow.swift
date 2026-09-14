@@ -574,7 +574,7 @@ struct StopListRow: View {
             if let onEditStockwerk {
                 Button(
                     info == nil && stockwerk == nil
-                        ? "Kundeninfos eintragen" : "Kundeninfos ändern",
+                        ? "Globale Infos eintragen" : "Globale Infos ändern",
                     systemImage: "stairs", action: onEditStockwerk)
             }
             Divider()
