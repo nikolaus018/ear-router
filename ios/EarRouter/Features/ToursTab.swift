@@ -209,8 +209,8 @@ struct TourRow: View {
             // over and at least one still to go. An empty trough under a tour
             // nobody has started promises something it cannot say, and a full
             // one under a finished tour says what the section header said.
-            if completedDate == nil, stats.delivered > 0, stats.delivered < stats.customers {
-                ProgressView(value: Double(stats.delivered), total: Double(stats.customers))
+            if completedDate == nil, stats.settled > 0, stats.settled < stats.customers {
+                ProgressView(value: Double(stats.settled), total: Double(stats.customers))
                     .tint(.delivered)
                     .padding(.top, 2)
             }
@@ -229,12 +229,16 @@ struct TourRow: View {
         parts.append(Format.stops(stats.customers))
         // "0 geliefert" is not a progress report, it is the absence of one —
         // and it was on every tour the moment it was created.
-        if completedDate == nil, stats.delivered > 0 {
+        if completedDate == nil, stats.settled > 0 {
             parts.append(
                 stats.delivered == stats.customers
                     ? "alle geliefert"
                     : "\(stats.delivered) von \(stats.customers) geliefert")
         }
+        // Named on the row, not left to be discovered by opening the tour. It
+        // is the one fact about a day that somebody still has to do something
+        // about.
+        if stats.missed > 0 { parts.append("\(stats.missed) nicht angetroffen") }
         if stats.km > 0, let formatted = Format.km(stats.km) { parts.append(formatted) }
         return parts.joined(separator: " · ")
     }
@@ -243,19 +247,27 @@ struct TourRow: View {
     private struct Stats {
         let customers: Int
         let delivered: Int
+        /// Doors answered for — what the progress trough fills to. A customer
+        /// nobody was home for is behind the driver, and a bar that refused to
+        /// move for them sat at 29 of 30 for the rest of the afternoon.
+        let settled: Int
         let km: Double
 
+        var missed: Int { settled - delivered }
+
         init(_ route: Route) {
-            var customers = 0, delivered = 0, km = 0.0
+            var customers = 0, delivered = 0, settled = 0, km = 0.0
             for s in route.stops {
                 if s.kind == .customer {
                     customers += 1
                     if s.delivered { delivered += 1 }
+                    if s.isSettled { settled += 1 }
                 }
                 if !s.excluded { km += s.nextLegKm ?? 0 }
             }
             self.customers = customers
             self.delivered = delivered
+            self.settled = settled
             self.km = km
         }
     }

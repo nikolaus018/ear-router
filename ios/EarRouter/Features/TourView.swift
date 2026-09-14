@@ -396,7 +396,7 @@ struct TourView: View {
                 Button("Lieferstatus zurücksetzen", systemImage: "arrow.counterclockwise") {
                     confirmingReset = true
                 }
-                .disabled(route.deliveredCount == 0)
+                .disabled(route.settledCount == 0)
                 Button(
                     route.status == .active ? "Als erledigt markieren" : "Wieder aktivieren",
                     systemImage: route.status == .active ? "checkmark.seal" : "arrow.uturn.backward"
@@ -421,15 +421,20 @@ struct TourView: View {
         // "0 von 0 geliefert" over a route that has only its three fixed points
         // is a progress report on nothing.
         if snapshot.customerCount == 0 { return "Fixpunkte" }
-        return "\(snapshot.deliveredCount) von \(snapshot.customerCount) geliefert"
+        let missed = snapshot.settledCount - snapshot.deliveredCount
+        let base = "\(snapshot.deliveredCount) von \(snapshot.customerCount) geliefert"
+        return missed > 0 ? "\(base) · \(missed) nicht" : base
     }
 
     /// Says what is at stake, counted at the moment of asking.
     private var resetMessage: String {
-        let n = route.deliveredCount
+        // Settled, not delivered. This clears a "nicht angetroffen" too, and a
+        // dialog that promised to reset three stops while quietly reopening
+        // five was understating what the button does.
+        let n = route.settledCount
         let what = n == 1
-            ? "1 zugestellter Stopp wird wieder auf offen gesetzt"
-            : "\(n) zugestellte Stopps werden wieder auf offen gesetzt"
+            ? "1 abgehakter Stopp wird wieder auf offen gesetzt"
+            : "\(n) abgehakte Stopps werden wieder auf offen gesetzt"
         return route.status == .completed
             ? "\(what), und die Tour wird wieder aktiviert."
             : "\(what)."

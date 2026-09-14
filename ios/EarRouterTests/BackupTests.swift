@@ -55,6 +55,75 @@ struct BackupTests {
 
     // MARK: - Round trip
 
+    /// A lost phone is a lost year of tours, and since outcomes exist it is
+    /// also a lost record of who did not get their food. All of it has to make
+    /// the trip through the file.
+    @Test func whatHappenedAtEachDoorSurvivesTheFile() throws {
+        let source = try makeContext()
+        let context = source
+        let route = Route(name: "Tour 14.09.2026")
+        context.insert(route)
+
+        let when = Date(timeIntervalSince1970: 1_757_000_000)
+        let missed = Stop(
+            kind: .customer, kunde: "Fr. Novak", strasse: "Gentzgasse 4", plz: "1180",
+            lat: 48.2301, lon: 16.3201, orderIndex: 1)
+        missed.record(.notHome, at: when)
+        let urgent = Stop(
+            kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 9", plz: "1180",
+            lat: 48.2302, lon: 16.3202, orderIndex: 2)
+        urgent.prioritaet = true
+        urgent.record(.neighbour, at: when)
+        for s in [missed, urgent] {
+            s.route = route
+            context.insert(s)
+        }
+        try context.save()
+
+        let archive = try roundTrip(BackupArchive.make(from: source))
+        let fresh = try makeContext()
+        try BackupRestore.apply(archive, mode: .replace, in: fresh)
+
+        let restored = try #require(try fresh.fetch(FetchDescriptor<Route>()).first)
+        let novak = try #require(restored.customerStops.first { $0.kunde == "Fr. Novak" })
+        #expect(novak.outcome == .notHome)
+        #expect(!novak.delivered)
+        #expect(novak.settledAt == when)
+
+        let gruber = try #require(restored.customerStops.first { $0.kunde == "Fam. Gruber" })
+        #expect(gruber.outcome == .neighbour)
+        #expect(gruber.delivered)
+        #expect(gruber.prioritaet)
+    }
+
+    /// A file written before any of this existed restores as it always did: a
+    /// ticked stop is a delivery, and nothing else is claimed about it.
+    @Test func anOlderBackupStillRestoresItsDeliveredTicks() throws {
+        let source = try makeContext()
+        try seed(source)
+        var archive = try roundTrip(BackupArchive.make(from: source))
+
+        // Strip the fields an older writer would not have written.
+        for i in archive.routes.indices {
+            for j in archive.routes[i].stops.indices {
+                archive.routes[i].stops[j].outcome = nil
+                archive.routes[i].stops[j].settledAt = nil
+                archive.routes[i].stops[j].prioritaet = nil
+            }
+        }
+
+        let fresh = try makeContext()
+        try BackupRestore.apply(archive, mode: .replace, in: fresh)
+
+        let restored = try #require(try fresh.fetch(FetchDescriptor<Route>()).first)
+        let delivered = try #require(restored.customerStops.first { $0.delivered })
+        #expect(delivered.outcome == .delivered)
+        #expect(delivered.settledAt == nil)
+        #expect(!delivered.prioritaet)
+        #expect(restored.customerStops.contains { $0.outcome == nil })
+    }
+
+
     @Test func aRestoredTourIsTheTourThatWasBackedUp() throws {
         let source = try makeContext()
         try seed(source)

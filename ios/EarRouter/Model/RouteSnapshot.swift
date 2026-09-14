@@ -247,6 +247,13 @@ extension RouteSnapshot {
     func eta(for stop: Stop, from now: Date = Date()) -> Date? {
         guard totalMinutes > 0, !stop.isSettled, let arrival = arrivalMinutes[stop.id]
         else { return nil }
+        // Only for a point the van has not reached. The fixed ones carry no
+        // outcome and so can never be "settled": without this the depot sat at
+        // the top of the list all day promising an arrival of *now*, first
+        // because the driver was standing in it and then, after four
+        // deliveries, because the clamp below had nothing left to subtract.
+        // An arrival time that is always the current time is not an estimate.
+        guard arrival > minutesDriven || stop.id == nextOpen?.id else { return nil }
         let driving = max(0, arrival - minutesDriven)
         let doors = Double(openDoorsBefore[stop.id] ?? 0)
         return now.addingTimeInterval((driving + doors * pace.minutesPerStop) * 60)

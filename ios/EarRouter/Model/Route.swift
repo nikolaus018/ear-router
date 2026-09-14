@@ -83,6 +83,13 @@ extension Route {
         stops.count { $0.kind == .customer && $0.delivered }
     }
 
+    /// Doors the driver has answered for, whichever way they answered. What
+    /// "how far through is this tour" actually means, and what
+    /// "Lieferstatus zurücksetzen" actually clears.
+    var settledCount: Int {
+        stops.count { $0.kind == .customer && $0.isSettled }
+    }
+
     /// Whether every door on the tour has been answered for — which is not the
     /// same as every meal having been delivered.
     ///

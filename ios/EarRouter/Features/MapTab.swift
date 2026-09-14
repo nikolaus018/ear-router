@@ -134,6 +134,7 @@ struct MapTab: View {
                     StyleKey.Entry(
                         id: $0.id,
                         delivered: $0.delivered,
+                        outcomeRaw: $0.outcomeRaw,
                         excluded: $0.excluded,
                         precisionRaw: $0.precisionRaw)
                 }
@@ -162,6 +163,10 @@ struct MapTab: View {
         struct Entry: Equatable {
             let id: UUID
             let delivered: Bool
+            /// In the key as well as `delivered`, because the two no longer
+            /// move together: a door recorded as "nicht angetroffen" leaves
+            /// `delivered` false and must still repaint its pin.
+            let outcomeRaw: String?
             let excluded: Bool
             let precisionRaw: String?
         }
@@ -280,7 +285,10 @@ struct MapTab: View {
 
     private func toggleDelivered(_ stop: Stop) {
         guard stop.kind == .customer else { return }
-        let nowDelivered = !stop.delivered
+        // Off whatever it was settled as, not off `delivered` alone: a door
+        // recorded as "nicht angetroffen" has `delivered` false, so this tick
+        // used to turn it into a delivery rather than re-opening it.
+        let nowDelivered = !stop.isSettled
         do {
             try RouteStore.setDelivered(stop, nowDelivered, in: context)
         } catch {
@@ -644,13 +652,20 @@ struct MapTab: View {
         abs(a.lat - b.lat) < 0.00001 && abs(a.lon - b.lon) < 0.00001
     }
 
-    /// Green once delivered, amber while the location is only approximate,
-    /// otherwise the accent. The colour carries the same meaning it does in the
-    /// list, and the depot and via points stay grey: they are the shape of the
-    /// tour, not stops with a state to change.
+    /// Green once the meal is handed over, amber for a door nobody opened or a
+    /// location that is only approximate, otherwise the accent. The colour
+    /// carries the same meaning it does in the list, and the depot and via
+    /// points stay grey: they are the shape of the tour, not stops with a state
+    /// to change.
+    ///
+    /// A cancelled stop goes grey with the fixtures, which is what it has
+    /// become — a point on the route with nothing owed at it.
     private static func tint(for stop: Stop) -> Color {
         guard stop.kind == .customer else { return .fixture }
-        if stop.delivered { return .delivered }
+        if let outcome = stop.outcome {
+            if outcome.handedOver { return .delivered }
+            return outcome.needsFollowUp ? .attention : .fixture
+        }
         if stop.precision != nil { return .attention }
         // MapKit may resolve `accentColor` from a transient annotation host
         // while it diffs a large set of markers, which falls back to grey.
@@ -661,7 +676,7 @@ struct MapTab: View {
 
     private static func visualState(for stop: Stop) -> Int {
         guard stop.kind == .customer else { return 0 }
-        if stop.delivered { return 2 }
+        if let outcome = stop.outcome { return outcome.handedOver ? 2 : 3 }
         if stop.precision != nil { return 1 }
         return 0
     }
@@ -1088,7 +1103,9 @@ struct StopPreviewSheet: View {
                     .foregroundStyle(.white)
                     .frame(width: badgeSize, height: badgeSize)
                     .background(
-                        Circle().fill(stop.delivered ? Color.delivered : Color.accentColor))
+                        Circle().fill(stop.isSettled && stop.delivered
+                            ? Color.delivered
+                            : (stop.isSettled ? Color.attention : Color.accentColor)))
                     .accessibilityHidden(true)
             }
 
@@ -1111,15 +1128,19 @@ struct StopPreviewSheet: View {
             // the map is the same gesture at the same size in the same colours.
             if isCustomer {
                 Button(action: onToggleDelivered) {
-                    Image(systemName: stop.delivered ? "checkmark.circle.fill" : "circle")
+                    Image(systemName: stop.outcome.map {
+                        $0.handedOver ? "checkmark.circle.fill" : $0.symbol
+                    } ?? "circle")
                         .font(.system(size: min(30 * textScale, 40)))
-                        .foregroundStyle(stop.delivered ? Color.delivered : Color.secondary)
+                        .foregroundStyle(stop.outcome.map {
+                            $0.handedOver ? Color.delivered : Color.attention
+                        } ?? Color.secondary)
                         .frame(width: min(44 * textScale, 64), height: min(44 * textScale, 64))
                         .contentShape(.rect)
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel(
-                    stop.delivered ? "Zustellung zurücknehmen" : "Als zugestellt markieren")
+                    stop.isSettled ? "Stopp wieder öffnen" : "Als zugestellt markieren")
                 .sensoryFeedback(.impact(weight: .medium), trigger: stop.delivered)
             }
         }

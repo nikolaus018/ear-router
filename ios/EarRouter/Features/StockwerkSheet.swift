@@ -134,6 +134,7 @@ struct StockwerkForm: View {
                     TextField("Türcode", text: $tuercode)
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
+                    decodeHint
                     TextField(
                         "z. B. klopfen, Hund, Nachbarin Tür 12 nimmt an",
                         text: $tuerNotiz, axis: .vertical)
@@ -225,6 +226,33 @@ struct StockwerkForm: View {
         DoorKnowledge(
             stockwerk: text, tuerNotiz: tuerNotiz, tuercode: tuercode,
             langeLaeuten: langeLaeuten, dontAsk: dontAsk)
+    }
+
+    /// The office's cipher, offered where the code is actually written down.
+    ///
+    /// The Türcode tool decoded "CEZD" into "0123" on its own screen and then
+    /// threw the answer away, so the same building was decoded again the
+    /// following week and every week after. Here the decode is one tap and what
+    /// it produces is *kept* — which is the whole difference between a tool and
+    /// a thing the app knows.
+    ///
+    /// Only when decoding would actually change something: a code already typed
+    /// as digits decodes to itself, and a button offering to replace "1234"
+    /// with "1234" is noise on the one row it appears under.
+    @ViewBuilder
+    private var decodeHint: some View {
+        let typed = tuercode.trimmed
+        let decoded = Tuercode.decode(typed)
+        if !typed.isEmpty, decoded != typed.uppercased() {
+            Button {
+                tuercode = decoded
+            } label: {
+                Label("Als \(decoded) übernehmen", systemImage: "wand.and.sparkles")
+                    .font(.subheadline)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityHint("Entschlüsselt den Türcode nach der Tabelle des Büros")
+        }
     }
 
     private var quickPicks: some View {

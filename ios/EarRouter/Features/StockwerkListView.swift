@@ -1,13 +1,16 @@
 import SwiftUI
 import SwiftData
 
-/// Every customer the app has been told a floor for.
+/// Every customer the app has been told anything about: the floor, the
+/// Türcode, the bell that has to be held, the words somebody wrote down after
+/// standing at the door.
 ///
-/// The floors are the one thing in this app that is *only* in this app —
-/// nothing in the office's list carries them, and after a few months there is a
-/// year of stairwells in here that exists nowhere else. So they get a screen:
-/// somewhere to correct the one that was typed wrong, to take back a "nicht
-/// mehr fragen", and — mostly — to see that they are there.
+/// This is the one thing in the app that is *only* in the app — nothing in the
+/// office's list carries any of it, and after a few months there is a year of
+/// stairwells in here that exists nowhere else. So it gets a screen: somewhere
+/// to correct the one that was typed wrong, to take back a "nicht mehr fragen",
+/// to hand the lot to a stand-in driver, and — mostly — to see that it is
+/// there.
 struct StockwerkListView: View {
     @Environment(\.modelContext) private var context
 
@@ -28,6 +31,8 @@ struct StockwerkListView: View {
     /// deleted a customer's floor on the one gesture a thumb makes by accident.
     @State private var deleting: [StockwerkNote] = []
     @State private var error: AppError?
+    /// The door knowledge on its way to another driver's phone — see `share`.
+    @State private var sharedFile: SharedFile?
 
     private var visible: [StockwerkNote] {
         let query = AddressText.Search(search)
@@ -42,7 +47,11 @@ struct StockwerkListView: View {
         // list, because the key writes the two either side of a separator:
         // "fam gruber|gentzgasse 129 1|1180".
         return notes.filter {
-            query.matches($0.key, or: AddressText.matchKey($0.stockwerk ?? ""))
+            query.matches(
+                $0.key,
+                or: AddressText.matchKey(
+                    [$0.stockwerk, $0.tuerNotiz, $0.tuercode]
+                        .compactMap { $0 }.joined(separator: " ")))
         }
     }
 
@@ -56,7 +65,7 @@ struct StockwerkListView: View {
         return List {
             if notes.isEmpty {
                 ContentUnavailableView {
-                    Label("Noch keine Stockwerke", systemImage: "stairs")
+                    Label("Noch nichts gespeichert", systemImage: "stairs")
                 } description: {
                     Text(
                         "Nach dem Abhaken einer Lieferung fragt die App nach dem Stockwerk. "
@@ -81,12 +90,20 @@ struct StockwerkListView: View {
                 }
             }
         }
-        .navigationTitle("Stockwerke")
+        .navigationTitle("Türinfos")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $search, prompt: "Kunde, Adresse oder Stockwerk")
+        .searchable(text: $search, prompt: "Kunde, Adresse, Stockwerk oder Notiz")
+        .toolbar {
+            if !notes.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Teilen", systemImage: "square.and.arrow.up") { share() }
+                }
+            }
+        }
+        .sheet(item: $sharedFile) { ShareSheet(items: [$0.url]) }
         .sheet(item: $editing) { StockwerkNoteSheet(note: $0) }
         .confirmationDialog(
-            deleting.count == 1 ? "Stockwerk löschen?" : "\(deleting.count) Stockwerke löschen?",
+            deleting.count == 1 ? "Türinfos löschen?" : "\(deleting.count) Einträge löschen?",
             isPresented: Binding(
                 get: { !deleting.isEmpty },
                 set: { if !$0 { deleting = [] } }),
@@ -114,10 +131,10 @@ struct StockwerkListView: View {
 
     private var deletionMessage: String {
         guard let only = deleting.first, deleting.count == 1 else {
-            return "Die Stockwerke werden gelöscht. Diese Kunden werden bei der "
+            return "Die Türinfos werden gelöscht. Diese Kunden werden bei der "
                 + "nächsten Lieferung wieder gefragt."
         }
-        return "Das gespeicherte Stockwerk für „\(only.title)“ wird gelöscht. "
+        return "Alles Gespeicherte zu „\(only.title)“ wird gelöscht. "
             + "Beim nächsten Mal fragt die App wieder danach."
     }
 
@@ -134,6 +151,12 @@ struct StockwerkListView: View {
                             .font(.caption)
                             .foregroundStyle(Color.secondary)
                     }
+                    // The floor has the right-hand column to itself, the way
+                    // Settings puts a value there. Everything else learned at
+                    // this door goes under the address, where a two-line note
+                    // has room to be two lines.
+                    StopFacts.doorKnowledge(note)
+                        .font(.caption)
                 }
                 Spacer(minLength: 8)
                 if let stockwerk = note.stockwerk, !stockwerk.trimmed.isEmpty {
@@ -145,7 +168,7 @@ struct StockwerkListView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .accessibilityLabel("Stockwerk \(Format.floor(stockwerk))")
-                } else if note.dontAsk {
+                } else if note.dontAsk && note.doorFacts.isEmpty {
                     // The other thing a row can mean: not a floor, but a
                     // standing instruction not to ask for one.
                     Label("Nicht fragen", systemImage: "bell.slash.fill")
@@ -153,6 +176,28 @@ struct StockwerkListView: View {
                         .foregroundStyle(Color.secondary)
                 }
             }
+        }
+    }
+
+    /// Hands everything learned at these doors to another phone.
+    ///
+    /// The case this exists for: somebody takes over the round for a week. All
+    /// of it — every floor, every Türcode, every "klingelt nicht, klopfen" —
+    /// is on one phone, and without this the stand-in starts from nothing and
+    /// rings the wrong bell at thirty buildings.
+    ///
+    /// A `BackupArchive` with no tours in it, so it restores through the same
+    /// merge the full backup already uses: newest answer per customer wins,
+    /// and the receiving phone's own tours are not touched. Nothing new to
+    /// write on the reading side, which is the point of reusing the format.
+    private func share() {
+        do {
+            var archive = BackupArchive()
+            archive.app = BackupArchive.appVersion
+            archive.stockwerke = notes.map(BackupArchive.StockwerkBackup.init)
+            sharedFile = SharedFile(url: try archive.writeForSharing())
+        } catch {
+            self.error = AppError.message("Die Türinfos konnten nicht geteilt werden.")
         }
     }
 
@@ -170,8 +215,8 @@ struct StockwerkListView: View {
             context.rollback()
             self.error = AppError.message(
                 doomed.count == 1
-                    ? "Das Stockwerk konnte nicht gelöscht werden."
-                    : "Die Stockwerke konnten nicht gelöscht werden.")
+                    ? "Der Eintrag konnte nicht gelöscht werden."
+                    : "Die Einträge konnten nicht gelöscht werden.")
         }
     }
 }
