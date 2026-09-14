@@ -83,18 +83,26 @@ extension Route {
         stops.count { $0.kind == .customer && $0.delivered }
     }
 
+    /// Whether every door on the tour has been answered for — which is not the
+    /// same as every meal having been delivered.
+    ///
+    /// A customer who was not home settles the stop: the van has been there and
+    /// is not going back past it. The driving is done, and the tour is finished
+    /// in the only sense a driver uses the word. Counting that as incomplete
+    /// left a tour that had visibly ended showing "Noch 1 Stopp" until somebody
+    /// ticked a meal as delivered that never was.
     var isComplete: Bool {
         var seen = false
         for s in stops where s.kind == .customer {
-            if !s.delivered { return false }
+            if !s.isSettled { return false }
             seen = true
         }
         return seen
     }
 
-    /// The next stop the driver has not yet ticked off.
+    /// The next stop the driver has not yet answered for.
     var nextOpenStop: Stop? {
-        orderedStops.first { $0.kind == .customer && !$0.delivered }
+        orderedStops.first(where: \.isOpenDelivery)
     }
 
     /// Total distance and time over the legs that are actually driven. One

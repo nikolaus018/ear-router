@@ -197,13 +197,142 @@ enum EarRouterSchemaV4: VersionedSchema {
     static var models: [any PersistentModel.Type] {
         [Route.self, Stop.self, StockwerkNote.self]
     }
+
+    /// The models as shipped in V4 — V3's, plus `telefon`. Frozen for the same
+    /// reason V3's are, and frozen *now* because V5 is the first change to the
+    /// live models since this version shipped: a superseded version still
+    /// naming a live type silently acquires every field added after it, and a
+    /// phone holding a V4 store then cannot be identified as the source of a
+    /// migration. `onlySupersededVersionsAreFrozen` is the test that says so.
+    @Model
+    final class Route {
+        var id: UUID = UUID()
+        var name: String = ""
+        var statusRaw: String = RouteStatus.active.rawValue
+        var createdAt: Date = Date()
+        var completedAt: Date?
+        var geometryFlat: [Double] = []
+        var needsOptimize: Bool = false
+
+        @Relationship(deleteRule: .cascade, inverse: \Stop.route)
+        var stops: [Stop] = []
+
+        init(name: String = "") {
+            self.id = UUID()
+            self.name = name
+            self.statusRaw = RouteStatus.active.rawValue
+            self.createdAt = Date()
+            self.geometryFlat = []
+            self.needsOptimize = false
+            self.stops = []
+        }
+    }
+
+    @Model
+    final class Stop {
+        var id: UUID = UUID()
+        var kindRaw: String = StopKind.customer.rawValue
+        var kunde: String?
+        var strasse: String?
+        var plz: String?
+        var paket: String?
+        var notiz: String?
+        var telefon: String?
+        var lat: Double = 0
+        var lon: Double = 0
+        var orderIndex: Int = 0
+        var delivered: Bool = false
+        var nextLegKm: Double?
+        var nextLegMin: Double?
+        var createdAt: Date = Date()
+        var excluded: Bool = false
+        var pinned: Bool = false
+        var precisionRaw: String?
+        var route: Route?
+
+        init(
+            kind: StopKind = .customer,
+            kunde: String? = nil,
+            strasse: String? = nil,
+            plz: String? = nil,
+            paket: String? = nil,
+            notiz: String? = nil,
+            telefon: String? = nil,
+            lat: Double = 0,
+            lon: Double = 0,
+            orderIndex: Int = 0,
+            precision: Precision? = nil,
+            pinned: Bool = false,
+            excluded: Bool = false
+        ) {
+            self.id = UUID()
+            self.kindRaw = kind.rawValue
+            self.kunde = kunde
+            self.strasse = strasse
+            self.plz = plz
+            self.paket = paket
+            self.notiz = notiz
+            self.telefon = telefon
+            self.lat = lat
+            self.lon = lon
+            self.orderIndex = orderIndex
+            self.delivered = false
+            self.createdAt = Date()
+            self.excluded = excluded
+            self.pinned = pinned
+            self.precisionRaw = precision?.rawValue
+        }
+    }
+
+    @Model
+    final class StockwerkNote {
+        var id: UUID = UUID()
+        var key: String = ""
+        var kunde: String = ""
+        var strasse: String = ""
+        var plz: String = ""
+        var stockwerk: String?
+        var dontAsk: Bool = false
+        var updatedAt: Date = Date()
+
+        init(
+            key: String = "", kunde: String = "", strasse: String = "", plz: String = "",
+            stockwerk: String? = nil, dontAsk: Bool = false
+        ) {
+            self.id = UUID()
+            self.key = key
+            self.kunde = kunde
+            self.strasse = strasse
+            self.plz = plz
+            self.stockwerk = stockwerk
+            self.dontAsk = dontAsk
+            self.updatedAt = Date()
+        }
+    }
+}
+
+/// V5 records *what happened* at a door rather than one delivered bit, stamps
+/// the time it was said, lets a stop be pinned to the front of the tour, and
+/// keeps the rest of what a driver learns in a stairwell beside the floor.
+///
+/// Lightweight, and that is by design rather than by luck. Every field it adds
+/// is optional or has a default, and the one fact that would otherwise need
+/// rewriting — that an already-ticked stop was *delivered* — is read back out
+/// of the `delivered` bit those rows already carry, by `Stop.outcome`. Nothing
+/// on the phone is rewritten on the morning this build first opens the store.
+enum EarRouterSchemaV5: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(5, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [Route.self, Stop.self, StockwerkNote.self]
+    }
 }
 
 /// How the store gets from one schema version to the next.
 enum EarRouterMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [EarRouterSchemaV1.self, EarRouterSchemaV2.self, EarRouterSchemaV3.self,
-         EarRouterSchemaV4.self]
+         EarRouterSchemaV4.self, EarRouterSchemaV5.self]
     }
 
     /// Both lightweight, because adding and dropping a standalone entity takes
@@ -215,12 +344,13 @@ enum EarRouterMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: EarRouterSchemaV1.self, toVersion: EarRouterSchemaV2.self),
             .lightweight(fromVersion: EarRouterSchemaV2.self, toVersion: EarRouterSchemaV3.self),
             .lightweight(fromVersion: EarRouterSchemaV3.self, toVersion: EarRouterSchemaV4.self),
+            .lightweight(fromVersion: EarRouterSchemaV4.self, toVersion: EarRouterSchemaV5.self),
         ]
     }
 }
 
 enum AppSchema {
-    static let current = Schema(versionedSchema: EarRouterSchemaV4.self)
+    static let current = Schema(versionedSchema: EarRouterSchemaV5.self)
 
     /// Opens the store. `url` is only for tests — the app always wants the
     /// default location, which is the same file the unversioned container used,

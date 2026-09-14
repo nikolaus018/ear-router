@@ -37,6 +37,35 @@ final class StockwerkNote {
     /// and a wrong choice from a list is worse than the right words.
     var stockwerk: String?
 
+    /// The rest of what the driver learned standing at this door, in their own
+    /// words: "klingelt nicht, klopfen", "Hund", "Nachbarin Tür 12 nimmt an",
+    /// "Lift seit Mai kaputt".
+    ///
+    /// The same argument as the floor, which this file already makes: a thing
+    /// that does not change, that no list the office sends carries, and that a
+    /// driver otherwise has to hold in their head for every customer on every
+    /// tour forever. The floor was simply the first one of those anybody wrote
+    /// down. `Stop.notiz` is not the place for it — a stop belongs to one tour
+    /// and is deleted with it, so a note typed there is gone by Monday.
+    var tuerNotiz: String?
+
+    /// The code for the door, once somebody has worked it out.
+    ///
+    /// The Türcode tool decoded the office's cipher and then threw the answer
+    /// away, so the same building was decoded again every week. Kept here, it
+    /// is decoded once per building, ever.
+    var tuercode: String?
+
+    /// Ring long and ring again — somebody who is hard of hearing, or slow to
+    /// the door, and who has been written off as "nicht angetroffen" by a
+    /// stand-in driver who gave it fifteen seconds.
+    ///
+    /// A flag rather than words in `tuerNotiz`, because this one changes what
+    /// the app *does*: it is shown on the card at the moment the driver is
+    /// deciding whether to give up, and it is the first thing the "nicht
+    /// angetroffen" sheet says.
+    var langeLaeuten: Bool = false
+
     /// Set when the driver ticked "Nicht mehr fragen". The one thing worse than
     /// not knowing the floor is being asked after every single delivery to a
     /// customer where the question makes no sense — a house, a Kleingarten, a
@@ -47,7 +76,8 @@ final class StockwerkNote {
 
     init(
         key: String, kunde: String, strasse: String, plz: String,
-        stockwerk: String? = nil, dontAsk: Bool = false
+        stockwerk: String? = nil, tuerNotiz: String? = nil, tuercode: String? = nil,
+        langeLaeuten: Bool = false, dontAsk: Bool = false
     ) {
         self.id = UUID()
         self.key = key
@@ -55,6 +85,9 @@ final class StockwerkNote {
         self.strasse = strasse
         self.plz = plz
         self.stockwerk = stockwerk
+        self.tuerNotiz = tuerNotiz
+        self.tuercode = tuercode
+        self.langeLaeuten = langeLaeuten
         self.dontAsk = dontAsk
         self.updatedAt = Date()
     }
@@ -70,6 +103,34 @@ extension StockwerkNote {
     var subtitle: String {
         let address = kunde.isEmpty ? "" : strasse
         return [address, plz].filter { !$0.isEmpty }.joined(separator: ", ")
+    }
+
+    /// Everything learned about this door except the floor, which has its own
+    /// line on every row in the app and is never part of this.
+    var doorFacts: [(symbol: String, text: String)] {
+        var out: [(String, String)] = []
+        if langeLaeuten { out.append(("bell.badge.fill", "Lange läuten")) }
+        if let code = tuercode?.trimmed, !code.isEmpty {
+            out.append(("key.fill", "Türcode \(code)"))
+        }
+        if let note = tuerNotiz?.trimmed, !note.isEmpty {
+            out.append(("text.bubble.fill", note))
+        }
+        return out
+    }
+
+    /// Nothing known and no standing instruction — a row that is only taking up
+    /// space, and which `StockwerkStore` deletes rather than storing blank.
+    ///
+    /// Every field, not just the floor. Clearing the floor on a customer whose
+    /// Türcode is the only thing anybody ever learned about them used to be the
+    /// write that threw the Türcode away.
+    var isBlank: Bool {
+        (stockwerk?.trimmed.isEmpty ?? true)
+            && (tuerNotiz?.trimmed.isEmpty ?? true)
+            && (tuercode?.trimmed.isEmpty ?? true)
+            && !langeLaeuten
+            && !dontAsk
     }
 }
 

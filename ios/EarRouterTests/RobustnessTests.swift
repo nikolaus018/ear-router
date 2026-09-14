@@ -554,7 +554,7 @@ struct StatedRuleTests {
         try context.save()
 
         let summary = RouteSnapshot(route).summary(of: route)
-        #expect(summary == "Alle geliefert")
+        #expect(summary == "Alle erledigt")
         #expect(!summary.contains("0,0"))
     }
 }

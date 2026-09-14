@@ -1,7 +1,55 @@
 import Foundation
 import SwiftData
 
-/// Every read and write of a customer's floor.
+/// Everything this app knows about one customer's door, as one value.
+///
+/// A struct rather than five arguments because these are written together or
+/// not at all: the sheet that asks about the floor is the same sheet that holds
+/// the Türcode and the "lange läuten" switch, and a save that carried only the
+/// field that happened to change was how a Türcode learned in March got wiped
+/// by a floor corrected in May.
+struct DoorKnowledge: Equatable, Sendable {
+    var stockwerk: String?
+    var tuerNotiz: String?
+    var tuercode: String?
+    var langeLaeuten = false
+    var dontAsk = false
+
+    init(
+        stockwerk: String? = nil, tuerNotiz: String? = nil, tuercode: String? = nil,
+        langeLaeuten: Bool = false, dontAsk: Bool = false
+    ) {
+        self.stockwerk = stockwerk.cleaned
+        self.tuerNotiz = tuerNotiz.cleaned
+        self.tuercode = tuercode.cleaned
+        self.langeLaeuten = langeLaeuten
+        self.dontAsk = dontAsk
+    }
+
+    init(_ note: StockwerkNote) {
+        self.init(
+            stockwerk: note.stockwerk, tuerNotiz: note.tuerNotiz, tuercode: note.tuercode,
+            langeLaeuten: note.langeLaeuten, dontAsk: note.dontAsk)
+    }
+
+    /// Nothing known and no standing instruction — which is a row's absence,
+    /// not its contents. See `StockwerkStore.save`.
+    var isBlank: Bool {
+        stockwerk == nil && tuerNotiz == nil && tuercode == nil && !langeLaeuten && !dontAsk
+    }
+}
+
+extension Optional where Wrapped == String {
+    /// Trimmed, with empty reading as nothing at all. The one rule every field
+    /// of `DoorKnowledge` is stored under, so " " and "" and `nil` cannot be
+    /// three different states of the same answer.
+    fileprivate var cleaned: String? {
+        guard let value = self?.trimmed, !value.isEmpty else { return nil }
+        return value
+    }
+}
+
+/// Every read and write of what is known about a customer's door.
 ///
 /// The rule this exists to keep: one row per customer. `StockwerkNote.key`
 /// carries no unique constraint, so the read-before-write lives here and every
@@ -40,30 +88,30 @@ enum StockwerkStore {
 
     // MARK: - Writing
 
-    /// Records an answer — a floor, a "don't ask again", or both.
+    /// Writes everything known about a door, as one answer.
     ///
-    /// An answer that says nothing at all (empty text, asking still allowed)
-    /// deletes the row instead of storing a blank one. A customer with no
-    /// floor known and no standing instruction is one this app has never been
-    /// told about, and that is a row's absence, not its contents.
+    /// An answer that says nothing at all — no floor, no note, no code, no
+    /// standing instruction — deletes the row instead of storing a blank one. A
+    /// customer nothing is known about is one this app has never been told
+    /// about, and that is a row's absence, not its contents.
     static func save(
-        stockwerk: String?, dontAsk: Bool, for stop: Stop, in context: ModelContext
+        _ knowledge: DoorKnowledge, for stop: Stop, in context: ModelContext
     ) throws {
         guard let key = StockwerkKey.make(for: stop) else { return }
-        let cleaned = stockwerk?.trimmed
-        let value = (cleaned?.isEmpty ?? true) ? nil : cleaned
-
         let existing = try note(forKey: key, in: context)
 
-        if value == nil && !dontAsk {
+        if knowledge.isBlank {
             if let existing { context.delete(existing) }
             try context.save()
             return
         }
 
         if let existing {
-            existing.stockwerk = value
-            existing.dontAsk = dontAsk
+            existing.stockwerk = knowledge.stockwerk
+            existing.tuerNotiz = knowledge.tuerNotiz
+            existing.tuercode = knowledge.tuercode
+            existing.langeLaeuten = knowledge.langeLaeuten
+            existing.dontAsk = knowledge.dontAsk
             existing.updatedAt = Date()
             // The name and address as this stop spells them, so the entries
             // list shows a customer the way the most recent list wrote them
@@ -78,10 +126,29 @@ enum StockwerkStore {
                     kunde: stop.kunde?.trimmed ?? "",
                     strasse: stop.strasse?.trimmed ?? "",
                     plz: stop.plz?.trimmed ?? "",
-                    stockwerk: value,
-                    dontAsk: dontAsk))
+                    stockwerk: knowledge.stockwerk,
+                    tuerNotiz: knowledge.tuerNotiz,
+                    tuercode: knowledge.tuercode,
+                    langeLaeuten: knowledge.langeLaeuten,
+                    dontAsk: knowledge.dontAsk))
         }
         try context.save()
+    }
+
+    /// The floor alone, leaving everything else known about the door exactly as
+    /// it was.
+    ///
+    /// The distinction matters: a caller that has only been told a floor must
+    /// not be able to throw away a Türcode it never saw. Everything that edits
+    /// the whole door goes through `save(_:for:in:)` with a full value.
+    static func save(
+        stockwerk: String?, dontAsk: Bool, for stop: Stop, in context: ModelContext
+    ) throws {
+        var knowledge = (try note(for: stop, in: context)).map(DoorKnowledge.init)
+            ?? DoorKnowledge()
+        knowledge.stockwerk = stockwerk?.trimmed.nilIfEmpty
+        knowledge.dontAsk = dontAsk
+        try save(knowledge, for: stop, in: context)
     }
 
     static func delete(_ note: StockwerkNote, in context: ModelContext) throws {
@@ -97,6 +164,27 @@ enum StockwerkStore {
 }
 
 extension Collection where Element == StockwerkNote {
+    /// Everything known about each of `stops`, by stop id.
+    ///
+    /// The same one-pass indexing as `floors(for:)` below and for the same
+    /// reasons — it is simply the whole row rather than one field of it, which
+    /// is what a screen showing the Türcode beside the floor needs.
+    func knowledge(for stops: [Stop]) -> [UUID: StockwerkNote] {
+        var wanted: [String: [UUID]] = [:]
+        for stop in stops where stop.kind == .customer {
+            guard let key = StockwerkKey.make(for: stop) else { continue }
+            wanted[key, default: []].append(stop.id)
+        }
+        guard !wanted.isEmpty else { return [:] }
+
+        var out: [UUID: StockwerkNote] = [:]
+        for note in self {
+            guard let ids = wanted[note.key] else { continue }
+            for id in ids { out[id] = note }
+        }
+        return out
+    }
+
     /// The floor for each of `stops`, by stop id.
     ///
     /// Built from a list of notes that is already in memory — the stop list has

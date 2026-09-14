@@ -623,7 +623,7 @@ struct TourSummaryTests {
     @Test func everyMealHandedOverLeavesOnlyTheDriveBack() throws {
         let route = try tour(delivered: 2, of: 2)
         let summary = RouteSnapshot(route).summary(of: route)
-        #expect(summary.hasPrefix("Alle geliefert"))
+        #expect(summary.hasPrefix("Alle erledigt"))
         #expect(summary.contains("Rückfahrt"))
     }
 }

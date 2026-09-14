@@ -103,6 +103,28 @@ enum Format {
         date.formatted(.dateTime.day().month().year().locale(atLocale))
     }
 
+    /// "07:12" — the 24-hour clock, always, whatever the phone is set to.
+    ///
+    /// An arrival time is read at a glance from a holder on the dashboard, and
+    /// "12:40" is one token where "12:40 PM" is two. Austria writes the time
+    /// this way; a driver whose phone happens to be set to a 12-hour locale is
+    /// still driving in Vienna.
+    ///
+    /// A fixed pattern on `en_US_POSIX` rather than a locale that formats this
+    /// way by convention: a locale's clock follows the phone's own 24-hour
+    /// setting, which is a switch in Settings and therefore not a guarantee.
+    /// This is the one way to actually promise "HH:mm".
+    static func time(_ date: Date) -> String {
+        clockFormatter.string(from: date)
+    }
+
+    private static let clockFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
     /// "3" is a floor and reads better said out; anything the driver spelled
     /// out themselves — "2/Tür 14", "Dachgeschoss" — is left exactly as they
     /// wrote it.

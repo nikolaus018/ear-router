@@ -79,6 +79,11 @@ struct BackupArchive: Codable, Sendable {
         var lon: Double
         var orderIndex: Int
         var delivered: Bool
+        /// `nil` on every stop written before outcomes existed, which reads
+        /// back through `Stop.outcome` as exactly what `delivered` meant then.
+        var outcome: String?
+        var settledAt: Date?
+        var prioritaet: Bool?
         var nextLegKm: Double?
         var nextLegMin: Double?
         var createdAt: Date
@@ -93,18 +98,25 @@ struct BackupArchive: Codable, Sendable {
         var strasse: String
         var plz: String
         var stockwerk: String?
+        var tuerNotiz: String?
+        var tuercode: String?
+        var langeLaeuten: Bool?
         var dontAsk: Bool
         var updatedAt: Date
 
         init(
             key: String, kunde: String, strasse: String, plz: String,
-            stockwerk: String?, dontAsk: Bool, updatedAt: Date
+            stockwerk: String?, tuerNotiz: String? = nil, tuercode: String? = nil,
+            langeLaeuten: Bool = false, dontAsk: Bool, updatedAt: Date
         ) {
             self.key = key
             self.kunde = kunde
             self.strasse = strasse
             self.plz = plz
             self.stockwerk = stockwerk
+            self.tuerNotiz = tuerNotiz
+            self.tuercode = tuercode
+            self.langeLaeuten = langeLaeuten
             self.dontAsk = dontAsk
             self.updatedAt = updatedAt
         }
@@ -118,6 +130,9 @@ struct BackupArchive: Codable, Sendable {
             strasse = try c.decodeIfPresent(String.self, forKey: .strasse) ?? ""
             plz = try c.decodeIfPresent(String.self, forKey: .plz) ?? ""
             stockwerk = try c.decodeIfPresent(String.self, forKey: .stockwerk)
+            tuerNotiz = try c.decodeIfPresent(String.self, forKey: .tuerNotiz)
+            tuercode = try c.decodeIfPresent(String.self, forKey: .tuercode)
+            langeLaeuten = try c.decodeIfPresent(Bool.self, forKey: .langeLaeuten)
             dontAsk = try c.decodeIfPresent(Bool.self, forKey: .dontAsk) ?? false
             updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         }
@@ -210,7 +225,9 @@ extension BackupArchive.StopBackup {
             id: stop.id, kind: stop.kindRaw, kunde: stop.kunde, strasse: stop.strasse,
             plz: stop.plz, paket: stop.paket, notiz: stop.notiz, telefon: stop.telefon,
             lat: stop.lat, lon: stop.lon, orderIndex: stop.orderIndex,
-            delivered: stop.delivered, nextLegKm: stop.nextLegKm,
+            delivered: stop.delivered, outcome: stop.outcomeRaw,
+            settledAt: stop.settledAt, prioritaet: stop.prioritaet,
+            nextLegKm: stop.nextLegKm,
             nextLegMin: stop.nextLegMin, createdAt: stop.createdAt,
             excluded: stop.excluded, pinned: stop.pinned, precision: stop.precisionRaw)
     }
@@ -220,7 +237,9 @@ extension BackupArchive.StockwerkBackup {
     init(_ note: StockwerkNote) {
         self.init(
             key: note.key, kunde: note.kunde, strasse: note.strasse, plz: note.plz,
-            stockwerk: note.stockwerk, dontAsk: note.dontAsk, updatedAt: note.updatedAt)
+            stockwerk: note.stockwerk, tuerNotiz: note.tuerNotiz,
+            tuercode: note.tuercode, langeLaeuten: note.langeLaeuten,
+            dontAsk: note.dontAsk, updatedAt: note.updatedAt)
     }
 }
 
@@ -359,6 +378,9 @@ enum BackupRestore {
                 // one is the one that saw the building most recently.
                 guard backup.updatedAt > note.updatedAt else { continue }
                 note.stockwerk = backup.stockwerk
+                note.tuerNotiz = backup.tuerNotiz
+                note.tuercode = backup.tuercode
+                note.langeLaeuten = backup.langeLaeuten ?? false
                 note.dontAsk = backup.dontAsk
                 note.kunde = backup.kunde
                 note.strasse = backup.strasse
@@ -367,7 +389,9 @@ enum BackupRestore {
             } else {
                 let note = StockwerkNote(
                     key: backup.key, kunde: backup.kunde, strasse: backup.strasse,
-                    plz: backup.plz, stockwerk: backup.stockwerk, dontAsk: backup.dontAsk)
+                    plz: backup.plz, stockwerk: backup.stockwerk,
+                    tuerNotiz: backup.tuerNotiz, tuercode: backup.tuercode,
+                    langeLaeuten: backup.langeLaeuten ?? false, dontAsk: backup.dontAsk)
                 note.updatedAt = backup.updatedAt
                 context.insert(note)
                 existing[backup.key] = note
@@ -417,6 +441,9 @@ enum BackupRestore {
                 takenStopIDs.insert(stop.id)
             }
             stop.delivered = s.delivered
+            stop.outcomeRaw = s.outcome
+            stop.settledAt = s.settledAt
+            stop.prioritaet = s.prioritaet ?? false
             stop.nextLegKm = s.nextLegKm
             stop.nextLegMin = s.nextLegMin
             stop.createdAt = s.createdAt

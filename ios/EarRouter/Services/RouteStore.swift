@@ -173,7 +173,7 @@ enum RouteStore {
     }
 
     static func resetDelivered(_ route: Route, in context: ModelContext) throws {
-        for s in route.stops { s.delivered = false }
+        for s in route.stops { s.record(nil) }
         if route.status == .completed {
             route.status = .active
             route.completedAt = nil
@@ -317,17 +317,46 @@ enum RouteStore {
         }
     }
 
+    /// Records what happened at a door, or re-opens it with `nil`.
+    ///
+    /// Deliberately does *not* complete the route on the last stop. A tour
+    /// being finished is the driver's call, not an inference: they may still
+    /// have a stop to take back, a note to add, or a door to try again on the
+    /// way home. Auto-completing also moved the route straight out of the
+    /// active list from under the screen they were standing on. "Tour
+    /// abschließen" is on the tour's own screen for exactly this.
+    static func record(
+        _ outcome: DeliveryOutcome?, for stop: Stop, at date: Date = Date(),
+        in context: ModelContext
+    ) throws {
+        stop.record(outcome, at: date)
+        try context.save()
+    }
+
+    /// The plain tick, which is still what happens at twenty-nine doors out of
+    /// thirty: on means delivered, off means not answered for yet.
     static func setDelivered(
         _ stop: Stop, _ delivered: Bool, in context: ModelContext
     ) throws {
-        stop.delivered = delivered
-        // Deliberately does *not* complete the route on the last tick. A tour
-        // being finished is the driver's call, not an inference: they may still
-        // have a stop to un-tick, a note to add, or a customer who was not home.
-        // Auto-completing also moved the route straight out of the active list
-        // from under the screen they were standing on. "Als erledigt markieren"
-        // is in the route menu for exactly this.
+        try record(delivered ? .delivered : nil, for: stop, in: context)
+    }
+
+    /// Pins a customer to the front of the tour, or lets the optimizer have
+    /// them back.
+    ///
+    /// Re-optimizes, because this changes the shape of the problem rather than
+    /// the contents of a row — the same treatment a moved pin or an excluded
+    /// fixed point gets, and for the same reason: the stop order on screen is
+    /// wrong until OSRM has answered again.
+    static func setPriority(
+        _ stop: Stop, _ priority: Bool, in context: ModelContext
+    ) async throws {
+        guard stop.kind == .customer else { return }
+        stop.prioritaet = priority
+        guard let route = stop.route else { return try context.save() }
+        route.markRoutingStale()
         try context.save()
+        await RouteOptimizer.optimizeBestEffort(route, in: context)
     }
 
     /// Takes one delivery back, found by the id the undo banner is holding.

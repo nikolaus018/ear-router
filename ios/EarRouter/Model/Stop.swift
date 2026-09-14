@@ -29,6 +29,77 @@ enum Precision: String, Codable, Sendable {
     case district
 }
 
+/// What actually happened at a door.
+///
+/// A tour used to record one bit per stop — delivered, or not yet — and that
+/// bit cannot tell "I have not got there" from "I rang for two minutes and
+/// nobody came". On this round those are not variations of the same fact. The
+/// second one is the reason somebody phones a daughter in Graz, and it was
+/// being stored as the absence of a tick.
+///
+/// Four outcomes, and the line that matters runs between `handedOver` and the
+/// rest: the meal is off the van, or it came back. A driver reads the tour as
+/// "done / not done" and the office reads it as "who did not get their food",
+/// and both have to come out of the same stored answer.
+enum DeliveryOutcome: String, Codable, Sendable, CaseIterable {
+    /// Into the customer's own hands.
+    case delivered
+    /// Left with a neighbour, a Rezeption, a Pflegedienst — somebody took it,
+    /// and it was not the person whose name is on the row.
+    case neighbour
+    /// Nobody answered. The meal is still in the van.
+    case notHome
+    /// Nothing to deliver: abbestellt, im Spital, verstorben. Not a failure and
+    /// not a delivery — a door that was never owed a meal today.
+    case cancelled
+
+    /// Whether the meal left the van. This is what `Stop.delivered` has always
+    /// meant and still means, which is why a neighbour counts and a locked door
+    /// does not.
+    var handedOver: Bool {
+        switch self {
+        case .delivered, .neighbour: true
+        case .notHome, .cancelled: false
+        }
+    }
+
+    /// Whether anybody needs to hear about this before tomorrow. Exactly one
+    /// outcome does: a meal that came back because nobody opened the door.
+    var needsFollowUp: Bool { self == .notHome }
+
+    var label: String {
+        switch self {
+        case .delivered: "Geliefert"
+        case .neighbour: "Bei Nachbarn abgegeben"
+        case .notHome: "Nicht angetroffen"
+        case .cancelled: "Abbestellt"
+        }
+    }
+
+    /// The short form, for a row in a list that is already narrow.
+    var shortLabel: String {
+        switch self {
+        case .delivered: "geliefert"
+        case .neighbour: "bei Nachbarn"
+        case .notHome: "nicht angetroffen"
+        case .cancelled: "abbestellt"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .delivered: "checkmark.circle.fill"
+        case .neighbour: "person.fill.checkmark"
+        case .notHome: "bell.slash.fill"
+        case .cancelled: "minus.circle.fill"
+        }
+    }
+
+    /// The three the driver picks from after the plain tick has not applied.
+    /// `delivered` is not among them — that one is the big button.
+    static var exceptions: [DeliveryOutcome] { [.neighbour, .notHome, .cancelled] }
+}
+
 @Model
 final class Stop {
     /// Stable across exports and re-imports, unlike SwiftData's own
@@ -58,7 +129,42 @@ final class Stop {
     var lon: Double = 0
 
     var orderIndex: Int = 0
+
+    /// Whether the meal left the van. Kept exactly as it was — every count, the
+    /// map, the backup and the strikethrough on the row all read it — and now
+    /// written only through `outcome`, which is the fuller answer it is a
+    /// summary of.
     var delivered: Bool = false
+
+    /// What happened at the door, when it was anything other than "not yet".
+    /// `nil` is an open stop.
+    ///
+    /// Deliberately alongside `delivered` rather than replacing it, and the
+    /// redundancy is the point. Every row written before this field existed
+    /// carries a `delivered` bit and no outcome; read through `outcome` below,
+    /// such a row answers `.delivered` on its own, which is both true and
+    /// exactly what it always meant. That is what makes this a lightweight
+    /// migration instead of a custom one that has to rewrite every stop of
+    /// every tour on the phone — on launch, in a van, at seven in the morning.
+    var outcomeRaw: String?
+
+    /// When the driver said what happened here. `nil` on an open stop and on
+    /// every stop settled before this field existed.
+    ///
+    /// The one stored fact behind the arrival estimate, the day's report and
+    /// "wann war ich gestern bei Frau Gruber" — three questions that had no
+    /// answer at all for the sake of one `Date`.
+    var settledAt: Date?
+
+    /// Driven before OSRM gets a say, straight after the warehouse.
+    ///
+    /// The optimizer solves for distance, which is the right objective right up
+    /// until it is not: somebody waiting on medication, a customer who leaves
+    /// for dialysis at ten, a Pflegedienst that is only at the flat until half
+    /// past nine. None of that is visible in a distance matrix. Rather than
+    /// have the driver fight the stop order all morning, this takes the stop
+    /// out of the solve and pins it to the front — see `RouteOptimizer.Nodes`.
+    var prioritaet: Bool = false
 
     /// Distance and time from this stop to the next one in driving order.
     /// `nil` on a stop that isn't driven at all, and on the last one.
@@ -115,6 +221,9 @@ final class Stop {
         self.lon = lon
         self.orderIndex = orderIndex
         self.delivered = false
+        self.outcomeRaw = nil
+        self.settledAt = nil
+        self.prioritaet = false
         self.createdAt = Date()
         self.excluded = excluded
         self.pinned = pinned
@@ -123,6 +232,44 @@ final class Stop {
 }
 
 extension Stop {
+    /// What happened at this door, or `nil` while it is still open.
+    ///
+    /// Read-only on purpose. Recording an outcome also stamps the time and
+    /// restates `delivered`, and three stored facts that must agree are not
+    /// something a property setter should be quietly doing on the way past —
+    /// `record(_:at:)` is the one way in, and `RouteStore` is the one caller.
+    ///
+    /// The fallback in the second line is what lets this ship as a lightweight
+    /// migration: a stop ticked off before outcomes existed has no `outcomeRaw`
+    /// and a `delivered` bit, and "delivered" is precisely what that bit meant.
+    var outcome: DeliveryOutcome? {
+        if let raw = outcomeRaw, let known = DeliveryOutcome(rawValue: raw) { return known }
+        return delivered ? .delivered : nil
+    }
+
+    /// Whether the driver has said anything about this door yet.
+    ///
+    /// The distinction the tour list is actually sorted by, and not the same as
+    /// `delivered`: a customer who was not home is settled — the van has been
+    /// there and is not going back on the way past — while the meal never left
+    /// it. A stop that is settled drops out of "noch offen" and out of the
+    /// next-stop card, and stays visibly undelivered on its row.
+    var isSettled: Bool { outcome != nil }
+
+    /// Only ever on a customer. The fixed points are not doors.
+    var isOpenDelivery: Bool { kind == .customer && !isSettled }
+
+    /// Records what happened here, or re-opens the stop with `nil`.
+    ///
+    /// The three facts are written together and only here, so they cannot drift:
+    /// the outcome itself, the `delivered` summary every count in the app still
+    /// reads, and the time it was said.
+    func record(_ outcome: DeliveryOutcome?, at date: Date = Date()) {
+        outcomeRaw = outcome?.rawValue
+        delivered = outcome?.handedOver ?? false
+        settledAt = outcome == nil ? nil : date
+    }
+
     /// Falls back to the geometric centre of Vienna for a row whose stored
     /// coordinates are unusable, so one bad value can never take out the map
     /// for the whole route.
