@@ -24,3 +24,11 @@ struct SharedFile: Identifiable {
     let id = UUID()
     let url: URL
 }
+
+/// Text waiting to be shared — the day's report on its way into WhatsApp or a
+/// mail. Same reason as `SharedFile`: `sheet(item:)` wants an identity, and a
+/// `String` has none of its own.
+struct SharedText: Identifiable {
+    let id = UUID()
+    let text: String
+}

@@ -87,6 +87,52 @@ enum StopFacts {
         .symbolRenderingMode(.monochrome)
     }
 
+    /// What the driver was told about this door before they got to it, on one
+    /// line: lange läuten, the Türcode, and their own words about the place.
+    ///
+    /// Every one of these is read standing at the door with a warm box in one
+    /// hand, so they are not behind a disclosure and not in a sheet. The bell
+    /// glyph takes the accent because that one changes what the driver *does*
+    /// in the next fifteen seconds; the rest are facts they look up.
+    @ViewBuilder
+    static func doorKnowledge(_ note: StockwerkNote?, dimmed: Bool = false) -> some View {
+        if let note, !note.doorFacts.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(note.doorFacts, id: \.text) { fact in
+                    Label {
+                        Text(fact.text).fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: fact.symbol)
+                    }
+                    .labelStyle(
+                        TintedIconLabelStyle(
+                            tint: fact.symbol == "bell.badge.fill" ? .attention : .secondary))
+                    .foregroundStyle(dimmed ? .secondary : .primary)
+                    .symbolRenderingMode(.monochrome)
+                }
+            }
+        }
+    }
+
+    /// How a settled stop reports itself. Nothing at all for a plain delivery —
+    /// the struck-through name and the green tick have already said it, and a
+    /// list where every finished row also carries the word "geliefert" is a
+    /// list nobody skims.
+    static func outcome(_ outcome: DeliveryOutcome?) -> Text? {
+        guard let outcome, outcome != .delivered else { return nil }
+        return run(outcome.symbol, outcome.label)
+    }
+
+    /// "ca. 12:40" — when the van is expected at a door it has not reached yet.
+    ///
+    /// Always hedged, and hedged in the label rather than in a footnote
+    /// somewhere: this is arithmetic over a measured average, and a driver who
+    /// reads it as a promise will make one to a customer.
+    static func eta(_ date: Date?) -> Text? {
+        guard let date else { return nil }
+        return Text("ca.\u{00A0}\(Format.time(date))").monospacedDigit()
+    }
+
     /// One icon-and-words run of a small-print strip.
     ///
     /// A narrow *no-break* space between the glyph and its words, not an

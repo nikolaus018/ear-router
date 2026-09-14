@@ -20,9 +20,8 @@ struct StockwerkSheet: View {
             subtitle: stop.listAddress,
             initial: (try? StockwerkStore.note(for: stop, in: context)) ?? nil,
             askingAfterDelivery: true
-        ) { text, dontAsk in
-            try StockwerkStore.save(
-                stockwerk: text, dontAsk: dontAsk, for: stop, in: context)
+        ) { knowledge in
+            try StockwerkStore.save(knowledge, for: stop, in: context)
         }
     }
 }
@@ -40,13 +39,15 @@ struct StockwerkNoteSheet: View {
             subtitle: note.subtitle,
             initial: note,
             askingAfterDelivery: false
-        ) { text, dontAsk in
-            let cleaned = text.trimmed
-            if cleaned.isEmpty && !dontAsk {
+        ) { knowledge in
+            if knowledge.isBlank {
                 context.delete(note)
             } else {
-                note.stockwerk = cleaned.isEmpty ? nil : cleaned
-                note.dontAsk = dontAsk
+                note.stockwerk = knowledge.stockwerk
+                note.tuerNotiz = knowledge.tuerNotiz
+                note.tuercode = knowledge.tuercode
+                note.langeLaeuten = knowledge.langeLaeuten
+                note.dontAsk = knowledge.dontAsk
                 note.updatedAt = Date()
             }
             try context.save()
@@ -74,11 +75,14 @@ struct StockwerkForm: View {
     let askingAfterDelivery: Bool
     /// Throws rather than returning a flag, so a failed write shows the driver
     /// a sentence instead of closing as though it had worked.
-    let onSave: (String, Bool) throws -> Void
+    let onSave: (DoorKnowledge) throws -> Void
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var text = ""
+    @State private var tuerNotiz = ""
+    @State private var tuercode = ""
+    @State private var langeLaeuten = false
     @State private var dontAsk = false
     @State private var loaded = false
     @State private var saveError: String?
@@ -122,6 +126,30 @@ struct StockwerkForm: View {
                 }
 
                 Section {
+                    Toggle(isOn: $langeLaeuten) {
+                        Label("Lange läuten", systemImage: "bell.badge.fill")
+                            .labelStyle(TintedIconLabelStyle(tint: .attention))
+                            .symbolRenderingMode(.monochrome)
+                    }
+                    TextField("Türcode", text: $tuercode)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                    TextField(
+                        "z. B. klopfen, Hund, Nachbarin Tür 12 nimmt an",
+                        text: $tuerNotiz, axis: .vertical)
+                        .lineLimit(1...4)
+                } header: {
+                    Text("Zur Tür")
+                } footer: {
+                    // The argument for this section being here at all, in the
+                    // one place a driver is already answering a question about
+                    // this door.
+                    Text(
+                        "Bleibt beim Kunden — auf jeder Tour, für immer. Anders als "
+                            + "die Notiz beim Stopp, die mit der Tour verschwindet.")
+                }
+
+                Section {
                     Toggle("Nicht mehr fragen", isOn: $dontAsk)
                 } footer: {
                     Text(
@@ -150,7 +178,7 @@ struct StockwerkForm: View {
                     }
                 }
             }
-            .navigationTitle(askingAfterDelivery ? "Stockwerk?" : "Stockwerk")
+            .navigationTitle(askingAfterDelivery ? "Stockwerk?" : "Zur Tür")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -167,6 +195,9 @@ struct StockwerkForm: View {
                 guard !loaded else { return }
                 loaded = true
                 text = initial?.stockwerk ?? ""
+                tuerNotiz = initial?.tuerNotiz ?? ""
+                tuercode = initial?.tuercode ?? ""
+                langeLaeuten = initial?.langeLaeuten ?? false
                 dontAsk = initial?.dontAsk ?? false
             }
         }
@@ -186,7 +217,14 @@ struct StockwerkForm: View {
     /// there before, where clearing the field is how a wrong floor gets taken
     /// back out.
     private var canSave: Bool {
-        !text.trimmed.isEmpty || dontAsk || initial != nil
+        !knowledge.isBlank || initial != nil
+    }
+
+    /// The five fields as the one value they are stored as.
+    private var knowledge: DoorKnowledge {
+        DoorKnowledge(
+            stockwerk: text, tuerNotiz: tuerNotiz, tuercode: tuercode,
+            langeLaeuten: langeLaeuten, dontAsk: dontAsk)
     }
 
     private var quickPicks: some View {
@@ -234,10 +272,10 @@ struct StockwerkForm: View {
     private func saveAndClose() {
         guard canSave else { return }
         do {
-            try onSave(text, dontAsk)
+            try onSave(knowledge)
             dismiss()
         } catch {
-            saveError = "Konnte das Stockwerk nicht speichern."
+            saveError = "Konnte die Türinfos nicht speichern."
         }
     }
 }

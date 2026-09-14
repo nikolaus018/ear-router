@@ -34,6 +34,8 @@ struct NowTab: View {
 
     @State private var editingStop: Stop?
     @State private var stockwerkStop: Stop?
+    /// The stop whose delivery did not simply work — see `OutcomeSheet`.
+    @State private var outcomeStop: Stop?
     /// The delivery that can still be taken back — see `undoBanner`.
     @State private var undo: DeliveredTick?
     @State private var undoTask: Task<Void, Never>?
@@ -50,6 +52,10 @@ struct NowTab: View {
     struct DeliveredTick: Equatable {
         let id: UUID
         let name: String
+        /// What was recorded, so the banner can say it. "„Fam. Gruber“
+        /// zugestellt" over a door nobody opened would be the app's own
+        /// summary of the day quietly disagreeing with the driver's.
+        var outcome: DeliveryOutcome = .delivered
     }
 
     private var route: Route? {
@@ -65,6 +71,11 @@ struct NowTab: View {
             }
         }
         .stockwerkPrompt(for: $stockwerkStop)
+        .sheet(item: $outcomeStop) { stop in
+            OutcomeSheet(stop: stop, knowledge: knowledge(for: stop)) { outcome in
+                settle(stop, as: outcome)
+            }
+        }
         // The floor question has closed, so the undo banner is visible at
         // last — and only now does its countdown begin. See `offerUndo`.
         .onChange(of: stockwerkStop?.id) { _, shown in
@@ -97,7 +108,7 @@ struct NowTab: View {
         // Derived once, for the same reason `TourView` does: every one of these
         // walks the whole route.
         let snapshot = RouteSnapshot(route)
-        let floors = stockwerkNotes.floors(for: snapshot.ordered)
+        let knowledge = stockwerkNotes.knowledge(for: snapshot.ordered)
         let current = snapshot.nextOpen
 
         // One stop and nothing else. What comes after it, and the whole list,
@@ -105,7 +116,7 @@ struct NowTab: View {
         // clutter this tab exists to get away from.
         return List {
             if let current {
-                currentSection(current, route: route, snapshot: snapshot, floors: floors)
+                currentSection(current, route: route, snapshot: snapshot, knowledge: knowledge)
             } else if snapshot.customerCount == 0 {
                 emptySection(route)
             } else {
@@ -117,7 +128,9 @@ struct NowTab: View {
         .navigationTitle(route.name)
         .navigationSubtitle(snapshot.summary(of: route))
         .toolbar {
-            toolbar(route, current: current, hasFloor: current.flatMap { floors[$0.id] } != nil)
+            toolbar(
+                route, current: current,
+                hasFloor: current.flatMap { knowledge[$0.id]?.stockwerk } != nil)
         }
         .animation(.snappy, value: current?.id)
         .safeAreaInset(edge: .bottom, spacing: 0) { undoBanner(route) }
@@ -126,20 +139,24 @@ struct NowTab: View {
     }
 
     private func currentSection(
-        _ stop: Stop, route: Route, snapshot: RouteSnapshot, floors: [UUID: String]
+        _ stop: Stop, route: Route, snapshot: RouteSnapshot, knowledge: [UUID: StockwerkNote]
     ) -> some View {
         Section {
             NowStopCard(
                 stop: stop,
                 number: snapshot.number(stop),
-                stockwerk: floors[stop.id],
+                knowledge: knowledge[stop.id],
                 sameDoorCount: snapshot.doorCount(stop),
+                finishesAt: snapshot.etaFinish(),
                 onNavigate: { navigate(to: stop) },
-                onDelivered: { deliver(stop, of: route) })
+                onDelivered: { deliver(stop, of: route) },
+                onNotDelivered: { outcomeStop = stop })
                 .id(stop.id)
                 .listRowInsets(EdgeInsets(top: 20, leading: 20, bottom: 20, trailing: 20))
         } header: {
-            ProgressHeader(delivered: snapshot.deliveredCount, total: snapshot.customerCount)
+            ProgressHeader(
+                delivered: snapshot.deliveredCount, settled: snapshot.settledCount,
+                total: snapshot.customerCount)
         }
     }
 
@@ -162,13 +179,17 @@ struct NowTab: View {
         return Section {
             TourDoneView(
                 count: snapshot.customerCount,
+                delivered: snapshot.deliveredCount,
+                followUps: snapshot.followUps,
                 homeKm: snapshot.remainingKm,
                 canNavigateHome: end != nil,
                 onNavigateHome: { if let end { navigate(to: end) } },
                 onFinish: { finish(route) })
                 .listRowBackground(Color.clear)
         } header: {
-            ProgressHeader(delivered: snapshot.deliveredCount, total: snapshot.customerCount)
+            ProgressHeader(
+                delivered: snapshot.deliveredCount, settled: snapshot.settledCount,
+                total: snapshot.customerCount)
         }
     }
 
@@ -208,10 +229,10 @@ struct NowTab: View {
     private func undoBanner(_ route: Route) -> some View {
         if let undo {
             HStack(spacing: 10) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(Color.delivered)
+                Image(systemName: undo.outcome.symbol)
+                    .foregroundStyle(undo.outcome.handedOver ? Color.delivered : Color.attention)
                     .accessibilityHidden(true)
-                Text("„\(undo.name)“ zugestellt")
+                Text("„\(undo.name)“ — \(undo.outcome.shortLabel)")
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
                 Spacer(minLength: 8)
@@ -251,16 +272,38 @@ struct NowTab: View {
     /// Ticks the stop off, offers to take it back, and — on the way past — asks
     /// the floor, exactly as a tick in the stop list does.
     private func deliver(_ stop: Stop, of route: Route) {
+        settle(stop, as: .delivered)
+    }
+
+    /// Records any outcome, from the big green button or from `OutcomeSheet`,
+    /// and offers the same few seconds to take it back.
+    ///
+    /// The floor question follows only a meal that actually arrived. After a
+    /// locked door the driver is walking back to the van, not standing in the
+    /// stairwell, and the entire case for asking then is that they are looking
+    /// at the answer.
+    private func settle(_ stop: Stop, as outcome: DeliveryOutcome) {
+        guard let route = stop.route else { return }
         do {
-            try RouteStore.setDelivered(stop, true, in: context)
+            try RouteStore.record(outcome, for: stop, in: context)
         } catch {
             self.error = AppError.message("Konnte den Lieferstatus nicht speichern.")
             return
         }
         finishedTour = route.isComplete
         ticks += 1
-        if StockwerkStore.shouldAsk(stop, in: context) { stockwerkStop = stop }
-        offerUndo(DeliveredTick(id: stop.id, name: stop.kunde ?? "Stopp"))
+        if outcome.handedOver, StockwerkStore.shouldAsk(stop, in: context) {
+            stockwerkStop = stop
+        }
+        offerUndo(
+            DeliveredTick(id: stop.id, name: stop.kunde ?? "Stopp", outcome: outcome))
+    }
+
+    /// What is known about this one door. A linear scan rather than the table
+    /// the list builds: this is one stop, once, when a sheet opens.
+    private func knowledge(for stop: Stop) -> StockwerkNote? {
+        guard let key = StockwerkKey.make(for: stop) else { return nil }
+        return stockwerkNotes.first { $0.key == key }
     }
 
     /// Puts the banner up. Its six seconds start only once nothing covers it:
@@ -273,7 +316,9 @@ struct NowTab: View {
         // Said out loud as well: VoiceOver does not notice a banner arriving
         // at the bottom of the screen on its own, and the stop it was on has
         // just been replaced by the next one.
-        AccessibilityNotification.Announcement("„\(tick.name)“ zugestellt").post()
+        AccessibilityNotification.Announcement(
+            "„\(tick.name)“ \(tick.outcome.shortLabel)"
+        ).post()
         if stockwerkStop == nil { startUndoCountdown() }
     }
 
@@ -327,10 +372,18 @@ struct NowTab: View {
 private struct NowStopCard: View {
     let stop: Stop
     let number: Int?
-    let stockwerk: String?
+    /// Everything learned standing at this door: the floor, the Türcode, the
+    /// bell that has to be held, the driver's own words about the place.
+    let knowledge: StockwerkNote?
     let sameDoorCount: Int
+    /// When the shift is expected to end, shown once rather than per stop —
+    /// this is the screen a driver looks at when somebody asks how long they
+    /// will be.
+    let finishesAt: Date?
     let onNavigate: () -> Void
     let onDelivered: () -> Void
+    /// Opens the "Nicht zugestellt" sheet.
+    let onNotDelivered: () -> Void
 
     @ScaledMetric(relativeTo: .body) private var badge: CGFloat = 28
     @Environment(\.openURL) private var openURL
@@ -354,6 +407,7 @@ private struct NowStopCard: View {
             who
             errand
             actions
+            finish
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .symbolRenderingMode(.monochrome)
@@ -437,9 +491,12 @@ private struct NowStopCard: View {
     @ViewBuilder
     private var errand: some View {
         let paket = StopFacts.paket(stop.paket)
-        let floor = StopFacts.floor(stockwerk)
+        let floor = StopFacts.floor(knowledge?.stockwerk)
         let note = stop.notiz?.trimmed ?? ""
-        if paket != nil || floor != nil || !note.isEmpty || stop.precision != nil {
+        let doorFacts = knowledge?.doorFacts ?? []
+        if paket != nil || floor != nil || !note.isEmpty || stop.precision != nil
+            || !doorFacts.isEmpty
+        {
             VStack(alignment: .leading, spacing: 10) {
                 if let paket {
                     paket
@@ -451,6 +508,11 @@ private struct NowStopCard: View {
                         .font(.body)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // Above the tour's own note on purpose. This is the part
+                // learned at this door by somebody who stood at it, and it is
+                // read in the ten seconds before the bell rather than after.
+                StopFacts.doorKnowledge(knowledge)
+                    .font(.body)
                 if !note.isEmpty {
                     StopFacts.note(note, lineLimit: 40)
                         .font(.callout)
@@ -479,6 +541,17 @@ private struct NowStopCard: View {
             }
             .buttonStyle(.bordered)
             .tint(.delivered)
+
+            // The other answer, and the whole reason this app stopped storing
+            // one bit per door. Same width and same height as "Geliefert",
+            // because on the day it is needed it is needed with one hand and a
+            // warm box in the other — but tinted amber and second, because it
+            // is the answer at one door in thirty.
+            Button(action: onNotDelivered) {
+                WideButtonLabel("Nicht zugestellt", systemImage: "bell.slash")
+            }
+            .buttonStyle(.bordered)
+            .tint(.attention)
 
             // The customer's own number from the Zusteller-Portal — same
             // height as Navigation and Geliefert above it. It used to be
@@ -512,6 +585,23 @@ private struct NowStopCard: View {
         .controlSize(.large)
     }
 
+    /// "Voraussichtlich fertig gegen 11:48" — under the buttons, in the small
+    /// print, because it is the answer to a question somebody else asks.
+    ///
+    /// Hedged, and only ever "gegen": it is arithmetic over a measured average,
+    /// and the driver reading it will repeat it to a customer.
+    @ViewBuilder
+    private var finish: some View {
+        if let finishesAt {
+            Label("Voraussichtlich fertig gegen \(Format.time(finishesAt))", systemImage: "flag.checkered")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .labelStyle(TintedIconLabelStyle(tint: .secondary))
+                .padding(.leading, indent)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var telefonURL: URL? {
         stop.telefon?.trimmed.nilIfEmpty.flatMap(PhoneNumbers.dialURL(for:))
     }
@@ -525,42 +615,94 @@ private struct NowStopCard: View {
 /// with the green of a tick to show how far along that is.
 private struct ProgressHeader: View {
     let delivered: Int
+    /// Doors answered for, which is what the bar fills to. A customer who was
+    /// not home is behind the driver even though no meal left the van, and a
+    /// bar that refused to move for them would sit at 29/30 all afternoon.
+    let settled: Int
     let total: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("\(delivered) von \(total) geliefert")
-            ProgressView(value: Double(delivered), total: Double(max(total, 1)))
+            Text(caption)
+            ProgressView(value: Double(settled), total: Double(max(total, 1)))
                 .tint(.delivered)
         }
         .textCase(nil)
         .padding(.bottom, 4)
         .accessibilityElement(children: .combine)
     }
+
+    /// "12 von 30 geliefert", and the gap named when there is one. Two numbers
+    /// that differ need the difference said out loud — a header reading "12 von
+    /// 30" over fourteen doors already behind the driver is the kind of
+    /// arithmetic nobody should be doing at the wheel.
+    private var caption: String {
+        let missed = settled - delivered
+        guard missed > 0 else { return "\(delivered) von \(total) geliefert" }
+        return "\(delivered) von \(total) geliefert · \(missed) nicht"
+    }
 }
 
 /// Every meal handed over: the drive home, and the button that files the tour.
 private struct TourDoneView: View {
     let count: Int
+    /// Meals that actually left the van.
+    let delivered: Int
+    /// The customers nobody was home for — the reason this screen is not
+    /// always a green seal.
+    let followUps: [Stop]
     let homeKm: Double
     let canNavigateHome: Bool
     let onNavigateHome: () -> Void
     let onFinish: () -> Void
 
+    private var allDelivered: Bool { followUps.isEmpty }
+
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "checkmark.seal.fill")
+            Image(systemName: allDelivered ? "checkmark.seal.fill" : "bell.slash.fill")
                 .font(.system(size: 44))
-                .foregroundStyle(Color.delivered)
+                .foregroundStyle(allDelivered ? Color.delivered : Color.attention)
                 .accessibilityHidden(true)
 
             VStack(spacing: 4) {
-                Text("Alle geliefert")
+                Text(allDelivered ? "Alle geliefert" : "Tour gefahren")
                     .font(.title2.bold())
                 Text(detail)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+            }
+
+            // Named, not counted. "1 nicht angetroffen" is a number somebody
+            // then has to go and look up; the name is the whole content of the
+            // phone call that follows, and this is the screen the driver is on
+            // when they decide whether to make it.
+            if !allDelivered {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(followUps, id: \.id) { stop in
+                        Label {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(stop.kunde ?? "Stopp")
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if !stop.listAddress.isEmpty {
+                                    Text(stop.listAddress)
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        } icon: {
+                            Image(systemName: "bell.slash.fill")
+                        }
+                        .font(.subheadline)
+                        .labelStyle(TintedIconLabelStyle(tint: .attention))
+                        .symbolRenderingMode(.monochrome)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(Color.attention.opacity(0.12), in: .rect(cornerRadius: 12))
             }
 
             VStack(spacing: 8) {
@@ -587,8 +729,10 @@ private struct TourDoneView: View {
     }
 
     private var detail: String {
-        let delivered = count == 1 ? "1 Stopp zugestellt" : "\(count) Stopps zugestellt"
-        guard homeKm >= 0.05, let km = Format.km(homeKm) else { return delivered }
-        return "\(delivered) · Rückfahrt \(km)"
+        let handed = allDelivered
+            ? (count == 1 ? "1 Stopp zugestellt" : "\(count) Stopps zugestellt")
+            : "\(delivered) von \(count) zugestellt"
+        guard homeKm >= 0.05, let km = Format.km(homeKm) else { return handed }
+        return "\(handed) · Rückfahrt \(km)"
     }
 }

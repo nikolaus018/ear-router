@@ -61,6 +61,12 @@ struct TourView: View {
     /// The stop whose floor is being asked about — set by ticking a delivery
     /// off at a door nothing is known about yet, or from the row's own menu.
     @State private var stockwerkStop: Stop?
+    /// The stop whose delivery did not simply work — see `OutcomeSheet`.
+    @State private var outcomeStop: Stop?
+    /// The end-of-day report, and the checklist before setting off. Two screens
+    /// about the same tour at its two ends.
+    @State private var showingReport = false
+    @State private var showingPreflight = false
 
     /// Every door ever answered for. Queried whole rather than per row: this is
     /// a few thousand short rows after years of tours, one pass turns it into
@@ -100,7 +106,7 @@ struct TourView: View {
         // every tick of a delivery. Derived here, it is one of each.
         let snapshot = RouteSnapshot(route)
         let visible = visibleStops(in: snapshot)
-        let floors = stockwerkNotes.floors(for: snapshot.ordered)
+        let knowledge = stockwerkNotes.knowledge(for: snapshot.ordered)
 
         return Group {
             if visible.isEmpty && !search.isEmpty {
@@ -109,7 +115,7 @@ struct TourView: View {
                 // found.
                 ContentUnavailableView.search(text: search)
             } else {
-                stops(snapshot, visible: visible, floors: floors)
+                stops(snapshot, visible: visible, knowledge: knowledge)
             }
         }
         // `safeAreaInset`, not an overlay: the list runs underneath the
@@ -153,6 +159,28 @@ struct TourView: View {
             }
         }
         .stockwerkPrompt(for: $stockwerkStop)
+        .sheet(item: $outcomeStop) { stop in
+            OutcomeSheet(stop: stop, knowledge: stockwerkNotes.first { note in
+                StockwerkKey.make(for: stop).map { $0 == note.key } ?? false
+            }) { outcome in
+                record(outcome, for: stop)
+            }
+        }
+        .sheet(isPresented: $showingReport) {
+            TourReportSheet(route: route)
+        }
+        .sheet(isPresented: $showingPreflight) {
+            PreflightSheet(
+                route: route,
+                onOptimize: { startLongJob { await optimize() } },
+                onRecheck: { startLongJob { await recheck() } },
+                onResetDelivered: {
+                    save("Der Lieferstatus konnte nicht zurückgesetzt werden.") {
+                        try RouteStore.resetDelivered(route, in: context)
+                    }
+                },
+                onLadeliste: { showingLadeliste = true })
+        }
         .sheet(isPresented: $showingJSON) {
             JSONEditorSheet(route: route)
         }
@@ -219,7 +247,7 @@ struct TourView: View {
     // MARK: - The list
 
     private func stops(
-        _ snapshot: RouteSnapshot, visible: [Stop], floors: [UUID: String]
+        _ snapshot: RouteSnapshot, visible: [Stop], knowledge: [UUID: StockwerkNote]
     ) -> some View {
         List {
             if route.needsOptimize {
@@ -230,7 +258,7 @@ struct TourView: View {
 
             Section {
                 ForEach(visible) { stop in
-                    row(for: stop, in: snapshot, floors: floors)
+                    row(for: stop, in: snapshot, knowledge: knowledge)
                 }
             } header: {
                 Text(listHeader(snapshot, visible: visible))
@@ -266,20 +294,23 @@ struct TourView: View {
     /// inside the `ForEach` pushed the enclosing `List` past what the type
     /// checker will solve in reasonable time.
     private func row(
-        for stop: Stop, in snapshot: RouteSnapshot, floors: [UUID: String]
+        for stop: Stop, in snapshot: RouteSnapshot, knowledge: [UUID: StockwerkNote]
     ) -> some View {
         StopListRow(
             stop: stop,
             sameDoorCount: snapshot.doorCount(stop),
             number: snapshot.number(stop),
-            stockwerk: floors[stop.id],
+            knowledge: knowledge[stop.id],
+            eta: snapshot.eta(for: stop),
             isNext: snapshot.nextOpen?.id == stop.id,
             onTap: { tapped(stop) },
-            onToggleDelivered: { setDelivered(stop, !stop.delivered) },
+            onToggleDelivered: { setDelivered(stop, !stop.isSettled) },
             onDelete: { deletingStop = stop },
             onNavigate: { open(stop) },
             onShowOnMap: { focus.showOnMap(stop: stop, of: route) },
             onEditStockwerk: { stockwerkStop = stop },
+            onRecordOutcome: { outcomeStop = stop },
+            onTogglePriority: { Task { await togglePriority(stop) } },
             onToggleExcluded: { Task { await toggleExcluded(stop) } })
             // The id is the scroll target `reveal` aims at.
             .id(stop.id)
@@ -300,9 +331,14 @@ struct TourView: View {
     private func finishButton(_ snapshot: RouteSnapshot) -> some View {
         if search.isEmpty, route.status == .active, snapshot.isComplete {
             Button {
+                // Filed *and* reported, in one press. The report is the whole
+                // reason anybody asked for outcomes and timestamps, and a
+                // screen the driver has to remember to go and find is one that
+                // gets found on the third day and never again.
                 save("Die Tour konnte nicht abgeschlossen werden.") {
                     try RouteStore.toggleStatus(route, in: context)
                 }
+                if error == nil { showingReport = true }
             } label: {
                 WideButtonLabel("Tour abschließen", systemImage: "checkmark.seal.fill")
             }
@@ -325,6 +361,14 @@ struct TourView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
+                // The two ends of a shift, at the top of the menu, because
+                // they are the two things a driver opens deliberately rather
+                // than stumbles into.
+                Button("Tour vorbereiten", systemImage: "checklist.checked") {
+                    showingPreflight = true
+                }
+                Button("Tagesabschluss", systemImage: "doc.text") { showingReport = true }
+                Divider()
                 Button("Ladeliste", systemImage: "checklist") { showingLadeliste = true }
                 Button("JSON einsetzen", systemImage: "curlybraces") {
                     showingJSON = true
@@ -447,13 +491,35 @@ struct TourView: View {
     /// question on top of a failed save would bury the error it needs to
     /// report.
     private func setDelivered(_ stop: Stop, _ value: Bool) {
+        record(value ? .delivered : nil, for: stop)
+    }
+
+    /// Records what happened at a door, and asks about the floor on the way
+    /// past when the meal actually got there.
+    ///
+    /// Not after a locked door: the driver is walking back to the van, not
+    /// standing in the stairwell, and the whole argument for asking at that
+    /// moment is that they are looking at the answer. Asking anyway would train
+    /// them to dismiss the one question this app relies on being answered
+    /// honestly.
+    private func record(_ outcome: DeliveryOutcome?, for stop: Stop) {
         var ok = false
         save("Konnte den Lieferstatus nicht speichern.") {
-            try RouteStore.setDelivered(stop, value, in: context)
+            try RouteStore.record(outcome, for: stop, in: context)
             ok = true
         }
-        guard ok, value, StockwerkStore.shouldAsk(stop, in: context) else { return }
+        guard ok, outcome?.handedOver == true,
+              StockwerkStore.shouldAsk(stop, in: context)
+        else { return }
         stockwerkStop = stop
+    }
+
+    private func togglePriority(_ stop: Stop) async {
+        do {
+            try await RouteStore.setPriority(stop, !stop.prioritaet, in: context)
+        } catch {
+            self.error = AppError.message("Konnte den Vorrang nicht ändern.")
+        }
     }
 
     /// Starts one of the two long network jobs — optimizing, or re-checking

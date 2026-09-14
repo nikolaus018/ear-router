@@ -61,7 +61,15 @@ extension View {
 /// grey. That gradient is what makes the finished half of a tour recede
 /// without hiding it.
 struct StopNumberBadge: View {
-    enum Kind { case current, open, done }
+    enum Kind {
+        case current, open, done
+        /// Settled, but the meal never left the van — nicht angetroffen, or
+        /// abbestellt. Its own shade rather than `done`, because "the van has
+        /// been here" and "this customer got their food" stopped being the
+        /// same fact, and the badge is the one place the whole tour is read at
+        /// a glance.
+        case missed
+    }
 
     let number: Int?
     let kind: Kind
@@ -82,6 +90,7 @@ struct StopNumberBadge: View {
         case .current: AnyShapeStyle(Color.white)
         case .open: AnyShapeStyle(Color.accentColor)
         case .done: AnyShapeStyle(.secondary)
+        case .missed: AnyShapeStyle(Color.attention)
         }
     }
 
@@ -90,6 +99,7 @@ struct StopNumberBadge: View {
         case .current: AnyShapeStyle(Color.accentColor)
         case .open: AnyShapeStyle(Color.accentColor.opacity(0.12))
         case .done: AnyShapeStyle(.quaternary)
+        case .missed: AnyShapeStyle(Color.attention.opacity(0.18))
         }
     }
 }

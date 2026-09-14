@@ -57,6 +57,13 @@ struct StopRow: View {
     var number: Int?
     /// What is known about this door's floor. `nil` when nobody has said yet.
     var stockwerk: String?
+    /// The rest of what has been learned standing at this door — the Türcode,
+    /// "lange läuten", the driver's own words. `nil` on a screen that has not
+    /// got the notes to hand, which is what `stockwerk` above is still for.
+    var knowledge: StockwerkNote?
+    /// When the van is expected here. `nil` on a settled stop, on a route that
+    /// has never been optimized, and on every fixed point.
+    var eta: Date?
     /// The stop the driver is on: the one row in the list with a solid badge.
     var isNext: Bool = false
     var onToggleDelivered: (() -> Void)?
@@ -125,10 +132,7 @@ struct StopRow: View {
     private var badge: some View {
         switch stop.kind {
         case .customer:
-            StopNumberBadge(
-                number: number,
-                kind: stop.delivered ? .done : (isNext ? .current : .open),
-                size: badgeSize)
+            StopNumberBadge(number: number, kind: badgeKind, size: badgeSize)
         case .start:
             fixedIcon("house.fill")
         case .via:
@@ -136,6 +140,15 @@ struct StopRow: View {
         case .end:
             fixedIcon("flag.checkered")
         }
+    }
+
+    /// Four states, and the new one is the point: a door the van has been to
+    /// where the meal did not leave it. Grey would file it with the deliveries
+    /// and open would put it back on the list of things still to do, and it is
+    /// neither.
+    private var badgeKind: StopNumberBadge.Kind {
+        guard let outcome = stop.outcome else { return isNext ? .current : .open }
+        return outcome.handedOver ? .done : .missed
     }
 
     private func fixedIcon(_ name: String) -> some View {
@@ -156,8 +169,20 @@ struct StopRow: View {
                     .font(.body)
                     .fontWeight(isNext ? .semibold : .regular)
                     .strikethrough(stop.delivered && stop.kind == .customer)
+                    // A customer who was not home is not crossed off. The line
+                    // through a name means "done with"; on the one row somebody
+                    // still has to do something about, it means the opposite.
                     .foregroundStyle(dimmed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                     .fixedSize(horizontal: false, vertical: true)
+                if stop.prioritaet && stop.kind == .customer {
+                    // Loud on purpose, and the only thing on an ordinary row
+                    // allowed to be: this stop being near the top of the list
+                    // is a decision somebody made, and it has to be legible as
+                    // one rather than as an accident of the optimizer.
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Color.attention)
+                }
                 if stop.pinned {
                     Image(systemName: "hand.point.up.left.fill")
                         .font(.caption2)
@@ -179,11 +204,14 @@ struct StopRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let floor = StopFacts.floor(stockwerk, dimmed: dimmed) {
+            if let floor = StopFacts.floor(stockwerk ?? knowledge?.stockwerk, dimmed: dimmed) {
                 floor
                     .font(.subheadline)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            StopFacts.doorKnowledge(knowledge, dimmed: dimmed)
+                .font(.subheadline)
 
             if let notiz = stop.notiz?.trimmed, !notiz.isEmpty {
                 StopFacts.note(notiz)
@@ -225,6 +253,21 @@ struct StopRow: View {
 
         if stop.excluded {
             runs.append(Text("Ausgelassen"))
+        }
+
+        // What happened here, when it was not the ordinary thing. A plain
+        // delivery says nothing — the struck-through name and the green tick
+        // have already said it.
+        if let outcome = StopFacts.outcome(stop.outcome) {
+            runs.append(outcome)
+        }
+
+        // Only on a door still ahead. `eta` is already `nil` on a settled one;
+        // this says so a second time because the two facts arrive from
+        // different places and a stale arrival time on a finished stop is
+        // exactly the kind of thing nobody notices until a driver does.
+        if !dimmed, !stop.isSettled, let when = StopFacts.eta(eta) {
+            runs.append(when)
         }
 
         // Only while the stop is still ahead. The leg belongs to the drive
@@ -290,9 +333,9 @@ struct StopRow: View {
                 ticks += 1
                 onToggleDelivered()
             } label: {
-                Image(systemName: stop.delivered ? "checkmark.circle.fill" : "circle")
+                Image(systemName: stateGlyph)
                     .font(.system(size: disc, weight: .regular))
-                    .foregroundStyle(stop.delivered ? Color.delivered : Color.secondary)
+                    .foregroundStyle(stateTint)
                     .frame(width: target, height: target)
                     .contentShape(.rect)
             }
@@ -300,7 +343,7 @@ struct StopRow: View {
             // its own — without it a tap anywhere in the row fires it.
             .buttonStyle(.borderless)
             .accessibilityLabel(
-                stop.delivered ? "Zustellung zurücknehmen" : "Als zugestellt markieren")
+                stop.isSettled ? "Stopp wieder öffnen" : "Als zugestellt markieren")
             .sensoryFeedback(.impact(weight: .medium), trigger: ticks)
         } else if let onToggleExcluded {
             // The affordance this action never had before it was a control:
@@ -326,8 +369,21 @@ struct StopRow: View {
 
     // MARK: -
 
+    /// The one control's glyph, which now has three things to say rather than
+    /// two: delivered, settled some other way, or still owed.
+    private var stateGlyph: String {
+        guard let outcome = stop.outcome else { return "circle" }
+        return outcome.handedOver ? "checkmark.circle.fill" : outcome.symbol
+    }
+
+    private var stateTint: Color {
+        guard let outcome = stop.outcome else { return .secondary }
+        return outcome.handedOver ? .delivered : .attention
+    }
+
+    /// A row the driver is finished with, whichever way it went.
     private var dimmed: Bool {
-        stop.excluded || (stop.delivered && stop.kind == .customer)
+        stop.excluded || (stop.isSettled && stop.kind == .customer)
     }
 
     private var title: String {
@@ -343,11 +399,16 @@ struct StopRow: View {
         parts.append(title)
         if !stop.listAddress.isEmpty { parts.append(stop.listAddress) }
         if stop.kind == .customer {
-            parts.append(stop.delivered ? "zugestellt" : "offen")
+            parts.append(stop.outcome?.label ?? "offen")
         }
+        if stop.prioritaet && stop.kind == .customer { parts.append("Vorrang") }
         if let paket = stop.paket, !paket.isEmpty { parts.append(paket) }
-        if let stockwerk = stockwerk?.trimmed, !stockwerk.isEmpty {
-            parts.append("Stockwerk \(Format.floor(stockwerk))")
+        if let floor = (stockwerk ?? knowledge?.stockwerk)?.trimmed, !floor.isEmpty {
+            parts.append("Stockwerk \(Format.floor(floor))")
+        }
+        for fact in knowledge?.doorFacts ?? [] { parts.append(fact.text) }
+        if !dimmed, !stop.isSettled, let eta {
+            parts.append("Ankunft etwa \(Format.time(eta))")
         }
         if let notiz = stop.notiz, !notiz.isEmpty { parts.append("Notiz: \(notiz)") }
         if sameDoorCount > 1 { parts.append("\(sameDoorCount) Kunden an dieser Tür") }
@@ -373,6 +434,8 @@ struct StopListRow: View {
     var sameDoorCount: Int = 1
     var number: Int?
     var stockwerk: String?
+    var knowledge: StockwerkNote?
+    var eta: Date?
     var isNext: Bool = false
     let onTap: () -> Void
     let onToggleDelivered: () -> Void
@@ -380,6 +443,10 @@ struct StopListRow: View {
     let onNavigate: () -> Void
     let onShowOnMap: () -> Void
     var onEditStockwerk: (() -> Void)?
+    /// Opens the "Nicht zugestellt" sheet. `nil` on a screen that has no way
+    /// to present it.
+    var onRecordOutcome: (() -> Void)?
+    var onTogglePriority: (() -> Void)?
     /// Only ever called for a fixed point — the same action the row's own tap
     /// and its context menu perform.
     var onToggleExcluded: (() -> Void)?
@@ -394,6 +461,8 @@ struct StopListRow: View {
             sameDoorCount: sameDoorCount,
             number: number,
             stockwerk: stockwerk,
+            knowledge: knowledge,
+            eta: eta,
             isNext: isNext,
             onToggleDelivered: isCustomer ? onToggleDelivered : nil,
             onToggleExcluded: isCustomer ? nil : onToggleExcluded,
@@ -419,10 +488,19 @@ struct StopListRow: View {
                 if isCustomer {
                     Button(action: onToggleDelivered) {
                         Label(
-                            stop.delivered ? "Offen" : "Geliefert",
-                            systemImage: stop.delivered ? "arrow.uturn.backward" : "checkmark")
+                            stop.isSettled ? "Offen" : "Geliefert",
+                            systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark")
                     }
-                    .tint(stop.delivered ? .attention : .delivered)
+                    .tint(stop.isSettled ? .attention : .delivered)
+                    // The second-most-made decision at a door, on the gesture
+                    // next to the most-made one. It is in the menu as well; a
+                    // driver with one free hand in the rain finds this first.
+                    if let onRecordOutcome, !stop.isSettled {
+                        Button(action: onRecordOutcome) {
+                            Label("Nicht zugestellt", systemImage: "bell.slash")
+                        }
+                        .tint(.attention)
+                    }
                 }
             }
             .swipeActions(edge: .trailing) {
@@ -478,12 +556,24 @@ struct StopListRow: View {
                 }
             }
             Button(
-                stop.delivered ? "Als offen markieren" : "Als zugestellt markieren",
-                systemImage: stop.delivered ? "arrow.uturn.backward" : "checkmark.circle",
+                stop.isSettled ? "Als offen markieren" : "Als zugestellt markieren",
+                systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark.circle",
                 action: onToggleDelivered)
+            if let onRecordOutcome, !stop.isSettled {
+                Button("Nicht zugestellt …", systemImage: "bell.slash", action: onRecordOutcome)
+            }
+            if let onTogglePriority {
+                Button(
+                    stop.prioritaet ? "Vorrang aufheben" : "Zuerst anfahren",
+                    systemImage: stop.prioritaet
+                        ? "arrow.uturn.backward"
+                        : "exclamationmark.circle",
+                    action: onTogglePriority)
+            }
             if let onEditStockwerk {
                 Button(
-                    stockwerk == nil ? "Stockwerk eintragen" : "Stockwerk ändern",
+                    knowledge == nil && stockwerk == nil
+                        ? "Türinfos eintragen" : "Türinfos ändern",
                     systemImage: "stairs", action: onEditStockwerk)
             }
             Divider()
