@@ -126,8 +126,14 @@ enum Format {
     }()
 
     /// "3" is a floor and reads better said out; anything the driver spelled
-    /// out themselves — "2/Tür 14", "Dachgeschoss" — is left exactly as they
+    /// out themselves — "2/Tür 14", "Mezzanin" — is left exactly as they
     /// wrote it.
+    ///
+    /// "EG" and "DG" are left alone as well, and deliberately: they are the two
+    /// quick picks that are not numbers, they are what is written on the
+    /// doorbell panel, and "EG. Stock" is not a thing anybody says. VoiceOver
+    /// gets the spelled-out form from `StockwerkForm.spokenFloor`; this is the
+    /// line a driver reads at a glance, where the short form is the point.
     static func floor(_ text: String) -> String {
         let t = text.trimmed
         return t.allSatisfy(\.isNumber) && !t.isEmpty ? "\(t). Stock" : t

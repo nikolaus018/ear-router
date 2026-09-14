@@ -98,27 +98,67 @@ struct BackupArchive: Codable, Sendable {
         var strasse: String
         var plz: String
         var stockwerk: String?
-        var tuerNotiz: String?
-        var tuercode: String?
-        var langeLaeuten: Bool?
+        var notiz: String?
         var dontAsk: Bool
         var updatedAt: Date
 
         init(
             key: String, kunde: String, strasse: String, plz: String,
-            stockwerk: String?, tuerNotiz: String? = nil, tuercode: String? = nil,
-            langeLaeuten: Bool = false, dontAsk: Bool, updatedAt: Date
+            stockwerk: String?, notiz: String? = nil, dontAsk: Bool, updatedAt: Date
         ) {
             self.key = key
             self.kunde = kunde
             self.strasse = strasse
             self.plz = plz
             self.stockwerk = stockwerk
-            self.tuerNotiz = tuerNotiz
-            self.tuercode = tuercode
-            self.langeLaeuten = langeLaeuten
+            self.notiz = notiz
             self.dontAsk = dontAsk
             self.updatedAt = updatedAt
+        }
+
+        private static func foldedNote(
+            _ c: KeyedDecodingContainer<CodingKeys>
+        ) throws -> String? {
+            var parts: [String] = []
+            if let note = try c.decodeIfPresent(String.self, forKey: .notiz) {
+                parts.append(note)
+            }
+            if let legacy = try c.decodeIfPresent(String.self, forKey: .tuerNotiz) {
+                parts.append(legacy)
+            }
+            if let code = try c.decodeIfPresent(String.self, forKey: .tuercode) {
+                parts.append("Türcode \(code)")
+            }
+            if try c.decodeIfPresent(Bool.self, forKey: .langeLaeuten) == true {
+                parts.append("Lange läuten")
+            }
+            let joined = parts.map(\.trimmed).filter { !$0.isEmpty }.joined(separator: " · ")
+            return joined.isEmpty ? nil : joined
+        }
+
+        /// The three legacy keys are not properties any more; they are only
+        /// ever read. Spelled out because the synthesised `CodingKeys` would
+        /// only cover what the struct still stores — and named here means
+        /// `encode(to:)` has to be written out too, since nothing would fill
+        /// them.
+        enum CodingKeys: String, CodingKey {
+            case key, kunde, strasse, plz, stockwerk, notiz, dontAsk, updatedAt
+            case tuerNotiz, tuercode, langeLaeuten
+        }
+
+        /// Writes what this build stores, and nothing it merely reads. A file
+        /// this app produces carries one note per customer; the split fields
+        /// are a shape it can still *open*, not one it writes.
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(key, forKey: .key)
+            try c.encode(kunde, forKey: .kunde)
+            try c.encode(strasse, forKey: .strasse)
+            try c.encode(plz, forKey: .plz)
+            try c.encodeIfPresent(stockwerk, forKey: .stockwerk)
+            try c.encodeIfPresent(notiz, forKey: .notiz)
+            try c.encode(dontAsk, forKey: .dontAsk)
+            try c.encode(updatedAt, forKey: .updatedAt)
         }
 
         /// Same reason as the archive's own: a row missing a field is a row,
@@ -130,9 +170,13 @@ struct BackupArchive: Codable, Sendable {
             strasse = try c.decodeIfPresent(String.self, forKey: .strasse) ?? ""
             plz = try c.decodeIfPresent(String.self, forKey: .plz) ?? ""
             stockwerk = try c.decodeIfPresent(String.self, forKey: .stockwerk)
-            tuerNotiz = try c.decodeIfPresent(String.self, forKey: .tuerNotiz)
-            tuercode = try c.decodeIfPresent(String.self, forKey: .tuercode)
-            langeLaeuten = try c.decodeIfPresent(Bool.self, forKey: .langeLaeuten)
+            // `tuerNotiz`, `tuercode` and `langeLaeuten` are what this row's
+            // one note was briefly split into. A file carrying them is folded
+            // back into a single note rather than losing two thirds of what
+            // somebody wrote down — the same forgiveness this reader gives
+            // every other field, for the same reason: a backup is read on the
+            // day something has already gone wrong.
+            notiz = try Self.foldedNote(c)
             dontAsk = try c.decodeIfPresent(Bool.self, forKey: .dontAsk) ?? false
             updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         }
@@ -237,8 +281,7 @@ extension BackupArchive.StockwerkBackup {
     init(_ note: StockwerkNote) {
         self.init(
             key: note.key, kunde: note.kunde, strasse: note.strasse, plz: note.plz,
-            stockwerk: note.stockwerk, tuerNotiz: note.tuerNotiz,
-            tuercode: note.tuercode, langeLaeuten: note.langeLaeuten,
+            stockwerk: note.stockwerk, notiz: note.notiz,
             dontAsk: note.dontAsk, updatedAt: note.updatedAt)
     }
 }
@@ -378,9 +421,7 @@ enum BackupRestore {
                 // one is the one that saw the building most recently.
                 guard backup.updatedAt > note.updatedAt else { continue }
                 note.stockwerk = backup.stockwerk
-                note.tuerNotiz = backup.tuerNotiz
-                note.tuercode = backup.tuercode
-                note.langeLaeuten = backup.langeLaeuten ?? false
+                note.notiz = backup.notiz
                 note.dontAsk = backup.dontAsk
                 note.kunde = backup.kunde
                 note.strasse = backup.strasse
@@ -390,8 +431,7 @@ enum BackupRestore {
                 let note = StockwerkNote(
                     key: backup.key, kunde: backup.kunde, strasse: backup.strasse,
                     plz: backup.plz, stockwerk: backup.stockwerk,
-                    tuerNotiz: backup.tuerNotiz, tuercode: backup.tuercode,
-                    langeLaeuten: backup.langeLaeuten ?? false, dontAsk: backup.dontAsk)
+                    notiz: backup.notiz, dontAsk: backup.dontAsk)
                 note.updatedAt = backup.updatedAt
                 context.insert(note)
                 existing[backup.key] = note

@@ -1,7 +1,14 @@
 import Foundation
 import SwiftData
 
-/// Which floor one customer lives on, kept for good and across every tour.
+/// What this app knows about one customer, kept for good and across every tour:
+/// which floor they live on, and whatever else the driver wrote down.
+///
+/// Still called `StockwerkNote` because that is the entity name the store on
+/// the driver's phone was written with, and renaming an entity is a custom
+/// migration rather than a rename. The floor was the first thing anybody kept
+/// here and gave the table its name; `CustomerInfo` is what the rest of the app
+/// calls the shape of it now.
 ///
 /// The floor is the one thing about a delivery that never changes and that no
 /// list the office sends ever carries. A driver learns it once, standing in the
@@ -37,34 +44,22 @@ final class StockwerkNote {
     /// and a wrong choice from a list is worse than the right words.
     var stockwerk: String?
 
-    /// The rest of what the driver learned standing at this door, in their own
-    /// words: "klingelt nicht, klopfen", "Hund", "Nachbarin Tür 12 nimmt an",
-    /// "Lift seit Mai kaputt".
+    /// Everything else worth knowing about this customer, in the driver's own
+    /// words: "klingelt nicht, klopfen", "Türcode 0123", "Hund", "Nachbarin
+    /// Tür 12 nimmt an", "Lift seit Mai kaputt".
+    ///
+    /// Free text, and deliberately only free text. Each of those was briefly a
+    /// field of its own here — a Türcode column, a "lange läuten" switch — and
+    /// that was the wrong shape: it is a list with no end, every entry on it is
+    /// a sentence somebody would write anyway, and a form of eight labelled
+    /// boxes is slower to fill in at a door than one line to type into.
     ///
     /// The same argument as the floor, which this file already makes: a thing
     /// that does not change, that no list the office sends carries, and that a
     /// driver otherwise has to hold in their head for every customer on every
-    /// tour forever. The floor was simply the first one of those anybody wrote
-    /// down. `Stop.notiz` is not the place for it — a stop belongs to one tour
-    /// and is deleted with it, so a note typed there is gone by Monday.
-    var tuerNotiz: String?
-
-    /// The code for the door, once somebody has worked it out.
-    ///
-    /// The Türcode tool decoded the office's cipher and then threw the answer
-    /// away, so the same building was decoded again every week. Kept here, it
-    /// is decoded once per building, ever.
-    var tuercode: String?
-
-    /// Ring long and ring again — somebody who is hard of hearing, or slow to
-    /// the door, and who has been written off as "nicht angetroffen" by a
-    /// stand-in driver who gave it fifteen seconds.
-    ///
-    /// A flag rather than words in `tuerNotiz`, because this one changes what
-    /// the app *does*: it is shown on the card at the moment the driver is
-    /// deciding whether to give up, and it is the first thing the "nicht
-    /// angetroffen" sheet says.
-    var langeLaeuten: Bool = false
+    /// tour forever. `Stop.notiz` is not the place for it — a stop belongs to
+    /// one tour and is deleted with it, so a note typed there is gone by Monday.
+    var notiz: String?
 
     /// Set when the driver ticked "Nicht mehr fragen". The one thing worse than
     /// not knowing the floor is being asked after every single delivery to a
@@ -76,8 +71,7 @@ final class StockwerkNote {
 
     init(
         key: String, kunde: String, strasse: String, plz: String,
-        stockwerk: String? = nil, tuerNotiz: String? = nil, tuercode: String? = nil,
-        langeLaeuten: Bool = false, dontAsk: Bool = false
+        stockwerk: String? = nil, notiz: String? = nil, dontAsk: Bool = false
     ) {
         self.id = UUID()
         self.key = key
@@ -85,9 +79,7 @@ final class StockwerkNote {
         self.strasse = strasse
         self.plz = plz
         self.stockwerk = stockwerk
-        self.tuerNotiz = tuerNotiz
-        self.tuercode = tuercode
-        self.langeLaeuten = langeLaeuten
+        self.notiz = notiz
         self.dontAsk = dontAsk
         self.updatedAt = Date()
     }
@@ -105,31 +97,15 @@ extension StockwerkNote {
         return [address, plz].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
-    /// Everything learned about this door except the floor, which has its own
-    /// line on every row in the app and is never part of this.
-    var doorFacts: [(symbol: String, text: String)] {
-        var out: [(String, String)] = []
-        if langeLaeuten { out.append(("bell.badge.fill", "Lange läuten")) }
-        if let code = tuercode?.trimmed, !code.isEmpty {
-            out.append(("key.fill", "Türcode \(code)"))
-        }
-        if let note = tuerNotiz?.trimmed, !note.isEmpty {
-            out.append(("text.bubble.fill", note))
-        }
-        return out
-    }
-
     /// Nothing known and no standing instruction — a row that is only taking up
     /// space, and which `StockwerkStore` deletes rather than storing blank.
     ///
-    /// Every field, not just the floor. Clearing the floor on a customer whose
-    /// Türcode is the only thing anybody ever learned about them used to be the
-    /// write that threw the Türcode away.
+    /// Both fields, not just the floor. Clearing the floor on a customer whose
+    /// note is the only thing anybody ever learned about them used to be the
+    /// write that threw the note away.
     var isBlank: Bool {
         (stockwerk?.trimmed.isEmpty ?? true)
-            && (tuerNotiz?.trimmed.isEmpty ?? true)
-            && (tuercode?.trimmed.isEmpty ?? true)
-            && !langeLaeuten
+            && (notiz?.trimmed.isEmpty ?? true)
             && !dontAsk
     }
 }

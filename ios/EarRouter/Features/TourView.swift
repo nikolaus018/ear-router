@@ -106,7 +106,7 @@ struct TourView: View {
         // every tick of a delivery. Derived here, it is one of each.
         let snapshot = RouteSnapshot(route)
         let visible = visibleStops(in: snapshot)
-        let knowledge = stockwerkNotes.knowledge(for: snapshot.ordered)
+        let info = stockwerkNotes.info(for: snapshot.ordered)
 
         return Group {
             if visible.isEmpty && !search.isEmpty {
@@ -115,7 +115,7 @@ struct TourView: View {
                 // found.
                 ContentUnavailableView.search(text: search)
             } else {
-                stops(snapshot, visible: visible, knowledge: knowledge)
+                stops(snapshot, visible: visible, info: info)
             }
         }
         // `safeAreaInset`, not an overlay: the list runs underneath the
@@ -160,7 +160,7 @@ struct TourView: View {
         }
         .stockwerkPrompt(for: $stockwerkStop)
         .sheet(item: $outcomeStop) { stop in
-            OutcomeSheet(stop: stop, knowledge: stockwerkNotes.first { note in
+            OutcomeSheet(stop: stop, info: stockwerkNotes.first { note in
                 StockwerkKey.make(for: stop).map { $0 == note.key } ?? false
             }) { outcome in
                 record(outcome, for: stop)
@@ -247,7 +247,7 @@ struct TourView: View {
     // MARK: - The list
 
     private func stops(
-        _ snapshot: RouteSnapshot, visible: [Stop], knowledge: [UUID: StockwerkNote]
+        _ snapshot: RouteSnapshot, visible: [Stop], info: [UUID: StockwerkNote]
     ) -> some View {
         List {
             if route.needsOptimize {
@@ -258,7 +258,7 @@ struct TourView: View {
 
             Section {
                 ForEach(visible) { stop in
-                    row(for: stop, in: snapshot, knowledge: knowledge)
+                    row(for: stop, in: snapshot, info: info)
                 }
             } header: {
                 Text(listHeader(snapshot, visible: visible))
@@ -294,13 +294,13 @@ struct TourView: View {
     /// inside the `ForEach` pushed the enclosing `List` past what the type
     /// checker will solve in reasonable time.
     private func row(
-        for stop: Stop, in snapshot: RouteSnapshot, knowledge: [UUID: StockwerkNote]
+        for stop: Stop, in snapshot: RouteSnapshot, info: [UUID: StockwerkNote]
     ) -> some View {
         StopListRow(
             stop: stop,
             sameDoorCount: snapshot.doorCount(stop),
             number: snapshot.number(stop),
-            knowledge: knowledge[stop.id],
+            info: info[stop.id],
             eta: snapshot.eta(for: stop),
             isNext: snapshot.nextOpen?.id == stop.id,
             onTap: { tapped(stop) },

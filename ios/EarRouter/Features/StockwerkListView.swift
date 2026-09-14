@@ -1,9 +1,8 @@
 import SwiftUI
 import SwiftData
 
-/// Every customer the app has been told anything about: the floor, the
-/// Türcode, the bell that has to be held, the words somebody wrote down after
-/// standing at the door.
+/// Every customer the app has been told anything about: which floor they live
+/// on, and whatever the driver wrote down after standing at their door.
 ///
 /// This is the one thing in the app that is *only* in the app — nothing in the
 /// office's list carries any of it, and after a few months there is a year of
@@ -50,8 +49,7 @@ struct StockwerkListView: View {
             query.matches(
                 $0.key,
                 or: AddressText.matchKey(
-                    [$0.stockwerk, $0.tuerNotiz, $0.tuercode]
-                        .compactMap { $0 }.joined(separator: " ")))
+                    [$0.stockwerk, $0.notiz].compactMap { $0 }.joined(separator: " ")))
         }
     }
 
@@ -90,7 +88,7 @@ struct StockwerkListView: View {
                 }
             }
         }
-        .navigationTitle("Türinfos")
+        .navigationTitle("Kundeninfos")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $search, prompt: "Kunde, Adresse, Stockwerk oder Notiz")
         .toolbar {
@@ -103,7 +101,7 @@ struct StockwerkListView: View {
         .sheet(item: $sharedFile) { ShareSheet(items: [$0.url]) }
         .sheet(item: $editing) { StockwerkNoteSheet(note: $0) }
         .confirmationDialog(
-            deleting.count == 1 ? "Türinfos löschen?" : "\(deleting.count) Einträge löschen?",
+            deleting.count == 1 ? "Kundeninfos löschen?" : "\(deleting.count) Einträge löschen?",
             isPresented: Binding(
                 get: { !deleting.isEmpty },
                 set: { if !$0 { deleting = [] } }),
@@ -131,7 +129,7 @@ struct StockwerkListView: View {
 
     private var deletionMessage: String {
         guard let only = deleting.first, deleting.count == 1 else {
-            return "Die Türinfos werden gelöscht. Diese Kunden werden bei der "
+            return "Die Kundeninfos werden gelöscht. Diese Kunden werden bei der "
                 + "nächsten Lieferung wieder gefragt."
         }
         return "Alles Gespeicherte zu „\(only.title)“ wird gelöscht. "
@@ -152,10 +150,10 @@ struct StockwerkListView: View {
                             .foregroundStyle(Color.secondary)
                     }
                     // The floor has the right-hand column to itself, the way
-                    // Settings puts a value there. Everything else learned at
-                    // this door goes under the address, where a two-line note
-                    // has room to be two lines.
-                    StopFacts.doorKnowledge(note)
+                    // Settings puts a value there. The standing note goes under
+                    // the address, where two lines of somebody's handwriting
+                    // have room to be two lines.
+                    StopFacts.customerNote(note, lineLimit: 2)
                         .font(.caption)
                 }
                 Spacer(minLength: 8)
@@ -168,7 +166,7 @@ struct StockwerkListView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .accessibilityLabel("Stockwerk \(Format.floor(stockwerk))")
-                } else if note.dontAsk && note.doorFacts.isEmpty {
+                } else if note.dontAsk && (note.notiz?.trimmed.isEmpty ?? true) {
                     // The other thing a row can mean: not a floor, but a
                     // standing instruction not to ask for one.
                     Label("Nicht fragen", systemImage: "bell.slash.fill")
@@ -179,12 +177,12 @@ struct StockwerkListView: View {
         }
     }
 
-    /// Hands everything learned at these doors to another phone.
+    /// Hands everything learned about these customers to another phone.
     ///
     /// The case this exists for: somebody takes over the round for a week. All
-    /// of it — every floor, every Türcode, every "klingelt nicht, klopfen" —
-    /// is on one phone, and without this the stand-in starts from nothing and
-    /// rings the wrong bell at thirty buildings.
+    /// of it — every floor and every "klingelt nicht, klopfen" — is on one
+    /// phone, and without this the stand-in starts from nothing and rings the
+    /// wrong bell at thirty buildings.
     ///
     /// A `BackupArchive` with no tours in it, so it restores through the same
     /// merge the full backup already uses: newest answer per customer wins,
@@ -197,7 +195,7 @@ struct StockwerkListView: View {
             archive.stockwerke = notes.map(BackupArchive.StockwerkBackup.init)
             sharedFile = SharedFile(url: try archive.writeForSharing())
         } catch {
-            self.error = AppError.message("Die Türinfos konnten nicht geteilt werden.")
+            self.error = AppError.message("Die Kundeninfos konnten nicht geteilt werden.")
         }
     }
 

@@ -72,7 +72,7 @@ struct NowTab: View {
         }
         .stockwerkPrompt(for: $stockwerkStop)
         .sheet(item: $outcomeStop) { stop in
-            OutcomeSheet(stop: stop, knowledge: knowledge(for: stop)) { outcome in
+            OutcomeSheet(stop: stop, info: info(for: stop)) { outcome in
                 settle(stop, as: outcome)
             }
         }
@@ -108,7 +108,7 @@ struct NowTab: View {
         // Derived once, for the same reason `TourView` does: every one of these
         // walks the whole route.
         let snapshot = RouteSnapshot(route)
-        let knowledge = stockwerkNotes.knowledge(for: snapshot.ordered)
+        let info = stockwerkNotes.info(for: snapshot.ordered)
         let current = snapshot.nextOpen
 
         // One stop and nothing else. What comes after it, and the whole list,
@@ -116,7 +116,7 @@ struct NowTab: View {
         // clutter this tab exists to get away from.
         return List {
             if let current {
-                currentSection(current, route: route, snapshot: snapshot, knowledge: knowledge)
+                currentSection(current, route: route, snapshot: snapshot, info: info)
             } else if snapshot.customerCount == 0 {
                 emptySection(route)
             } else {
@@ -130,7 +130,7 @@ struct NowTab: View {
         .toolbar {
             toolbar(
                 route, current: current,
-                hasFloor: current.flatMap { knowledge[$0.id]?.stockwerk } != nil)
+                hasFloor: current.flatMap { info[$0.id]?.stockwerk } != nil)
         }
         .animation(.snappy, value: current?.id)
         .safeAreaInset(edge: .bottom, spacing: 0) { undoBanner(route) }
@@ -139,13 +139,13 @@ struct NowTab: View {
     }
 
     private func currentSection(
-        _ stop: Stop, route: Route, snapshot: RouteSnapshot, knowledge: [UUID: StockwerkNote]
+        _ stop: Stop, route: Route, snapshot: RouteSnapshot, info: [UUID: StockwerkNote]
     ) -> some View {
         Section {
             NowStopCard(
                 stop: stop,
                 number: snapshot.number(stop),
-                knowledge: knowledge[stop.id],
+                info: info[stop.id],
                 sameDoorCount: snapshot.doorCount(stop),
                 finishesAt: snapshot.etaFinish(),
                 onNavigate: { navigate(to: stop) },
@@ -299,9 +299,9 @@ struct NowTab: View {
             DeliveredTick(id: stop.id, name: stop.kunde ?? "Stopp", outcome: outcome))
     }
 
-    /// What is known about this one door. A linear scan rather than the table
-    /// the list builds: this is one stop, once, when a sheet opens.
-    private func knowledge(for stop: Stop) -> StockwerkNote? {
+    /// What is known about this one customer. A linear scan rather than the
+    /// table the list builds: this is one stop, once, when a sheet opens.
+    private func info(for stop: Stop) -> StockwerkNote? {
         guard let key = StockwerkKey.make(for: stop) else { return nil }
         return stockwerkNotes.first { $0.key == key }
     }
@@ -372,9 +372,9 @@ struct NowTab: View {
 private struct NowStopCard: View {
     let stop: Stop
     let number: Int?
-    /// Everything learned standing at this door: the floor, the Türcode, the
-    /// bell that has to be held, the driver's own words about the place.
-    let knowledge: StockwerkNote?
+    /// What is kept about this customer across every tour: the floor, and the
+    /// driver's own standing note.
+    let info: StockwerkNote?
     let sameDoorCount: Int
     /// When the shift is expected to end, shown once rather than per stop —
     /// this is the screen a driver looks at when somebody asks how long they
@@ -491,11 +491,11 @@ private struct NowStopCard: View {
     @ViewBuilder
     private var errand: some View {
         let paket = StopFacts.paket(stop.paket)
-        let floor = StopFacts.floor(knowledge?.stockwerk)
+        let floor = StopFacts.floor(info?.stockwerk)
         let note = stop.notiz?.trimmed ?? ""
-        let doorFacts = knowledge?.doorFacts ?? []
+        let standing = info?.notiz?.trimmed ?? ""
         if paket != nil || floor != nil || !note.isEmpty || stop.precision != nil
-            || !doorFacts.isEmpty
+            || !standing.isEmpty
         {
             VStack(alignment: .leading, spacing: 10) {
                 if let paket {
@@ -511,8 +511,8 @@ private struct NowStopCard: View {
                 // Above the tour's own note on purpose. This is the part
                 // learned at this door by somebody who stood at it, and it is
                 // read in the ten seconds before the bell rather than after.
-                StopFacts.doorKnowledge(knowledge)
-                    .font(.body)
+                StopFacts.customerNote(info, lineLimit: 40)
+                    .font(.callout)
                 if !note.isEmpty {
                     StopFacts.note(note, lineLimit: 40)
                         .font(.callout)

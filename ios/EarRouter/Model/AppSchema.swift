@@ -313,15 +313,130 @@ enum EarRouterSchemaV4: VersionedSchema {
 
 /// V5 records *what happened* at a door rather than one delivered bit, stamps
 /// the time it was said, lets a stop be pinned to the front of the tour, and
-/// keeps the rest of what a driver learns in a stairwell beside the floor.
+/// keeps what a driver learns in a stairwell beside the floor.
 ///
 /// Lightweight, and that is by design rather than by luck. Every field it adds
 /// is optional or has a default, and the one fact that would otherwise need
 /// rewriting — that an already-ticked stop was *delivered* — is read back out
 /// of the `delivered` bit those rows already carry, by `Stop.outcome`. Nothing
 /// on the phone is rewritten on the morning this build first opens the store.
+///
+/// Its floor table briefly split what a driver knows about a customer into
+/// three columns — a Türcode, a "lange läuten" switch, and a note. V6 folds
+/// them back into one note. This version is frozen rather than edited in place
+/// because a store stamped with it can exist: opening one against an amended
+/// V5 fails with "unknown model version", and what catches that is `Store`'s
+/// recovery path, which parks a year of tours and brings the app up empty.
+/// That was watched happening once, on a simulator, which was one time more
+/// than it needs to happen on a phone in a van.
 enum EarRouterSchemaV5: VersionedSchema {
     static var versionIdentifier: Schema.Version { Schema.Version(5, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [Route.self, Stop.self, StockwerkNote.self]
+    }
+
+    @Model
+    final class Route {
+        var id: UUID = UUID()
+        var name: String = ""
+        var statusRaw: String = RouteStatus.active.rawValue
+        var createdAt: Date = Date()
+        var completedAt: Date?
+        var geometryFlat: [Double] = []
+        var needsOptimize: Bool = false
+
+        @Relationship(deleteRule: .cascade, inverse: \Stop.route)
+        var stops: [Stop] = []
+
+        init(name: String = "") {
+            self.id = UUID()
+            self.name = name
+            self.statusRaw = RouteStatus.active.rawValue
+            self.createdAt = Date()
+            self.geometryFlat = []
+            self.needsOptimize = false
+            self.stops = []
+        }
+    }
+
+    @Model
+    final class Stop {
+        var id: UUID = UUID()
+        var kindRaw: String = StopKind.customer.rawValue
+        var kunde: String?
+        var strasse: String?
+        var plz: String?
+        var paket: String?
+        var notiz: String?
+        var telefon: String?
+        var lat: Double = 0
+        var lon: Double = 0
+        var orderIndex: Int = 0
+        var delivered: Bool = false
+        var outcomeRaw: String?
+        var settledAt: Date?
+        var prioritaet: Bool = false
+        var nextLegKm: Double?
+        var nextLegMin: Double?
+        var createdAt: Date = Date()
+        var excluded: Bool = false
+        var pinned: Bool = false
+        var precisionRaw: String?
+        var route: Route?
+
+        init(kind: StopKind = .customer, lat: Double = 0, lon: Double = 0) {
+            self.id = UUID()
+            self.kindRaw = kind.rawValue
+            self.lat = lat
+            self.lon = lon
+            self.createdAt = Date()
+        }
+    }
+
+    /// V5's floor table, with the three columns V6 folds back into one note.
+    @Model
+    final class StockwerkNote {
+        var id: UUID = UUID()
+        var key: String = ""
+        var kunde: String = ""
+        var strasse: String = ""
+        var plz: String = ""
+        var stockwerk: String?
+        var tuerNotiz: String?
+        var tuercode: String?
+        var langeLaeuten: Bool = false
+        var dontAsk: Bool = false
+        var updatedAt: Date = Date()
+
+        init(key: String = "", kunde: String = "", strasse: String = "", plz: String = "") {
+            self.id = UUID()
+            self.key = key
+            self.kunde = kunde
+            self.strasse = strasse
+            self.plz = plz
+            self.updatedAt = Date()
+        }
+    }
+}
+
+/// V6 folds the three columns V5 kept about a customer's door back into one
+/// free-text note.
+///
+/// The split was the wrong shape for what it held. The things worth writing
+/// down at a door are a list with no end — a code, a bell that has to be held,
+/// a dog, a neighbour who takes the meal, a lift that has been broken since May
+/// — and every one of them is a sentence somebody would write anyway. A form of
+/// labelled boxes is slower to fill in standing at a door than one line to type
+/// into, and it can only ever hold the handful of cases somebody thought of.
+///
+/// Lightweight: two columns go, one arrives, and the floor — the thing this
+/// table was made for and the thing that took a year of stairwells to learn —
+/// is untouched by either. What the dropped columns held is not carried across
+/// in the store, and does not need to be: `BackupArchive` folds all three into
+/// the note when it reads a file that has them.
+enum EarRouterSchemaV6: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(6, 0, 0) }
 
     static var models: [any PersistentModel.Type] {
         [Route.self, Stop.self, StockwerkNote.self]
@@ -332,7 +447,7 @@ enum EarRouterSchemaV5: VersionedSchema {
 enum EarRouterMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [EarRouterSchemaV1.self, EarRouterSchemaV2.self, EarRouterSchemaV3.self,
-         EarRouterSchemaV4.self, EarRouterSchemaV5.self]
+         EarRouterSchemaV4.self, EarRouterSchemaV5.self, EarRouterSchemaV6.self]
     }
 
     /// Both lightweight, because adding and dropping a standalone entity takes
@@ -345,12 +460,13 @@ enum EarRouterMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: EarRouterSchemaV2.self, toVersion: EarRouterSchemaV3.self),
             .lightweight(fromVersion: EarRouterSchemaV3.self, toVersion: EarRouterSchemaV4.self),
             .lightweight(fromVersion: EarRouterSchemaV4.self, toVersion: EarRouterSchemaV5.self),
+            .lightweight(fromVersion: EarRouterSchemaV5.self, toVersion: EarRouterSchemaV6.self),
         ]
     }
 }
 
 enum AppSchema {
-    static let current = Schema(versionedSchema: EarRouterSchemaV5.self)
+    static let current = Schema(versionedSchema: EarRouterSchemaV6.self)
 
     /// Opens the store. `url` is only for tests — the app always wants the
     /// default location, which is the same file the unversioned container used,

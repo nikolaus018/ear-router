@@ -30,7 +30,7 @@ third-party dependencies.
 | `Services/RouteStore` | Every mutation, plus the JSON bulk import |
 | `Services/BackupArchive` | The whole store out to one readable JSON file, and back again. Everything here lives on one phone, which is the point of it and also the risk; this is the other half of that deal |
 | `Services/SameDoor` | Which stops share a front door |
-| `Services/StockwerkStore` | Everything learned standing at a customer's door — the floor, the Türcode, "lange läuten", the driver's own words. The things about a delivery that never change and that no list the office sends ever carries: asked once, in the stairwell, and on the row from then on |
+| `Services/StockwerkStore` | What is kept about a customer across every tour — which floor they live on, and whatever the driver wrote down. The things about a delivery that never change and that no list the office sends ever carries: asked once, in the stairwell, and on the row from then on |
 | `Services/TourReport` | The day in the form the office has to hear it, plain text, ready to share |
 | `Services/Preflight` | The checklist that runs while the van is still in the yard, where every failure this app can have is still cheap |
 | `Services/NextStopIntent` | "Hey Siri, nächster Stopp" — read-only, and deliberately so |

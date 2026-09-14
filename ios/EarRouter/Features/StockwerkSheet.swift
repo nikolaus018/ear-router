@@ -20,8 +20,8 @@ struct StockwerkSheet: View {
             subtitle: stop.listAddress,
             initial: (try? StockwerkStore.note(for: stop, in: context)) ?? nil,
             askingAfterDelivery: true
-        ) { knowledge in
-            try StockwerkStore.save(knowledge, for: stop, in: context)
+        ) { info in
+            try StockwerkStore.save(info, for: stop, in: context)
         }
     }
 }
@@ -39,15 +39,13 @@ struct StockwerkNoteSheet: View {
             subtitle: note.subtitle,
             initial: note,
             askingAfterDelivery: false
-        ) { knowledge in
-            if knowledge.isBlank {
+        ) { info in
+            if info.isBlank {
                 context.delete(note)
             } else {
-                note.stockwerk = knowledge.stockwerk
-                note.tuerNotiz = knowledge.tuerNotiz
-                note.tuercode = knowledge.tuercode
-                note.langeLaeuten = knowledge.langeLaeuten
-                note.dontAsk = knowledge.dontAsk
+                note.stockwerk = info.stockwerk
+                note.notiz = info.notiz
+                note.dontAsk = info.dontAsk
                 note.updatedAt = Date()
             }
             try context.save()
@@ -75,23 +73,27 @@ struct StockwerkForm: View {
     let askingAfterDelivery: Bool
     /// Throws rather than returning a flag, so a failed write shows the driver
     /// a sentence instead of closing as though it had worked.
-    let onSave: (DoorKnowledge) throws -> Void
+    let onSave: (CustomerInfo) throws -> Void
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var text = ""
-    @State private var tuerNotiz = ""
-    @State private var tuercode = ""
-    @State private var langeLaeuten = false
+    @State private var notiz = ""
     @State private var dontAsk = false
     @State private var loaded = false
     @State private var saveError: String?
     @FocusState private var focused: Bool
 
-    /// The floors that come up over and over in a Viennese stairwell. Tapping
-    /// one fills the field rather than saving outright: a mis-tap that saves is
-    /// a wrong floor stored for good, and the field is right there to correct.
-    private let quick = ["EG", "1", "2", "3", "4", "5"]
+    /// The floors that come up over and over in a Viennese stairwell, from the
+    /// ground floor to the attic. Tapping one fills the field rather than
+    /// saving outright: a mis-tap that saves is a wrong floor stored for good,
+    /// and the field is right there to correct.
+    ///
+    /// The field stays, and these never replace it: Viennese stairwells are
+    /// numbered in more ways than any row of buttons could hold — Mezzanin,
+    /// Hochparterre, "2/Tür 14" — and the picks are the eight that cover most
+    /// doors, not a claim to cover all of them.
+    private let quick = ["EG", "1", "2", "3", "4", "5", "6", "DG"]
 
     var body: some View {
         NavigationStack {
@@ -126,25 +128,24 @@ struct StockwerkForm: View {
                 }
 
                 Section {
-                    Toggle(isOn: $langeLaeuten) {
-                        Label("Lange läuten", systemImage: "bell.badge.fill")
-                            .labelStyle(TintedIconLabelStyle(tint: .attention))
-                            .symbolRenderingMode(.monochrome)
-                    }
-                    TextField("Türcode", text: $tuercode)
-                        .textInputAutocapitalization(.characters)
-                        .autocorrectionDisabled()
-                    decodeHint
                     TextField(
-                        "z. B. klopfen, Hund, Nachbarin Tür 12 nimmt an",
-                        text: $tuerNotiz, axis: .vertical)
-                        .lineLimit(1...4)
+                        "z. B. klopfen, Türcode 0123, Hund, Nachbarin Tür 12 nimmt an",
+                        text: $notiz, axis: .vertical)
+                        // The same rule as the stop editor's own fields, and
+                        // this is the field that needed it most: it is where a
+                        // door code gets written down. Autocorrect turned a
+                        // typed "Tuercode 0123" into "Zürcher 0123" on the
+                        // first run of this screen — and a quietly corrupted
+                        // door code is a driver standing outside a building
+                        // they cannot get into, holding a warm meal.
+                        .autocorrectionDisabled()
+                        .lineLimit(2...8)
                 } header: {
-                    Text("Zur Tür")
+                    Text("Notiz")
                 } footer: {
-                    // The argument for this section being here at all, in the
-                    // one place a driver is already answering a question about
-                    // this door.
+                    // The argument for this section existing at all, in the one
+                    // place a driver is already answering a question about this
+                    // customer.
                     Text(
                         "Bleibt beim Kunden — auf jeder Tour, für immer. Anders als "
                             + "die Notiz beim Stopp, die mit der Tour verschwindet.")
@@ -179,7 +180,7 @@ struct StockwerkForm: View {
                     }
                 }
             }
-            .navigationTitle(askingAfterDelivery ? "Stockwerk?" : "Zur Tür")
+            .navigationTitle(askingAfterDelivery ? "Stockwerk?" : "Kundeninfos")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -196,9 +197,7 @@ struct StockwerkForm: View {
                 guard !loaded else { return }
                 loaded = true
                 text = initial?.stockwerk ?? ""
-                tuerNotiz = initial?.tuerNotiz ?? ""
-                tuercode = initial?.tuercode ?? ""
-                langeLaeuten = initial?.langeLaeuten ?? false
+                notiz = initial?.notiz ?? ""
                 dontAsk = initial?.dontAsk ?? false
             }
         }
@@ -218,45 +217,26 @@ struct StockwerkForm: View {
     /// there before, where clearing the field is how a wrong floor gets taken
     /// back out.
     private var canSave: Bool {
-        !knowledge.isBlank || initial != nil
+        !info.isBlank || initial != nil
     }
 
-    /// The five fields as the one value they are stored as.
-    private var knowledge: DoorKnowledge {
-        DoorKnowledge(
-            stockwerk: text, tuerNotiz: tuerNotiz, tuercode: tuercode,
-            langeLaeuten: langeLaeuten, dontAsk: dontAsk)
+    /// The three fields as the one value they are stored as.
+    private var info: CustomerInfo {
+        CustomerInfo(stockwerk: text, notiz: notiz, dontAsk: dontAsk)
     }
 
-    /// The office's cipher, offered where the code is actually written down.
+    /// A grid rather than a row.
     ///
-    /// The Türcode tool decoded "CEZD" into "0123" on its own screen and then
-    /// threw the answer away, so the same building was decoded again the
-    /// following week and every week after. Here the decode is one tap and what
-    /// it produces is *kept* — which is the whole difference between a tool and
-    /// a thing the app knows.
-    ///
-    /// Only when decoding would actually change something: a code already typed
-    /// as digits decodes to itself, and a button offering to replace "1234"
-    /// with "1234" is noise on the one row it appears under.
-    @ViewBuilder
-    private var decodeHint: some View {
-        let typed = tuercode.trimmed
-        let decoded = Tuercode.decode(typed)
-        if !typed.isEmpty, decoded != typed.uppercased() {
-            Button {
-                tuercode = decoded
-            } label: {
-                Label("Als \(decoded) übernehmen", systemImage: "wand.and.sparkles")
-                    .font(.subheadline)
-            }
-            .buttonStyle(.borderless)
-            .accessibilityHint("Entschlüsselt den Türcode nach der Tabelle des Büros")
-        }
-    }
-
+    /// Six picks fitted across a phone; eight do not — at 44 points each, the
+    /// minimum this button is allowed to be, they overflow the sheet before
+    /// the text size is raised at all. An adaptive grid wraps them onto a
+    /// second line instead of shrinking them below the size a thumb can hit,
+    /// and keeps wrapping as the driver's text size goes up.
     private var quickPicks: some View {
-        HStack(spacing: 8) {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 48), spacing: 8)],
+            spacing: 8
+        ) {
             ForEach(quick, id: \.self) { value in
                 quickPick(value)
             }
@@ -283,8 +263,18 @@ struct StockwerkForm: View {
                 .background(quickPickFill(picked), in: .rect(cornerRadius: 10))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(value == "EG" ? "Erdgeschoss" : "\(value). Stock")
+        .accessibilityLabel(Self.spokenFloor(value))
         .accessibilityAddTraits(picked ? [.isSelected] : [])
+    }
+
+    /// What VoiceOver calls each pick. "EG. Stock" and "DG. Stock" are not
+    /// things anybody says.
+    static func spokenFloor(_ value: String) -> String {
+        switch value {
+        case "EG": "Erdgeschoss"
+        case "DG": "Dachgeschoss"
+        default: "\(value). Stock"
+        }
     }
 
     private func quickPickFill(_ picked: Bool) -> AnyShapeStyle {
@@ -300,10 +290,10 @@ struct StockwerkForm: View {
     private func saveAndClose() {
         guard canSave else { return }
         do {
-            try onSave(knowledge)
+            try onSave(info)
             dismiss()
         } catch {
-            saveError = "Konnte die Türinfos nicht speichern."
+            saveError = "Konnte die Kundeninfos nicht speichern."
         }
     }
 }

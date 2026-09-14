@@ -87,30 +87,28 @@ enum StopFacts {
         .symbolRenderingMode(.monochrome)
     }
 
-    /// What the driver was told about this door before they got to it, on one
-    /// line: lange läuten, the Türcode, and their own words about the place.
+    /// The standing note about this customer — the driver's own words, kept
+    /// across every tour.
     ///
-    /// Every one of these is read standing at the door with a warm box in one
-    /// hand, so they are not behind a disclosure and not in a sheet. The bell
-    /// glyph takes the accent because that one changes what the driver *does*
-    /// in the next fifteen seconds; the rest are facts they look up.
+    /// Read standing at the door with a warm box in one hand, so it is not
+    /// behind a disclosure and not in a sheet. Set like the stop's own note and
+    /// distinguished from it by one thing: the glyph. They are the same kind of
+    /// fact written at two different times, and a driver should not have to
+    /// work out which is which to act on either.
     @ViewBuilder
-    static func doorKnowledge(_ note: StockwerkNote?, dimmed: Bool = false) -> some View {
-        if let note, !note.doorFacts.isEmpty {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(note.doorFacts, id: \.text) { fact in
-                    Label {
-                        Text(fact.text).fixedSize(horizontal: false, vertical: true)
-                    } icon: {
-                        Image(systemName: fact.symbol)
-                    }
-                    .labelStyle(
-                        TintedIconLabelStyle(
-                            tint: fact.symbol == "bell.badge.fill" ? .attention : .secondary))
-                    .foregroundStyle(dimmed ? .secondary : .primary)
-                    .symbolRenderingMode(.monochrome)
-                }
+    static func customerNote(_ note: StockwerkNote?, lineLimit: Int = 3) -> some View {
+        if let text = note?.notiz?.trimmed, !text.isEmpty {
+            Label {
+                Text(text)
+                    .italic()
+                    .lineLimit(lineLimit)
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "person.text.rectangle.fill")
             }
+            .labelStyle(TintedIconLabelStyle(tint: .attention))
+            .foregroundStyle(.secondary)
+            .symbolRenderingMode(.monochrome)
         }
     }
 

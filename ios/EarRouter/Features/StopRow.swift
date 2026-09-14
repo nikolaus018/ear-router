@@ -57,10 +57,10 @@ struct StopRow: View {
     var number: Int?
     /// What is known about this door's floor. `nil` when nobody has said yet.
     var stockwerk: String?
-    /// The rest of what has been learned standing at this door — the Türcode,
-    /// "lange läuten", the driver's own words. `nil` on a screen that has not
-    /// got the notes to hand, which is what `stockwerk` above is still for.
-    var knowledge: StockwerkNote?
+    /// What is kept about this customer across every tour — their floor, and
+    /// the driver's own standing note. `nil` on a screen that has not got the
+    /// rows to hand, which is what `stockwerk` above is still for.
+    var info: StockwerkNote?
     /// When the van is expected here. `nil` on a settled stop, on a route that
     /// has never been optimized, and on every fixed point.
     var eta: Date?
@@ -204,14 +204,15 @@ struct StopRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let floor = StopFacts.floor(stockwerk ?? knowledge?.stockwerk, dimmed: dimmed) {
+            if let floor = StopFacts.floor(stockwerk ?? info?.stockwerk, dimmed: dimmed) {
                 floor
                     .font(.subheadline)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            StopFacts.doorKnowledge(knowledge, dimmed: dimmed)
+            StopFacts.customerNote(info)
                 .font(.subheadline)
+                .opacity(dimmed ? 0.7 : 1)
 
             if let notiz = stop.notiz?.trimmed, !notiz.isEmpty {
                 StopFacts.note(notiz)
@@ -403,10 +404,10 @@ struct StopRow: View {
         }
         if stop.prioritaet && stop.kind == .customer { parts.append("Vorrang") }
         if let paket = stop.paket, !paket.isEmpty { parts.append(paket) }
-        if let floor = (stockwerk ?? knowledge?.stockwerk)?.trimmed, !floor.isEmpty {
+        if let floor = (stockwerk ?? info?.stockwerk)?.trimmed, !floor.isEmpty {
             parts.append("Stockwerk \(Format.floor(floor))")
         }
-        for fact in knowledge?.doorFacts ?? [] { parts.append(fact.text) }
+        if let note = info?.notiz?.trimmed, !note.isEmpty { parts.append("Kunde: \(note)") }
         if !dimmed, !stop.isSettled, let eta {
             parts.append("Ankunft etwa \(Format.time(eta))")
         }
@@ -434,7 +435,7 @@ struct StopListRow: View {
     var sameDoorCount: Int = 1
     var number: Int?
     var stockwerk: String?
-    var knowledge: StockwerkNote?
+    var info: StockwerkNote?
     var eta: Date?
     var isNext: Bool = false
     let onTap: () -> Void
@@ -461,7 +462,7 @@ struct StopListRow: View {
             sameDoorCount: sameDoorCount,
             number: number,
             stockwerk: stockwerk,
-            knowledge: knowledge,
+            info: info,
             eta: eta,
             isNext: isNext,
             onToggleDelivered: isCustomer ? onToggleDelivered : nil,
@@ -572,8 +573,8 @@ struct StopListRow: View {
             }
             if let onEditStockwerk {
                 Button(
-                    knowledge == nil && stockwerk == nil
-                        ? "Türinfos eintragen" : "Türinfos ändern",
+                    info == nil && stockwerk == nil
+                        ? "Kundeninfos eintragen" : "Kundeninfos ändern",
                     systemImage: "stairs", action: onEditStockwerk)
             }
             Divider()

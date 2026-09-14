@@ -129,8 +129,9 @@ struct SchemaMigrationTests {
         #expect(EarRouterSchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
         #expect(EarRouterSchemaV4.versionIdentifier == Schema.Version(4, 0, 0))
         #expect(EarRouterSchemaV5.versionIdentifier == Schema.Version(5, 0, 0))
-        #expect(EarRouterMigrationPlan.schemas.count == 5)
-        #expect(EarRouterMigrationPlan.stages.count == 4)
+        #expect(EarRouterSchemaV6.versionIdentifier == Schema.Version(6, 0, 0))
+        #expect(EarRouterMigrationPlan.schemas.count == 6)
+        #expect(EarRouterMigrationPlan.stages.count == 5)
     }
 
     /// SwiftData identifies entities by these stable names, not by the nested
@@ -312,6 +313,71 @@ struct SchemaMigrationTests {
         // point: the old row could not say which household it belonged to.
         #expect(try StockwerkStore.all(in: context).isEmpty)
         #expect(StockwerkStore.shouldAsk(gruber, in: context))
+    }
+
+    /// The version this change nearly shipped without.
+    ///
+    /// V5 split what a driver knows about a customer into a Türcode, a "lange
+    /// läuten" switch and a note; V6 folds them back into one note. Editing V5
+    /// in place to do that was tried, and a store already stamped V5 then
+    /// failed to open with "unknown model version" — straight into `Store`'s
+    /// recovery path, which parks every tour on the phone and brings the app up
+    /// empty. This is the check that the tours, the outcomes and the floors all
+    /// come across instead.
+    @Test func aV5StoreOpensAsV6WithTheTourAndTheFloorsIntact() throws {
+        let url = temporaryStoreURL()
+        defer { removeStore(at: url) }
+
+        let settled = Date(timeIntervalSince1970: 1_757_000_000)
+        do {
+            let schema = Schema(versionedSchema: EarRouterSchemaV5.self)
+            let v5 = try ModelContainer(
+                for: schema, configurations: ModelConfiguration(schema: schema, url: url))
+            let context = ModelContext(v5)
+
+            let route = EarRouterSchemaV5.Route(name: "Tour 14.09.2026")
+            context.insert(route)
+
+            let missed = EarRouterSchemaV5.Stop(kind: .customer, lat: 48.2301, lon: 16.3201)
+            missed.kunde = "Fr. Novak"
+            missed.strasse = "Gentzgasse 4"
+            missed.plz = "1180"
+            missed.outcomeRaw = DeliveryOutcome.notHome.rawValue
+            missed.settledAt = settled
+            missed.prioritaet = true
+            missed.route = route
+            context.insert(missed)
+
+            let note = EarRouterSchemaV5.StockwerkNote(
+                key: "fr novak|gentzgasse 4|1180", kunde: "Fr. Novak",
+                strasse: "Gentzgasse 4", plz: "1180")
+            note.stockwerk = "3"
+            note.tuercode = "0123"
+            note.langeLaeuten = true
+            context.insert(note)
+            try context.save()
+        }
+
+        let context = ModelContext(try AppSchema.container(url: url))
+
+        let route = try #require(try context.fetch(FetchDescriptor<Route>()).first)
+        #expect(route.name == "Tour 14.09.2026")
+
+        // What happened at the door, above all. It cannot be reconstructed from
+        // anywhere else on the phone.
+        let novak = try #require(route.customerStops.first)
+        #expect(novak.outcome == .notHome)
+        #expect(!novak.delivered)
+        #expect(novak.settledAt == settled)
+        #expect(novak.prioritaet)
+
+        // And the floor, which took a stairwell to learn. The three split
+        // columns are gone with the version that had them — what they held is
+        // recovered from a backup file, not from the store.
+        let kept = try #require(try StockwerkStore.all(in: context).first)
+        #expect(kept.stockwerk == "3")
+        #expect(kept.notiz == nil)
+        #expect(!StockwerkStore.shouldAsk(novak, in: context))
     }
 
     /// And a floor written today is still there after a relaunch — the same

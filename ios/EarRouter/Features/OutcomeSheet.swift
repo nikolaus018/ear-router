@@ -5,18 +5,19 @@ import SwiftUI
 ///
 /// It opens *before* the driver has decided to give up, which is the whole
 /// point of it being a screen rather than a menu. The two things most likely to
-/// turn a failed delivery into a successful one are on it: whatever this app
-/// already knows about the door — above all "lange läuten", on somebody who is
-/// slow to get to it — and the customer's own phone number, one tap away. Only
-/// under those come the three ways of writing the door off.
+/// turn a failed delivery into a successful one are on it: whatever has been
+/// written down about this customer — "klingelt nicht, klopfen", "braucht lange
+/// zur Tür" — and their own phone number, one tap away. Only under those come
+/// the three ways of writing the door off.
 ///
 /// A locked door is not a neutral event on this round. It is the one outcome
 /// somebody has to hear about today, and the thirty seconds this screen spends
 /// arguing for one more try are cheap against it.
 struct OutcomeSheet: View {
     let stop: Stop
-    /// What is known about this door, so the sheet can argue with the driver.
-    let knowledge: StockwerkNote?
+    /// What is known about this customer, so the sheet can argue with the
+    /// driver before it lets the door be written off.
+    let info: StockwerkNote?
     let onPick: (DeliveryOutcome) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -62,29 +63,15 @@ struct OutcomeSheet: View {
 
     /// The one thing on this screen that might send the driver back up the
     /// stairs instead of back to the van.
+    ///
+    /// Whatever was written down about this customer, at the moment it is worth
+    /// the most: "klingelt nicht, klopfen" and "braucht lange zur Tür" are both
+    /// ordinary things to have noted, and both of them are the difference
+    /// between a failed delivery and one more try.
     @ViewBuilder
     private var advice: some View {
-        if knowledge?.langeLaeuten == true {
-            Label {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Lange läuten").fontWeight(.semibold)
-                    Text("Dieser Kunde braucht länger zur Tür. Gib ihm noch einen Moment.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } icon: {
-                Image(systemName: "bell.badge.fill")
-            }
-            .labelStyle(TintedIconLabelStyle(tint: .attention))
-            .symbolRenderingMode(.monochrome)
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.attention.opacity(0.12), in: .rect(cornerRadius: 12))
-        } else if let note = knowledge?.tuerNotiz?.trimmed, !note.isEmpty {
-            StopFacts.note(note, lineLimit: 6)
-                .font(.subheadline)
-        }
+        StopFacts.customerNote(info, lineLimit: 8)
+            .font(.subheadline)
     }
 
     private func callButton(_ url: URL) -> some View {
