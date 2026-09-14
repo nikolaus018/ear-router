@@ -27,8 +27,12 @@ struct EarRouterApp: App {
         guard let container else { return .tours }
         let open = FetchDescriptor<Route>(predicate: #Predicate { $0.statusRaw == "active" })
         let routes = (try? container.mainContext.fetch(open)) ?? []
+        // A door still owed a visit, not merely one without a tick. A customer
+        // nobody was home for leaves `delivered` false for good, and counting
+        // that as waiting opened the app on Jetzt to tell the driver there was
+        // nothing to do — on every launch, for the rest of the day.
         let waiting = routes.contains { route in
-            route.stops.contains { $0.kind == .customer && !$0.delivered }
+            route.stops.contains(where: \.isOpenDelivery)
         }
         return waiting ? .now : .tours
     }

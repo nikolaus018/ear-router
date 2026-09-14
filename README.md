@@ -19,8 +19,8 @@ third-party dependencies.
 
 | | |
 |---|---|
-| `Model/` | `Route`, `Stop` and `StockwerkNote` — the whole persistent store — plus its versioned schema and the migrations between versions |
-| `Model/RouteSnapshot` | Everything one pass of a stop list needs to know about a tour, worked out in a single walk of its stops |
+| `Model/` | `Route`, `Stop` and `StockwerkNote` — the whole persistent store — plus its versioned schema and the migrations between versions. `Stop` records a `DeliveryOutcome`, not a tick: delivered, bei Nachbarn, nicht angetroffen, abbestellt |
+| `Model/RouteSnapshot` | Everything one pass of a stop list needs to know about a tour, worked out in a single walk of its stops — including when the van gets to each remaining door, off the day's own measured pace |
 | `Model/Districts` | Vienna's 23 districts, and `Postcodes` — any Austrian PLZ is a valid stop |
 | `Services/AddressText` | Address normalisation, Stiege/Parzelle sub-addresses, match keys — and `Search`, the one rule every search field in the app answers to |
 | `Services/Geocoder` | Wien OGD → Nominatim cascade, throttled, with wrong-district detection. The city register is only asked about Vienna postcodes; anywhere else in Austria is Nominatim alone |
@@ -30,7 +30,10 @@ third-party dependencies.
 | `Services/RouteStore` | Every mutation, plus the JSON bulk import |
 | `Services/BackupArchive` | The whole store out to one readable JSON file, and back again. Everything here lives on one phone, which is the point of it and also the risk; this is the other half of that deal |
 | `Services/SameDoor` | Which stops share a front door |
-| `Services/StockwerkStore` | Which floor each customer lives on. The one thing about a delivery that never changes and that no list the office sends ever carries — asked once, in the stairwell, and on the row from then on |
+| `Services/StockwerkStore` | Everything learned standing at a customer's door — the floor, the Türcode, "lange läuten", the driver's own words. The things about a delivery that never change and that no list the office sends ever carries: asked once, in the stairwell, and on the row from then on |
+| `Services/TourReport` | The day in the form the office has to hear it, plain text, ready to share |
+| `Services/Preflight` | The checklist that runs while the van is still in the yard, where every failure this app can have is still cheap |
+| `Services/NextStopIntent` | "Hey Siri, nächster Stopp" — read-only, and deliberately so |
 | `Services/GourmetPortal` | The Zusteller-Portal: login, the day's tours and their deliveries; the login lives in the Keychain |
 | `Support/NavigationHandoff` | Hands a stop to Apple Maps, Waze or Google Maps — always as its address, never as a point |
 | `Support/Theme` | The palette, and why each colour is the colour it is |
