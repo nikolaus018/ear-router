@@ -4,7 +4,7 @@ import OSLog
 
 private let log = Logger(subsystem: "win.ringtwo.EarRouter", category: "optimize")
 
-/// Re-solves stop order and fetches real geometry through the selected engine.
+/// Re-solves stop order and fetches real geometry for a route via OSRM.
 ///
 /// The shape of a tour is: the fixed head (depot → warehouse) in exactly that
 /// order, then the customers in whatever order OSRM finds cheapest, then the
@@ -164,7 +164,7 @@ enum RouteOptimizer {
         // as a loop over pairs because the head is 0, 1 or 2 points depending
         // on what this tour skips — with either of them off there is no leg.
         for pair in zip(plan.head, plan.head.dropFirst()) {
-            let leg = try await routeLeg(
+            let leg = try await OSRMClient.shared.routeLeg(
                 from: (pair.0.lat, pair.0.lon), to: (pair.1.lat, pair.1.lon))
             legs.append((leg.distance, leg.duration))
             append(&geometry, leg.geometry)
@@ -173,7 +173,7 @@ enum RouteOptimizer {
         var solvedOrder: [Int]?
         if plan.needsTrip {
             let coords = plan.tripNodes.map { (lat: $0.lat, lon: $0.lon) }
-            let solved = try await trip(
+            let solved = try await OSRMClient.shared.trip(
                 coords: coords, fixFirst: plan.fixFirst, fixLast: plan.fixLast)
             solvedOrder = solved.order
             legs.append(contentsOf: solved.legs)
@@ -194,25 +194,6 @@ enum RouteOptimizer {
         try Self.apply(
             nodes, routed: routed, legs: legs, geometry: geometry,
             plannedFrom: plannedFrom, to: route, in: context)
-    }
-
-    private static func routeLeg(
-        from: (lat: Double, lon: Double), to: (lat: Double, lon: Double)
-    ) async throws -> (distance: Double, duration: Double, geometry: [[Double]]) {
-        switch RoutingEngine.current {
-        case .osrm: try await OSRMClient.shared.routeLeg(from: from, to: to)
-        case .googleTraffic: try await GoogleRoutesClient.shared.routeLeg(from: from, to: to)
-        }
-    }
-
-    private static func trip(
-        coords: [(lat: Double, lon: Double)], fixFirst: Bool, fixLast: Bool
-    ) async throws -> (order: [Int], legs: [(Double, Double)], geometry: [[Double]]) {
-        switch RoutingEngine.current {
-        case .osrm: try await OSRMClient.shared.trip(coords: coords, fixFirst: fixFirst, fixLast: fixLast)
-        case .googleTraffic:
-            try await GoogleRoutesClient.shared.trip(coords: coords, fixFirst: fixFirst, fixLast: fixLast)
-        }
     }
 
     /// Writes one finished solution back onto the route.

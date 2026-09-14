@@ -245,7 +245,6 @@ struct BackupView: View {
 enum Settings {
     private static let keys = [
         Upstreams.Keys.osrmURL,
-        Upstreams.Keys.routingEngine,
         NavigationHandoff.providerKey,
         Kilometerstand.lastKey,
         Kilometerstand.hasLastKey,
@@ -294,3 +293,4 @@ enum Settings {
         }
     }
 }
+

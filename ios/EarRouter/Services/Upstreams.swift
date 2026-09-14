@@ -66,27 +66,6 @@ struct Upstreams: Sendable, Equatable {
 
     enum Keys {
         static let osrmURL = "upstream.osrm.url"
-        static let routingEngine = "routing.engine"
-    }
-}
-
-/// The engine that chooses the stop order and calculates the driven line.
-enum RoutingEngine: String, CaseIterable, Identifiable, Sendable {
-    case osrm
-    case googleTraffic
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .osrm: "OSRM"
-        case .googleTraffic: "Google Verkehr"
-        }
-    }
-
-    static var current: RoutingEngine {
-        RoutingEngine(rawValue: UserDefaults.standard.string(forKey: Upstreams.Keys.routingEngine) ?? "")
-            ?? .osrm
     }
 }
 
@@ -103,10 +82,6 @@ let upstreamUserAgent = "EAR-Router-iOS/1.0 (local delivery route planner)"
 /// oversized route gets a German sentence explaining the real limit instead of
 /// an opaque relayed "TooBig".
 let osrmMaxTripCoords = 100
-
-/// Compute Routes supports at most 25 intermediate stopovers. Origin and
-/// destination make 27 coordinates in the shape used by this app.
-let googleMaxTripCoords = 27
 
 /// The trip cap minus the three fixed points, i.e. how many customers can go
 /// on one route.
