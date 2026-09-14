@@ -54,41 +54,10 @@ actor GoogleRoutesClient {
         request.setValue("routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline,routes.legs.distanceMeters,routes.legs.duration,routes.optimizedIntermediateWaypointIndex", forHTTPHeaderField: "X-Goog-FieldMask")
         request.httpBody = try JSONEncoder().encode(Request(origin: Point(origin), destination: Point(destination), intermediates: intermediates.map(Point.init), optimizeWaypointOrder: optimize))
         let (data, rawResponse) = try await session.data(for: request)
-        guard let response = rawResponse as? HTTPURLResponse else {
-            throw AppError.message("Google Verkehr hat keine gültige Antwort geliefert.")
+        guard let response = rawResponse as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+            throw AppError.message("Google Verkehr ist nicht erreichbar oder der API-Schlüssel ist ungültig.")
         }
-        guard (200..<300).contains(response.statusCode) else {
-            throw Self.failure(statusCode: response.statusCode, data: data)
-        }
-        do {
-            return try JSONDecoder().decode(Response.self, from: data)
-        } catch {
-            throw AppError.message(
-                "Google Verkehr hat eine unlesbare Antwort geliefert. Bitte später erneut versuchen.")
-        }
-    }
-
-    private static func failure(statusCode: Int, data: Data) -> AppError {
-        let detail = try? JSONDecoder().decode(ErrorResponse.self, from: data).error
-        let text = [detail?.status, detail?.message].compactMap { $0 }.joined(separator: " ")
-        switch statusCode {
-        case 403 where text.contains("SERVICE_DISABLED"):
-            return AppError.message(
-                "Die Google Routes API ist für diesen Schlüssel nicht aktiviert. "
-                    + "Bitte in Google Cloud aktivieren und danach einige Minuten warten.")
-        case 403:
-            return AppError.message(
-                "Google hat den API-Schlüssel abgelehnt. Bitte Schlüssel, API-Beschränkung und "
-                    + "Abrechnung in Google Cloud prüfen.")
-        case 429:
-            return AppError.message(
-                "Google Verkehr hat das Nutzungslimit erreicht. Bitte später erneut versuchen.")
-        case 400:
-            return AppError.message(
-                "Google Verkehr konnte diese Tour nicht berechnen. Bitte die Stopps und Pins prüfen.")
-        default:
-            return AppError.message("Google Verkehr ist vorübergehend nicht erreichbar (HTTP (statusCode)).")
-        }
+        return try JSONDecoder().decode(Response.self, from: data)
     }
 
     private static func seconds(_ duration: String) throws -> Double {
@@ -131,8 +100,6 @@ actor GoogleRoutesClient {
     private struct Route: Decodable { let distanceMeters: Double; let duration: String; let polyline: Polyline; let legs: [Leg]; let optimizedIntermediateWaypointIndex: [Int]? }
     private struct Leg: Decodable { let distanceMeters: Double; let duration: String }
     private struct Polyline: Decodable { let encodedPolyline: String }
-    private struct ErrorResponse: Decodable { let error: ErrorDetail }
-    private struct ErrorDetail: Decodable { let status: String?; let message: String? }
 }
 
 /// This is a billable credential, so it belongs in the Keychain—not a readable
