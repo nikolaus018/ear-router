@@ -58,6 +58,21 @@ struct UpstreamDecisionTests {
         #expect(OSRMClient.flip([]).isEmpty)
     }
 
+    /// Google sends an encoded polyline rather than GeoJSON. Decoding it in
+    /// longitude-first order would draw the right shape in the wrong country.
+    @Test func googleRouteGeometryAlsoComesBackLatitudeFirst() {
+        let line = GoogleRoutesClient.decodePolyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@")
+        #expect(line == [[38.5, -120.2], [40.7, -120.95], [43.252, -126.453]])
+    }
+
+    @Test func googlesOneStopSentinelMeansKeepTheOnlyStop() throws {
+        #expect(try GoogleRoutesClient.intermediateOrder([-1], count: 1) == [0])
+        #expect(try GoogleRoutesClient.intermediateOrder([1, 0], count: 2) == [1, 0])
+        #expect(throws: AppError.self) {
+            try GoogleRoutesClient.intermediateOrder([-1], count: 2)
+        }
+    }
+
     // MARK: - What the driver is told when the router refuses
 
     /// The codes are protocol words, and they were going straight into the

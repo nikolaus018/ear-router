@@ -208,6 +208,8 @@ private struct SideloadExpiryRow: View {
 /// it exists for the one day the routing server moves.
 struct AdvancedSettingsView: View {
     @AppStorage(Upstreams.Keys.osrmURL) private var osrmURL = ""
+    @AppStorage(Upstreams.Keys.routingEngine) private var routingEngineRaw = RoutingEngine.osrm.rawValue
+    @State private var googleRoutesAPIKey = ""
 
     @State private var cacheCount = 0
     @State private var status: ConnectionStatus = .idle
@@ -237,8 +239,14 @@ struct AdvancedSettingsView: View {
     var body: some View {
         List {
             Section {
+                Picker("Routing-Engine", selection: $routingEngineRaw) {
+                    ForEach(RoutingEngine.allCases) { engine in
+                        Text(engine.label).tag(engine.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
                 LabeledContent("Server") {
-                    Text(effectiveHost)
+                    Text(effectiveEngineDetail)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -256,10 +264,22 @@ struct AdvancedSettingsView: View {
             } header: {
                 Text("Routenoptimierung")
             } footer: {
-                Text(
-                    "Geprüft wird genau dieser Server. Ist er nicht erreichbar, weicht die "
-                        + "App beim Routen automatisch auf den öffentlichen OSRM-Demoserver "
-                        + "aus — die Routenoptimierung funktioniert also weiter.")
+                Text(routingEngine == .osrm
+                    ? "Geprüft wird genau dieser Server. Ist er nicht erreichbar, weicht die App beim Routen automatisch auf den öffentlichen OSRM-Demoserver aus."
+                    : "Google Verkehr plant mit aktuellen Verkehrsdaten. Für die Stopp-Reihenfolge müssen Start und Ziel eingeschaltet sein; maximal 25 freie Stopps sind möglich.")
+            }
+
+            if routingEngine == .googleTraffic {
+                Section {
+                    SecureField("Routes API-Schlüssel", text: $googleRoutesAPIKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: googleRoutesAPIKey) { GoogleRoutesKeyStore.save(googleRoutesAPIKey) }
+                } header: {
+                    Text("Google Maps Platform")
+                } footer: {
+                    Text("In Google Cloud die Routes API aktivieren und einen auf diese App beschränkten Schlüssel einsetzen. Für jede Google-Optimierung werden die Tour-Koordinaten an Google gesendet. Der Schlüssel wird nicht in Sicherungen exportiert.")
+                }
             }
 
             Section {
@@ -326,11 +346,22 @@ struct AdvancedSettingsView: View {
         } message: {
             Text("\(cacheCount) Adressen werden beim nächsten Mal neu gesucht.")
         }
-        .task { cacheCount = await GeocodeCache.shared.count }
+        .task {
+            cacheCount = await GeocodeCache.shared.count
+            googleRoutesAPIKey = GoogleRoutesKeyStore.load() ?? ""
+        }
     }
 
     private var effectiveHost: String {
         Upstreams.current.osrm.host ?? Upstreams.current.osrm.absoluteString
+    }
+
+    private var routingEngine: RoutingEngine {
+        RoutingEngine(rawValue: routingEngineRaw) ?? .osrm
+    }
+
+    private var effectiveEngineDetail: String {
+        routingEngine == .osrm ? effectiveHost : "Routes API · Verkehr aktiv"
     }
 
     /// Tests the server named right above the button, and only that one.
@@ -343,7 +374,11 @@ struct AdvancedSettingsView: View {
     private func check() async {
         status = .checking
         let started = Date()
-        let ok = await OSRMClient.shared.probe(base: Upstreams.current.osrm)
+        let ok: Bool
+        switch routingEngine {
+        case .osrm: ok = await OSRMClient.shared.probe(base: Upstreams.current.osrm)
+        case .googleTraffic: ok = await GoogleRoutesClient.shared.probe()
+        }
         status = ok
             ? .reachable(ms: Int(Date().timeIntervalSince(started) * 1000))
             : .unreachable
@@ -398,7 +433,7 @@ struct AboutView: View {
                 LabeledContent("Karten", value: "Apple Maps")
                 LabeledContent("Adressregister", value: "Stadt Wien")
                 LabeledContent("Geocoder", value: "Nominatim")
-                LabeledContent("Routing", value: "OSRM")
+                LabeledContent("Routing", value: RoutingEngine.current.label)
             } header: {
                 Text("Daten")
             } footer: {
