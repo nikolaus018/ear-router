@@ -238,14 +238,21 @@ struct BackupView: View {
 
 /// The handful of settings that are worth carrying to a new phone.
 ///
-/// Kept to the ones a driver actually set: which maps app to hand over to, a
-/// self-hosted routing server, and the odometer reading the Kilometerstand tool
-/// remembers. Everything else the app stores in `UserDefaults` is either a
-/// cache or a window's idea of where it was.
+/// Kept to the ones a driver actually set: which maps app to hand over to,
+/// whether the car starts the navigation by itself, a self-hosted routing
+/// server, and the odometer reading the Kilometerstand tool remembers.
+/// Everything else the app stores in `UserDefaults` is either a cache or a
+/// window's idea of where it was.
+///
+/// The CarPlay switch travels even though the Kurzbefehle automation it arms
+/// cannot: restored onto a phone with no automation it simply does nothing,
+/// which is a great deal better than a driver who restored their backup and
+/// then spent a morning wondering why the car stopped navigating.
 enum Settings {
     private static let keys = [
         Upstreams.Keys.osrmURL,
         NavigationHandoff.providerKey,
+        CarPlayNavigation.enabledKey,
         Kilometerstand.lastKey,
         Kilometerstand.hasLastKey,
         Kilometerstand.savedAtKey,
@@ -270,7 +277,7 @@ enum Settings {
             switch key {
             case Kilometerstand.lastKey, Kilometerstand.savedAtKey:
                 out[key] = String(defaults.double(forKey: key))
-            case Kilometerstand.hasLastKey:
+            case Kilometerstand.hasLastKey, CarPlayNavigation.enabledKey:
                 out[key] = defaults.bool(forKey: key) ? "1" : "0"
             default:
                 if let s = defaults.string(forKey: key) { out[key] = s }
@@ -285,7 +292,7 @@ enum Settings {
             switch key {
             case Kilometerstand.lastKey, Kilometerstand.savedAtKey:
                 if let d = Double(value) { defaults.set(d, forKey: key) }
-            case Kilometerstand.hasLastKey:
+            case Kilometerstand.hasLastKey, CarPlayNavigation.enabledKey:
                 defaults.set(value == "1" || value.lowercased() == "true", forKey: key)
             default:
                 defaults.set(value, forKey: key)

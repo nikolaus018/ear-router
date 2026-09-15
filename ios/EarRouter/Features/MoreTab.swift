@@ -11,9 +11,12 @@ struct MoreTab: View {
     @AppStorage(NavigationHandoff.providerKey) private var providerRaw =
         NavigationHandoff.Provider.apple.rawValue
 
+    @AppStorage(CarPlayNavigation.enabledKey) private var carPlayEnabled = false
+
     @State private var showingTuercode = false
     @State private var showingKilometer = false
     @State private var showingGourmet = false
+    @State private var showingCarPlaySetup = false
 
     /// The driver's own dispatch portal — the customer list this app's stops
     /// are copied out of in the first place.
@@ -62,6 +65,29 @@ struct MoreTab: View {
                 }
             } footer: {
                 Text("Womit „Navigation starten“ öffnet.")
+            }
+
+            // Under the navigation picker, because it is the same handover —
+            // the same stop, the same maps app — just started by the car
+            // instead of by a thumb.
+            Section {
+                Toggle(isOn: $carPlayEnabled) {
+                    SettingsRow(
+                        icon: "car.fill", tint: .mint, title: "CarPlay-Navigation",
+                        detail: "Beim Anstecken zum nächsten Stopp")
+                }
+                Button {
+                    showingCarPlaySetup = true
+                } label: {
+                    SettingsRow(
+                        icon: "list.number", tint: .gray, title: "Einrichten",
+                        detail: "Automation in Kurzbefehle")
+                }
+            } footer: {
+                Text(
+                    "iOS lässt die App das nicht von selbst starten — das übernimmt eine "
+                        + "Automation in „Kurzbefehle“, die einmal eingerichtet wird. "
+                        + "Dieser Schalter ist der Hauptschalter dafür.")
             }
 
             Section {
@@ -115,6 +141,13 @@ struct MoreTab: View {
         .sheet(isPresented: $showingKilometer) { KilometerSheet() }
         .sheet(isPresented: $showingGourmet) {
             SafariView(url: gourmetURL).ignoresSafeArea()
+        }
+        .sheet(isPresented: $showingCarPlaySetup) { CarPlaySetupSheet() }
+        // Switched on, the instructions come up by themselves: without the
+        // automation the switch does nothing at all, and a driver who turns it
+        // on and drives off tomorrow would find that out in the van.
+        .onChange(of: carPlayEnabled) { _, on in
+            if on { showingCarPlaySetup = true }
         }
     }
 }

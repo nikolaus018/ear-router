@@ -573,7 +573,7 @@ struct BackupTests {
         let keys = [
             Kilometerstand.lastKey, Kilometerstand.hasLastKey,
             Kilometerstand.savedAtKey, NavigationHandoff.providerKey,
-            Upstreams.Keys.osrmURL,
+            CarPlayNavigation.enabledKey, Upstreams.Keys.osrmURL,
         ]
         let before = keys.map { ($0, defaults.object(forKey: $0)) }
         defer {
@@ -587,6 +587,7 @@ struct BackupTests {
         defaults.set(true, forKey: Kilometerstand.hasLastKey)
         defaults.set(1_757_000_000.0, forKey: Kilometerstand.savedAtKey)
         defaults.set("waze", forKey: NavigationHandoff.providerKey)
+        defaults.set(true, forKey: CarPlayNavigation.enabledKey)
         defaults.set("https://osrm.example.com", forKey: Upstreams.Keys.osrmURL)
 
         let captured = Settings.capture()
@@ -598,6 +599,10 @@ struct BackupTests {
         #expect(defaults.bool(forKey: Kilometerstand.hasLastKey))
         #expect(defaults.double(forKey: Kilometerstand.savedAtKey) == 1_757_000_000.0)
         #expect(NavigationHandoff.provider == .waze)
+        // A Bool, and one that has to come back as a Bool rather than as the
+        // string "1": `@AppStorage` reads it with `bool(forKey:)`, and the
+        // switch in Mehr would sit there off with the value right beside it.
+        #expect(CarPlayNavigation.isEnabled())
         #expect(Upstreams.current.osrm.absoluteString == "https://osrm.example.com")
     }
 

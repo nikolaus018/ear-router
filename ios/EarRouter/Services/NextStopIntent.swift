@@ -130,5 +130,18 @@ struct EarRouterShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Nächster Stopp",
             systemImageName: "arrow.trianglehead.turn.up.right")
+        // The one the CarPlay automation runs. It is here as well so it can be
+        // said out loud on a morning the phone never got plugged in, and so it
+        // turns up in Kurzbefehle's own search while the automation is being
+        // built — which is step four of `CarPlaySetupSheet`.
+        AppShortcut(
+            intent: NavigateNextStopIntent(),
+            phrases: [
+                "Navigation zum nächsten Stopp in \(.applicationName)",
+                "Zum nächsten Stopp navigieren mit \(.applicationName)",
+                "\(.applicationName) Navigation starten",
+            ],
+            shortTitle: "Zum nächsten Stopp",
+            systemImageName: "car.fill")
     }
 }
