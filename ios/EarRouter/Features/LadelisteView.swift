@@ -37,14 +37,21 @@ enum LadelisteMode: String, CaseIterable, Identifiable {
     }
 }
 
-/// One customer as the loading list shows them.
+/// One customer as the loading list shows them: a position in the van, a name
+/// and an address.
+///
+/// Deliberately nothing about what is in the box — not the dishes, not even a
+/// count of them. On a TK tour every parcel has the customer's name printed on
+/// it, so the name *is* the label, and a piece count beside it is a number the
+/// driver would have to reconcile against a stack they are already holding.
+/// The Paket field itself is untouched on the stop; it is simply not this
+/// screen's business.
 struct LadungStop: Identifiable, Hashable {
     let id: UUID
     /// Where this door's parcels go into the van: 1 is loaded first.
     let position: Int
     let name: String
     let address: String
-    let pieces: Int
 
     /// Namespaced so a tick here can never collide with a `PaketItem` key.
     /// Both modes share one tick store per tour, and a dish that happened to be
@@ -70,16 +77,15 @@ enum LadungPlan {
                 id: stop.id,
                 position: position + 1,
                 name: kunde.isEmpty ? "Stopp" : kunde,
-                address: stop.listAddress,
-                pieces: PaketParser.totalQty(stop.paket))
+                address: stop.listAddress)
         }
     }
 }
 
 /// What one loading list is made of, in whichever of the two shapes this tour
 /// takes. One value rather than two optional arrays: everything the screen does
-/// afterwards — count the ticks, total the pieces, decide whether there is
-/// anything to show at all — is the same question asked of both.
+/// afterwards — count the ticks, decide whether there is anything to show at
+/// all — is the same question asked of both.
 enum Ladung {
     case pakete([PaketItem])
     case kunden([LadungStop])
@@ -88,13 +94,6 @@ enum Ladung {
         switch self {
         case .pakete(let items): items.map(\.key)
         case .kunden(let stops): stops.map(\.key)
-        }
-    }
-
-    var pieces: Int {
-        switch self {
-        case .pakete(let items): items.reduce(0) { $0 + $1.qty }
-        case .kunden(let stops): stops.reduce(0) { $0 + $1.pieces }
         }
     }
 
@@ -225,8 +224,8 @@ struct LadelisteView: View {
                 } footer: {
                     Text(
                         "Von oben nach unten einladen: der letzte Kunde zuerst, "
-                        + "damit er zuletzt wieder herauskommt. Die Namen stehen "
-                        + "auf den Paketen.")
+                        + "damit er zuletzt wieder herauskommt. Was mitkommt, steht "
+                        + "auf den Paketen — dort steht der Name drauf.")
                 }
             }
         }
@@ -257,11 +256,6 @@ struct LadelisteView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                }
-                if stop.pieces > 0 {
-                    Text("\(stop.pieces) Stück")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -331,14 +325,18 @@ struct LadelisteView: View {
         let keys = ladung.keys
         guard !keys.isEmpty else { return "" }
         let done = keys.count { checked.contains($0) }
-        let verb = switch ladung {
-        case .pakete: "abgehakt"
-        case .kunden: "geladen"
+        switch ladung {
+        case .pakete(let items):
+            let pieces = items.reduce(0) { $0 + $1.qty }
+            let total = pieces > 0 ? " · \(pieces) Stück" : ""
+            if done >= keys.count { return "Alles abgehakt\(total)" }
+            return "\(done) von \(keys.count) abgehakt\(total)"
+        case .kunden:
+            // No piece count here either — see `LadungStop`. A TK tour's
+            // Ladeliste counts doors, because doors are what it loads by.
+            if done >= keys.count { return "Alles geladen" }
+            return "\(done) von \(keys.count) geladen"
         }
-        let pieces = ladung.pieces
-        let total = pieces > 0 ? " · \(pieces) Stück" : ""
-        if done >= keys.count { return "Alles \(verb)\(total)" }
-        return "\(done) von \(keys.count) \(verb)\(total)"
     }
 
     private func load() {

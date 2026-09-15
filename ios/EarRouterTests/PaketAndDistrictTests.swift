@@ -357,12 +357,20 @@ struct LadelisteModeTests {
         #expect(LadungPlan.loadingOrder(for: r).map(\.name) == ["Erste", "Zweite", "Dritte"])
     }
 
-    @Test func eachDoorCarriesItsPieceCount() throws {
+    /// A TK row is a name and an address. The Paket is not shown — the parcels
+    /// carry the customer's name, so the list loads by door — and it is not
+    /// touched on the stop either: it is still there for the VM list, the stop
+    /// row and the day's report.
+    @Test func aDoorCarriesNothingAboutItsPaket() throws {
         let r = try route(
             "TK1", kunden: [("Barak", "1x Suppe, 2x Menü"), ("Bolz", nil), ("Fischer", "Menü")])
         let order = LadungPlan.loadingOrder(for: r)
-        #expect(order.map(\.pieces) == [1, 0, 3])
+        #expect(order.map(\.name) == ["Fischer", "Bolz", "Barak"])
         #expect(order.first?.address == "Gasse 2, 1180")
+
+        // Untouched on the stops themselves.
+        #expect(r.customerStops.compactMap(\.paket).count == 2)
+        #expect(PaketParser.items(for: r).isEmpty == false)
     }
 
     /// A stop nobody has named still has to be loadable — it is a parcel in the
