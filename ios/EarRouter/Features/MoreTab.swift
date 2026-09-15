@@ -76,13 +76,6 @@ struct MoreTab: View {
                         icon: "car.fill", tint: .mint, title: "CarPlay-Navigation",
                         detail: "Beim Anstecken zum nächsten Stopp")
                 }
-                Button {
-                    showingCarPlaySetup = true
-                } label: {
-                    SettingsRow(
-                        icon: "list.number", tint: .gray, title: "Einrichten",
-                        detail: "Automation in Kurzbefehle")
-                }
             } footer: {
                 Text(
                     "iOS lässt die App das nicht von selbst starten — das übernimmt eine "
@@ -143,9 +136,12 @@ struct MoreTab: View {
             SafariView(url: gourmetURL).ignoresSafeArea()
         }
         .sheet(isPresented: $showingCarPlaySetup) { CarPlaySetupSheet() }
-        // Switched on, the instructions come up by themselves: without the
-        // automation the switch does nothing at all, and a driver who turns it
-        // on and drives off tomorrow would find that out in the van.
+        // The switch is the only control here, and switching it on is what
+        // brings the instructions up — there is no second row to tap, because
+        // there is nothing to set up that turning it on does not already mean.
+        // Without the automation the switch does nothing at all, and a driver
+        // who turns it on and drives off tomorrow would find that out in the
+        // van.
         .onChange(of: carPlayEnabled) { _, on in
             if on { showingCarPlaySetup = true }
         }

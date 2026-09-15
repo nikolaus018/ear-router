@@ -1,8 +1,10 @@
 import SwiftUI
 
 /// The five taps in Kurzbefehle that make the CarPlay switch actually do
-/// something — shown when the driver turns it on, and reachable again from the
-/// row underneath it.
+/// something — shown when the driver turns it on, which is the only thing that
+/// opens it. Turning the switch off and on again is the way back to it, and
+/// that is the whole of it: one switch, and the instructions for the one thing
+/// switching it on requires.
 ///
 /// It exists because the honest version of this feature is "turn it on, then go
 /// and build an automation in a different app". Left unexplained, the switch
