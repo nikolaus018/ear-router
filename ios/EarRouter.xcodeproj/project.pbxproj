@@ -14,12 +14,30 @@
 			remoteGlobalIDString = E4000060;
 			remoteInfo = EarRouter;
 		};
+		E4000470 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E4000100 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E4000460;
+			remoteInfo = EarRouterWidgets;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		E4000020 /* EarRouter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EarRouter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E4000220 /* EarRouterTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EarRouterTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E4000420 /* EarRouterWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EarRouterWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		E4000411 /* Exceptions for "EarRouterWidgets" folder in "EarRouterWidgets" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E4000460 /* EarRouterWidgets */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		E4000010 /* EarRouter */ = {
@@ -30,6 +48,19 @@
 		E4000210 /* EarRouterTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = EarRouterTests;
+			sourceTree = "<group>";
+		};
+		E4000410 /* EarRouterWidgets */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E4000411 /* Exceptions for "EarRouterWidgets" folder in "EarRouterWidgets" target */,
+			);
+			path = EarRouterWidgets;
+			sourceTree = "<group>";
+		};
+		E4000510 /* EarRouterShared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = EarRouterShared;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -49,6 +80,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E4000430 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -56,6 +94,8 @@
 			isa = PBXGroup;
 			children = (
 				E4000010 /* EarRouter */,
+				E4000410 /* EarRouterWidgets */,
+				E4000510 /* EarRouterShared */,
 				E4000210 /* EarRouterTests */,
 				E4000050 /* Products */,
 			);
@@ -65,6 +105,7 @@
 			isa = PBXGroup;
 			children = (
 				E4000020 /* EarRouter.app */,
+				E4000420 /* EarRouterWidgets.appex */,
 				E4000220 /* EarRouterTests.xctest */,
 			);
 			name = Products;
@@ -80,13 +121,16 @@
 				E4000080 /* Sources */,
 				E4000030 /* Frameworks */,
 				E4000090 /* Resources */,
+				E4000440 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				E4000450 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				E4000010 /* EarRouter */,
+				E4000510 /* EarRouterShared */,
 			);
 			name = EarRouter;
 			productName = EarRouter;
@@ -113,6 +157,27 @@
 			productReference = E4000220 /* EarRouterTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		E4000460 /* EarRouterWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E4000500 /* Build configuration list for PBXNativeTarget "EarRouterWidgets" */;
+			buildPhases = (
+				E4000480 /* Sources */,
+				E4000430 /* Frameworks */,
+				E4000490 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E4000410 /* EarRouterWidgets */,
+				E4000510 /* EarRouterShared */,
+			);
+			name = EarRouterWidgets;
+			productName = EarRouterWidgets;
+			productReference = E4000420 /* EarRouterWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -129,6 +194,9 @@
 					E4000260 = {
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = E4000060;
+					};
+					E4000460 = {
+						CreatedOnToolsVersion = 26.6;
 					};
 				};
 			};
@@ -148,6 +216,7 @@
 			projectRoot = "";
 			targets = (
 				E4000060 /* EarRouter */,
+				E4000460 /* EarRouterWidgets */,
 				E4000260 /* EarRouterTests */,
 			);
 		};
@@ -161,7 +230,32 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E4000490 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E4000440 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				E4000441 /* EarRouterWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXBuildFile section */
+		E4000441 /* EarRouterWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E4000420 /* EarRouterWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
 
 /* Begin PBXSourcesBuildPhase section */
 		E4000080 /* Sources */ = {
@@ -178,6 +272,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E4000480 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -185,6 +286,11 @@
 			isa = PBXTargetDependency;
 			target = E4000060 /* EarRouter */;
 			targetProxy = E4000300 /* PBXContainerItemProxy */;
+		};
+		E4000450 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E4000460 /* EarRouterWidgets */;
+			targetProxy = E4000470 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -261,6 +367,7 @@
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Zeigt deinen Standort auf der Routenkarte an.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleDefault;
@@ -295,6 +402,7 @@
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Zeigt deinen Standort auf der Routenkarte an.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleDefault;
@@ -350,6 +458,62 @@
 			};
 			name = Release;
 		};
+		E4000520 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = C5MSK2XBMK;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = EarRouterWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "EAR Router";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = win.ringtwo.EarRouter.Widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		E4000530 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = C5MSK2XBMK;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = EarRouterWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "EAR Router";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = win.ringtwo.EarRouter.Widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -376,6 +540,15 @@
 			buildConfigurations = (
 				E4000310 /* Debug */,
 				E4000320 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E4000500 /* Build configuration list for PBXNativeTarget "EarRouterWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E4000520 /* Debug */,
+				E4000530 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
