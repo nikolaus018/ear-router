@@ -1,41 +1,5 @@
+import SwiftData
 import SwiftUI
-
-/// Which kind of tour the van is being loaded for — which decides what a
-/// packing list can usefully say.
-///
-/// On a Vormittag round every stop carries the same handful of menu codes
-/// ("1x Vitalmenü EP TGM5"), so what loads the van is those codes, summed: nine
-/// TGM7, five DLM7, two DBM5. On a Tiefkühl round every stop carries its own
-/// basket of dishes, near enough unique per customer and with the customer's
-/// name printed on the parcel — summing those produces thirty one-off lines
-/// nobody counts, off text the portal has usually already cut off mid-word.
-/// There, what loads the van is the customers themselves, in reverse.
-enum LadelisteMode: String, CaseIterable, Identifiable {
-    /// Pakete, summed across the tour.
-    case vm
-    /// Kunden, last door first.
-    case tk
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .vm: "VM"
-        case .tk: "TK"
-        }
-    }
-
-    /// The mode a tour opens in, read off its name.
-    ///
-    /// A guess, and deliberately only a guess: it decides nothing the driver
-    /// cannot see and flip in one tap. The names arrive from the
-    /// Zusteller-Portal already — "Tk1", "TK1", "VM 4 DO Vormittag" — so the
-    /// prefix is how the round is called on paper, which makes it the one thing
-    /// about a tour that is reliably about what goes in the van.
-    static func suggested(for route: Route) -> LadelisteMode {
-        route.name.trimmed.lowercased().hasPrefix("tk") ? .tk : .vm
-    }
-}
 
 /// One customer as the loading list shows them: a position in the van, a name
 /// and an address.
@@ -115,6 +79,7 @@ enum Ladung {
 struct LadelisteView: View {
     let route: Route
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var context
     @State private var checked: Set<String> = []
     @State private var mode: LadelisteMode = .vm
 
@@ -131,6 +96,12 @@ struct LadelisteView: View {
         Binding(get: { mode }, set: { new in
             mode = new
             LadelisteState.store(new, for: route.id)
+            // The mode decides whether the Paket is drawn anywhere, the lock
+            // screen included — and it lives in `UserDefaults`, which the
+            // `@Query` behind `LiveActivitySync` cannot see. Without this the
+            // card keeps yesterday's answer until something else on the tour
+            // changes.
+            StopActivity.refresh(in: context)
         })
     }
 
@@ -341,54 +312,11 @@ struct LadelisteView: View {
 
     private func load() {
         checked = LadelisteState.checked(for: route.id)
-        mode = LadelisteState.mode(for: route.id) ?? .suggested(for: route)
+        mode = .effective(for: route)
     }
 
     private func save() {
         LadelisteState.store(checked, for: route.id)
-    }
-}
-
-/// Which lines of a route's packing list are ticked off, and which of the two
-/// lists it is showing.
-///
-/// In `UserDefaults` rather than on the model: a tick here means "already in the
-/// van this morning", which is about one loading, not about the tour as a
-/// record. It lives outside SwiftData, though, which means nothing cascades it
-/// away — so deleting a route has to say so explicitly, or every tour ever
-/// deleted leaves its checklist behind in the app's preferences for good.
-enum LadelisteState {
-    private static func key(_ routeID: UUID) -> String {
-        "ladeliste.\(routeID.uuidString)"
-    }
-
-    private static func modeKey(_ routeID: UUID) -> String {
-        "ladeliste.mode.\(routeID.uuidString)"
-    }
-
-    static func checked(for routeID: UUID) -> Set<String> {
-        Set(UserDefaults.standard.stringArray(forKey: key(routeID)) ?? [])
-    }
-
-    static func store(_ checked: Set<String>, for routeID: UUID) {
-        UserDefaults.standard.set(Array(checked), forKey: key(routeID))
-    }
-
-    /// The mode the driver picked for this tour, or `nil` if they never picked
-    /// one. Absent rather than defaulted on purpose: a tour nobody has switched
-    /// by hand should keep following its name, including after a rename.
-    static func mode(for routeID: UUID) -> LadelisteMode? {
-        UserDefaults.standard.string(forKey: modeKey(routeID))
-            .flatMap(LadelisteMode.init(rawValue:))
-    }
-
-    static func store(_ mode: LadelisteMode, for routeID: UUID) {
-        UserDefaults.standard.set(mode.rawValue, forKey: modeKey(routeID))
-    }
-
-    static func forget(_ routeID: UUID) {
-        UserDefaults.standard.removeObject(forKey: key(routeID))
-        UserDefaults.standard.removeObject(forKey: modeKey(routeID))
     }
 }
 

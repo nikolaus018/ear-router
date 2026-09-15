@@ -75,7 +75,7 @@ struct NextStopIntent: AppIntent {
         parts.append(number.map { "Stopp \($0): \(who)" } ?? who)
         if !stop.listAddress.isEmpty { parts.append(stop.listAddress) }
         if let floor = floor?.trimmed, !floor.isEmpty { parts.append(Format.floor(floor)) }
-        if let paket = stop.paket?.trimmed, !paket.isEmpty { parts.append(paket) }
+        if let paket = stop.displayPaket?.trimmed, !paket.isEmpty { parts.append(paket) }
         if let eta { parts.append("Ankunft etwa \(Format.time(eta))") }
         return parts.joined(separator: ", ") + "."
     }
@@ -102,7 +102,7 @@ struct NextStopSnippet: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-            if let paket = StopFacts.paket(stop.paket) { paket.font(.subheadline) }
+            if let paket = StopFacts.paket(stop.displayPaket) { paket.font(.subheadline) }
             if let floor = StopFacts.floor(floor) { floor.font(.subheadline) }
             if let when = StopFacts.eta(eta) {
                 when.font(.footnote).foregroundStyle(.secondary)

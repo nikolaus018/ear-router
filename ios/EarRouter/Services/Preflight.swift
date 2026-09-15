@@ -121,15 +121,33 @@ struct Preflight {
                     action: .resetDelivered))
         }
 
-        // 4. What goes in the van.
-        let pieces = customers.reduce(0) { $0 + PaketParser.totalQty($1.paket) }
-        if pieces > 0 {
-            findings.append(
-                Finding(
-                    id: "ladung", severity: .note, symbol: "shippingbox.fill",
-                    title: "\(pieces) \(pieces == 1 ? "Position" : "Positionen") einladen",
-                    detail: "Die Ladeliste hat sie aufgeschlüsselt.",
-                    action: .openLadeliste))
+        // 4. What goes in the van — counted the way this tour is loaded.
+        //
+        // A TK tour is loaded by door, so its pieces are not counted anywhere:
+        // the parcels carry the customers' names. Reporting "38 Positionen" and
+        // then opening a Ladeliste that lists sixteen customers was two answers
+        // to one question.
+        switch LadelisteMode.effective(for: route) {
+        case .vm:
+            let pieces = customers.reduce(0) { $0 + PaketParser.totalQty($1.paket) }
+            if pieces > 0 {
+                findings.append(
+                    Finding(
+                        id: "ladung", severity: .note, symbol: "shippingbox.fill",
+                        title: "\(pieces) \(pieces == 1 ? "Position" : "Positionen") einladen",
+                        detail: "Die Ladeliste hat sie aufgeschlüsselt.",
+                        action: .openLadeliste))
+            }
+        case .tk:
+            let doors = customers.count
+            if doors > 0 {
+                findings.append(
+                    Finding(
+                        id: "ladung", severity: .note, symbol: "shippingbox.fill",
+                        title: "\(doors) \(doors == 1 ? "Kunde" : "Kunden") einladen",
+                        detail: "Die Ladeliste zählt sie rückwärts auf — letzter Kunde zuerst.",
+                        action: .openLadeliste))
+            }
         }
 
         // 5. Doors that want reading before the bell, not after it.

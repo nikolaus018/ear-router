@@ -197,7 +197,7 @@ struct StopRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let paket = StopFacts.paket(stop.paket, dimmed: dimmed) {
+            if let paket = StopFacts.paket(stop.displayPaket, dimmed: dimmed) {
                 paket
                     .font(.subheadline)
                     .padding(.top, 2)
@@ -403,7 +403,7 @@ struct StopRow: View {
             parts.append(stop.outcome?.label ?? "offen")
         }
         if stop.prioritaet && stop.kind == .customer { parts.append("Vorrang") }
-        if let paket = stop.paket, !paket.isEmpty { parts.append(paket) }
+        if let paket = stop.displayPaket, !paket.isEmpty { parts.append(paket) }
         if let floor = (stockwerk ?? info?.stockwerk)?.trimmed, !floor.isEmpty {
             parts.append("Stockwerk \(Format.floor(floor))")
         }

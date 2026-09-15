@@ -490,7 +490,7 @@ private struct NowStopCard: View {
     /// ringing — the same lines, in the same vocabulary, as the stop's row.
     @ViewBuilder
     private var errand: some View {
-        let paket = StopFacts.paket(stop.paket)
+        let paket = StopFacts.paket(stop.displayPaket)
         let floor = StopFacts.floor(info?.stockwerk)
         let note = stop.notiz?.trimmed ?? ""
         let standing = info?.notiz?.trimmed ?? ""

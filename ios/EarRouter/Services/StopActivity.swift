@@ -52,7 +52,7 @@ enum StopActivity {
         let state = StopActivityAttributes.ContentState(
             kunde: stop.kunde?.trimmed.nilIfEmpty ?? "Stopp",
             adresse: stop.strasse?.trimmed.nilIfEmpty ?? "",
-            paket: stop.paket?.trimmed.nilIfEmpty,
+            paket: stop.displayPaket?.trimmed.nilIfEmpty,
             notiz: stop.notiz?.trimmed.nilIfEmpty,
             stockwerk: info?.stockwerk?.trimmed.nilIfEmpty.map(Format.floor),
             kundeninfo: info?.notiz?.trimmed.nilIfEmpty,

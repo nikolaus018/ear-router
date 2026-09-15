@@ -1155,7 +1155,7 @@ struct StopPreviewSheet: View {
             // in the floor's grey, which made a two-line note the loudest thing
             // on the card.
             VStack(alignment: .leading, spacing: 8) {
-                if let paket = StopFacts.paket(stop.paket) {
+                if let paket = StopFacts.paket(stop.displayPaket) {
                     paket
                         .font(.subheadline)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1214,7 +1214,7 @@ struct StopPreviewSheet: View {
     /// newline used to open an empty details block, an amber note glyph beside
     /// no words, and eight points of gap under the address.
     private var hasDetails: Bool {
-        !(stop.paket?.trimmed ?? "").isEmpty || !(stop.notiz?.trimmed ?? "").isEmpty
+        !(stop.displayPaket?.trimmed ?? "").isEmpty || !(stop.notiz?.trimmed ?? "").isEmpty
             || stop.precision != nil || !(stockwerk?.trimmed ?? "").isEmpty
     }
 }

@@ -39,7 +39,7 @@ private struct LiveActivitySync: ViewModifier {
         }
         return [
             route.name, stop.id.uuidString, stop.kunde ?? "", stop.strasse ?? "",
-            stop.paket ?? "", stop.notiz ?? "",
+            stop.displayPaket ?? "", stop.notiz ?? "",
             info?.stockwerk ?? "", info?.notiz ?? "",
             String(snapshot.number(stop) ?? 0),
         ].joined(separator: "|")
