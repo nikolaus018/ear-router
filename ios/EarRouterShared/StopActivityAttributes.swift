@@ -15,7 +15,9 @@ struct StopActivityAttributes: ActivityAttributes {
     /// The part that changes as the tour is worked.
     struct ContentState: Codable, Hashable {
         var kunde: String
-        /// "Straße, PLZ" — the same line the stop list shows.
+        /// The street and house number, without the postcode: the card is read
+        /// at the door by somebody who drove there, not by somebody addressing
+        /// an envelope.
         var adresse: String
         /// What to carry up, if anything.
         var paket: String?
@@ -34,21 +36,13 @@ struct StopActivityAttributes: ActivityAttributes {
         var kundeninfo: String?
         /// The stop's number on the tour, for the badge.
         var number: Int?
-        /// Doors answered for, out of how many — the tour's own progress line.
-        var done: Int
-        var total: Int
-
-        /// "Stopp 7 von 18" when the stop is numbered, the progress alone when
-        /// it is not. Computed rather than stored: it is derived from two
-        /// numbers already in the payload, and a third field is a third thing
-        /// that can disagree with the other two.
-        var progress: String {
-            guard total > 0 else { return "" }
-            return "\(done) von \(total) erledigt"
-        }
     }
 
-    /// The tour's name. Fixed for the life of the activity — a new tour is a
-    /// new activity, not an update to this one.
+    /// The tour's name — the activity's identity, and deliberately not drawn.
+    ///
+    /// It is what tells an update to this tour apart from the first stop of the
+    /// next one, so the card is replaced rather than relabelled when the driver
+    /// moves on. On the card itself it was a line saying which round this is to
+    /// somebody who has been driving it since six in the morning.
     var tour: String
 }

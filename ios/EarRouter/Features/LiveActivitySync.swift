@@ -38,11 +38,10 @@ private struct LiveActivitySync: ViewModifier {
             infos.first { $0.key == key }
         }
         return [
-            route.name, stop.id.uuidString, stop.kunde ?? "", stop.listAddress,
+            route.name, stop.id.uuidString, stop.kunde ?? "", stop.strasse ?? "",
             stop.paket ?? "", stop.notiz ?? "",
             info?.stockwerk ?? "", info?.notiz ?? "",
             String(snapshot.number(stop) ?? 0),
-            String(snapshot.settledCount), String(snapshot.customerCount),
         ].joined(separator: "|")
     }
 

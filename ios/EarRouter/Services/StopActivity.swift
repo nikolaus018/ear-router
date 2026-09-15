@@ -51,14 +51,12 @@ enum StopActivity {
         let info = (try? StockwerkStore.note(for: stop, in: context)) ?? nil
         let state = StopActivityAttributes.ContentState(
             kunde: stop.kunde?.trimmed.nilIfEmpty ?? "Stopp",
-            adresse: stop.listAddress,
+            adresse: stop.strasse?.trimmed.nilIfEmpty ?? "",
             paket: stop.paket?.trimmed.nilIfEmpty,
             notiz: stop.notiz?.trimmed.nilIfEmpty,
             stockwerk: info?.stockwerk?.trimmed.nilIfEmpty.map(Format.floor),
             kundeninfo: info?.notiz?.trimmed.nilIfEmpty,
-            number: snapshot.number(stop),
-            done: snapshot.settledCount,
-            total: snapshot.customerCount)
+            number: snapshot.number(stop))
         let tour = route.name
 
         Task { await sync(tour: tour, state: state) }

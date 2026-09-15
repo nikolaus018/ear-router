@@ -11,7 +11,7 @@ import WidgetKit
 struct StopLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: StopActivityAttributes.self) { context in
-            lockScreen(context.state, tour: context.attributes.tour)
+            lockScreen(context.state)
                 .activityBackgroundTint(nil)
                 .activitySystemActionForegroundColor(nil)
         } dynamicIsland: { context in
@@ -19,12 +19,6 @@ struct StopLiveActivity: Widget {
                 DynamicIslandExpandedRegion(.leading) {
                     numberBadge(context.state.number)
                         .padding(.leading, 4)
-                }
-                DynamicIslandExpandedRegion(.trailing) {
-                    Text(context.state.progress)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.trailing, 4)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     // One line each, truncating. The expanded island is a fixed
@@ -90,23 +84,20 @@ struct StopLiveActivity: Widget {
     // MARK: - Lock screen
 
     private func lockScreen(
-        _ state: StopActivityAttributes.ContentState, tour: String
+        _ state: StopActivityAttributes.ContentState
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            // The number and the name. The tour's name and its "x von y
+            // erledigt" used to sit opposite: one of them told a driver which
+            // round they had been driving since six in the morning, the other
+            // was a score. Neither changes anything at the door, and the height
+            // they cost is the note's.
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 numberBadge(state.number)
                 Text(state.kunde)
                     .font(.headline)
                     .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(tour)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    Text(state.progress)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+                Spacer(minLength: 0)
             }
 
             // Address and floor share a line here too. The lock screen card
@@ -150,7 +141,7 @@ struct StopLiveActivity: Widget {
             if let notiz = state.notiz, !notiz.isEmpty {
                 Label(notiz, systemImage: "note.text")
                     .font(.subheadline)
-                    .lineLimit(2)
+                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
