@@ -44,11 +44,18 @@ enum StopActivity {
             return
         }
         let snapshot = RouteSnapshot(route)
+        // What the app knows about this customer from every previous tour —
+        // the floor, and whatever the driver wrote down at the door once. The
+        // same lookup the Jetzt tab and Siri do; a stop with nothing stored
+        // simply carries neither.
+        let info = (try? StockwerkStore.note(for: stop, in: context)) ?? nil
         let state = StopActivityAttributes.ContentState(
             kunde: stop.kunde?.trimmed.nilIfEmpty ?? "Stopp",
             adresse: stop.listAddress,
             paket: stop.paket?.trimmed.nilIfEmpty,
             notiz: stop.notiz?.trimmed.nilIfEmpty,
+            stockwerk: info?.stockwerk?.trimmed.nilIfEmpty.map(Format.floor),
+            kundeninfo: info?.notiz?.trimmed.nilIfEmpty,
             number: snapshot.number(stop),
             done: snapshot.settledCount,
             total: snapshot.customerCount)

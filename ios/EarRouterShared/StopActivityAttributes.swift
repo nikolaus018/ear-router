@@ -22,6 +22,16 @@ struct StopActivityAttributes: ActivityAttributes {
         /// The door's note. The one field here that can be a paragraph, and the
         /// one most worth reading before ringing.
         var notiz: String?
+        /// The floor, already written out ("3. Stock"): `Format.floor` lives in
+        /// the app target and the extension cannot see it.
+        ///
+        /// From the Globale Infos rather than from the stop — it is the fact
+        /// that outlives every tour, and the reason the app asks for it once.
+        var stockwerk: String?
+        /// The standing note about this customer, also from Globale Infos:
+        /// "klingelt nicht, klopfen", "Lift seit Mai kaputt". Distinct from
+        /// `notiz`, which is what today's list said about today's delivery.
+        var kundeninfo: String?
         /// The stop's number on the tour, for the badge.
         var number: Int?
         /// Doors answered for, out of how many — the tour's own progress line.

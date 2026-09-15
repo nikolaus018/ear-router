@@ -20,6 +20,12 @@ private struct LiveActivitySync: ViewModifier {
         sort: \Route.createdAt, order: .reverse)
     private var active: [Route]
 
+    /// The Globale Infos, watched as well as the tours. The card shows the
+    /// floor and the standing customer note, and those change on their own
+    /// screen — a floor typed into Globale Infos has to reach the lock screen
+    /// without waiting for the next tick.
+    @Query private var infos: [StockwerkNote]
+
     /// Everything the card draws, flattened — so a change here means the card
     /// would look different, and no change means there is nothing to send.
     /// Cheaper than it looks, and much cheaper than waking ActivityKit on every
@@ -28,9 +34,13 @@ private struct LiveActivitySync: ViewModifier {
         guard let route = active.first else { return "" }
         let snapshot = RouteSnapshot(route)
         guard let stop = snapshot.nextOpen else { return "\(route.id)|fertig" }
+        let info = StockwerkKey.make(for: stop).flatMap { key in
+            infos.first { $0.key == key }
+        }
         return [
             route.name, stop.id.uuidString, stop.kunde ?? "", stop.listAddress,
             stop.paket ?? "", stop.notiz ?? "",
+            info?.stockwerk ?? "", info?.notiz ?? "",
             String(snapshot.number(stop) ?? 0),
             String(snapshot.settledCount), String(snapshot.customerCount),
         ].joined(separator: "|")
