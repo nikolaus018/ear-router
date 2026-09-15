@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The five taps in Kurzbefehle that make the CarPlay switch actually do
+/// The six taps in Kurzbefehle that make the CarPlay switch actually do
 /// something — shown when the driver turns it on, which is the only thing that
 /// opens it. Turning the switch off and on again is the way back to it, and
 /// that is the whole of it: one switch, and the instructions for the one thing
@@ -26,16 +26,23 @@ struct CarPlaySetupSheet: View {
 
     private let steps: [Step] = [
         Step(id: 1, text: "Die App „Kurzbefehle“ öffnen und unten auf „Automation“ tippen."),
-        Step(id: 2, text: "Oben auf „+“ tippen und in der Liste „CarPlay“ auswählen."),
+        Step(
+            id: 2,
+            text: "Auf „Neue Automation“ tippen — oder oben auf „+“, wenn dort schon "
+                + "Automationen stehen."),
         Step(
             id: 3,
+            text: "Ganz unten ins Suchfeld „CarPlay“ eintippen und den Auslöser "
+                + "auswählen. Die Liste ist lang — such, statt zu scrollen."),
+        Step(
+            id: 4,
             text: "„Wird verbunden“ ankreuzen, „Sofort ausführen“ einschalten "
                 + "und auf „Weiter“ tippen."),
         Step(
-            id: 4,
+            id: 5,
             text: "Nach „Zum nächsten Stopp navigieren“ suchen und die Aktion von "
                 + "EAR Router auswählen."),
-        Step(id: 5, text: "Auf „Fertig“ tippen. Das war's."),
+        Step(id: 6, text: "Auf „Fertig“ tippen. Das war's."),
     ]
 
     var body: some View {
@@ -52,6 +59,19 @@ struct CarPlaySetupSheet: View {
                         "Danach startet die Navigation von selbst, sobald das Handy im "
                             + "Auto steckt — auch mit gesperrtem Bildschirm. Gefahren wird "
                             + "immer zum nächsten Stopp, der noch nicht abgehakt ist.")
+                }
+
+                Section {
+                    Label(
+                        "Findet die Suche kein „CarPlay“, nimm „Bluetooth“ und wähl dein "
+                            + "Autoradio aus. Das verbindet sich im selben Moment, in dem du "
+                            + "ansteckst — der Rest der Anleitung bleibt gleich.",
+                        systemImage: "antenna.radiowaves.left.and.right")
+                        .labelStyle(TintedIconLabelStyle(tint: .secondary))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Kein CarPlay in der Liste?")
                 }
 
                 Section {

@@ -114,26 +114,17 @@ struct NextStopSnippet: View {
     }
 }
 
-/// Makes the intent reachable by voice without the driver setting anything up.
+/// Makes the navigation intent reachable without the driver setting anything
+/// up — in Kurzbefehle's own action list, which is where the CarPlay automation
+/// is built from, and by voice on a morning the phone never got plugged in.
 ///
-/// The phrases are the ones actually said out loud in a van. "Nächster Stopp"
-/// on its own is what a second driver in the passenger seat would be asked, and
-/// it is what this answers.
+/// `NextStopIntent` is deliberately *not* listed. It still exists and still
+/// works as an action somebody adds by hand, but two EAR Router tiles sitting
+/// side by side in Kurzbefehle — one that reads the next stop out, one that
+/// drives to it — is a choice to make at the wheel, and the wrong one is the
+/// one that does nothing about the van being parked.
 struct EarRouterShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
-        AppShortcut(
-            intent: NextStopIntent(),
-            phrases: [
-                "Nächster Stopp in \(.applicationName)",
-                "Wer ist als Nächstes dran in \(.applicationName)",
-                "\(.applicationName) nächster Stopp",
-            ],
-            shortTitle: "Nächster Stopp",
-            systemImageName: "arrow.trianglehead.turn.up.right")
-        // The one the CarPlay automation runs. It is here as well so it can be
-        // said out loud on a morning the phone never got plugged in, and so it
-        // turns up in Kurzbefehle's own search while the automation is being
-        // built — which is step four of `CarPlaySetupSheet`.
         AppShortcut(
             intent: NavigateNextStopIntent(),
             phrases: [
