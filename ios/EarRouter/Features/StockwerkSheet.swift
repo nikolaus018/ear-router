@@ -91,9 +91,14 @@ struct StockwerkForm: View {
     ///
     /// The field stays, and these never replace it: Viennese stairwells are
     /// numbered in more ways than any row of buttons could hold — Mezzanin,
-    /// Hochparterre, "2/Tür 14" — and the picks are the eight that cover most
+    /// Hochparterre, "2/Tür 14" — and the picks are the ones that cover most
     /// doors, not a claim to cover all of them.
-    private let quick = ["EG", "1", "2", "3", "4", "5", "6", "DG"]
+    ///
+    /// Up to ten because the round has towers on it. Stopping at six meant
+    /// every door above the sixth floor — a Gemeindebau lift going to ten — was
+    /// typed by hand, which is the one input a driver makes standing in a
+    /// stairwell with both hands full.
+    private let quick = ["EG", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "DG"]
 
     var body: some View {
         NavigationStack {
