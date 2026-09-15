@@ -294,3 +294,94 @@ struct LadelisteTests {
         #expect(PaketParser.items(for: try route(["", "  "])).isEmpty)
     }
 }
+
+/// Which of the two loading lists a tour opens with, and what the TK one says.
+///
+/// The two rounds are loaded in opposite ways. A VM tour carries the same few
+/// menu codes to every door, so the van is loaded by counting codes. A TK tour
+/// carries a different basket of dishes to each door with the customer's name
+/// on it, so the van is loaded by customer — last door at the front of the
+/// stack, because it comes out last.
+@MainActor
+struct LadelisteModeTests {
+
+    private func route(_ name: String, kunden: [(String, String?)] = []) throws -> Route {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self, StockwerkNote.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let route = try RouteStore.createRoute(name: name, in: context)
+        for (i, kunde) in kunden.enumerated() {
+            let stop = Stop(
+                kind: .customer, kunde: kunde.0, strasse: "Gasse \(i)", plz: "1180",
+                paket: kunde.1, lat: 48.23, lon: 16.32, orderIndex: 10 + i)
+            stop.route = route
+            context.insert(stop)
+        }
+        try context.save()
+        return route
+    }
+
+    @Test func aTourNamedAfterTheFreezerOpensInTKMode() throws {
+        #expect(LadelisteMode.suggested(for: try route("TK1")) == .tk)
+        // The portal spells it both ways, and a driver typing it by hand spells
+        // it a third.
+        #expect(LadelisteMode.suggested(for: try route("Tk1")) == .tk)
+        #expect(LadelisteMode.suggested(for: try route(" tk 2 ")) == .tk)
+    }
+
+    @Test func everythingElseOpensInVMMode() throws {
+        #expect(LadelisteMode.suggested(for: try route("VM4")) == .vm)
+        #expect(LadelisteMode.suggested(for: try route("VM 4 DO Vormittag")) == .vm)
+        #expect(LadelisteMode.suggested(for: try route("TP AST 14 - 1401")) == .vm)
+        #expect(LadelisteMode.suggested(for: try route("Tour 12.09.")) == .vm)
+    }
+
+    /// The whole point of the TK list: first in, last out.
+    @Test func theLastDoorIsLoadedFirst() throws {
+        let r = try route("TK1", kunden: [("Erste", nil), ("Zweite", nil), ("Letzte", nil)])
+        let order = LadungPlan.loadingOrder(for: r)
+        #expect(order.map(\.name) == ["Letzte", "Zweite", "Erste"])
+        #expect(order.map(\.position) == [1, 2, 3])
+    }
+
+    /// Reversed off the driving order the tour screen shows, not off the order
+    /// the stops happened to be created in.
+    @Test func theOrderFollowsTheRouteAndNotTheEntryOrder() throws {
+        let r = try route("TK1", kunden: [("Erste", nil), ("Zweite", nil), ("Dritte", nil)])
+        let stops = r.customerStops
+        // The optimizer has re-ordered the tour: the last-entered door is now
+        // driven first.
+        stops[0].orderIndex = 30
+        stops[2].orderIndex = 10
+        #expect(LadungPlan.loadingOrder(for: r).map(\.name) == ["Erste", "Zweite", "Dritte"])
+    }
+
+    @Test func eachDoorCarriesItsPieceCount() throws {
+        let r = try route(
+            "TK1", kunden: [("Barak", "1x Suppe, 2x Menü"), ("Bolz", nil), ("Fischer", "Menü")])
+        let order = LadungPlan.loadingOrder(for: r)
+        #expect(order.map(\.pieces) == [1, 0, 3])
+        #expect(order.first?.address == "Gasse 2, 1180")
+    }
+
+    /// A stop nobody has named still has to be loadable — it is a parcel in the
+    /// van either way.
+    @Test func aDoorWithoutANameStillGetsARow() throws {
+        let r = try route("TK1", kunden: [("", nil), ("   ", nil)])
+        #expect(LadungPlan.loadingOrder(for: r).map(\.name) == ["Stopp", "Stopp"])
+    }
+
+    /// Both lists tick into the same store per tour, so their keys must not be
+    /// able to mean each other.
+    @Test func aCustomerTickCannotBeMistakenForAPaketTick() throws {
+        let r = try route("TK1", kunden: [("Barak", "1x Menü")])
+        let customerKey = LadungPlan.loadingOrder(for: r).first?.key
+        #expect(customerKey?.hasPrefix("stop:") == true)
+        #expect(!PaketParser.items(for: r).map(\.key).contains(customerKey ?? ""))
+    }
+
+    @Test func aTourWithNoStopsHasNoLoadingOrder() throws {
+        #expect(LadungPlan.loadingOrder(for: try route("TK1")).isEmpty)
+    }
+}

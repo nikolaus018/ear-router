@@ -764,6 +764,39 @@ struct LadelisteStateTests {
         }
     }
 
+    /// The mode is an override, not a setting: absent until the driver picks
+    /// one, so a tour nobody has switched by hand keeps following its name —
+    /// including after a rename.
+    @Test func aTourNobodyHasSwitchedHasNoStoredMode() {
+        #expect(LadelisteState.mode(for: UUID()) == nil)
+    }
+
+    @Test func thePickedModeSticksToItsOwnTour() {
+        let tk = UUID(), vm = UUID()
+        clean([tk, vm]) {
+            LadelisteState.store(LadelisteMode.tk, for: tk)
+
+            #expect(LadelisteState.mode(for: tk) == .tk)
+            #expect(LadelisteState.mode(for: vm) == nil)
+
+            LadelisteState.store(LadelisteMode.vm, for: vm)
+            #expect(LadelisteState.mode(for: tk) == .tk)
+            #expect(LadelisteState.mode(for: vm) == .vm)
+        }
+    }
+
+    /// The mode lives in `UserDefaults` next to the ticks and has to be cleaned
+    /// up with them, or a new tour that happens to reuse a deleted tour's id
+    /// opens in somebody else's mode.
+    @Test func forgettingATourForgetsItsModeToo() {
+        let id = UUID()
+        clean([id]) {
+            LadelisteState.store(LadelisteMode.tk, for: id)
+            LadelisteState.forget(id)
+            #expect(LadelisteState.mode(for: id) == nil)
+        }
+    }
+
     /// And deleting the tour is what triggers that, which is the half that has
     /// to be remembered by hand at every call site.
     @Test func deletingATourForgetsItsTicks() throws {
