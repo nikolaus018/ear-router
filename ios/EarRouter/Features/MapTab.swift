@@ -408,6 +408,7 @@ struct MapTab: View {
                 set: { selectedStopID = $0; chosenMemberID = nil }),
             fitToken: fitToken,
             followToken: focus.mapFollowToken,
+            isShown: focus.tab == .map,
             pointAt: $pointAt)
             .onChange(of: shapeKey, initial: true) { reconcile(route) }
             .onChange(of: styleKey) { rebuildPins(for: route) }
@@ -797,6 +798,9 @@ private struct RouteMapCanvas: View {
     /// Changes every time the driver chooses Karte from the tab bar — the cue
     /// to put the camera back on them. See `RouteFocus.select`.
     let followToken: Int
+    /// Whether the Karte is the tab on screen. Following the driver needs the
+    /// compass and GPS running, which is not worth doing behind another tab.
+    let isShown: Bool
     /// One stop to zoom to, or `nil` for the ordinary "show the whole tour"
     /// behaviour. Cleared from in here when the driver asks for the whole route
     /// again — that button is how they take the camera back.
@@ -812,8 +816,9 @@ private struct RouteMapCanvas: View {
     /// stay there for the one session where the driver was told the app wanted
     /// their location.
     @State private var wantsDriver = true
-    /// The second half of `aimAtDriver`, waiting for the zoom to land.
-    @State private var aimTask: Task<Void, Never>?
+    /// The camera is following the driver, close in and turned with the
+    /// phone — see `aimAtDriver`. Ends the moment the driver moves the map.
+    @State private var following = false
 
     var body: some View {
         Map(position: $camera, selection: $selection) {
@@ -880,7 +885,7 @@ private struct RouteMapCanvas: View {
             // what it did. Unlike the stop request above this does not stand
             // down after one: it lasts precisely as long as the camera is
             // actually following, and the first pan ends it.
-            guard !camera.followsUserLocation else { return }
+            guard !camera.followsUserLocation, !following else { return }
             // And the same again for the half-second before the camera gets
             // there. The first fix and the finished polyline arrive within a
             // moment of each other in either order, so on the open where the
@@ -914,11 +919,30 @@ private struct RouteMapCanvas: View {
         // second after the tap swung the camera off to the driver — leaving
         // the card open on a customer whose pin was now off the screen.
         .onChange(of: selection) { _, picked in
-            if picked != nil { wantsDriver = false }
+            if picked != nil { wantsDriver = false; following = false }
+        }
+        // Kept on the driver while following: every new position or compass
+        // reading moves the camera with them.
+        .onChange(of: LocationAuthorization.shared.liveLocation) { followDriver(animated: true) }
+        .onChange(of: LocationAuthorization.shared.heading) { followDriver(animated: true) }
+        // The driver dragged, pinched or turned the map, or pressed the
+        // location button: the map is theirs now.
+        .onChange(of: camera.positionedByUser) { _, byUser in
+            if byUser { following = false }
+        }
+        .onChange(of: camera.followsUserLocation) { _, system in
+            if system { following = false }
+        }
+        .onChange(of: following) { _, on in
+            if !on { LocationAuthorization.shared.stopFollowing() }
+        }
+        .onChange(of: isShown) { _, shown in
+            if !shown { following = false }
         }
         .onChange(of: pointAt, initial: true) { _, request in
             guard let request else { return }
             wantsDriver = false
+            following = false
             // Close enough to read the street the door is on, wide enough to
             // see the stops either side of it.
             let span = 0.006
@@ -946,6 +970,7 @@ private struct RouteMapCanvas: View {
             Button {
                 pointAt = nil
                 wantsDriver = false
+                following = false
                 fit()
             } label: {
                 // The `contentShape` is the whole 44pt disc, not just the
@@ -965,44 +990,43 @@ private struct RouteMapCanvas: View {
         }
     }
 
-    /// Puts the camera on the driver, if there is a driver to put it on.
+    /// Puts the camera on the driver, close in and turned the way the phone
+    /// faces, and keeps it there until the driver moves the map.
     ///
-    /// Gated on there being a fix rather than left to `fallback:` to sort out.
-    /// A `.userLocation` position reports itself as following whether or not
-    /// Core Location will ever answer it, so on a phone where the permission
-    /// was refused an ungated one would both sit on its fallback *and* switch
-    /// off the whole-route re-frame above — leaving the driver looking at
-    /// whatever `.automatic` makes of an empty map, permanently.
+    /// Done here rather than with a `.userLocation(followsHeading:)` position.
+    /// That mode picks its own zoom — far out, a street and its neighbours —
+    /// and snapped back to it even after the camera had been brought in close.
+    /// This map is opened in front of a building to find its door, which wants
+    /// a single block filling the screen.
     ///
-    /// In two steps. Tracking on its own keeps whatever zoom the map had, which
-    /// on opening is the whole tour — a blue dot in the middle of Vienna. So
-    /// the camera is first brought down to street level over the driver, and
-    /// only then handed to tracking with heading, which keeps that zoom and
-    /// turns the map the way the phone is facing.
+    /// Gated on there being a fix: without one there is nowhere to aim, and the
+    /// whole-route frame is the better thing to show.
     private func aimAtDriver() {
-        guard LocationAuthorization.shared.hasFix else { return }
-        aimTask?.cancel()
+        guard isShown, LocationAuthorization.shared.hasFix else { return }
+        LocationAuthorization.shared.startFollowing()
+        following = true
+        followDriver(animated: true)
+    }
 
-        if let here = LocationAuthorization.shared.lastKnownCoordinate {
-            withAnimation(.easeInOut(duration: 0.5)) {
-                camera = .camera(MapCamera(centerCoordinate: here, distance: Self.driverDistance))
-            }
-        }
-        aimTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled, wantsDriver, !camera.positionedByUser else { return }
-            // Assigned flat, not inside `withAnimation`. A tracking position is
-            // a *mode*, not a place, and there is nothing for SwiftUI to
-            // interpolate towards: wrapped in an animation the assignment was
-            // accepted — `followsUserLocation` came back true — and the map
-            // never moved.
-            camera = .userLocation(followsHeading: true, fallback: .automatic)
+    private func followDriver(animated: Bool) {
+        guard following, !camera.positionedByUser,
+              let here = LocationAuthorization.shared.liveLocation?.coordinate
+        else { return }
+        let next = MapCameraPosition.camera(
+            MapCamera(
+                centerCoordinate: here, distance: Self.driverDistance,
+                heading: LocationAuthorization.shared.heading ?? 0, pitch: 0))
+        if animated {
+            withAnimation(.easeOut(duration: 0.3)) { camera = next }
+        } else {
+            camera = next
         }
     }
 
-    /// How far above the driver the camera sits when the map opens on them, in
-    /// metres: a few blocks either way, close enough to read the street names.
-    private static let driverDistance: Double = 900
+    /// How far above the driver the camera sits while following, in metres:
+    /// about one block across the screen, close enough to tell which side of a
+    /// building the door is on.
+    private static let driverDistance: Double = 250
 
     /// Frames the whole tour. Prefers the driven line over the pins, so the
     /// view covers the road actually taken rather than just the doors on it.
