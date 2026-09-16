@@ -485,6 +485,20 @@ struct HandoffAndUpstreamTests {
         #expect(Geocoder.pickEntrance(features, number: "12", plz: "1180") == nil)
     }
 
+    /// Some ranges are filed whole — "31-35" — and still count for "31".
+    @Test func findsAnEntranceFiledAsARange() {
+        func entrance(_ number: String, lat: Double) -> Geocoder.EntranceFeature {
+            Geocoder.EntranceFeature(
+                geometry: Geocoder.OGDGeometry(coordinates: [16.33, lat]),
+                properties: Geocoder.EntranceProperties(number: number, plz: "1120"))
+        }
+        let features = [entrance("310", lat: 48.1), entrance("31-35", lat: 48.2)]
+        #expect(Geocoder.pickEntrance(features, number: "31", plz: "1120")?.lat == 48.2)
+        // An exact number beats a range that starts with it.
+        let both = [entrance("31-35", lat: 48.2), entrance("31", lat: 48.3)]
+        #expect(Geocoder.pickEntrance(both, number: "31", plz: "1120")?.lat == 48.3)
+    }
+
     /// The fallback for a stop with no address text: a point, to six places.
     @Test func thePointFallbackKeepsSixPlaces() {
         let url = NavigationHandoff.Provider.apple.point(lat: 48.2301, lon: 16.3201)

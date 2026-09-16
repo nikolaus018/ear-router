@@ -263,16 +263,25 @@ actor Geocoder {
         return digits
     }
 
-    /// The entrance whose number is exactly this one — never "129a" or "1290"
-    /// for "129", which the prefix query also returns.
+    /// The entrance whose number is this one — never "129a" or "1290" for
+    /// "129", which the prefix query also returns.
+    ///
+    /// The layer is not consistent about ranges: "Heiligenstädter Straße
+    /// 82-92" is filed as "82", "Münchenstraße 31-35" as "31-35". So a number
+    /// written exactly as asked wins, and otherwise a range starting with it
+    /// counts — read through `entranceNumber`, so "31-35" is "31" and "1290"
+    /// is still not "129".
     static func pickEntrance(
         _ features: [EntranceFeature], number: String, plz: String
     ) -> (lat: Double, lon: Double)? {
         let want = number.lowercased().filter { !$0.isWhitespace }
-        guard let hit = features.first(where: {
-            $0.properties.plz == plz
-                && ($0.properties.number ?? "").lowercased().filter { !$0.isWhitespace } == want
-        }), hit.geometry.coordinates.count == 2
+        let here = features.filter { $0.properties.plz == plz }
+        func raw(_ f: EntranceFeature) -> String {
+            (f.properties.number ?? "").lowercased().filter { !$0.isWhitespace }
+        }
+        guard let hit = here.first(where: { raw($0) == want })
+                ?? here.first(where: { entranceNumber(raw($0)) == want }),
+              hit.geometry.coordinates.count == 2
         else { return nil }
         let lon = hit.geometry.coordinates[0], lat = hit.geometry.coordinates[1]
         guard Coordinates.isInVienna(lat: lat, lon: lon) else { return nil }
