@@ -92,7 +92,13 @@ let maxBulkStops = 97
 enum FieldLimits {
     static let kunde = 120
     static let strasse = 200
-    static let paket = 200
+    /// Deliberately far past anything real. A Paket is copied off the
+    /// portal as-is, and a TK order spelling out every dish runs to many
+    /// hundreds of characters — a limit the driver can hit turns an import
+    /// into an error over text nobody typed. This only keeps a broken paste
+    /// from filling the store; the screens that cannot grow (the Live
+    /// Activity) cut it down themselves.
+    static let paket = 10_000
     static let notiz = 1000
     static let telefon = 40
     static let routeName = 200
