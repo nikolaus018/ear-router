@@ -173,16 +173,13 @@ struct PreflightTests {
         #expect(finding(preflight, "stockwerke") == nil)
     }
 
-    /// What the driver themselves said has to come first, read back to them
-    /// before they set off.
-    @Test func pinnedStopsAreListedBackToTheDriver() throws {
+    /// "Zuerst anfahren" is gone: a stop still carrying the old flag is not
+    /// read back as coming first.
+    @Test func theOldPriorityFlagIsIgnored() throws {
         let context = try store()
         let route = try readyRoute(in: context)
         try #require(route.customerStops.first).prioritaet = true
-
-        let vorrang = try #require(finding(check(route), "vorrang"))
-        #expect(vorrang.severity == .ok)
-        #expect(vorrang.detail == "K0")
+        #expect(finding(check(route), "vorrang") == nil)
     }
 
     /// Worst first, so the screen opens on the thing that matters.

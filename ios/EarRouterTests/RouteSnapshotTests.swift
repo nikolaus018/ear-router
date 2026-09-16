@@ -931,3 +931,26 @@ struct LadelisteStateTests {
         }
     }
 }
+
+/// "Zuerst anfahren" was removed. A stop still carrying the old flag from
+/// before is planned like every other customer, not pinned to the front.
+@MainActor
+struct RemovedPriorityTests {
+    @Test func theOldPriorityFlagIsPlannedLikeAnyCustomer() throws {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let route = try RouteStore.createRoute(name: "Test", in: context)
+        let urgent = Stop(kind: .customer, kunde: "A", strasse: "Gentzgasse 1", plz: "1180",
+                          lat: 48.2301, lon: 16.3201)
+        urgent.prioritaet = true
+        urgent.route = route
+        context.insert(urgent)
+        try context.save()
+
+        let (nodes, _) = RouteOptimizer.snapshot(route)
+        #expect(nodes.customers.map(\.id) == [urgent.id])
+        #expect(!nodes.head.contains { $0.id == urgent.id })
+    }
+}

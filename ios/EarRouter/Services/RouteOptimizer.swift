@@ -25,16 +25,6 @@ enum RouteOptimizer {
         var start: FixedStop?
         var via: FixedStop?
         var end: FixedStop?
-        /// Customers the driver has pinned to the front, in the order they were
-        /// entered. Driven straight after the warehouse and never reordered.
-        ///
-        /// OSRM solves for distance, which is the right objective until it is
-        /// not: somebody waiting on medication, a customer who leaves for
-        /// dialysis at ten, a Pflegedienst only at the flat until half nine.
-        /// None of that is in a distance matrix, and a driver who cannot say it
-        /// to the app says it by ignoring the stop order all morning — which
-        /// costs the tour every other thing the optimizer was right about.
-        var priority: [StopCoord] = []
         var customers: [StopCoord] = []
 
         /// The fixed points the tour actually drives, in order, before any
@@ -43,15 +33,12 @@ enum RouteOptimizer {
             [start, via].compactMap { $0?.active }
         }
 
-        /// Everything driven before OSRM is allowed to choose anything: the
-        /// fixed head, then the pinned customers.
-        var head: [StopCoord] { fixedHead + priority }
+        /// Everything driven before OSRM is allowed to choose anything.
+        var head: [StopCoord] { fixedHead }
 
-        /// Every customer on the tour, pinned or not. What tells a customer
-        /// from a fixed point when the display order is rebuilt.
-        var customerIDs: Set<UUID> {
-            Set(priority.map(\.id)).union(customers.map(\.id))
-        }
+        /// Every customer on the tour. What tells a customer from a fixed point
+        /// when the display order is rebuilt.
+        var customerIDs: Set<UUID> { Set(customers.map(\.id)) }
     }
 
     struct FixedStop: Sendable {
@@ -74,11 +61,6 @@ enum RouteOptimizer {
             let lat: Double
             let lon: Double
             let excluded: Bool
-            /// In it because pinning a stop to the front changes the shape of
-            /// the problem, not the contents of a row. Left out, a route
-            /// re-solved for a pin compared as unchanged and the amber banner
-            /// cleared over a stop order that had not moved.
-            let priority: Bool
         }
     }
 
@@ -366,11 +348,7 @@ enum RouteOptimizer {
             case .via: nodes.via = fixed
             case .end: nodes.end = fixed
             case .customer:
-                if s.prioritaet {
-                    nodes.priority.append(coord)
-                } else {
-                    nodes.customers.append(coord)
-                }
+                nodes.customers.append(coord)
             }
         }
         return (nodes, fingerprint(route))
@@ -382,8 +360,7 @@ enum RouteOptimizer {
                 .sorted(by: Stop.createdBefore)
                 .map {
                     Fingerprint.Entry(
-                        id: $0.id, lat: $0.lat, lon: $0.lon, excluded: $0.excluded,
-                        priority: $0.prioritaet)
+                        id: $0.id, lat: $0.lat, lon: $0.lon, excluded: $0.excluded)
                 })
     }
 
@@ -394,10 +371,6 @@ enum RouteOptimizer {
     /// underneath the last customer of the day. Only the customers are placed
     /// by `routed`; that ordering is the whole point of the optimization.
     static func displayOrder(_ nodes: Nodes, routed: [StopCoord]) -> [StopCoord] {
-        // Every customer, pinned ones included. Pinned stops travel in `routed`
-        // as part of the head, so a set built from the unpinned customers alone
-        // filtered them straight out of the list — the tour's most urgent stops
-        // were the three that stopped being shown.
         let customerIDs = nodes.customerIDs
         var out: [StopCoord] = []
         out.reserveCapacity(routed.count + 3)

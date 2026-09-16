@@ -349,24 +349,6 @@ enum RouteStore {
         try record(delivered ? .delivered : nil, for: stop, in: context)
     }
 
-    /// Pins a customer to the front of the tour, or lets the optimizer have
-    /// them back.
-    ///
-    /// Re-optimizes, because this changes the shape of the problem rather than
-    /// the contents of a row — the same treatment a moved pin or an excluded
-    /// fixed point gets, and for the same reason: the stop order on screen is
-    /// wrong until OSRM has answered again.
-    static func setPriority(
-        _ stop: Stop, _ priority: Bool, in context: ModelContext
-    ) async throws {
-        guard stop.kind == .customer else { return }
-        stop.prioritaet = priority
-        guard let route = stop.route else { return try context.save() }
-        route.markRoutingStale()
-        try context.save()
-        await RouteOptimizer.optimizeBestEffort(route, in: context)
-    }
-
     /// Takes one delivery back, found by the id the undo banner is holding.
     ///
     /// By id rather than by keeping hold of the `Stop`, because the banner

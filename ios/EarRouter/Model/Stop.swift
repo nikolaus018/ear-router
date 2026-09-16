@@ -156,14 +156,9 @@ final class Stop {
     /// answer at all for the sake of one `Date`.
     var settledAt: Date?
 
-    /// Driven before OSRM gets a say, straight after the warehouse.
-    ///
-    /// The optimizer solves for distance, which is the right objective right up
-    /// until it is not: somebody waiting on medication, a customer who leaves
-    /// for dialysis at ten, a Pflegedienst that is only at the flat until half
-    /// past nine. None of that is visible in a distance matrix. Rather than
-    /// have the driver fight the stop order all morning, this takes the stop
-    /// out of the solve and pins it to the front — see `RouteOptimizer.Nodes`.
+    /// No longer used. "Zuerst anfahren" is gone and nothing reads this; the
+    /// column stays so the store needs no migration, and backups keep the
+    /// field so older files still read.
     var prioritaet: Bool = false
 
     /// Distance and time from this stop to the next one in driving order.

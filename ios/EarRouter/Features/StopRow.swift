@@ -174,15 +174,6 @@ struct StopRow: View {
                     // still has to do something about, it means the opposite.
                     .foregroundStyle(dimmed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                     .fixedSize(horizontal: false, vertical: true)
-                if stop.prioritaet && stop.kind == .customer {
-                    // Loud on purpose, and the only thing on an ordinary row
-                    // allowed to be: this stop being near the top of the list
-                    // is a decision somebody made, and it has to be legible as
-                    // one rather than as an accident of the optimizer.
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(Color.attention)
-                }
                 if stop.pinned {
                     Image(systemName: "hand.point.up.left.fill")
                         .font(.caption2)
@@ -407,7 +398,6 @@ struct StopRow: View {
         } else if stop.isCheckpoint {
             parts.append(stop.isSettled ? "erledigt" : "offen")
         }
-        if stop.prioritaet && stop.kind == .customer { parts.append("Vorrang") }
         if let paket = stop.displayPaket, !paket.isEmpty { parts.append(paket) }
         if let floor = (stockwerk ?? info?.stockwerk)?.trimmed, !floor.isEmpty {
             parts.append("Stockwerk \(Format.floor(floor))")
@@ -452,7 +442,6 @@ struct StopListRow: View {
     /// Opens the "Nicht zugestellt" sheet. `nil` on a screen that has no way
     /// to present it.
     var onRecordOutcome: (() -> Void)?
-    var onTogglePriority: (() -> Void)?
     /// Only ever called for a fixed point — the same action the row's own tap
     /// and its context menu perform.
     var onToggleExcluded: (() -> Void)?
@@ -577,14 +566,6 @@ struct StopListRow: View {
                 action: onToggleDelivered)
             if let onRecordOutcome, !stop.isSettled {
                 Button("Nicht zugestellt …", systemImage: "bell.slash", action: onRecordOutcome)
-            }
-            if let onTogglePriority {
-                Button(
-                    stop.prioritaet ? "Vorrang aufheben" : "Zuerst anfahren",
-                    systemImage: stop.prioritaet
-                        ? "arrow.uturn.backward"
-                        : "exclamationmark.circle",
-                    action: onTogglePriority)
             }
             if let onEditStockwerk {
                 Button(

@@ -310,7 +310,6 @@ struct TourView: View {
             onShowOnMap: { focus.showOnMap(stop: stop, of: route) },
             onEditStockwerk: { stockwerkStop = stop },
             onRecordOutcome: { outcomeStop = stop },
-            onTogglePriority: { Task { await togglePriority(stop) } },
             onToggleExcluded: { Task { await toggleExcluded(stop) } })
             // The id is the scroll target `reveal` aims at.
             .id(stop.id)
@@ -521,14 +520,6 @@ struct TourView: View {
               StockwerkStore.shouldAsk(stop, in: context)
         else { return }
         stockwerkStop = stop
-    }
-
-    private func togglePriority(_ stop: Stop) async {
-        do {
-            try await RouteStore.setPriority(stop, !stop.prioritaet, in: context)
-        } catch {
-            self.error = AppError.message("Konnte den Vorrang nicht ändern.")
-        }
     }
 
     /// Starts one of the two long network jobs — optimizing, or re-checking

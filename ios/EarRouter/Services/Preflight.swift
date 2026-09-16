@@ -175,17 +175,6 @@ struct Preflight {
                     action: nil))
         }
 
-        // 7. What the driver themselves said has to come first.
-        let priority = customers.filter(\.prioritaet)
-        if !priority.isEmpty {
-            findings.append(
-                Finding(
-                    id: "vorrang", severity: .ok, symbol: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90",
-                    title: "\(priority.count) \(priority.count == 1 ? "Stopp fährst du" : "Stopps fährst du") zuerst",
-                    detail: priority.compactMap(\.kunde).joined(separator: ", "),
-                    action: nil))
-        }
-
         // Worst first, and ties in the order they were worked out above.
         //
         // `sorted(by:)` makes no promise about equal elements, and this list is
