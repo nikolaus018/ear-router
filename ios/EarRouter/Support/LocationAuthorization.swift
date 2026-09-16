@@ -35,6 +35,13 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
 
     @ObservationIgnored private let manager = CLLocationManager()
 
+    /// The most recent position Core Location has, for aiming the map before
+    /// tracking takes over. Can be a little old; the tracking that follows
+    /// corrects it.
+    var lastKnownCoordinate: CLLocationCoordinate2D? {
+        manager.location?.coordinate
+    }
+
     private override init() {
         super.init()
         manager.delegate = self

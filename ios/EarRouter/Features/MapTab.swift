@@ -812,6 +812,8 @@ private struct RouteMapCanvas: View {
     /// stay there for the one session where the driver was told the app wanted
     /// their location.
     @State private var wantsDriver = true
+    /// The second half of `aimAtDriver`, waiting for the zoom to land.
+    @State private var aimTask: Task<Void, Never>?
 
     var body: some View {
         Map(position: $camera, selection: $selection) {
@@ -971,14 +973,36 @@ private struct RouteMapCanvas: View {
     /// was refused an ungated one would both sit on its fallback *and* switch
     /// off the whole-route re-frame above — leaving the driver looking at
     /// whatever `.automatic` makes of an empty map, permanently.
+    ///
+    /// In two steps. Tracking on its own keeps whatever zoom the map had, which
+    /// on opening is the whole tour — a blue dot in the middle of Vienna. So
+    /// the camera is first brought down to street level over the driver, and
+    /// only then handed to tracking with heading, which keeps that zoom and
+    /// turns the map the way the phone is facing.
     private func aimAtDriver() {
         guard LocationAuthorization.shared.hasFix else { return }
-        // Assigned flat, not inside `withAnimation`. A tracking position is a
-        // *mode*, not a place, and there is nothing for SwiftUI to interpolate
-        // towards: wrapped in an animation the assignment was accepted —
-        // `followsUserLocation` came back true — and the map never moved.
-        camera = .userLocation(fallback: .automatic)
+        aimTask?.cancel()
+
+        if let here = LocationAuthorization.shared.lastKnownCoordinate {
+            withAnimation(.easeInOut(duration: 0.5)) {
+                camera = .camera(MapCamera(centerCoordinate: here, distance: Self.driverDistance))
+            }
+        }
+        aimTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, wantsDriver, !camera.positionedByUser else { return }
+            // Assigned flat, not inside `withAnimation`. A tracking position is
+            // a *mode*, not a place, and there is nothing for SwiftUI to
+            // interpolate towards: wrapped in an animation the assignment was
+            // accepted — `followsUserLocation` came back true — and the map
+            // never moved.
+            camera = .userLocation(followsHeading: true, fallback: .automatic)
+        }
     }
+
+    /// How far above the driver the camera sits when the map opens on them, in
+    /// metres: a few blocks either way, close enough to read the street names.
+    private static let driverDistance: Double = 900
 
     /// Frames the whole tour. Prefers the driven line over the pins, so the
     /// view covers the road actually taken rather than just the doors on it.
