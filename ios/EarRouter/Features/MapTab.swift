@@ -812,6 +812,8 @@ private struct RouteMapCanvas: View {
     /// stay there for the one session where the driver was told the app wanted
     /// their location.
     @State private var wantsDriver = true
+    /// Zoomed in far enough to draw the map in 3D — see `mapStyle(closeIn:)`.
+    @State private var closeIn = false
 
     var body: some View {
         Map(position: $camera, selection: $selection) {
@@ -841,7 +843,16 @@ private struct RouteMapCanvas: View {
                 }
             }
         }
-        .mapStyle(style.mapStyle)
+        .mapStyle(style.mapStyle(closeIn: closeIn))
+        // Only written when it flips, so a pan does not rebuild the style on
+        // every frame.
+        .onMapCameraChange(frequency: .continuous) { context in
+            let distance = context.camera.distance
+            // Two thresholds, so hovering around one does not flip the style
+            // back and forth.
+            if !closeIn, distance < 3_500 { closeIn = true }
+            if closeIn, distance > 4_500 { closeIn = false }
+        }
         // Explicitly blue rather than inherited, even though the app's accent
         // is now blue too. This is the colour a user-location dot is on every
         // map anyone has ever used — the same pairing Apple Maps ships, where
@@ -1128,13 +1139,16 @@ enum MapStyleChoice: String, CaseIterable, Identifiable {
     /// crowded the map around the pins, which are the only places on it the
     /// driver is looking for; streets and their names stay.
     ///
-    /// Realistic elevation, so tilting the map with two fingers shows the
-    /// buildings and terrain in 3D, the way Apple Maps does. Looking straight
-    /// down it draws the same as before.
-    var mapStyle: MapStyle {
+    /// 3D — buildings and terrain, tilted with two fingers like Apple Maps —
+    /// once the map is zoomed in to a few streets. Not further out: with
+    /// realistic elevation MapKit draws the route line several times too thick
+    /// over a whole tour, and there are no buildings to see from there anyway.
+    /// Not switched on the tilt itself, because a flat map cannot be tilted.
+    func mapStyle(closeIn: Bool) -> MapStyle {
+        let elevation: MapStyle.Elevation = closeIn ? .realistic : .flat
         switch self {
-        case .standard: .standard(elevation: .realistic, pointsOfInterest: .excludingAll)
-        case .hybrid: .hybrid(elevation: .realistic, pointsOfInterest: .excludingAll)
+        case .standard: return .standard(elevation: elevation, pointsOfInterest: .excludingAll)
+        case .hybrid: return .hybrid(elevation: elevation, pointsOfInterest: .excludingAll)
         }
     }
 }
