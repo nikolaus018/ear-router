@@ -307,7 +307,11 @@ actor Geocoder {
             URLQueryItem(name: "typeName", value: "ogdwien:ZUGANGSADROGD"),
             URLQueryItem(name: "srsName", value: "EPSG:4326"),
             URLQueryItem(name: "outputFormat", value: "json"),
-            URLQueryItem(name: "maxFeatures", value: "50"),
+            // Generous: the prefix also matches every longer number, and on a
+            // long street "1" alone brings back 1, 10–19 and 100–199. At 50
+            // the one actually asked for could be cut off. The server rejects
+            // an OR filter that would ask for just the number.
+            URLQueryItem(name: "maxFeatures", value: "500"),
             URLQueryItem(name: "cql_filter", value: filter),
         ]
         guard let url = comps?.url else { return nil }
