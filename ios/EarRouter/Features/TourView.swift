@@ -481,6 +481,10 @@ struct TourView: View {
     /// Tapping a fixed stop switches it in or out of this tour; tapping a
     /// customer opens the editor.
     private func tapped(_ stop: Stop) {
+        // Lager and Ziel carry a tick now, and a tap that missed it by a few
+        // points would switch the point out of the tour. Leaving one out goes
+        // through the long-press menu instead.
+        if stop.isCheckpoint { return }
         if stop.kind.isFixed {
             Task { await toggleExcluded(stop) }
         } else {

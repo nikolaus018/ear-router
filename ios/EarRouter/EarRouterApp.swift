@@ -32,7 +32,7 @@ struct EarRouterApp: App {
         // that as waiting opened the app on Jetzt to tell the driver there was
         // nothing to do — on every launch, for the rest of the day.
         let waiting = routes.contains { route in
-            route.stops.contains(where: \.isOpenDelivery)
+            route.nextOpenStop != nil
         }
         return waiting ? .now : .tours
     }

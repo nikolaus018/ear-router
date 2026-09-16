@@ -56,6 +56,10 @@ struct NowTab: View {
         /// zugestellt" over a door nobody opened would be the app's own
         /// summary of the day quietly disagreeing with the driver's.
         var outcome: DeliveryOutcome = .delivered
+        /// Lager or Ziel, which are "erledigt" rather than "geliefert".
+        var checkpoint = false
+
+        var label: String { checkpoint ? "erledigt" : outcome.shortLabel }
     }
 
     private var route: Route? {
@@ -145,7 +149,7 @@ struct NowTab: View {
             NowStopCard(
                 stop: stop,
                 number: snapshot.number(stop),
-                info: info[stop.id],
+                info: stop.kind == .customer ? info[stop.id] : nil,
                 sameDoorCount: snapshot.doorCount(stop),
                 finishesAt: snapshot.etaFinish(),
                 onNavigate: { navigate(to: stop) },
@@ -175,15 +179,12 @@ struct NowTab: View {
     }
 
     private func doneSection(_ route: Route, snapshot: RouteSnapshot) -> some View {
-        let end = snapshot.ordered.first { $0.kind == .end && !$0.excluded }
-        return Section {
+        Section {
             TourDoneView(
                 count: snapshot.customerCount,
                 delivered: snapshot.deliveredCount,
                 followUps: snapshot.followUps,
                 homeKm: snapshot.remainingKm,
-                canNavigateHome: end != nil,
-                onNavigateHome: { if let end { navigate(to: end) } },
                 onFinish: { finish(route) })
                 .listRowBackground(Color.clear)
         } header: {
@@ -203,17 +204,20 @@ struct NowTab: View {
                     focus.showOnMap(stop: current, of: route)
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button("Bearbeiten", systemImage: "pencil") { editingStop = current }
-                    Button(
-                        hasFloor ? "Stockwerk ändern" : "Stockwerk eintragen",
-                        systemImage: "stairs"
-                    ) {
-                        stockwerkStop = current
+            // Not on Lager or Ziel: nothing there to edit, and no floor.
+            if current.kind == .customer {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Bearbeiten", systemImage: "pencil") { editingStop = current }
+                        Button(
+                            hasFloor ? "Stockwerk ändern" : "Stockwerk eintragen",
+                            systemImage: "stairs"
+                        ) {
+                            stockwerkStop = current
+                        }
+                    } label: {
+                        Label("Mehr", systemImage: "ellipsis")
                     }
-                } label: {
-                    Label("Mehr", systemImage: "ellipsis")
                 }
             }
         }
@@ -232,7 +236,7 @@ struct NowTab: View {
                 Image(systemName: undo.outcome.symbol)
                     .foregroundStyle(undo.outcome.handedOver ? Color.delivered : Color.attention)
                     .accessibilityHidden(true)
-                Text("„\(undo.name)“ — \(undo.outcome.shortLabel)")
+                Text("„\(undo.name)“ — \(undo.label)")
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
                 Spacer(minLength: 8)
@@ -296,7 +300,9 @@ struct NowTab: View {
             stockwerkStop = stop
         }
         offerUndo(
-            DeliveredTick(id: stop.id, name: stop.kunde ?? "Stopp", outcome: outcome))
+            DeliveredTick(
+                id: stop.id, name: stop.kunde ?? "Stopp", outcome: outcome,
+                checkpoint: stop.kind != .customer))
     }
 
     /// What is known about this one customer. A linear scan rather than the
@@ -317,7 +323,7 @@ struct NowTab: View {
         // at the bottom of the screen on its own, and the stop it was on has
         // just been replaced by the next one.
         AccessibilityNotification.Announcement(
-            "„\(tick.name)“ \(tick.outcome.shortLabel)"
+            "„\(tick.name)“ \(tick.label)"
         ).post()
         if stockwerkStop == nil { startUndoCountdown() }
     }
@@ -420,9 +426,18 @@ private struct NowStopCard: View {
     private var who: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                StopNumberBadge(
-                    number: number, kind: .current, size: badge,
-                    font: .subheadline.weight(.semibold).monospacedDigit())
+                if isCheckpoint {
+                    Image(systemName: stop.kind == .via ? "shippingbox.fill" : "flag.checkered")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: badge, height: badge)
+                        .background(Circle().fill(Color.accentColor))
+                        .accessibilityHidden(true)
+                } else {
+                    StopNumberBadge(
+                        number: number, kind: .current, size: badge,
+                        font: .subheadline.weight(.semibold).monospacedDigit())
+                }
                 Text(stop.kunde ?? "Stopp")
                     .font(.title2.bold())
                     .fixedSize(horizontal: false, vertical: true)
@@ -537,7 +552,7 @@ private struct NowStopCard: View {
             .buttonStyle(.borderedProminent)
 
             Button(action: onDelivered) {
-                WideButtonLabel("Geliefert", systemImage: "checkmark")
+                WideButtonLabel(isCheckpoint ? "Erledigt" : "Geliefert", systemImage: "checkmark")
             }
             .buttonStyle(.bordered)
             .tint(.delivered)
@@ -547,11 +562,15 @@ private struct NowStopCard: View {
             // because on the day it is needed it is needed with one hand and a
             // warm box in the other — but tinted amber and second, because it
             // is the answer at one door in thirty.
-            Button(action: onNotDelivered) {
-                WideButtonLabel("Nicht zugestellt", systemImage: "bell.slash")
+            //
+            // Not at Lager or Ziel, where there is nobody to be not at home.
+            if !isCheckpoint {
+                Button(action: onNotDelivered) {
+                    WideButtonLabel("Nicht zugestellt", systemImage: "bell.slash")
+                }
+                .buttonStyle(.bordered)
+                .tint(.attention)
             }
-            .buttonStyle(.bordered)
-            .tint(.attention)
 
             // The customer's own number from the Zusteller-Portal — same
             // height as Navigation and Geliefert above it. It used to be
@@ -601,6 +620,8 @@ private struct NowStopCard: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
+
+    private var isCheckpoint: Bool { stop.kind != .customer }
 
     private var telefonURL: URL? {
         stop.telefon?.trimmed.nilIfEmpty.flatMap(PhoneNumbers.dialURL(for:))
@@ -652,8 +673,6 @@ private struct TourDoneView: View {
     /// always a green seal.
     let followUps: [Stop]
     let homeKm: Double
-    let canNavigateHome: Bool
-    let onNavigateHome: () -> Void
     let onFinish: () -> Void
 
     private var allDelivered: Bool { followUps.isEmpty }
@@ -705,23 +724,12 @@ private struct TourDoneView: View {
                 .background(Color.attention.opacity(0.12), in: .rect(cornerRadius: 12))
             }
 
-            VStack(spacing: 8) {
-                if canNavigateHome {
-                    Button(action: onNavigateHome) {
-                        WideButtonLabel("Navigation zum Ziel", systemImage: "flag.checkered")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Button(action: onFinish) {
-                        WideButtonLabel("Tour abschließen", systemImage: "checkmark.seal.fill")
-                    }
-                    .buttonStyle(.bordered)
-                } else {
-                    Button(action: onFinish) {
-                        WideButtonLabel("Tour abschließen", systemImage: "checkmark.seal.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
+            // No "Navigation zum Ziel": Ziel is a stop of its own now, and this
+            // screen only comes up once it has been ticked off.
+            Button(action: onFinish) {
+                WideButtonLabel("Tour abschließen", systemImage: "checkmark.seal.fill")
             }
+            .buttonStyle(.borderedProminent)
             .controlSize(.large)
         }
         .frame(maxWidth: .infinity)

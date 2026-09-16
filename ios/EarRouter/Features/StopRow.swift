@@ -168,7 +168,7 @@ struct StopRow: View {
                 Text(title)
                     .font(.body)
                     .fontWeight(isNext ? .semibold : .regular)
-                    .strikethrough(stop.delivered && stop.kind == .customer)
+                    .strikethrough(stop.delivered && stop.countsAsStop)
                     // A customer who was not home is not crossed off. The line
                     // through a name means "done with"; on the one row somebody
                     // still has to do something about, it means the opposite.
@@ -324,7 +324,8 @@ struct StopRow: View {
         }
     }
 
-    /// The tick on a customer, the in/out switch on a fixed point. Trailing-most
+    /// The tick on a customer and on Lager and Ziel while the tour drives them,
+    /// the in/out switch on Start and on an excluded point. Trailing-most
     /// of the two, because it is the one pressed at every single door and the
     /// edge of the screen is where a thumb lands.
     @ViewBuilder
@@ -344,7 +345,9 @@ struct StopRow: View {
             // its own — without it a tap anywhere in the row fires it.
             .buttonStyle(.borderless)
             .accessibilityLabel(
-                stop.isSettled ? "Stopp wieder öffnen" : "Als zugestellt markieren")
+                stop.isSettled
+                    ? "Stopp wieder öffnen"
+                    : (stop.kind == .customer ? "Als zugestellt markieren" : "Als erledigt markieren"))
             .sensoryFeedback(.impact(weight: .medium), trigger: ticks)
         } else if let onToggleExcluded {
             // The affordance this action never had before it was a control:
@@ -384,7 +387,7 @@ struct StopRow: View {
 
     /// A row the driver is finished with, whichever way it went.
     private var dimmed: Bool {
-        stop.excluded || (stop.isSettled && stop.kind == .customer)
+        stop.excluded || (stop.isSettled && stop.countsAsStop)
     }
 
     private var title: String {
@@ -401,6 +404,8 @@ struct StopRow: View {
         if !stop.listAddress.isEmpty { parts.append(stop.listAddress) }
         if stop.kind == .customer {
             parts.append(stop.outcome?.label ?? "offen")
+        } else if stop.isCheckpoint {
+            parts.append(stop.isSettled ? "erledigt" : "offen")
         }
         if stop.prioritaet && stop.kind == .customer { parts.append("Vorrang") }
         if let paket = stop.displayPaket, !paket.isEmpty { parts.append(paket) }
@@ -465,7 +470,7 @@ struct StopListRow: View {
             info: info,
             eta: eta,
             isNext: isNext,
-            onToggleDelivered: isCustomer ? onToggleDelivered : nil,
+            onToggleDelivered: stop.countsAsStop ? onToggleDelivered : nil,
             onToggleExcluded: isCustomer ? nil : onToggleExcluded,
             onNavigate: onNavigate)
             // Opens the editor. The trailing controls are `.borderless`, so
@@ -475,6 +480,8 @@ struct StopListRow: View {
             .accessibilityHint(
                 isCustomer
                     ? "Doppeltippen zum Bearbeiten"
+                    : stop.isCheckpoint
+                    ? "Auslassen über das Kontextmenü"
                     : (stop.excluded
                         ? "Doppeltippen, um diesen Punkt wieder einzuplanen"
                         : "Doppeltippen, um diesen Punkt für diese Tour auszulassen"))
@@ -486,6 +493,14 @@ struct StopListRow: View {
             // to what this app has always had: deliver one way, delete the
             // other.
             .swipeActions(edge: .leading) {
+                if stop.isCheckpoint {
+                    Button(action: onToggleDelivered) {
+                        Label(
+                            stop.isSettled ? "Offen" : "Erledigt",
+                            systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark")
+                    }
+                    .tint(stop.isSettled ? .attention : .delivered)
+                }
                 if isCustomer {
                     Button(action: onToggleDelivered) {
                         Label(
@@ -581,11 +596,17 @@ struct StopListRow: View {
             Button("Bearbeiten", systemImage: "pencil", action: onTap)
             Button("Löschen", systemImage: "trash", role: .destructive, action: onDelete)
         } else {
+            if stop.isCheckpoint {
+                Button(
+                    stop.isSettled ? "Als offen markieren" : "Als erledigt markieren",
+                    systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark.circle",
+                    action: onToggleDelivered)
+            }
             Divider()
             Button(
                 stop.excluded ? "Wieder einplanen" : "Für diese Tour auslassen",
                 systemImage: stop.excluded ? "arrow.uturn.backward" : "minus.circle",
-                action: onTap)
+                action: onToggleExcluded ?? onTap)
         }
     }
 }

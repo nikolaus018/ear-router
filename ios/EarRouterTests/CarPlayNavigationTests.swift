@@ -34,6 +34,10 @@ struct CarPlayNavigationTests {
             stop.route = route
             context.insert(stop)
         }
+        // Loaded already: these are about which *door* comes next.
+        if !kunden.isEmpty, let lager = route.stops.first(where: { $0.kind == .via }) {
+            lager.record(.delivered)
+        }
         try context.save()
         return route
     }
@@ -116,10 +120,21 @@ struct CarPlayNavigationTests {
         }
     }
 
-    @Test func aTourWithEveryDoorDoneSaysSo() throws {
+    /// Every door done, and the van still has to get back: Ziel is next.
+    @Test func afterTheLastDoorItNavigatesToZiel() throws {
         let context = try context()
         let route = try tour("VM4", in: context)
         for stop in route.customerStops {
+            try RouteStore.record(.delivered, for: stop, in: context)
+        }
+
+        #expect(try CarPlayNavigation.destination(in: context).stop.kind == .end)
+    }
+
+    @Test func aTourWithEveryDoorDoneSaysSo() throws {
+        let context = try context()
+        let route = try tour("VM4", in: context)
+        for stop in route.stops where stop.countsAsStop {
             try RouteStore.record(.delivered, for: stop, in: context)
         }
 

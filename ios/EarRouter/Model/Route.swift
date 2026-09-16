@@ -86,8 +86,10 @@ extension Route {
     /// Doors the driver has answered for, whichever way they answered. What
     /// "how far through is this tour" actually means, and what
     /// "Lieferstatus zurücksetzen" actually clears.
+    ///
+    /// Every kind of stop, because a ticked Lager is cleared by the reset too.
     var settledCount: Int {
-        stops.count { $0.kind == .customer && $0.isSettled }
+        stops.count(where: \.isSettled)
     }
 
     /// Whether every door on the tour has been answered for — which is not the
@@ -98,18 +100,24 @@ extension Route {
     /// in the only sense a driver uses the word. Counting that as incomplete
     /// left a tour that had visibly ended showing "Noch 1 Stopp" until somebody
     /// ticked a meal as delivered that never was.
+    ///
+    /// Lager and Ziel included: a tour is not finished until the van is back.
     var isComplete: Bool {
         var seen = false
-        for s in stops where s.kind == .customer {
+        for s in stops where s.countsAsStop {
             if !s.isSettled { return false }
-            seen = true
+            if s.kind == .customer { seen = true }
         }
         return seen
     }
 
-    /// The next stop the driver has not yet answered for.
+    /// The next stop the driver has not yet ticked off, Lager and Ziel included.
+    /// `nil` on a tour with no customers yet, and Ziel only once nothing else
+    /// is left — the same answer as `RouteSnapshot.nextOpen`.
     var nextOpenStop: Stop? {
-        orderedStops.first(where: \.isOpenDelivery)
+        guard customerCount > 0 else { return nil }
+        let open = orderedStops.filter(\.isOpenStop)
+        return open.first { $0.kind != .end } ?? open.first
     }
 
     /// Total distance and time over the legs that are actually driven. One

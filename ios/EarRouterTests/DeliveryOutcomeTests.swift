@@ -169,9 +169,16 @@ struct DeliveryOutcomeTests {
         #expect(!route.isComplete)
 
         try RouteStore.record(.notHome, for: b, in: context)
-        #expect(route.isComplete)
         #expect(route.deliveredCount == 1)
-        #expect(route.settledCount == 2)
+
+        // Lager and Ziel are stops too: the tour is not done until both are
+        // ticked off.
+        #expect(!route.isComplete)
+        for fixed in route.stops where fixed.isCheckpoint {
+            try RouteStore.setDelivered(fixed, true, in: context)
+        }
+        #expect(route.isComplete)
+        #expect(route.settledCount == 4)
     }
 
     /// And the next-stop card moves past it. A door already answered for is not
@@ -187,8 +194,13 @@ struct DeliveryOutcomeTests {
             context.insert(s)
         }
 
+        #expect(route.nextOpenStop?.kunde == "Lager")
+        try RouteStore.setDelivered(
+            try #require(route.stops.first { $0.kind == .via }), true, in: context)
         #expect(route.nextOpenStop?.kunde == "A")
         try RouteStore.record(.notHome, for: a, in: context)
         #expect(route.nextOpenStop?.kunde == "B")
+        try RouteStore.record(.delivered, for: b, in: context)
+        #expect(route.nextOpenStop?.kunde == "Ziel")
     }
 }

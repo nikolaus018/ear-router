@@ -45,13 +45,16 @@ struct RouteSnapshotTests {
         return s
     }
 
-    private func fixed(_ kind: StopKind, excluded: Bool = false, km: Double? = nil) -> Stop {
+    private func fixed(
+        _ kind: StopKind, excluded: Bool = false, km: Double? = nil, done: Bool = false
+    ) -> Stop {
         let s = Stop(kind: kind, kunde: "Fix", strasse: Coordinates.startAddress,
                      plz: Coordinates.startPlz,
                      lat: Coordinates.start.lat, lon: Coordinates.start.lon,
                      excluded: excluded)
         s.nextLegKm = km
         s.nextLegMin = km
+        if done { s.record(.delivered) }
         return s
     }
 
@@ -138,7 +141,8 @@ struct RouteSnapshotTests {
         let snap = RouteSnapshot(r)
         #expect(snap.remainingKm == snap.totalKm)
         #expect(snap.remainingMinutes == snap.totalMinutes)
-        #expect(snap.openCount == 2)
+        // Two doors, and Lager and Ziel.
+        #expect(snap.openCount == 4)
     }
 
     /// A leg belongs to the stop it leaves from, so ticking off the first
@@ -148,7 +152,7 @@ struct RouteSnapshotTests {
     @Test func deliveringAStopLeavesOnlyTheLegsFromItOnwards() throws {
         let r = try route([
             fixed(.start, km: 20),
-            fixed(.via, km: 5),
+            fixed(.via, km: 5, done: true),
             customer("A", at: 1, delivered: true, km: 2, minutes: 4),
             customer("B", at: 2, km: 3, minutes: 6),
             fixed(.end),
@@ -158,7 +162,8 @@ struct RouteSnapshotTests {
         // Everything before A's own leg is driven; A → B and B → Ziel are not.
         #expect(snap.remainingKm == 5)
         #expect(snap.remainingMinutes == 10)
-        #expect(snap.openCount == 1)
+        // B, and Ziel.
+        #expect(snap.openCount == 2)
     }
 
     /// Ticked off out of order — a customer met on the street and handed their
@@ -232,9 +237,8 @@ struct RouteSnapshotTests {
     }
 
     /// The last meal is handed over and the van still has to get home. That
-    /// drive is real, it is the only thing left, and reporting zero would have
-    /// the app quietly claim the day is over while the driver is 20 km out.
-    @Test func aFinishedTourStillCarriesTheDriveBack() throws {
+    /// drive is real, and it is the one stop left: Ziel.
+    @Test func afterTheLastMealZielIsStillAhead() throws {
         let r = try route([
             fixed(.start, km: 20),
             customer("A", at: 1, delivered: true, km: 2, minutes: 4),
@@ -242,10 +246,66 @@ struct RouteSnapshotTests {
             fixed(.end),
         ])
         let snap = RouteSnapshot(r)
-        #expect(snap.isComplete)
-        #expect(snap.openCount == 0)
+        #expect(!snap.isComplete)
+        #expect(snap.openCount == 1)
+        #expect(snap.nextOpen?.kind == .end)
         #expect(snap.remainingKm == 18)
         #expect(snap.remainingMinutes == 25)
+    }
+
+    /// Ticked off at Ziel, the tour is done and nothing is left to drive.
+    @Test func tickingZielFinishesTheTour() throws {
+        let r = try route([
+            fixed(.start, km: 20),
+            customer("A", at: 1, delivered: true, km: 2, minutes: 4),
+            customer("B", at: 2, delivered: true, km: 18, minutes: 25),
+            fixed(.end, done: true),
+        ])
+        let snap = RouteSnapshot(r)
+        #expect(snap.isComplete)
+        #expect(snap.openCount == 0)
+        #expect(snap.nextOpen == nil)
+        #expect(snap.remainingKm == 0)
+    }
+
+    /// Lager comes before the first door, and until it is ticked off it is the
+    /// stop the driver is on.
+    @Test func lagerIsTheFirstStop() throws {
+        let a = customer("A", at: 1)
+        let via = fixed(.via)
+        let r = try route([fixed(.start), via, a, fixed(.end)])
+        #expect(RouteSnapshot(r).nextOpen?.id == via.id)
+        #expect(r.nextOpenStop?.id == via.id)
+
+        via.record(.delivered)
+        #expect(RouteSnapshot(r).nextOpen?.id == a.id)
+    }
+
+    /// Switched off for this tour, Lager and Ziel are not stops at all.
+    @Test func anExcludedLagerOrZielIsNotAStop() throws {
+        let a = customer("A", at: 1)
+        let r = try route([
+            fixed(.start), fixed(.via, excluded: true), a, fixed(.end, excluded: true),
+        ])
+        let snap = RouteSnapshot(r)
+        #expect(snap.nextOpen?.id == a.id)
+        #expect(snap.openCount == 1)
+        a.record(.delivered)
+        #expect(RouteSnapshot(r).isComplete)
+    }
+
+    /// A tour not optimized yet lists Ziel above the customers added after it.
+    /// It still waits until they are done.
+    @Test func zielWaitsForTheCustomersWhereverItIsListed() throws {
+        let end = fixed(.end)
+        let a = customer("A", at: 1)
+        let r = try route([fixed(.start), fixed(.via, done: true), end, a])
+        #expect(RouteSnapshot(r).nextOpen?.id == a.id)
+        #expect(r.nextOpenStop?.id == a.id)
+
+        a.record(.delivered)
+        #expect(RouteSnapshot(r).nextOpen?.id == end.id)
+        #expect(r.nextOpenStop?.id == end.id)
     }
 
     /// A switched-off fixed point is not driven, so it cannot be part of what
@@ -474,6 +534,8 @@ struct UndoDeliveryTests {
             s.route = route
             context.insert(s)
         }
+        // Loaded already, and Ziel still ahead: these are about the doors.
+        route.stops.first { $0.kind == .via }?.record(.delivered)
         try context.save()
         return (route, first, second)
     }
@@ -531,6 +593,8 @@ struct UndoDeliveryTests {
         let (route, gruber, novak) = try seed(context)
         try RouteStore.setDelivered(gruber, true, in: context)
         try RouteStore.setDelivered(novak, true, in: context)
+        try RouteStore.setDelivered(
+            try #require(route.stops.first { $0.kind == .end }), true, in: context)
         #expect(RouteSnapshot(route).isComplete)
 
         #expect(try RouteStore.undoDelivery(novak.id, on: route, in: context))

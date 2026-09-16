@@ -259,6 +259,20 @@ extension Stop {
     /// Only ever on a customer. The fixed points are not doors.
     var isOpenDelivery: Bool { kind == .customer && !isSettled }
 
+    /// Lager and Ziel, on a tour that drives them. They are ticked off like a
+    /// door — loading at the warehouse and getting back are two stops of the
+    /// shift as much as any customer — but they are not deliveries: no meal,
+    /// no number, no "nicht angetroffen", and no place in the day's report.
+    ///
+    /// Not Start. The driver is standing in it when the tour begins.
+    var isCheckpoint: Bool { (kind == .via || kind == .end) && !excluded }
+
+    /// A stop the tour counts: every customer, and the checkpoints.
+    var countsAsStop: Bool { kind == .customer || isCheckpoint }
+
+    /// A stop still to be ticked off, delivery or checkpoint.
+    var isOpenStop: Bool { countsAsStop && !isSettled }
+
     /// Records what happened here, or re-opens the stop with `nil`.
     ///
     /// The three facts are written together and only here, so they cannot drift:

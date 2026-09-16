@@ -18,6 +18,7 @@ struct RouteSnapshot {
     /// the tour's own progress is measured against, because a customer who was
     /// not home is a door the van is not going back past.
     let settledCount: Int
+    /// The next stop to tick off — a customer, or Lager or Ziel.
     let nextOpen: Stop?
     let totalKm: Double
     let totalMinutes: Double
@@ -61,12 +62,17 @@ struct RouteSnapshot {
     /// between here and there, which driving time alone knows nothing about.
     private let openDoorsBefore: [UUID: Int]
 
-    /// Whether the tour is finished — every door answered for, not every meal
-    /// delivered.
-    var isComplete: Bool { customerCount > 0 && settledCount == customerCount }
+    /// Stops still to be ticked off: the open doors, plus Lager and Ziel while
+    /// they are still ahead.
+    let openCount: Int
 
-    /// Doors the driver has not reached yet.
-    var openCount: Int { customerCount - settledCount }
+    /// Whether the tour is finished — every stop ticked off, Lager and Ziel
+    /// included, not every meal delivered.
+    var isComplete: Bool { customerCount > 0 && openCount == 0 }
+
+    /// Doors the driver has not reached yet — the customers alone, which is
+    /// what the pace per door multiplies.
+    var openDoors: Int { customerCount - settledCount }
 
     func number(_ stop: Stop) -> Int? { numbers[stop.id] }
     func doorCount(_ stop: Stop) -> Int { doorCounts[stop.id] ?? 1 }
@@ -109,7 +115,9 @@ struct RouteSnapshot {
         var customers = 0
         var delivered = 0
         var settled = 0
+        var open = 0
         var next: Stop?
+        var openEnd: Stop?
         var km = 0.0
         var minutes = 0.0
         var followUps: [Stop] = []
@@ -136,7 +144,11 @@ struct RouteSnapshot {
                 if let outcome = stop.outcome {
                     settled += 1
                     if outcome.needsFollowUp { followUps.append(stop) }
-                    // Only while every customer up to here has been settled.
+                }
+            }
+            if stop.countsAsStop {
+                if stop.isSettled {
+                    // Only while every stop up to here has been settled.
                     //
                     // Ticked off in order — the normal case, and the one every
                     // other test in `RouteSnapshotTests` describes — that is
@@ -165,8 +177,16 @@ struct RouteSnapshot {
                         drivenMinutes = minutes
                     }
                 } else {
-                    if next == nil { next = stop }
-                    openSoFar += 1
+                    // Ziel waits for everything else, wherever it is listed: a
+                    // tour that has not been optimized yet still shows it
+                    // above the customers added after it.
+                    if stop.kind == .end {
+                        openEnd = stop
+                    } else if next == nil {
+                        next = stop
+                    }
+                    open += 1
+                    if stop.kind == .customer { openSoFar += 1 }
                 }
             }
             // Only the legs actually driven count towards the tour's totals.
@@ -178,7 +198,10 @@ struct RouteSnapshot {
         self.customerCount = customers
         self.deliveredCount = delivered
         self.settledCount = settled
-        self.nextOpen = next
+        // A tour with no customers yet has nothing to drive: its Lager and Ziel
+        // are not a round to be started, just three points waiting for one.
+        self.openCount = customers > 0 ? open : 0
+        self.nextOpen = customers > 0 ? (next ?? openEnd) : nil
         self.numbers = numbers
         self.totalKm = km
         self.totalMinutes = minutes
@@ -247,8 +270,8 @@ extension RouteSnapshot {
     func eta(for stop: Stop, from now: Date = Date()) -> Date? {
         guard totalMinutes > 0, !stop.isSettled, let arrival = arrivalMinutes[stop.id]
         else { return nil }
-        // Only for a point the van has not reached. The fixed ones carry no
-        // outcome and so can never be "settled": without this the depot sat at
+        // Only for a point the van has not reached. Start carries no outcome
+        // and so can never be "settled": without this the depot sat at
         // the top of the list all day promising an arrival of *now*, first
         // because the driver was standing in it and then, after four
         // deliveries, because the clamp below had nothing left to subtract.
@@ -263,7 +286,7 @@ extension RouteSnapshot {
     /// drives to, doors and all.
     func etaFinish(from now: Date = Date()) -> Date? {
         guard totalMinutes > 0, openCount > 0 else { return nil }
-        let doors = Double(openCount) * pace.minutesPerStop
+        let doors = Double(openDoors) * pace.minutesPerStop
         return now.addingTimeInterval((remainingMinutes + doors) * 60)
     }
 }
