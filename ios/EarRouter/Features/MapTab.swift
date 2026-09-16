@@ -1124,10 +1124,13 @@ enum MapStyleChoice: String, CaseIterable, Identifiable {
     var label: String { self == .standard ? "Karte" : "Satellit" }
     var symbol: String { self == .standard ? "map" : "globe.europe.africa.fill" }
 
+    /// No points of interest on either style. Shops, cafés and bus stops
+    /// crowded the map around the pins, which are the only places on it the
+    /// driver is looking for; streets and their names stay.
     var mapStyle: MapStyle {
         switch self {
-        case .standard: .standard(elevation: .flat)
-        case .hybrid: .hybrid(elevation: .flat)
+        case .standard: .standard(elevation: .flat, pointsOfInterest: .excludingAll)
+        case .hybrid: .hybrid(elevation: .flat, pointsOfInterest: .excludingAll)
         }
     }
 }
