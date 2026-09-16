@@ -13,6 +13,12 @@ struct MapTab: View {
 
     @State private var style: MapStyleChoice = .standard
     @State private var selectedStopID: UUID?
+    /// Which customer of a shared pin the card is showing. `nil` while the
+    /// pin's list of everyone at that address is up instead.
+    @State private var chosenMemberID: UUID?
+    /// Every customer's stop number, worked out with the pins. Not read off
+    /// the marker any more: a shared pin says "3+", not a number.
+    @State private var numbers: [UUID: Int] = [:]
     @State private var error: AppError?
     /// The stop whose floor is being asked about, once its card has closed.
     @State private var stockwerkStop: Stop?
@@ -235,26 +241,41 @@ struct MapTab: View {
                 }
             }
         }
-        .sheet(item: sheetStop, onDismiss: cardDismissed) { stop in
+        .sheet(item: sheetStop, onDismiss: cardDismissed) { tapped in
+            let members = sharedPinMembers(of: tapped)
+            let stop = chosenMemberID.flatMap { id in members.first { $0.id == id } }
+                ?? (members.isEmpty ? tapped : nil)
             // Sized to what the stop actually has, not to a fixed guess. A
             // fixed height gave a customer with no Paket and no Notiz the same
             // card as one carrying both, leaving a band of empty material under
             // the button.
-            StopPreviewSheet(
-                stop: stop,
-                number: customerNumber(of: stop),
-                stockwerk: floor(for: stop),
-                onNavigate: { navigate(to: stop) },
-                onToggleDelivered: { toggleDelivered(stop) },
-                onShowInList: {
-                    if let route { focus.reveal(stop: stop, of: route) }
-                    selectedStopID = nil
-                },
-                // Zero is not a measurement. `onGeometryChange` reports the
-                // card's height as it is torn down too, and writing that back
-                // left the *next* pin's card opening as a sliver until its own
-                // first measure arrived.
-                onMeasure: { if $0 > 0 { previewHeight = $0 } })
+            Group {
+                if let stop {
+                    StopPreviewSheet(
+                        stop: stop,
+                        number: customerNumber(of: stop),
+                        stockwerk: floor(for: stop),
+                        onBack: members.count > 1
+                            ? { chosenMemberID = nil } : nil,
+                        onNavigate: { navigate(to: stop) },
+                        onToggleDelivered: { toggleDelivered(stop) },
+                        onShowInList: {
+                            if let route { focus.reveal(stop: stop, of: route) }
+                            selectedStopID = nil
+                        },
+                        // Zero is not a measurement. `onGeometryChange` reports
+                        // the card's height as it is torn down too, and writing
+                        // that back left the *next* pin's card opening as a
+                        // sliver until its own first measure arrived.
+                        onMeasure: { if $0 > 0 { previewHeight = $0 } })
+                } else {
+                    SharedPinSheet(
+                        stops: members,
+                        number: customerNumber(of:),
+                        onPick: { chosenMemberID = $0.id },
+                        onMeasure: { if $0 > 0 { previewHeight = $0 } })
+                }
+            }
                 // Clamped, because "as tall as its content" has no upper bound
                 // of its own: a Notiz can run to a thousand characters, and a
                 // detent taller than a sheet is allowed to be simply clipped
@@ -275,7 +296,17 @@ struct MapTab: View {
     /// numbering was worked out once when the pins were built, and asking the
     /// route again re-sorted every stop on it to arrive at the same answer.
     private func customerNumber(of stop: Stop) -> Int? {
-        pins.first { $0.id == stop.id }?.monogram.flatMap(Int.init)
+        numbers[stop.id]
+    }
+
+    /// Every customer under the pin this stop heads, in stop order — or empty
+    /// when it is an ordinary pin of its own, or when the card was opened for
+    /// one particular stop rather than by tapping a shared pin.
+    private func sharedPinMembers(of stop: Stop) -> [Stop] {
+        guard let pin = pins.first(where: { $0.id == stop.id }), pin.memberIDs.count > 1,
+              let route
+        else { return [] }
+        return pin.memberIDs.compactMap { id in route.stops.first { $0.id == id } }
     }
 
     private func navigate(to stop: Stop) {
@@ -334,6 +365,7 @@ struct MapTab: View {
     /// ago. The floor is not lost — the customer is simply asked about at the
     /// next delivery, which is what `shouldAsk` already says.
     private func cardDismissed() {
+        chosenMemberID = nil
         guard let stop = pendingStockwerkStop else { return }
         pendingStockwerkStop = nil
         guard focus.tab == .map else { return }
@@ -369,7 +401,11 @@ struct MapTab: View {
             line: line,
             pins: pins,
             style: style,
-            selection: $selectedStopID,
+            // A tap on a pin starts at that pin's list again, not at whichever
+            // customer was last looked at under it.
+            selection: Binding(
+                get: { selectedStopID },
+                set: { selectedStopID = $0; chosenMemberID = nil }),
             fitToken: fitToken,
             followToken: focus.mapFollowToken,
             pointAt: $pointAt)
@@ -388,6 +424,9 @@ struct MapTab: View {
                 focus.mapStopID = nil
                 pointAt = MapFocusRequest(stop: stop, sequence: (pointAt?.sequence ?? 0) + 1)
                 selectedStopID = id
+                // Sent here for this one stop, so its card — not the list of
+                // everyone who shares its pin.
+                chosenMemberID = id
             }
             // `onChange` only fires if the body was evaluated, and a tab sitting
             // in the background is not guaranteed to be — so coming back to this
@@ -562,11 +601,46 @@ struct MapTab: View {
         let end = ordered.first { $0.kind == .end && !$0.excluded }
         let endIsOnStart = start != nil && end != nil && Self.sameSpot(start!, end!)
 
+        // Customers at the same spot share one pin. Drawn separately, the
+        // markers sat exactly on top of each other and only the last one could
+        // be seen or tapped — two households in one building looked like one.
+        var sharing: [UUID: [Stop]] = [:]
+        var underAnother: Set<UUID> = []
+        var heads: [Stop] = []
+        for stop in ordered where stop.kind == .customer {
+            if let head = heads.first(where: { Self.overlaps($0, stop) }) {
+                sharing[head.id, default: [head]].append(stop)
+                underAnother.insert(stop.id)
+            } else {
+                heads.append(stop)
+            }
+        }
+
         var built: [MapPin] = []
         built.reserveCapacity(ordered.count)
         for stop in ordered {
-            guard !stop.excluded else { continue }
+            guard !stop.excluded, !underAnother.contains(stop.id) else { continue }
             if endIsOnStart, stop.kind == .end { continue }
+
+            if let members = sharing[stop.id] {
+                // Coloured by whoever still needs something: an open door
+                // first, then one nobody answered, and green only once every
+                // meal under it is handed over.
+                let lead = members.first { !$0.isSettled }
+                    ?? members.first { $0.outcome?.needsFollowUp == true }
+                    ?? stop
+                built.append(
+                    MapPin(
+                        id: stop.id,
+                        visualState: Self.visualState(for: lead),
+                        coordinate: stop.coordinate,
+                        title: members.map { $0.kunde ?? "Stopp" }.joined(separator: " · "),
+                        monogram: number[stop.id].map { "\($0)+" },
+                        symbol: Self.symbol(for: .customer),
+                        tint: Self.tint(for: lead),
+                        memberIDs: members.map(\.id)))
+                continue
+            }
 
             let title: String
             if stop.kind == .customer {
@@ -589,6 +663,7 @@ struct MapTab: View {
         }
 
         pins = built
+        numbers = number
     }
 
     /// Ramer–Douglas–Peucker. Keeps the corners that define the shape of the
@@ -645,6 +720,17 @@ struct MapTab: View {
         }
 
         return zip(points, keep).compactMap { $1 ? $0 : nil }
+    }
+
+    /// Close enough that the two markers would be drawn on top of each other
+    /// at any zoom a driver uses: about ten metres. Wide enough for one
+    /// address written two ways, tight enough that the house next door keeps
+    /// a pin of its own.
+    private static func overlaps(_ a: Stop, _ b: Stop) -> Bool {
+        let ca = a.coordinate, cb = b.coordinate
+        let dLat = (ca.latitude - cb.latitude) * 111_000
+        let dLon = (ca.longitude - cb.longitude) * 111_000 * cos(ca.latitude * .pi / 180)
+        return dLat * dLat + dLon * dLon < 10 * 10
     }
 
     /// Within about a metre — the precision at which two pins are one pin.
@@ -974,6 +1060,9 @@ private struct MapPin: Identifiable, Equatable {
     let tint: Color
     let latitude: Double
     let longitude: Double
+    /// Every customer this pin stands for, in stop order. One, except where
+    /// several share a spot — see `MapTab.rebuildPins`.
+    let memberIDs: [UUID]
 
     /// The `ForEach` identity: **everything this pin draws**, not just which
     /// stop it is.
@@ -1006,9 +1095,11 @@ private struct MapPin: Identifiable, Equatable {
 
     init(
         id: UUID, visualState: Int, coordinate: CLLocationCoordinate2D,
-        title: String, monogram: String?, symbol: String, tint: Color
+        title: String, monogram: String?, symbol: String, tint: Color,
+        memberIDs: [UUID]? = nil
     ) {
         self.id = id
+        self.memberIDs = memberIDs ?? [id]
         self.title = title
         self.monogram = monogram
         self.symbol = symbol
@@ -1022,6 +1113,7 @@ private struct MapPin: Identifiable, Equatable {
         let lon = Int((coordinate.longitude * 100_000).rounded())
         self.annotationID =
             "\(id.uuidString)-\(visualState)-\(monogram ?? symbol)-\(lat),\(lon)-\(title)"
+            + "-\(self.memberIDs.count)"
     }
 }
 
@@ -1053,6 +1145,9 @@ struct StopPreviewSheet: View {
     var number: Int?
     /// The floor, when this door has been answered for.
     var stockwerk: String?
+    /// Back to the list of everyone at this spot, when the card was opened from
+    /// a shared pin.
+    var onBack: (() -> Void)? = nil
     let onNavigate: () -> Void
     let onToggleDelivered: () -> Void
     let onShowInList: () -> Void
@@ -1077,6 +1172,16 @@ struct StopPreviewSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                if let onBack {
+                    Button(action: onBack) {
+                        Label("Alle an dieser Adresse", systemImage: "chevron.left")
+                            .font(.subheadline.weight(.medium))
+                            .frame(minHeight: 44, alignment: .leading)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.borderless)
+                    .padding(.vertical, -10)
+                }
                 header
                 details
                 actions
@@ -1216,6 +1321,76 @@ struct StopPreviewSheet: View {
     private var hasDetails: Bool {
         !(stop.displayPaket?.trimmed ?? "").isEmpty || !(stop.notiz?.trimmed ?? "").isEmpty
             || stop.precision != nil || !(stockwerk?.trimmed ?? "").isEmpty
+    }
+}
+
+/// What a shared pin opens: everyone at that spot, one row each, in stop
+/// order. Tapping a row opens that customer's own card.
+private struct SharedPinSheet: View {
+    let stops: [Stop]
+    let number: (Stop) -> Int?
+    let onPick: (Stop) -> Void
+    let onMeasure: (CGFloat) -> Void
+
+    @ScaledMetric(relativeTo: .footnote) private var badgeSize: CGFloat = 26
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(stops.count) Stopps an dieser Adresse")
+                    .font(.title3.bold())
+                if let address = stops.first?.listAddress, !address.isEmpty {
+                    Text(address)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(spacing: 0) {
+                    ForEach(stops, id: \.id) { stop in
+                        Button { onPick(stop) } label: { row(stop) }
+                            .buttonStyle(.plain)
+                        if stop.id != stops.last?.id { Divider() }
+                    }
+                }
+                .padding(.top, 8)
+            }
+            .padding(.horizontal)
+            .padding(.top, 22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .safeAreaPadding(.bottom)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onMeasure($0) }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+    }
+
+    private func row(_ stop: Stop) -> some View {
+        HStack(spacing: 12) {
+            StopNumberBadge(number: number(stop), kind: badgeKind(stop), size: badgeSize)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(stop.kunde ?? "Stopp")
+                    .strikethrough(stop.delivered)
+                    .foregroundStyle(stop.isSettled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                    .fixedSize(horizontal: false, vertical: true)
+                if let outcome = stop.outcome {
+                    Text(outcome.label)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 10)
+        .frame(minHeight: 44)
+        .contentShape(.rect)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Öffnet diesen Stopp")
+    }
+
+    private func badgeKind(_ stop: Stop) -> StopNumberBadge.Kind {
+        guard let outcome = stop.outcome else { return .open }
+        return outcome.handedOver ? .done : .missed
     }
 }
 
