@@ -210,10 +210,19 @@ actor Geocoder {
 
         guard let features = await ogdFetch(simplified) else { return nil }
         let streetKey = AddressText.matchKey(AddressText.streetNameOnly(simplified))
-        guard let feature = Self.pickFeature(
+        // Only for the number that was asked for. For a number it does not
+        // know, the register answers with the nearest one it does — "Gentzgasse
+        // 999" comes back as 170, ranked in the hundreds — and that entrance is
+        // a precise point at the wrong house, worse than sending the address.
+        let asked = simplified.split(separator: " ").last
+            .flatMap { Self.entranceNumber(String($0)) }
+        guard let asked,
+              let feature = Self.pickFeature(
                 features, plz: plz, streetKey: streetKey, requireSub: nil),
+              (feature.properties.ranking ?? .greatestFiniteMagnitude) < 1.0,
               let street = feature.properties.streetName,
-              let number = feature.properties.streetNumber.flatMap(Self.entranceNumber)
+              let number = feature.properties.streetNumber.flatMap(Self.entranceNumber),
+              number == asked
         else {
             entrances[key] = Known(point: nil)
             return nil

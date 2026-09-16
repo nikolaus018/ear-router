@@ -357,7 +357,9 @@ enum PaketParser {
             else { return (1, part) }
             // A zero or absurd count, or a count with nothing left after it,
             // means the guess was wrong — keep the driver's original text.
-            return qty > 0 && !label.isEmpty ? (qty, label) : (1, part)
+            // Capped, because the counts are summed across a whole tour and a
+            // pasted "9999999999999999999 x" would overflow `Int` and crash.
+            return qty > 0 && qty <= 999 && !label.isEmpty ? (qty, label) : (1, part)
         }
     }
 
