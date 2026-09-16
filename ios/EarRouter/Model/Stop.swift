@@ -186,6 +186,16 @@ final class Stop {
     /// front of the building and told us where it is.
     var pinned: Bool = false
 
+    /// Where the register puts this address's house number on the street: the
+    /// entrance, as `ogdwien:ZUGANGSADROGD` has it. What a navigation app is
+    /// sent — see `NavigationHandoff`. `lat`/`lon` stay the building or
+    /// Stiege, which is what the map and the route planning want.
+    ///
+    /// `nil` outside Vienna, for an address the register has no entrance for,
+    /// and on every stop imported before this existed.
+    var entranceLat: Double?
+    var entranceLon: Double?
+
     var precisionRaw: String?
     var precision: Precision? {
         get { precisionRaw.flatMap(Precision.init(rawValue:)) }
@@ -310,7 +320,7 @@ extension Stop {
     }
 
     /// "Gentzgasse 129, 1180 Wien, Österreich" — what a navigation app is
-    /// handed. Always this, never the stored point: see `NavigationHandoff`.
+    /// handed when it has no pin or entrance to go to: see `NavigationHandoff`.
     ///
     /// Trimmed to street and housenumber. Stiege, Tür and Parzelle are things
     /// the city's register knows and no navigation app does, so
@@ -329,6 +339,20 @@ extension Stop {
         guard let plz = plz?.trimmed, !plz.isEmpty else { return street }
         let place = Postcodes.placeSuffix(for: plz)
         return street.isEmpty ? place : "\(street), \(place)"
+    }
+
+    /// The house number's entrance, when it is known and usable. Checked
+    /// against the postcode's box for the same reason `coordinate` is.
+    var entrance: CLLocationCoordinate2D? {
+        guard let entranceLat, let entranceLon,
+              Coordinates.isPlausible(lat: entranceLat, lon: entranceLon, forPlz: plz ?? "")
+        else { return nil }
+        return CLLocationCoordinate2D(latitude: entranceLat, longitude: entranceLon)
+    }
+
+    func setEntrance(_ point: (lat: Double, lon: Double)?) {
+        entranceLat = point?.lat
+        entranceLon = point?.lon
     }
 
     /// "Straße, PLZ" — the address as the stop list shows it.

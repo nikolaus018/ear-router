@@ -431,6 +431,60 @@ struct HandoffAndUpstreamTests {
         #expect(!url.contains("48.230100"))
     }
 
+    /// The register's entrance for the house number goes over as a point.
+    @Test func sendsTheEntranceWhenItIsKnown() {
+        let stop = Stop(
+            kind: .customer, kunde: "Fam. A", strasse: "Gentzgasse 129/1", plz: "1180",
+            lat: 48.2301, lon: 16.3201)
+        stop.setEntrance((48.23054851, 16.33060367))
+        #expect(NavigationHandoff.destination(for: stop) == .point(lat: 48.23054851, lon: 16.33060367))
+    }
+
+    /// A pin placed by hand beats the entrance: the driver stood at the door.
+    @Test func aHandPlacedPinBeatsTheEntrance() {
+        let stop = Stop(
+            kind: .customer, kunde: "Fam. A", strasse: "Gentzgasse 129", plz: "1180",
+            lat: 48.2305, lon: 16.3310, pinned: true)
+        stop.setEntrance((48.23054851, 16.33060367))
+        #expect(NavigationHandoff.destination(for: stop) == .point(lat: 48.2305, lon: 16.3310))
+    }
+
+    /// An entrance that is not a usable point is ignored, not driven to.
+    @Test func anUnusableEntranceFallsBackToTheAddress() {
+        let stop = Stop(
+            kind: .customer, kunde: "Fam. A", strasse: "Gentzgasse 129", plz: "1180",
+            lat: 48.2301, lon: 16.3201)
+        stop.setEntrance((0, 0))
+        #expect(NavigationHandoff.destination(for: stop) == .address("Gentzgasse 129, 1180 Wien, Österreich"))
+    }
+
+    /// Picking the number the entrance layer files an address under.
+    @Test func readsTheEntranceNumberOffTheRegistersNumber() {
+        #expect(Geocoder.entranceNumber("82") == "82")
+        #expect(Geocoder.entranceNumber("82-92") == "82")
+        #expect(Geocoder.entranceNumber("82/1") == "82")
+        #expect(Geocoder.entranceNumber("82 Kindertagesheim") == "82")
+        #expect(Geocoder.entranceNumber("12A") == "12a")
+        #expect(Geocoder.entranceNumber("12a/3") == "12a")
+        #expect(Geocoder.entranceNumber("Parz. 5") == nil)
+    }
+
+    /// The prefix query returns "129a" and "1290" for "129"; only 129 counts.
+    @Test func picksOnlyTheExactEntrance() {
+        func entrance(_ number: String, _ plz: String = "1180", lat: Double) -> Geocoder.EntranceFeature {
+            Geocoder.EntranceFeature(
+                geometry: Geocoder.OGDGeometry(coordinates: [16.33, lat]),
+                properties: Geocoder.EntranceProperties(number: number, plz: plz))
+        }
+        let features = [
+            entrance("1290", lat: 48.231), entrance("129a", lat: 48.232),
+            entrance("129", "1170", lat: 48.233), entrance("129", lat: 48.234),
+        ]
+        #expect(Geocoder.pickEntrance(features, number: "129", plz: "1180")?.lat == 48.234)
+        #expect(Geocoder.pickEntrance(features, number: "129a", plz: "1180")?.lat == 48.232)
+        #expect(Geocoder.pickEntrance(features, number: "12", plz: "1180") == nil)
+    }
+
     /// The fallback for a stop with no address text: a point, to six places.
     @Test func thePointFallbackKeepsSixPlaces() {
         let url = NavigationHandoff.Provider.apple.point(lat: 48.2301, lon: 16.3201)

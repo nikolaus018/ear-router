@@ -90,6 +90,9 @@ struct BackupArchive: Codable, Sendable {
         var excluded: Bool
         var pinned: Bool
         var precision: String?
+        /// Absent in files written before entrances existed.
+        var entranceLat: Double? = nil
+        var entranceLon: Double? = nil
     }
 
     struct StockwerkBackup: Codable, Sendable {
@@ -273,7 +276,8 @@ extension BackupArchive.StopBackup {
             settledAt: stop.settledAt, prioritaet: stop.prioritaet,
             nextLegKm: stop.nextLegKm,
             nextLegMin: stop.nextLegMin, createdAt: stop.createdAt,
-            excluded: stop.excluded, pinned: stop.pinned, precision: stop.precisionRaw)
+            excluded: stop.excluded, pinned: stop.pinned, precision: stop.precisionRaw,
+            entranceLat: stop.entranceLat, entranceLon: stop.entranceLon)
     }
 }
 
@@ -487,6 +491,7 @@ enum BackupRestore {
             stop.nextLegKm = s.nextLegKm
             stop.nextLegMin = s.nextLegMin
             stop.createdAt = s.createdAt
+            if let lat = s.entranceLat, let lon = s.entranceLon { stop.setEntrance((lat, lon)) }
             stop.route = route
             context.insert(stop)
         }

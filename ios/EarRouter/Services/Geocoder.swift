@@ -187,6 +187,144 @@ actor Geocoder {
         return result
     }
 
+    // MARK: - Entrance
+
+    /// Where the register puts this address's house number on the street — the
+    /// entrance a navigation app is sent to. `nil` outside Vienna, when either
+    /// lookup fails, and when the register has no entrance for the number.
+    ///
+    /// Two unthrottled calls. The address register first, to learn the street
+    /// and number the way the city spells them: the entrance layer only
+    /// matches its own spelling, and it files "82-92" under "82". Then the
+    /// entrance layer itself, `ogdwien:ZUGANGSADROGD`, which has one point per
+    /// house number — so every Stiege of a Gemeindebau gets the one entrance,
+    /// not a point round the back of the block.
+    ///
+    /// Only the answers are remembered, for this launch. A failed call is not
+    /// an answer and is asked again next time.
+    func entrance(strasse: String, plz: String) async -> (lat: Double, lon: Double)? {
+        guard Postcodes.isVienna(plz) else { return nil }
+        let simplified = AddressText.simplifyHousenumber(AddressText.normalize(strasse))
+        let key = "\(AddressText.matchKey(simplified))|\(plz)"
+        if let known = entrances[key] { return known.point }
+
+        guard let features = await ogdFetch(simplified) else { return nil }
+        let streetKey = AddressText.matchKey(AddressText.streetNameOnly(simplified))
+        guard let feature = Self.pickFeature(
+                features, plz: plz, streetKey: streetKey, requireSub: nil),
+              let street = feature.properties.streetName,
+              let number = feature.properties.streetNumber.flatMap(Self.entranceNumber)
+        else {
+            entrances[key] = Known(point: nil)
+            return nil
+        }
+
+        guard let candidates = await entranceFetch(street: street, number: number, plz: plz)
+        else { return nil }
+        let point = Self.pickEntrance(candidates, number: number, plz: plz)
+        entrances[key] = Known(point: point)
+        return point
+    }
+
+    private struct Known {
+        let point: (lat: Double, lon: Double)?
+    }
+    private var entrances: [String: Known] = [:]
+
+    /// "82" out of "82-92", "82/1" and "82 Kindertagesheim"; "12a" out of
+    /// "12a/3". The part of the number the entrance layer files it under.
+    static func entranceNumber(_ streetNumber: String) -> String? {
+        var digits = ""
+        var rest = streetNumber.trimmed.makeIterator()
+        var next = rest.next()
+        while let c = next, c.isASCII, c.isNumber {
+            digits.append(c)
+            next = rest.next()
+        }
+        guard !digits.isEmpty else { return nil }
+        // One letter straight after the digits belongs to the number — "12a" —
+        // but only if nothing but a separator or the end follows it, so the
+        // "K" of "82 Kindertagesheim" is not mistaken for one.
+        if let c = next, c.isLetter {
+            let after = rest.next()
+            if after == nil || after == "/" || after == " " || after == "-" {
+                return digits + String(c).lowercased()
+            }
+        }
+        return digits
+    }
+
+    /// The entrance whose number is exactly this one — never "129a" or "1290"
+    /// for "129", which the prefix query also returns.
+    static func pickEntrance(
+        _ features: [EntranceFeature], number: String, plz: String
+    ) -> (lat: Double, lon: Double)? {
+        let want = number.lowercased().filter { !$0.isWhitespace }
+        guard let hit = features.first(where: {
+            $0.properties.plz == plz
+                && ($0.properties.number ?? "").lowercased().filter { !$0.isWhitespace } == want
+        }), hit.geometry.coordinates.count == 2
+        else { return nil }
+        let lon = hit.geometry.coordinates[0], lat = hit.geometry.coordinates[1]
+        guard Coordinates.isInVienna(lat: lat, lon: lon) else { return nil }
+        return (lat, lon)
+    }
+
+    /// `nil` when the call failed; an empty list when it answered "none".
+    private func entranceFetch(
+        street: String, number: String, plz: String
+    ) async -> [EntranceFeature]? {
+        // Digits only in the prefix, so "12a" still finds "12A"; the exact
+        // number is picked out of what comes back. Quotes doubled, which is
+        // how CQL escapes them inside a string.
+        let digits = String(number.prefix { $0.isNumber })
+        func quoted(_ s: String) -> String { s.replacingOccurrences(of: "'", with: "''") }
+        let filter = "NAME LIKE '\(quoted(street)) \(digits)%' AND PLZ='\(quoted(plz))'"
+
+        var comps = URLComponents(url: Upstreams.wienEntrances, resolvingAgainstBaseURL: false)
+        comps?.queryItems = [
+            URLQueryItem(name: "service", value: "WFS"),
+            URLQueryItem(name: "request", value: "GetFeature"),
+            URLQueryItem(name: "version", value: "1.1.0"),
+            URLQueryItem(name: "typeName", value: "ogdwien:ZUGANGSADROGD"),
+            URLQueryItem(name: "srsName", value: "EPSG:4326"),
+            URLQueryItem(name: "outputFormat", value: "json"),
+            URLQueryItem(name: "maxFeatures", value: "50"),
+            URLQueryItem(name: "cql_filter", value: filter),
+        ]
+        guard let url = comps?.url else { return nil }
+        do {
+            let (data, response) = try await session.data(from: url)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode)
+            else {
+                log.warning("Wien entrance lookup error status")
+                return nil
+            }
+            return try JSONDecoder().decode(EntranceCollection.self, from: data).features
+        } catch {
+            log.warning("Wien entrance lookup failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private struct EntranceCollection: Decodable {
+        var features: [EntranceFeature] = []
+    }
+    struct EntranceFeature: Decodable {
+        let geometry: OGDGeometry
+        let properties: EntranceProperties
+    }
+    struct EntranceProperties: Decodable {
+        let number: String?
+        let plz: String?
+
+        enum CodingKeys: String, CodingKey {
+            case number = "NAME_ONR"
+            case plz = "PLZ"
+        }
+    }
+
     // MARK: - Vienna OGD
 
     /// Tries, in order of how precisely each form can place the van:
@@ -666,6 +804,9 @@ actor Geocoder {
         let kategorie: String?
         let adresse: String?
         let ranking: Double?
+        /// "82", "129/1", "82 Kindertagesheim" — the number as the register
+        /// writes it, which is what the entrance lookup is asked with.
+        var streetNumber: String? = nil
 
         enum CodingKeys: String, CodingKey {
             case streetName = "StreetName"
@@ -673,6 +814,7 @@ actor Geocoder {
             case kategorie = "Kategorie"
             case adresse = "Adresse"
             case ranking = "Ranking"
+            case streetNumber = "StreetNumber"
         }
     }
 

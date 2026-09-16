@@ -207,6 +207,7 @@ enum RouteStore {
         }
 
         let lat: Double, lon: Double, precision: Precision?, pinned: Bool
+        var entrance: (lat: Double, lon: Double)?
 
         if let coordinate {
             try checkPin(coordinate, plz: plz)
@@ -215,6 +216,7 @@ enum RouteStore {
             let hit = try await Geocoder.shared.geocode(strasse: strasse, plz: plz)
             (lat, lon, pinned) = (hit.lat, hit.lon, false)
             precision = hit.precision == .exact ? nil : hit.precision
+            entrance = await Geocoder.shared.entrance(strasse: strasse, plz: plz)
         }
 
         // The driver pressed Abbrechen while the address was being looked up,
@@ -235,6 +237,7 @@ enum RouteStore {
             // Appended at the end until the optimizer places it properly.
             orderIndex: nextOrderIndex(in: route),
             precision: precision, pinned: pinned)
+        stop.setEntrance(entrance)
         stop.route = route
         context.insert(stop)
         route.markRoutingStale()
@@ -276,9 +279,13 @@ enum RouteStore {
             stop.lon = coordinate.lon
             stop.precision = nil
             stop.pinned = true
+            // The pin is what navigation gets now; an entrance for an address
+            // typed over in the same edit would be somebody else's door.
+            if addressChanged { stop.setEntrance(nil) }
             moved = true
         } else if addressChanged || forceGeocode {
             let hit = try await Geocoder.shared.geocode(strasse: strasse, plz: plz)
+            let entrance = await Geocoder.shared.entrance(strasse: strasse, plz: plz)
             // Before the row is touched at all — see `addStop`. This is the
             // only suspension point in the whole edit, so throwing here leaves
             // the stop exactly as the driver found it rather than half-written
@@ -288,6 +295,7 @@ enum RouteStore {
             stop.lon = hit.lon
             stop.precision = hit.precision == .exact ? nil : hit.precision
             stop.pinned = false
+            stop.setEntrance(entrance)
             moved = true
         }
 
@@ -470,6 +478,8 @@ enum RouteStore {
                     stop.lat = hit.lat
                     stop.lon = hit.lon
                     stop.precision = newPrecision
+                    // Looked up again below, for the address as it now resolves.
+                    stop.setEntrance(nil)
                     improved += 1
                     moved = true
                 } else {
@@ -482,7 +492,20 @@ enum RouteStore {
             }
         }
 
-        guard moved else { return (improved, unchanged, failed, true) }
+        // Every stop still without an entrance gets one looked up — which is
+        // also how a tour imported before entrances existed catches up.
+        let filled = Task.isCancelled ? 0 : await fillEntrances(route.customerStops)
+
+        guard moved else {
+            guard filled > 0 else { return (improved, unchanged, failed, true) }
+            do {
+                try context.save()
+            } catch {
+                context.rollback()
+                return (improved, unchanged, failed, false)
+            }
+            return (improved, unchanged, failed, true)
+        }
 
         route.markRoutingStale()
         do {
@@ -690,6 +713,7 @@ enum RouteStore {
                 stop.lon = hit.lon
                 stop.precision = precision
                 stop.pinned = false
+                stop.setEntrance(nil)
                 result.moved += 1
             } else {
                 let stop = Stop(
@@ -736,11 +760,64 @@ enum RouteStore {
         if moved {
             route.markRoutingStale()
         }
+        // New and moved stops, and any already on the route from before
+        // entrances existed. Best effort: a stop left without one is still
+        // navigated to by its address.
+        if !result.cancelled {
+            await fillEntrances(route.customerStops)
+        }
         try context.save()
         if moved {
             await RouteOptimizer.optimizeBestEffort(route, in: context)
         }
         return result
+    }
+
+    /// Looks up the entrance for every stop that should have one and does
+    /// not: Viennese, not pinned by hand. Six at a time — the register has no
+    /// published rate limit, and a tour of thirty should not take thirty
+    /// seconds. Returns how many were written; does not save.
+    @discardableResult
+    static func fillEntrances(_ stops: [Stop]) async -> Int {
+        let wanted = stops.filter {
+            $0.kind == .customer && !$0.pinned && $0.entranceLat == nil
+                && Postcodes.isVienna($0.plz ?? "")
+                && !($0.strasse?.trimmed.isEmpty ?? true)
+        }
+        guard !wanted.isEmpty else { return 0 }
+
+        struct Job: Sendable { let id: UUID; let strasse: String; let plz: String }
+        struct Found: Sendable { let id: UUID; let lat: Double; let lon: Double }
+        var jobs = wanted.map { Job(id: $0.id, strasse: $0.strasse ?? "", plz: $0.plz ?? "") }
+            .makeIterator()
+
+        var found: [UUID: Found] = [:]
+        await withTaskGroup(of: Found?.self) { group in
+            func start(_ job: Job) {
+                group.addTask {
+                    guard let p = await Geocoder.shared.entrance(
+                        strasse: job.strasse, plz: job.plz)
+                    else { return nil }
+                    return Found(id: job.id, lat: p.lat, lon: p.lon)
+                }
+            }
+            for _ in 0..<6 {
+                guard let job = jobs.next() else { break }
+                start(job)
+            }
+            for await result in group {
+                if let result { found[result.id] = result }
+                if let job = jobs.next() { start(job) }
+            }
+        }
+
+        var written = 0
+        for stop in wanted {
+            guard let f = found[stop.id] else { continue }
+            stop.setEntrance((f.lat, f.lon))
+            written += 1
+        }
+        return written
     }
 
     // MARK: - Validation

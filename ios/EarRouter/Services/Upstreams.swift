@@ -15,6 +15,9 @@ struct Upstreams: Sendable, Equatable {
 
     static let defaultWienOGD = URL(
         string: "https://data.wien.gv.at/daten/OGDAddressService.svc/GetAddressInfo")!
+    /// Vienna's geodata WFS, for `ogdwien:ZUGANGSADROGD` — the entrance point
+    /// of every house number. Not configurable, like the register above it.
+    static let wienEntrances = URL(string: "https://data.wien.gv.at/daten/geo")!
     static let defaultNominatim = URL(
         string: "https://nominatim.openstreetmap.org/search")!
     /// The self-hosted OSRM, reachable from anywhere over a Cloudflare tunnel.

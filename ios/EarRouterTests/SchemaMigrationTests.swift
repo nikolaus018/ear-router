@@ -130,8 +130,9 @@ struct SchemaMigrationTests {
         #expect(EarRouterSchemaV4.versionIdentifier == Schema.Version(4, 0, 0))
         #expect(EarRouterSchemaV5.versionIdentifier == Schema.Version(5, 0, 0))
         #expect(EarRouterSchemaV6.versionIdentifier == Schema.Version(6, 0, 0))
-        #expect(EarRouterMigrationPlan.schemas.count == 6)
-        #expect(EarRouterMigrationPlan.stages.count == 5)
+        #expect(EarRouterSchemaV7.versionIdentifier == Schema.Version(7, 0, 0))
+        #expect(EarRouterMigrationPlan.schemas.count == 7)
+        #expect(EarRouterMigrationPlan.stages.count == 6)
     }
 
     /// SwiftData identifies entities by these stable names, not by the nested
@@ -378,6 +379,41 @@ struct SchemaMigrationTests {
         #expect(kept.stockwerk == "3")
         #expect(kept.notiz == nil)
         #expect(!StockwerkStore.shouldAsk(novak, in: context))
+    }
+
+    /// V7 adds a stop's entrance point. A store written by today's app has to
+    /// open with its tours and ticks intact, and no entrance yet.
+    @Test func aV6StoreOpensAsV7WithTheTourIntact() throws {
+        let url = temporaryStoreURL()
+        defer { removeStore(at: url) }
+
+        do {
+            let schema = Schema(versionedSchema: EarRouterSchemaV6.self)
+            let v6 = try ModelContainer(
+                for: schema, configurations: ModelConfiguration(schema: schema, url: url))
+            let context = ModelContext(v6)
+
+            let route = EarRouterSchemaV6.Route(name: "Tour 16.09.2026")
+            context.insert(route)
+            let stop = EarRouterSchemaV6.Stop(kind: .customer, lat: 48.2301, lon: 16.3201)
+            stop.kunde = "Fam. Gruber"
+            stop.strasse = "Gentzgasse 129"
+            stop.plz = "1180"
+            stop.delivered = true
+            stop.outcomeRaw = DeliveryOutcome.delivered.rawValue
+            stop.route = route
+            context.insert(stop)
+            try context.save()
+        }
+
+        let context = ModelContext(try AppSchema.container(url: url))
+        let route = try #require(try context.fetch(FetchDescriptor<Route>()).first)
+        let gruber = try #require(route.customerStops.first)
+        #expect(gruber.kunde == "Fam. Gruber")
+        #expect(gruber.outcome == .delivered)
+        #expect(gruber.lat == 48.2301)
+        #expect(gruber.entranceLat == nil)
+        #expect(gruber.entrance == nil)
     }
 
     /// And a floor written today is still there after a relaunch — the same

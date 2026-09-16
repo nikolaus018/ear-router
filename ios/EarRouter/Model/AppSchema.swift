@@ -441,13 +441,108 @@ enum EarRouterSchemaV6: VersionedSchema {
     static var models: [any PersistentModel.Type] {
         [Route.self, Stop.self, StockwerkNote.self]
     }
+
+    @Model
+    final class Route {
+        var id: UUID = UUID()
+        var name: String = ""
+        var statusRaw: String = RouteStatus.active.rawValue
+        var createdAt: Date = Date()
+        var completedAt: Date?
+        var geometryFlat: [Double] = []
+        var needsOptimize: Bool = false
+
+        @Relationship(deleteRule: .cascade, inverse: \Stop.route)
+        var stops: [Stop] = []
+
+        init(name: String = "") {
+            self.id = UUID()
+            self.name = name
+            self.statusRaw = RouteStatus.active.rawValue
+            self.createdAt = Date()
+            self.geometryFlat = []
+            self.needsOptimize = false
+            self.stops = []
+        }
+    }
+
+    @Model
+    final class Stop {
+        var id: UUID = UUID()
+        var kindRaw: String = StopKind.customer.rawValue
+        var kunde: String?
+        var strasse: String?
+        var plz: String?
+        var paket: String?
+        var notiz: String?
+        var telefon: String?
+        var lat: Double = 0
+        var lon: Double = 0
+        var orderIndex: Int = 0
+        var delivered: Bool = false
+        var outcomeRaw: String?
+        var settledAt: Date?
+        var prioritaet: Bool = false
+        var nextLegKm: Double?
+        var nextLegMin: Double?
+        var createdAt: Date = Date()
+        var excluded: Bool = false
+        var pinned: Bool = false
+        var precisionRaw: String?
+        var route: Route?
+
+        init(kind: StopKind = .customer, lat: Double = 0, lon: Double = 0) {
+            self.id = UUID()
+            self.kindRaw = kind.rawValue
+            self.lat = lat
+            self.lon = lon
+            self.createdAt = Date()
+        }
+    }
+
+    @Model
+    final class StockwerkNote {
+        var id: UUID = UUID()
+        var key: String = ""
+        var kunde: String = ""
+        var strasse: String = ""
+        var plz: String = ""
+        var stockwerk: String?
+        var notiz: String?
+        var dontAsk: Bool = false
+        var updatedAt: Date = Date()
+
+        init(key: String = "", kunde: String = "", strasse: String = "", plz: String = "") {
+            self.id = UUID()
+            self.key = key
+            self.kunde = kunde
+            self.strasse = strasse
+            self.plz = plz
+            self.updatedAt = Date()
+        }
+    }
+}
+
+/// V7 stores each stop's entrance — the point the register gives its house
+/// number on the street — beside the building point, for the navigation app.
+///
+/// Lightweight: two optional columns arrive, empty on every stop already on
+/// the phone, and nothing else moves. Those stops keep being navigated to by
+/// address until "Adressen prüfen" or a re-import fills them in.
+enum EarRouterSchemaV7: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(7, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [Route.self, Stop.self, StockwerkNote.self]
+    }
 }
 
 /// How the store gets from one schema version to the next.
 enum EarRouterMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [EarRouterSchemaV1.self, EarRouterSchemaV2.self, EarRouterSchemaV3.self,
-         EarRouterSchemaV4.self, EarRouterSchemaV5.self, EarRouterSchemaV6.self]
+         EarRouterSchemaV4.self, EarRouterSchemaV5.self, EarRouterSchemaV6.self,
+         EarRouterSchemaV7.self]
     }
 
     /// Both lightweight, because adding and dropping a standalone entity takes
@@ -461,12 +556,13 @@ enum EarRouterMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: EarRouterSchemaV3.self, toVersion: EarRouterSchemaV4.self),
             .lightweight(fromVersion: EarRouterSchemaV4.self, toVersion: EarRouterSchemaV5.self),
             .lightweight(fromVersion: EarRouterSchemaV5.self, toVersion: EarRouterSchemaV6.self),
+            .lightweight(fromVersion: EarRouterSchemaV6.self, toVersion: EarRouterSchemaV7.self),
         ]
     }
 }
 
 enum AppSchema {
-    static let current = Schema(versionedSchema: EarRouterSchemaV6.self)
+    static let current = Schema(versionedSchema: EarRouterSchemaV7.self)
 
     /// Opens the store. `url` is only for tests — the app always wants the
     /// default location, which is the same file the unversioned container used,

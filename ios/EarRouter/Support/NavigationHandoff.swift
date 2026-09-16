@@ -1,26 +1,24 @@
+import CoreLocation
 import Foundation
 
 /// Hands a stop to whichever navigation app the driver uses.
 ///
-/// Always as an address, never as a point — the driver's call, and the split
-/// is deliberate. The *map in this app* is drawn from the register's own
-/// coordinates, because that is what shows which side of a Gemeindebau the
-/// door is on. The *navigation app* gets the address, because a point is
-/// something it routes to the nearest bit of road it happens to know, while an
-/// address is something it has indexed, can show as a street name the driver
-/// recognises, and plans a sensible arrival for.
+/// In this order, the driver's call:
 ///
-/// This used to send an exactly-known stop as a point. It is the address now
-/// for every stop; the point is kept only as the fallback for a stop that has
-/// no address text at all — see `url(for:)`.
+/// 1. **A pin placed by hand.** The driver stood at the door and said where
+///    it is.
+/// 2. **The house number's entrance**, from Vienna's register
+///    (`Stop.entrance`). Sending the address alone left Waze guessing, and
+///    for some addresses guessing wrong.
+/// 3. **The address**, for everything else — outside Vienna, and stops whose
+///    entrance is not known yet.
 ///
-/// Sending the register's own point for a Stiege was weighed and turned down.
-/// The register does place each Stiege of a Gemeindebau separately — up to
-/// half a kilometre apart under one address at Rennbahnweg 27 — but a Stiege
-/// is just as often an internal staircase of one building whose only way in
-/// is the street door at the address, and a point drives the driver round to
-/// the wrong side of it. The address is right far more often, so it is the
-/// only thing sent.
+/// Not the building or Stiege point the map draws. The register places each
+/// Stiege of a Gemeindebau separately — up to half a kilometre apart at
+/// Rennbahnweg 27 — and a Stiege is often just a staircase inside a building
+/// whose only way in is the street door, so that point drives round to the
+/// wrong side. The entrance layer has one point per house number, on the
+/// street, which is where the van stops.
 enum NavigationHandoff {
 
     enum Provider: String, CaseIterable, Identifiable {
@@ -90,19 +88,38 @@ enum NavigationHandoff {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: providerKey) }
     }
 
-    /// The address — see `Stop.navigationAddress` for the form it takes.
+    /// Pin, then entrance, then address — see the type's own comment.
     ///
-    /// The stored point only for a stop with no address text at all, which no
-    /// screen in this app can create but a hand-edited backup could. Even then
-    /// through the postcode's own box, not `isFinite`: an unusable row's
-    /// stored `0, 0` is finite, and handing that over would navigate the
-    /// driver confidently into the Atlantic.
+    /// Every point through the postcode's own box, not `isFinite`: an unusable
+    /// row's stored `0, 0` is finite, and handing that over would navigate the
+    /// driver confidently into the Atlantic. The stored building point is
+    /// still the last resort for a stop with no address text at all, which no
+    /// screen can create but a hand-edited backup could.
     static func url(for stop: Stop) -> URL? {
-        let p = provider
+        destination(for: stop).url(provider)
+    }
+
+    enum Destination: Equatable {
+        case point(lat: Double, lon: Double)
+        case address(String)
+        case none
+
+        func url(_ p: Provider) -> URL? {
+            switch self {
+            case .point(let lat, let lon): p.point(lat: lat, lon: lon)
+            case .address(let a): p.address(a)
+            case .none: nil
+            }
+        }
+    }
+
+    static func destination(for stop: Stop) -> Destination {
+        let plausible = Coordinates.isPlausible(
+            lat: stop.lat, lon: stop.lon, forPlz: stop.plz ?? "")
+        if stop.pinned, plausible { return .point(lat: stop.lat, lon: stop.lon) }
+        if let e = stop.entrance { return .point(lat: e.latitude, lon: e.longitude) }
         let address = stop.navigationAddress
-        if !address.isEmpty { return p.address(address) }
-        guard Coordinates.isPlausible(lat: stop.lat, lon: stop.lon, forPlz: stop.plz ?? "")
-        else { return nil }
-        return p.point(lat: stop.lat, lon: stop.lon)
+        if !address.isEmpty { return .address(address) }
+        return plausible ? .point(lat: stop.lat, lon: stop.lon) : .none
     }
 }
