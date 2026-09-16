@@ -35,34 +35,11 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
 
     @ObservationIgnored private let manager = CLLocationManager()
 
-    /// Where the driver is, kept current only while the Karte is following
-    /// them — see `startFollowing`. Seeded from Core Location's last fix.
-    private(set) var liveLocation: CLLocation?
-    /// Which way the phone is pointing, in degrees from north. `nil` until the
-    /// compass answers, and on a device without one.
-    private(set) var heading: Double?
-
-    @ObservationIgnored private var following = false
-
-    /// Position and compass updates for the Karte's close-in follow. Stopped
-    /// again as soon as the map stops following, so nothing runs in the
-    /// background of a tour.
-    func startFollowing() {
-        guard status == .authorizedWhenInUse || status == .authorizedAlways else { return }
-        following = true
-        liveLocation = manager.location
-        manager.distanceFilter = 2
-        manager.headingFilter = 3
-        manager.startUpdatingLocation()
-        if CLLocationManager.headingAvailable() { manager.startUpdatingHeading() }
-    }
-
-    func stopFollowing() {
-        guard following else { return }
-        following = false
-        manager.stopUpdatingLocation()
-        manager.stopUpdatingHeading()
-        manager.distanceFilter = kCLDistanceFilterNone
+    /// The most recent position Core Location has, for aiming the map before
+    /// tracking takes over. Can be a little old; the tracking that follows
+    /// corrects it.
+    var lastKnownCoordinate: CLLocationCoordinate2D? {
+        manager.location?.coordinate
     }
 
     private override init() {
@@ -101,7 +78,7 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
 
     /// The first fix is in: nothing else in the app needs Core Location running.
     private func stopWaiting() {
-        if !following { manager.stopUpdatingLocation() }
+        manager.stopUpdatingLocation()
         hasFix = true
     }
 
@@ -131,22 +108,9 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(
         _ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]
     ) {
-        guard let last = locations.last else { return }
+        guard !locations.isEmpty else { return }
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            if self.following { self.liveLocation = last }
-            self.stopWaiting()
-        }
-    }
-
-    nonisolated func locationManager(
-        _ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading
-    ) {
-        guard newHeading.headingAccuracy >= 0 else { return }
-        let degrees = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
-        Task { @MainActor [weak self] in
-            guard let self, self.following else { return }
-            self.heading = degrees
+            self?.stopWaiting()
         }
     }
 
