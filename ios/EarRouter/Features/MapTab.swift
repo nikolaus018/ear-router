@@ -1127,10 +1127,14 @@ enum MapStyleChoice: String, CaseIterable, Identifiable {
     /// No points of interest on either style. Shops, cafés and bus stops
     /// crowded the map around the pins, which are the only places on it the
     /// driver is looking for; streets and their names stay.
+    ///
+    /// Realistic elevation, so tilting the map with two fingers shows the
+    /// buildings and terrain in 3D, the way Apple Maps does. Looking straight
+    /// down it draws the same as before.
     var mapStyle: MapStyle {
         switch self {
-        case .standard: .standard(elevation: .flat, pointsOfInterest: .excludingAll)
-        case .hybrid: .hybrid(elevation: .flat, pointsOfInterest: .excludingAll)
+        case .standard: .standard(elevation: .realistic, pointsOfInterest: .excludingAll)
+        case .hybrid: .hybrid(elevation: .realistic, pointsOfInterest: .excludingAll)
         }
     }
 }
