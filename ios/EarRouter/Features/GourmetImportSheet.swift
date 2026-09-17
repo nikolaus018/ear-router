@@ -502,3 +502,86 @@ struct GourmetStopSelectionView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
+
+// MARK: - Signing in on its own
+
+/// The portal login as a screen of its own, for the places that need a login
+/// before they can do anything and have no banner of their own to report
+/// progress in. Checks the password with one round trip, stores it in the
+/// Keychain, and says so through `onSignedIn`.
+struct GourmetLoginForm: View {
+    var onSignedIn: () -> Void
+
+    @State private var username = ""
+    @State private var password = ""
+    @State private var signingIn = false
+    @State private var error: AppError?
+    @State private var task: Task<Void, Never>?
+    @FocusState private var field: Field?
+    private enum Field: Hashable { case username, password }
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Benutzername", text: $username)
+                    .textContentType(.username)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.emailAddress)
+                    .submitLabel(.next)
+                    .focused($field, equals: .username)
+                    .onSubmit { field = .password }
+                SecureField("Passwort", text: $password)
+                    .textContentType(.password)
+                    .submitLabel(.go)
+                    .focused($field, equals: .password)
+                    .onSubmit(start)
+            } header: {
+                Text("Zusteller-Portal")
+            } footer: {
+                Text(
+                    "Dieselben Zugangsdaten wie im Zusteller-Portal im Browser. Sie werden "
+                        + "verschlüsselt auf diesem Gerät gespeichert.")
+            }
+            Section {
+                Button(action: start) {
+                    HStack {
+                        Text("Anmelden")
+                        Spacer()
+                        if signingIn { ProgressView() }
+                    }
+                }
+                .disabled(!canSignIn)
+            }
+        }
+        .errorAlert($error)
+        .onDisappear { task?.cancel() }
+    }
+
+    private var canSignIn: Bool {
+        !username.trimmed.isEmpty && !password.isEmpty && !signingIn
+    }
+
+    private func start() {
+        guard canSignIn else { return }
+        field = nil
+        task = Task { await signIn() }
+    }
+
+    private func signIn() async {
+        signingIn = true
+        defer { signingIn = false }
+        let credentials = GourmetPortal.Credentials(username: username.trimmed, password: password)
+        do {
+            _ = try await GourmetPortal.login(credentials)
+            GourmetCredentialsStore.save(credentials)
+            password = ""
+            onSignedIn()
+        } catch is CancellationError {
+        } catch let e as AppError {
+            error = e
+        } catch {
+            self.error = AppError.message("Anmeldung fehlgeschlagen.")
+        }
+    }
+}

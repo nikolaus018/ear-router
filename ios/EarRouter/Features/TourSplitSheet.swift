@@ -25,17 +25,23 @@ struct TourSplitSheet: View {
     @State private var loadTask: Task<Void, Never>?
     @State private var error: AppError?
     @State private var split: SplitState?
+    /// Read once, not in `body`: every redraw of this screen was a Keychain
+    /// query, and signing in here has to be able to flip it.
+    @State private var signedIn = GourmetCredentialsStore.load() != nil
 
     var body: some View {
         NavigationStack {
             Group {
-                if GourmetCredentialsStore.load() == nil {
-                    ContentUnavailableView(
-                        "Nicht angemeldet", systemImage: "person.crop.circle.badge.questionmark",
-                        description: Text(
-                            "Zuerst unter Touren → „Vom Zusteller-Portal“ anmelden."))
-                } else {
+                if signedIn {
                     form
+                } else {
+                    // Right here, rather than a pointer to the import screen
+                    // in another tab: splitting a tour is often the first
+                    // thing anybody does with the portal on this phone.
+                    GourmetLoginForm {
+                        signedIn = true
+                        Task { await loadTours() }
+                    }
                 }
             }
             .navigationTitle("Tour aufteilen")
@@ -58,7 +64,7 @@ struct TourSplitSheet: View {
             .errorAlert($error)
             .interactiveDismissDisabled(busy != nil)
             .task {
-                if GourmetCredentialsStore.load() != nil { await loadTours() }
+                if signedIn { await loadTours() }
             }
             .onChange(of: date) { _, _ in reconcileSelection() }
         }
@@ -354,6 +360,7 @@ private struct TourSplitMapView: View {
     @State private var fitToken = 0
     @State private var focus: SplitFocus?
     @State private var tapTick = 0
+    @State private var confirmingClose = false
     @State private var lassoTick = 0
 
     private var color: Color { SplitState.colors[person] }
@@ -380,7 +387,11 @@ private struct TourSplitMapView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Schließen", systemImage: "xmark") { dismiss() }
+                    Button("Schließen", systemImage: "xmark") {
+                        // Nothing here is saved, so a split that is half done
+                        // is not closed on one stray tap.
+                        if state.owner.isEmpty { dismiss() } else { confirmingClose = true }
+                    }
                 }
             }
             .sensoryFeedback(.selection, trigger: tapTick)
@@ -389,6 +400,8 @@ private struct TourSplitMapView: View {
         .sheet(isPresented: .constant(true)) {
             SplitPanel(
                 state: $state, person: $person, showingResult: $showingResult,
+                confirmingClose: $confirmingClose,
+                onClose: { dismiss() },
                 onFocus: { stop in
                     focus = SplitFocus(id: stop.id, sequence: (focus?.sequence ?? 0) + 1)
                 }
@@ -514,11 +527,34 @@ private struct SplitMapView: UIViewRepresentable {
             stop.coordinate.map { SplitAnnotation(id: stop.id, name: stop.name, coordinate: $0) }
         }
         coordinator.annotations = Dictionary(uniqueKeysWithValues: annotations.map { ($0.id, $0) })
+        coordinator.offsets = Self.fanOut(annotations)
         map.addAnnotations(annotations)
 
         map.onFirstLayout = { [weak coordinator] in coordinator?.fit(animated: false) }
         coordinator.lastFit = fitToken
         return map
+    }
+
+    /// Customers at the very same point — two flats in one Gemeindebau — are
+    /// spread into a small ring, so each has a pin of its own to tap instead
+    /// of one hiding under the other.
+    static func fanOut(_ annotations: [SplitAnnotation]) -> [Int: CGPoint] {
+        var groups: [String: [SplitAnnotation]] = [:]
+        for annotation in annotations {
+            let key = String(
+                format: "%.5f,%.5f", annotation.coordinate.latitude, annotation.coordinate.longitude)
+            groups[key, default: []].append(annotation)
+        }
+        var out: [Int: CGPoint] = [:]
+        for group in groups.values where group.count > 1 {
+            let radius = SplitPinView.disc * 0.6 + CGFloat(group.count) * 2
+            for (i, annotation) in group.sorted(by: { $0.id < $1.id }).enumerated() {
+                let angle = 2 * Double.pi * Double(i) / Double(group.count) - Double.pi / 2
+                out[annotation.id] = CGPoint(
+                    x: radius * CGFloat(cos(angle)), y: radius * CGFloat(sin(angle)))
+            }
+        }
+        return out
     }
 
     func updateUIView(_ map: SplitMKMapView, context: Context) {
@@ -540,6 +576,8 @@ private struct SplitMapView: UIViewRepresentable {
         var parent: SplitMapView!
         weak var map: MKMapView?
         var annotations: [Int: SplitAnnotation] = [:]
+        /// Screen offsets for pins that share a point — see `fanOut`.
+        var offsets: [Int: CGPoint] = [:]
         var lassoRecognizer: UIPanGestureRecognizer!
         let lassoLayer = CAShapeLayer()
         var lastFit = 0
@@ -611,7 +649,11 @@ private struct SplitMapView: UIViewRepresentable {
             guard let map, stroke.count > 2 else { return [] }
             return annotations.values.compactMap { annotation in
                 guard parent.owner[annotation.id] == nil else { return nil }
-                let point = map.convert(annotation.coordinate, toPointTo: map)
+                var point = map.convert(annotation.coordinate, toPointTo: map)
+                if let offset = offsets[annotation.id] {
+                    point.x += offset.x
+                    point.y += offset.y
+                }
                 return Lasso.catches(point, in: stroke, radius: SplitPinView.disc / 2)
                     ? annotation.id : nil
             }
@@ -659,6 +701,7 @@ private struct SplitMapView: UIViewRepresentable {
                 mapView.dequeueReusableAnnotationView(
                     withIdentifier: SplitPinView.reuseID, for: annotation) as! SplitPinView
             view.onTap = { [weak self] in self?.parent.onTap(annotation.id) }
+            view.centerOffset = offsets[annotation.id] ?? .zero
             view.configure(
                 owner: parent.owner[annotation.id], person: parent.person,
                 pending: pending.contains(annotation.id), animated: false)
@@ -875,6 +918,10 @@ private struct SplitPanel: View {
     @Binding var state: SplitState
     @Binding var person: Int
     @Binding var showingResult: Bool
+    /// Asked from here rather than from the map underneath: this panel is the
+    /// screen in front, and only the one in front can present anything.
+    @Binding var confirmingClose: Bool
+    var onClose: () -> Void
     var onFocus: (SplitStop) -> Void
 
     private var isLast: Bool { person == state.people - 1 }
@@ -903,7 +950,7 @@ private struct SplitPanel: View {
                             }
                     }
                 } header: {
-                    Text("Person \(person + 1) · \(state.stops(of: person).count) Stopps")
+                    Text("Person \(person + 1) · \(Format.stops(state.stops(of: person).count))")
                 }
 
                 let unplaced = state.stops.filter { $0.coordinate == nil }
@@ -946,6 +993,14 @@ private struct SplitPanel: View {
         }
         .sheet(isPresented: $showingResult) {
             SplitResultSheet(state: state)
+        }
+        .confirmationDialog(
+            "Aufteilung verwerfen?", isPresented: $confirmingClose, titleVisibility: .visible
+        ) {
+            Button("Verwerfen", role: .destructive, action: onClose)
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Die Aufteilung wird nicht gespeichert. Vorher über die Übersicht teilen.")
         }
     }
 
