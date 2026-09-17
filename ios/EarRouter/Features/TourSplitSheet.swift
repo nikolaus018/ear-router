@@ -486,9 +486,8 @@ private struct TourSplitMapView: View {
                         }
                         .disabled(!state.canUndo)
                         Button("Rest an Person \(person + 1)", systemImage: "tray.and.arrow.down") {
-                            withAnimation(.snappy) {
-                                state.claim(state.stops(of: nil).map(\.id), for: person)
-                            }
+                            let free = state.stops(of: nil).map(\.id)
+                            withAnimation(.snappy) { _ = state.claim(free, for: person) }
                         }
                         .disabled(state.freeCount == 0)
                         Divider()
@@ -831,7 +830,11 @@ private final class SplitMKMapView: MKMapView {
         super.layoutSubviews()
         guard bounds.width > 0, let first = onFirstLayout else { return }
         onFirstLayout = nil
-        DispatchQueue.main.async(execute: first)
+        // Through a `Task` on the main actor rather than `DispatchQueue`: the
+        // closure comes from a `@MainActor` view, and handing a non-`Sendable`
+        // function to GCD is exactly the hole Swift 6 concurrency checking is
+        // there to close.
+        Task { @MainActor in first() }
     }
 }
 

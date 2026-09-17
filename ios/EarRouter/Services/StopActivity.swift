@@ -118,7 +118,9 @@ enum StopActivity {
 
     private nonisolated static func endAll() async {
         for activity in Activity<StopActivityAttributes>.activities {
-            await activity.end(dismissalPolicy: .immediate)
+            // `end(_:dismissalPolicy:)`, with no new content: the older
+            // one-argument form has been deprecated since iOS 16.2.
+            await activity.end(nil, dismissalPolicy: .immediate)
         }
     }
 
