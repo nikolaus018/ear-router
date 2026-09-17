@@ -74,9 +74,14 @@ struct TourSplitSheet: View {
         // nothing picked.
         .fullScreenCover(item: $split) { state in
             TourSplitMapView(state: state) {
-                // A share became a tour and the driver asked to see it: the
-                // split screen and this sheet both step out of the way.
-                split = nil
+                // A share became a tour: this whole screen steps out of the
+                // way so the driver lands on it under Touren.
+                //
+                // `dismiss()` alone, and it has to be alone: clearing `split`
+                // first starts the cover's own dismissal, and the sheet's
+                // dismiss arriving mid-animation was swallowed — the map went
+                // away and the driver was left sitting on the setup form.
+                // Dismissing the sheet takes the cover with it anyway.
                 dismiss()
             }
         }
@@ -976,7 +981,11 @@ extension UIFont {
 /// button, which also says out loud what the two gestures do; the person is a
 /// pop-up button, which holds eight people as comfortably as two.
 private struct SplitPanel: View {
-    static let collapsed = PresentationDetent.height(190)
+    /// Tall enough for the person, the button and two whole rows — at 210 the
+    /// list was a sliver with a row sliced through the middle by the button
+    /// pinned under it, which reads as a layout that broke rather than as a
+    /// list that continues.
+    static let collapsed = PresentationDetent.height(290)
 
     @Binding var state: SplitState
     @Binding var person: Int
@@ -988,15 +997,17 @@ private struct SplitPanel: View {
     var onOpenedTour: () -> Void
     var onFocus: (SplitStop) -> Void
 
+    @State private var showingOverview = false
+
     private var color: Color { SplitState.colors[person] }
+    private var mine: [SplitStop] { state.stops(of: person) }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    let mine = state.stops(of: person)
                     if mine.isEmpty {
-                        Text("Noch keine Stopps.")
+                        Text("Noch keine Stopps — einkreisen oder antippen.")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(mine) { stop in
@@ -1012,12 +1023,6 @@ private struct SplitPanel: View {
                             }
                         }
                     }
-                } header: {
-                    personHeader
-                } footer: {
-                    Text(
-                        "Mit einem Finger einkreisen, mit zwei Fingern die Karte bewegen "
-                            + "und zoomen. Ein einzelner Stopp lässt sich antippen.")
                 }
 
                 let unplaced = state.stops.filter { $0.coordinate == nil }
@@ -1032,18 +1037,24 @@ private struct SplitPanel: View {
                         Text("Adresse nicht gefunden — hier antippen, um sie zuzuteilen.")
                     }
                 }
-
-                Section {
-                    NavigationLink("Übersicht und Touren") {
-                        SplitOverview(state: $state, onOpenedTour: onOpenedTour)
-                            .onAppear { detent = .large }
-                    }
-                }
             }
             .listStyle(.insetGrouped)
+            // The person and the way out of this screen are pinned above and
+            // below the list rather than scrolling away inside it: at the
+            // smallest detent the list is two rows tall, and both of them are
+            // needed from there.
+            .safeAreaInset(edge: .top, spacing: 0) { personBar }
+            .safeAreaInset(edge: .bottom, spacing: 0) { finishBar }
             .navigationTitle("Aufteilen")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(isPresented: $showingOverview) {
+                SplitOverview(state: $state, onOpenedTour: onOpenedTour)
+            }
+        }
+        .onChange(of: showingOverview) { _, open in
+            // The overview is a list of everyone's share; it wants the room.
+            if open { detent = .large }
         }
         .confirmationDialog(
             "Aufteilung verwerfen?", isPresented: $confirmingClose, titleVisibility: .visible
@@ -1055,37 +1066,73 @@ private struct SplitPanel: View {
         }
     }
 
-    /// The person whose turn it is, as a pop-up button — the control iOS uses
-    /// when one of several things is being chosen and the choice is the
-    /// heading of what is underneath it.
-    private var personHeader: some View {
-        HStack {
-            Menu {
-                Picker("Person", selection: $person) {
-                    ForEach(0..<state.people, id: \.self) { index in
-                        Text("Person \(index + 1) · \(Format.stops(state.stops(of: index).count))")
-                            .tag(index)
+    /// Whose turn it is, as a pop-up button — the control iOS uses for one of
+    /// several, and the one that holds eight people as comfortably as two —
+    /// with "Weiter" beside it for the way a split is actually done: one
+    /// person, then the next.
+    private var personBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Menu {
+                    Picker("Person", selection: $person) {
+                        ForEach(0..<state.people, id: \.self) { index in
+                            Text("Person \(index + 1) · \(Format.stops(state.stops(of: index).count))")
+                                .tag(index)
+                        }
                     }
+                } label: {
+                    HStack(spacing: 7) {
+                        Circle().fill(color).frame(width: 10, height: 10)
+                        Text("Person \(person + 1)").fontWeight(.semibold)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .foregroundStyle(Color.primary)
                 }
-            } label: {
-                HStack(spacing: 6) {
-                    Circle().fill(color).frame(width: 10, height: 10)
-                    Text("Person \(person + 1)")
-                        .font(.headline)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2.weight(.semibold))
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+
+                Text(Format.stops(mine.count))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
+
+                Spacer(minLength: 4)
+
+                if person < state.people - 1 {
+                    Button("Weiter") { withAnimation(.snappy) { person += 1 } }
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.capsule)
                 }
-                .foregroundStyle(Color.primary)
-                .textCase(nil)
             }
-            Spacer()
-            Text(Format.stops(state.stops(of: person).count))
-                .font(.subheadline)
+
+            Text("Mit einem Finger einkreisen, mit zwei die Karte bewegen.")
+                .font(.caption)
                 .foregroundStyle(.secondary)
-                .textCase(nil)
-                .contentTransition(.numericText())
         }
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.bar)
         .animation(.snappy, value: state.owner.count)
+    }
+
+    /// The way on: everyone's share, and the button that turns one into a
+    /// tour. Pinned, because it is the point of the screen and the list above
+    /// it can be thirty rows long.
+    private var finishBar: some View {
+        Button {
+            showingOverview = true
+        } label: {
+            WideButtonLabel("Übersicht und Touren", systemImage: "list.bullet.rectangle")
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .background(.bar)
     }
 
     private func unplacedRow(_ stop: SplitStop) -> some View {
@@ -1152,9 +1199,6 @@ private struct SplitOverview: View {
     /// just created nor cleaned up after a review that saved nothing.
     @State private var pending: ReviewContext?
     @State private var imported = false
-    /// Which people already have a tour on this phone, so the row says so
-    /// instead of offering to make a second one.
-    @State private var created: [Int: UUID] = [:]
 
     struct ReviewContext: Identifiable {
         let id = UUID()
@@ -1207,13 +1251,7 @@ private struct SplitOverview: View {
             }
             ForEach(mine) { StopLine(stop: $0) }
 
-            if let id = created[person] {
-                Button {
-                    open(id)
-                } label: {
-                    Label("Tour öffnen", systemImage: "arrow.forward.circle")
-                }
-            } else if !mine.isEmpty {
+            if !mine.isEmpty {
                 Button {
                     task = Task { await createTour(for: person) }
                 } label: {
@@ -1261,24 +1299,22 @@ private struct SplitOverview: View {
         }
     }
 
-    /// Runs once the review is gone, whichever way it went — the same bargain
-    /// the portal import makes: a route created for a review that saved
-    /// nothing is deleted again rather than left behind empty.
+    /// Runs once the review is gone, whichever way it went.
+    ///
+    /// A share that became a tour hands the driver straight over to it under
+    /// Touren — that tour is the thing they are about to drive, and staying
+    /// behind on a splitting screen whose work is now done was a dead end they
+    /// had to find their own way out of. A review that saved nothing takes its
+    /// empty route with it instead, the same bargain the portal import makes.
     private func reviewDismissed() {
         guard let ctx = pending else { return }
         pending = nil
         defer { imported = false }
-        if imported {
-            created[ctx.person] = ctx.route.id
-        } else {
+        guard imported else {
             try? RouteStore.delete(ctx.route, in: context)
+            return
         }
-    }
-
-    private func open(_ routeID: UUID) {
-        let all = (try? context.fetch(FetchDescriptor<Route>())) ?? []
-        guard let route = all.first(where: { $0.id == routeID }) else { return }
-        focus.open(route)
+        focus.open(ctx.route)
         onOpenedTour()
     }
 }
