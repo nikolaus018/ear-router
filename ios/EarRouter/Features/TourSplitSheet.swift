@@ -257,13 +257,12 @@ struct SplitState: Identifiable {
         return free.count
     }
 
-    /// A free stop goes to `person`; one of theirs is freed again. Someone
-    /// else's is left alone.
+    /// A tap: one of `person`'s stops is freed again, and any other — free
+    /// or someone else's — becomes theirs. The precise way to fix up what a
+    /// circle caught.
     mutating func toggle(_ id: Int, for person: Int) {
-        let current = owner[id]
-        guard current == nil || current == person else { return }
         history.append(owner)
-        owner[id] = current == nil ? person : nil
+        owner[id] = owner[id] == person ? nil : person
     }
 
     mutating func undo() {
@@ -337,34 +336,43 @@ enum Lasso {
 
 // MARK: - Map
 
+/// "Put the camera on this stop" — the sequence makes asking twice a change.
+private struct SplitFocus: Equatable {
+    let id: Int
+    let sequence: Int
+}
+
 private struct TourSplitMapView: View {
     @State var state: SplitState
     @Environment(\.dismiss) private var dismiss
 
     @State private var person = 0
-    @State private var camera: MapCameraPosition = .automatic
     @State private var drawing = true
-    @State private var lasso: [CGPoint] = []
-    @State private var claimed = 0
+    @State private var lassoActive = false
     @State private var showingResult = false
     @State private var detent: PresentationDetent = SplitPanel.collapsed
-
-    private static let space = "split-map"
-    private static let pinSize: CGFloat = 28
+    @State private var fitToken = 0
+    @State private var focus: SplitFocus?
+    @State private var tapTick = 0
+    @State private var lassoTick = 0
 
     private var color: Color { SplitState.colors[person] }
 
     var body: some View {
         NavigationStack {
-            MapReader { proxy in
-                ZStack {
-                    map
-                    if drawing {
-                        lassoLayer(proxy)
-                    }
-                }
-                .coordinateSpace(.named(Self.space))
-            }
+            SplitMapView(
+                stops: state.stops, owner: state.owner, person: person, drawing: drawing,
+                fitToken: fitToken, focus: focus,
+                onTap: { id in
+                    withAnimation(.snappy) { state.toggle(id, for: person) }
+                    tapTick += 1
+                },
+                onLasso: { ids in
+                    let added = withAnimation(.snappy) { state.claim(ids, for: person) }
+                    if added > 0 { lassoTick += 1 }
+                },
+                onLassoActive: { lassoActive = $0 }
+            )
             .ignoresSafeArea()
             .overlay(alignment: .topTrailing) { mapButtons }
             .overlay(alignment: .top) { hint }
@@ -375,63 +383,26 @@ private struct TourSplitMapView: View {
                     Button("Schließen", systemImage: "xmark") { dismiss() }
                 }
             }
-            .sensoryFeedback(.impact(weight: .medium), trigger: claimed)
-            .onAppear(perform: fit)
+            .sensoryFeedback(.selection, trigger: tapTick)
+            .sensoryFeedback(.impact(weight: .medium), trigger: lassoTick)
         }
         .sheet(isPresented: .constant(true)) {
             SplitPanel(
-                state: $state, person: $person, showingResult: $showingResult)
-                .presentationDetents(
-                    [SplitPanel.collapsed, .medium, .large], selection: $detent)
-                .presentationBackgroundInteraction(.enabled)
-                .interactiveDismissDisabled()
-        }
-    }
-
-    private var map: some View {
-        Map(position: $camera) {
-            UserAnnotation()
-            ForEach(state.stops.filter { $0.coordinate != nil }) { stop in
-                Annotation(stop.name, coordinate: stop.coordinate!, anchor: .center) {
-                    SplitPin(owner: state.owner(of: stop), current: person, size: Self.pinSize)
-                        .onTapGesture { toggle(stop) }
+                state: $state, person: $person, showingResult: $showingResult,
+                onFocus: { stop in
+                    focus = SplitFocus(id: stop.id, sequence: (focus?.sequence ?? 0) + 1)
                 }
-                .annotationTitles(.hidden)
-            }
+            )
+            .presentationDetents([SplitPanel.collapsed, .medium, .large], selection: $detent)
+            .presentationBackgroundInteraction(.enabled)
+            .interactiveDismissDisabled()
         }
-        .mapStyle(.standard(pointsOfInterest: .excludingAll))
-        .mapControls {}
-    }
-
-    private func lassoLayer(_ proxy: MapProxy) -> some View {
-        ZStack {
-            Color.clear
-                .contentShape(.rect)
-                .gesture(
-                    DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.space))
-                        .onChanged { lasso.append($0.location) }
-                        .onEnded { _ in finishLasso(proxy) })
-            if lasso.count > 1 {
-                Path { path in
-                    path.addLines(lasso)
-                    path.closeSubpath()
-                }
-                .fill(color.opacity(0.15))
-                Path { path in path.addLines(lasso) }
-                    .stroke(
-                        color,
-                        style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                    .shadow(color: .black.opacity(0.2), radius: 2)
-            }
-        }
-        .allowsHitTesting(true)
     }
 
     private var mapButtons: some View {
         VStack(spacing: 10) {
             mapButton(
-                drawing ? "lasso" : "hand.point.up.left",
-                label: drawing ? "Einkreisen aktiv" : "Karte bewegen",
+                "lasso", label: drawing ? "Einkreisen aus" : "Einkreisen an",
                 tint: drawing ? color : nil
             ) {
                 drawing.toggle()
@@ -442,7 +413,7 @@ private struct TourSplitMapView: View {
             .disabled(!state.canUndo)
             .opacity(state.canUndo ? 1 : 0.4)
             mapButton("arrow.down.left.and.arrow.up.right", label: "Alle Stopps zeigen") {
-                fit()
+                fitToken += 1
             }
         }
         .padding(.trailing, 12)
@@ -460,103 +431,437 @@ private struct TourSplitMapView: View {
                 .contentShape(.circle)
         }
         .buttonStyle(.plain)
-        .glassEffect(tint.map { .regular.tint($0).interactive() } ?? .regular.interactive(), in: .circle)
+        .glassEffect(
+            tint.map { .regular.tint($0).interactive() } ?? .regular.interactive(), in: .circle)
         .accessibilityLabel(label)
     }
 
     @ViewBuilder
     private var hint: some View {
-        if lasso.isEmpty {
+        if !lassoActive {
             HStack(spacing: 8) {
                 Circle().fill(color).frame(width: 10, height: 10)
                 Text(
                     drawing
-                        ? "Stopps für Person \(person + 1) einkreisen"
-                        : "Karte bewegen — zum Einkreisen \(Image(systemName: "lasso")) tippen")
+                        ? "Person \(person + 1): einkreisen oder antippen"
+                        : "Person \(person + 1): Stopps antippen")
                     .font(.subheadline.weight(.medium))
+                    .contentTransition(.numericText())
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .glassEffect(.regular, in: .capsule)
             .padding(.top, 8)
             .allowsHitTesting(false)
-            .transition(.opacity)
+            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            .animation(.snappy, value: person)
         }
-    }
-
-    private func finishLasso(_ proxy: MapProxy) {
-        let stroke = lasso
-        withAnimation(.easeOut(duration: 0.2)) { lasso = [] }
-
-        func screenPoint(_ stop: SplitStop) -> CGPoint? {
-            stop.coordinate.flatMap { proxy.convert($0, to: .named(Self.space)) }
-        }
-
-        // Barely moved: a tap. The lasso layer sits over the pins, so it
-        // hands the tap to the pin under the finger itself.
-        let span = stroke.reduce(into: CGRect.null) { $0 = $0.union(CGRect(origin: $1, size: .zero)) }
-        guard span.width > 20 || span.height > 20 else {
-            guard let tap = stroke.last else { return }
-            let nearest = state.stops
-                .compactMap { stop in screenPoint(stop).map { (stop, hypot($0.x - tap.x, $0.y - tap.y)) } }
-                .filter { $0.1 <= Self.pinSize }
-                .min { $0.1 < $1.1 }
-            if let nearest { toggle(nearest.0) }
-            return
-        }
-
-        let caught = state.stops.compactMap { stop -> Int? in
-            guard let point = screenPoint(stop),
-                Lasso.catches(point, in: stroke, radius: Self.pinSize / 2)
-            else { return nil }
-            return stop.id
-        }
-        let added = withAnimation(.snappy) { state.claim(caught, for: person) }
-        if added > 0 { claimed += 1 }
-    }
-
-    private func toggle(_ stop: SplitStop) {
-        let before = state.owner(of: stop)
-        withAnimation(.snappy) { state.toggle(stop.id, for: person) }
-        if state.owner(of: stop) != before { claimed += 1 }
-    }
-
-    /// Frames every pin, kept clear of the panel along the bottom.
-    private func fit() {
-        let points = state.stops.compactMap(\.coordinate)
-        guard var region = MKCoordinateRegion(fitting: points) else { return }
-        region.span.latitudeDelta *= 1.8
-        region.span.longitudeDelta *= 1.3
-        region.center.latitude -= region.span.latitudeDelta * 0.18
-        withAnimation(.easeInOut) { camera = .region(region) }
     }
 }
 
-private struct SplitPin: View {
-    let owner: Int?
-    let current: Int
-    let size: CGFloat
+/// MapKit's own map view underneath, because SwiftUI's `Map` cannot share a
+/// screen between drawing and moving: an overlay that catches a finger for
+/// the lasso catches every finger. Here one finger draws, two fingers move
+/// and zoom, and a pin takes its own taps — no mode to be in the wrong one of.
+private struct SplitMapView: UIViewRepresentable {
+    let stops: [SplitStop]
+    let owner: [Int: Int]
+    let person: Int
+    let drawing: Bool
+    let fitToken: Int
+    let focus: SplitFocus?
+    var onTap: (Int) -> Void
+    var onLasso: ([Int]) -> Void
+    var onLassoActive: (Bool) -> Void
 
-    var body: some View {
-        let mine = owner == current
-        ZStack {
-            if let owner {
-                Circle().fill(SplitState.colors[owner])
-                Text("\(owner + 1)")
-                    .font(.system(size: size * 0.45, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-            } else {
-                Circle().fill(.white)
-                Circle().fill(Color.gray.opacity(0.55)).padding(size * 0.3)
-            }
-            Circle().strokeBorder(.white, lineWidth: 2)
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> SplitMKMapView {
+        let coordinator = context.coordinator
+        coordinator.parent = self
+
+        let map = SplitMKMapView()
+        map.delegate = coordinator
+        map.pointOfInterestFilter = .excludingAll
+        map.showsUserLocation = true
+        map.showsCompass = false
+        map.isPitchEnabled = false
+        map.register(SplitPinView.self, forAnnotationViewWithReuseIdentifier: SplitPinView.reuseID)
+        coordinator.map = map
+
+        let lasso = UIPanGestureRecognizer(
+            target: coordinator, action: #selector(Coordinator.handleLasso(_:)))
+        lasso.maximumNumberOfTouches = 1
+        map.addGestureRecognizer(lasso)
+        coordinator.lassoRecognizer = lasso
+
+        let overlay = UIView()
+        overlay.isUserInteractionEnabled = false
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        map.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.leadingAnchor.constraint(equalTo: map.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: map.trailingAnchor),
+            overlay.topAnchor.constraint(equalTo: map.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: map.bottomAnchor),
+        ])
+        coordinator.lassoLayer.lineWidth = 3
+        coordinator.lassoLayer.lineJoin = .round
+        coordinator.lassoLayer.lineCap = .round
+        overlay.layer.addSublayer(coordinator.lassoLayer)
+
+        let annotations = stops.compactMap { stop in
+            stop.coordinate.map { SplitAnnotation(id: stop.id, name: stop.name, coordinate: $0) }
         }
-        .frame(width: size, height: size)
-        .opacity(owner == nil || mine ? 1 : 0.45)
-        .scaleEffect(mine ? 1.12 : 1)
-        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-        .animation(.snappy, value: owner)
-        .animation(.snappy, value: current)
+        coordinator.annotations = Dictionary(uniqueKeysWithValues: annotations.map { ($0.id, $0) })
+        map.addAnnotations(annotations)
+
+        map.onFirstLayout = { [weak coordinator] in coordinator?.fit(animated: false) }
+        coordinator.lastFit = fitToken
+        return map
+    }
+
+    func updateUIView(_ map: SplitMKMapView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.parent = self
+        coordinator.setDrawing(drawing)
+        coordinator.refreshPins()
+        if fitToken != coordinator.lastFit {
+            coordinator.lastFit = fitToken
+            coordinator.fit(animated: true)
+        }
+        if let focus, focus != coordinator.lastFocus {
+            coordinator.lastFocus = focus
+            coordinator.zoom(to: focus.id)
+        }
+    }
+
+    final class Coordinator: NSObject, MKMapViewDelegate {
+        var parent: SplitMapView!
+        weak var map: MKMapView?
+        var annotations: [Int: SplitAnnotation] = [:]
+        var lassoRecognizer: UIPanGestureRecognizer!
+        let lassoLayer = CAShapeLayer()
+        var lastFit = 0
+        var lastFocus: SplitFocus?
+        private var drawing: Bool?
+        private var stroke: [CGPoint] = []
+        private var pending: Set<Int> = []
+
+        private var color: UIColor { UIColor(SplitState.colors[parent.person]) }
+
+        // MARK: Drawing
+
+        /// In drawing mode the map's own panning is moved to two fingers, so
+        /// a single finger is free for the lasso.
+        func setDrawing(_ on: Bool) {
+            guard drawing != on, let map else { return }
+            drawing = on
+            lassoRecognizer.isEnabled = on
+            for recognizer in Self.recognizers(in: map) where recognizer !== lassoRecognizer {
+                if let pan = recognizer as? UIPanGestureRecognizer, pan.maximumNumberOfTouches > 1 {
+                    pan.minimumNumberOfTouches = on ? 2 : 1
+                }
+            }
+        }
+
+        private static func recognizers(in view: UIView) -> [UIGestureRecognizer] {
+            (view.gestureRecognizers ?? []) + view.subviews.flatMap(recognizers(in:))
+        }
+
+        @objc func handleLasso(_ recognizer: UIPanGestureRecognizer) {
+            guard let map else { return }
+            let point = recognizer.location(in: map)
+            switch recognizer.state {
+            case .began:
+                // The recogniser only begins once the finger has moved, so
+                // the stroke starts where the finger first came down.
+                let moved = recognizer.translation(in: map)
+                stroke = [CGPoint(x: point.x - moved.x, y: point.y - moved.y), point]
+                lassoLayer.opacity = 1
+                parent.onLassoActive(true)
+                redraw()
+            case .changed:
+                stroke.append(point)
+                redraw()
+                updatePending()
+            case .ended:
+                stroke.append(point)
+                let caught = caughtStops()
+                endStroke()
+                if !caught.isEmpty { parent.onLasso(caught) }
+            default:
+                endStroke()
+            }
+        }
+
+        private func redraw() {
+            let path = UIBezierPath()
+            guard let first = stroke.first else { return }
+            path.move(to: first)
+            for point in stroke.dropFirst() { path.addLine(to: point) }
+            lassoLayer.strokeColor = color.cgColor
+            lassoLayer.fillColor = color.withAlphaComponent(0.14).cgColor
+            lassoLayer.path = path.cgPath
+        }
+
+        /// Only free stops: a circle drawn across someone else's never takes
+        /// theirs. Tapping a pin does — that is the deliberate way.
+        private func caughtStops() -> [Int] {
+            guard let map, stroke.count > 2 else { return [] }
+            return annotations.values.compactMap { annotation in
+                guard parent.owner[annotation.id] == nil else { return nil }
+                let point = map.convert(annotation.coordinate, toPointTo: map)
+                return Lasso.catches(point, in: stroke, radius: SplitPinView.disc / 2)
+                    ? annotation.id : nil
+            }
+        }
+
+        private func updatePending() {
+            let now = Set(caughtStops())
+            guard now != pending else { return }
+            let changed = now.symmetricDifference(pending)
+            pending = now
+            for id in changed { configure(id) }
+        }
+
+        private func endStroke() {
+            stroke = []
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 1
+            fade.toValue = 0
+            fade.duration = 0.2
+            lassoLayer.add(fade, forKey: "fade")
+            lassoLayer.opacity = 0
+            let wasPending = pending
+            pending = []
+            for id in wasPending { configure(id) }
+            parent.onLassoActive(false)
+        }
+
+        // MARK: Pins
+
+        func refreshPins() {
+            for id in annotations.keys { configure(id) }
+        }
+
+        private func configure(_ id: Int) {
+            guard let map, let annotation = annotations[id],
+                let view = map.view(for: annotation) as? SplitPinView
+            else { return }
+            view.configure(
+                owner: parent.owner[id], person: parent.person, pending: pending.contains(id))
+        }
+
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            guard let annotation = annotation as? SplitAnnotation else { return nil }
+            let view =
+                mapView.dequeueReusableAnnotationView(
+                    withIdentifier: SplitPinView.reuseID, for: annotation) as! SplitPinView
+            view.onTap = { [weak self] in self?.parent.onTap(annotation.id) }
+            view.configure(
+                owner: parent.owner[annotation.id], person: parent.person,
+                pending: pending.contains(annotation.id), animated: false)
+            return view
+        }
+
+        // MARK: Camera
+
+        /// Every pin, clear of the title bar above and the panel below.
+        func fit(animated: Bool) {
+            guard let map, !annotations.isEmpty else { return }
+            var rect = MKMapRect.null
+            for annotation in annotations.values {
+                let point = MKMapPoint(annotation.coordinate)
+                rect = rect.union(MKMapRect(x: point.x, y: point.y, width: 0, height: 0))
+            }
+            let minimum = 1_500.0
+            if rect.size.width < minimum {
+                rect = rect.insetBy(dx: -(minimum - rect.size.width) / 2, dy: 0)
+            }
+            if rect.size.height < minimum {
+                rect = rect.insetBy(dx: 0, dy: -(minimum - rect.size.height) / 2)
+            }
+            let insets = map.safeAreaInsets
+            map.setVisibleMapRect(
+                rect,
+                edgePadding: UIEdgeInsets(
+                    top: insets.top + 70, left: 36, bottom: 190, right: 76),
+                animated: animated)
+        }
+
+        func zoom(to id: Int) {
+            guard let map, let annotation = annotations[id] else { return }
+            let region = MKCoordinateRegion(
+                center: annotation.coordinate, latitudinalMeters: 700, longitudinalMeters: 700)
+            let rect = MKMapRect(region)
+            // Into the top half, which the panel never covers however far it
+            // has been pulled up.
+            map.setVisibleMapRect(
+                rect,
+                edgePadding: UIEdgeInsets(
+                    top: map.safeAreaInsets.top + 60, left: 0, bottom: map.bounds.height * 0.5,
+                    right: 0),
+                animated: true)
+            (map.view(for: annotation) as? SplitPinView)?.pulse()
+        }
+    }
+}
+
+extension MKMapRect {
+    fileprivate init(_ region: MKCoordinateRegion) {
+        let a = MKMapPoint(
+            CLLocationCoordinate2D(
+                latitude: region.center.latitude + region.span.latitudeDelta / 2,
+                longitude: region.center.longitude - region.span.longitudeDelta / 2))
+        let b = MKMapPoint(
+            CLLocationCoordinate2D(
+                latitude: region.center.latitude - region.span.latitudeDelta / 2,
+                longitude: region.center.longitude + region.span.longitudeDelta / 2))
+        self.init(
+            x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+    }
+}
+
+private final class SplitMKMapView: MKMapView {
+    var onFirstLayout: (() -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.width > 0, let first = onFirstLayout else { return }
+        onFirstLayout = nil
+        DispatchQueue.main.async(execute: first)
+    }
+}
+
+private final class SplitAnnotation: NSObject, MKAnnotation {
+    let id: Int
+    let name: String
+    let coordinate: CLLocationCoordinate2D
+    var title: String? { name }
+
+    init(id: Int, name: String, coordinate: CLLocationCoordinate2D) {
+        self.id = id
+        self.name = name
+        self.coordinate = coordinate
+    }
+}
+
+/// A stop on the split map. The visible disc is small, so neighbours stay
+/// apart; the view around it is a full fingertip, so a tap does not miss.
+private final class SplitPinView: MKAnnotationView {
+    static let reuseID = "split-pin"
+    static let disc: CGFloat = 26
+    private static let touch: CGFloat = 40
+
+    var onTap: (() -> Void)?
+
+    private let circle = UIView()
+    private let number = UILabel()
+    private let dot = UIView()
+
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        frame = CGRect(x: 0, y: 0, width: Self.touch, height: Self.touch)
+        backgroundColor = .clear
+        canShowCallout = false
+        displayPriority = .required
+        collisionMode = .circle
+
+        circle.frame = CGRect(
+            x: (Self.touch - Self.disc) / 2, y: (Self.touch - Self.disc) / 2,
+            width: Self.disc, height: Self.disc)
+        circle.layer.cornerRadius = Self.disc / 2
+        circle.layer.borderColor = UIColor.white.cgColor
+        circle.layer.borderWidth = 2
+        circle.layer.shadowColor = UIColor.black.cgColor
+        circle.layer.shadowOpacity = 0.3
+        circle.layer.shadowRadius = 2
+        circle.layer.shadowOffset = CGSize(width: 0, height: 1)
+        circle.isUserInteractionEnabled = false
+        addSubview(circle)
+
+        number.frame = circle.bounds
+        number.textAlignment = .center
+        number.font = .systemFont(ofSize: 12, weight: .bold).rounded
+        number.textColor = .white
+        circle.addSubview(number)
+
+        dot.frame = CGRect(x: Self.disc / 2 - 4, y: Self.disc / 2 - 4, width: 8, height: 8)
+        dot.layer.cornerRadius = 4
+        dot.backgroundColor = .systemGray2
+        circle.addSubview(dot)
+
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        onTap = nil
+    }
+
+    @objc private func tapped() { onTap?() }
+
+    func configure(owner: Int?, person: Int, pending: Bool, animated: Bool = true) {
+        let mine = owner == person
+        let current = UIColor(SplitState.colors[person])
+        accessibilityLabel = (annotation as? SplitAnnotation)?.name
+        accessibilityValue = owner.map { "Person \($0 + 1)" } ?? "Frei"
+
+        let apply = { [self] in
+            if let owner {
+                circle.backgroundColor = UIColor(SplitState.colors[owner])
+                circle.layer.borderColor = UIColor.white.cgColor
+                number.text = "\(owner + 1)"
+                dot.alpha = 0
+                circle.alpha = mine ? 1 : 0.4
+                circle.transform = mine ? CGAffineTransform(scaleX: 1.1, y: 1.1)
+                    : CGAffineTransform(scaleX: 0.85, y: 0.85)
+            } else if pending {
+                circle.backgroundColor = current.withAlphaComponent(0.35)
+                circle.layer.borderColor = current.cgColor
+                number.text = nil
+                dot.alpha = 0
+                circle.alpha = 1
+                circle.transform = CGAffineTransform(scaleX: 1.15, y: 1.15)
+            } else {
+                circle.backgroundColor = .white
+                circle.layer.borderColor = UIColor.white.cgColor
+                number.text = nil
+                dot.alpha = 1
+                circle.alpha = 1
+                circle.transform = .identity
+            }
+        }
+        circle.layer.borderWidth = pending && owner == nil ? 3 : 2
+        zPriority = mine ? .max : owner == nil ? .defaultSelected : .min
+        if animated {
+            UIView.animate(
+                withDuration: 0.25, delay: 0, usingSpringWithDamping: 0.7,
+                initialSpringVelocity: 0, options: [.allowUserInteraction], animations: apply)
+        } else {
+            apply()
+        }
+    }
+
+    func pulse() {
+        UIView.animate(withDuration: 0.15, animations: {
+            self.transform = CGAffineTransform(scaleX: 1.5, y: 1.5)
+        }) { _ in
+            UIView.animate(
+                withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.5,
+                initialSpringVelocity: 0, options: [], animations: { self.transform = .identity })
+        }
+    }
+}
+
+extension UIFont {
+    fileprivate var rounded: UIFont {
+        fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: pointSize) } ?? self
     }
 }
 
@@ -570,6 +875,7 @@ private struct SplitPanel: View {
     @Binding var state: SplitState
     @Binding var person: Int
     @Binding var showingResult: Bool
+    var onFocus: (SplitStop) -> Void
 
     private var isLast: Bool { person == state.people - 1 }
     private var color: Color { SplitState.colors[person] }
@@ -580,11 +886,16 @@ private struct SplitPanel: View {
                 Section {
                     let mine = state.stops(of: person)
                     if mine.isEmpty {
-                        Text("Noch keine Stopps — auf der Karte einkreisen.")
+                        Text("Noch keine Stopps — auf der Karte einkreisen oder antippen.")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(mine) { stop in
-                        StopLine(stop: stop)
+                        Button {
+                            if stop.coordinate != nil { onFocus(stop) }
+                        } label: {
+                            StopLine(stop: stop).contentShape(.rect)
+                        }
+                        .buttonStyle(.plain)
                             .swipeActions {
                                 Button("Entfernen", role: .destructive) {
                                     withAnimation { state.toggle(stop.id, for: person) }
@@ -595,22 +906,27 @@ private struct SplitPanel: View {
                     Text("Person \(person + 1) · \(state.stops(of: person).count) Stopps")
                 }
 
-                let unplaced = state.stops.filter {
-                    $0.coordinate == nil && (state.owner(of: $0) == nil || state.owner(of: $0) == person)
-                }
+                let unplaced = state.stops.filter { $0.coordinate == nil }
                 if !unplaced.isEmpty {
                     Section {
                         ForEach(unplaced) { stop in
-                            let mine = state.owner(of: stop) == person
+                            let owner = state.owner(of: stop)
+                            let mine = owner == person
                             Button {
                                 withAnimation { state.toggle(stop.id, for: person) }
                             } label: {
                                 HStack {
                                     StopLine(stop: stop)
                                     Spacer()
-                                    Image(systemName: mine ? "checkmark.circle.fill" : "plus.circle")
-                                        .font(.title3)
-                                        .foregroundStyle(mine ? color : .secondary)
+                                    if let owner, !mine {
+                                        Text("Person \(owner + 1)")
+                                            .font(.footnote.weight(.semibold))
+                                            .foregroundStyle(SplitState.colors[owner])
+                                    } else {
+                                        Image(systemName: mine ? "checkmark.circle.fill" : "plus.circle")
+                                            .font(.title3)
+                                            .foregroundStyle(mine ? color : .secondary)
+                                    }
                                 }
                                 .contentShape(.rect)
                             }
@@ -689,7 +1005,7 @@ private struct SplitPanel: View {
                 }
                 .padding(.horizontal, -20)
                 .onChange(of: person) { _, index in
-                    withAnimation { scroller.scrollTo(index, anchor: .center) }
+                    withAnimation { scroller.scrollTo(index) }
                 }
             }
         }
