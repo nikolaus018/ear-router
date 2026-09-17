@@ -17,6 +17,7 @@ struct MoreTab: View {
     @State private var showingKilometer = false
     @State private var showingGourmet = false
     @State private var showingCarPlaySetup = false
+    @State private var showingSplit = false
 
     /// The driver's own dispatch portal — the customer list this app's stops
     /// are copied out of in the first place.
@@ -37,6 +38,13 @@ struct MoreTab: View {
                     SettingsRow(
                         icon: "square.grid.2x2.fill", tint: .purple, title: "Gourmet",
                         detail: "Kundenliste öffnen")
+                }
+                Button {
+                    showingSplit = true
+                } label: {
+                    SettingsRow(
+                        icon: "lasso", tint: .orange, title: "Tour aufteilen",
+                        detail: "Stopps auf der Karte verteilen")
                 }
                 Button {
                     showingTuercode = true
@@ -132,6 +140,7 @@ struct MoreTab: View {
         .navigationTitle("Mehr")
         .sheet(isPresented: $showingTuercode) { TuercodeSheet() }
         .sheet(isPresented: $showingKilometer) { KilometerSheet() }
+        .sheet(isPresented: $showingSplit) { TourSplitSheet() }
         .sheet(isPresented: $showingGourmet) {
             SafariView(url: gourmetURL).ignoresSafeArea()
         }
