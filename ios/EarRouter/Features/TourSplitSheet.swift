@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import MapKit
 
 /// Splits one Zusteller-Portal tour between several drivers, by drawing round
@@ -71,7 +72,14 @@ struct TourSplitSheet: View {
         // Full screen, not a sheet: a sheet's own swipe-to-dismiss claims any
         // downward stroke, which cancelled the circle half-way round and left
         // nothing picked.
-        .fullScreenCover(item: $split) { TourSplitMapView(state: $0) }
+        .fullScreenCover(item: $split) { state in
+            TourSplitMapView(state: state) {
+                // A share became a tour and the driver asked to see it: the
+                // split screen and this sheet both step out of the way.
+                split = nil
+                dismiss()
+            }
+        }
     }
 
     private var form: some View {
@@ -143,7 +151,7 @@ struct TourSplitSheet: View {
         busy = "Anmelden …"
         defer { busy = nil }
         do {
-            let (_, deliveries) = try await GourmetPortal.matchingDeliveries(
+            let (token, deliveries) = try await GourmetPortal.matchingDeliveries(
                 tour: tour, date: date, credentials: credentials
             ) { progress in
                 Task { @MainActor in busy = progress }
@@ -156,7 +164,12 @@ struct TourSplitSheet: View {
             let stops = try await Self.place(deliveries) { done, total in
                 Task { @MainActor in busy = "Adresse \(done) von \(total) wird gesucht …" }
             }
-            split = SplitState(tourName: tour.name, people: people, stops: stops)
+            // The token and the deliveries are kept: a share that becomes a
+            // tour needs its Paket and phone numbers, and those are one
+            // detail call per stop away.
+            split = SplitState(
+                tourName: tour.name, date: date, people: people, stops: stops, token: token,
+                deliveries: Dictionary(deliveries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a }))
         } catch is CancellationError {
         } catch let e as AppError {
             error = e
@@ -210,7 +223,7 @@ struct TourSplitSheet: View {
         return inputs.map { input in
             SplitStop(
                 id: input.id, name: input.name.isEmpty ? "Ohne Namen" : input.name,
-                address: input.address, coordinate: placed[input.id])
+                address: input.address, plz: input.plz, coordinate: placed[input.id])
         }
     }
 }
@@ -218,10 +231,19 @@ struct TourSplitSheet: View {
 // MARK: - State
 
 struct SplitStop: Identifiable {
+    /// The portal's delivery id, which is also how the Paket and the phone
+    /// number are fetched later if this stop becomes a real tour.
     let id: Int
     let name: String
     let address: String
+    let plz: String
     let coordinate: CLLocationCoordinate2D?
+
+    /// The stop as an import entry, with only what the tour list carried.
+    /// Used when the detail fetch is not available or did not answer.
+    var plainEntry: CustomerJSON {
+        CustomerJSON(kunde: name, strasse: address, plz: plz, paket: nil, notiz: nil)
+    }
 }
 
 /// Everything a split is, held only for as long as the screen is open.
@@ -231,16 +253,28 @@ struct SplitState: Identifiable {
 
     let id = UUID()
     let tourName: String
+    let date: Date
     let people: Int
     let stops: [SplitStop]
+    /// The login this split was loaded with, kept so a share can be turned
+    /// into a tour without signing in again.
+    let token: String?
+    /// The delivery behind each stop, for that same detail fetch.
+    let deliveries: [Int: GourmetPortal.Delivery]
     /// Delivery id → person index. A stop with no entry is still free.
     private(set) var owner: [Int: Int] = [:]
     private var history: [[Int: Int]] = []
 
-    init(tourName: String, people: Int, stops: [SplitStop]) {
+    init(
+        tourName: String, date: Date = Date(), people: Int, stops: [SplitStop],
+        token: String? = nil, deliveries: [Int: GourmetPortal.Delivery] = [:]
+    ) {
         self.tourName = tourName
+        self.date = date
         self.people = people
         self.stops = stops
+        self.token = token
+        self.deliveries = deliveries
     }
 
     var canUndo: Bool { !history.isEmpty }
@@ -280,6 +314,51 @@ struct SplitState: Identifiable {
         history.append(owner)
         owner = [:]
     }
+
+    // MARK: Becoming a tour
+
+    /// What one person's share looks like as import entries.
+    ///
+    /// The Paket and the phone number are on the portal's *detail* call, one
+    /// request per stop — deliberately skipped while splitting, because a
+    /// split needs neither and thirty of them is a minute nobody is waiting
+    /// for. They are fetched here instead, for one share, at the moment that
+    /// share is about to become a tour somebody drives: without the Paket the
+    /// Ladeliste is empty and "Anrufen" has no number.
+    ///
+    /// A fetch that fails falls back to the name and address already on
+    /// screen. A tour missing its Paket is worth having; a tour that could not
+    /// be created at all is not.
+    func entries(
+        for person: Int, onProgress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }
+    ) async -> [CustomerJSON] {
+        let mine = stops(of: person)
+        let wanted = mine.compactMap { deliveries[$0.id] }
+        guard let token, !wanted.isEmpty else { return mine.map(\.plainEntry) }
+        do {
+            return try await GourmetPortal.fetchDetails(
+                for: wanted, token: token, onProgress: onProgress)
+        } catch {
+            return mine.map(\.plainEntry)
+        }
+    }
+
+    /// "VM 4 DO Vormittag – Person 2", with the date added only when a tour of
+    /// that name is already open — the same rule the portal import follows.
+    func routeName(for person: Int, taken: Set<String> = []) -> String {
+        let base = "\(tourName.trimmed) – Person \(person + 1)"
+        guard taken.contains(base) else { return base }
+        return "\(base) – \(Self.dayFormatter.string(from: date))"
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "de_AT")
+        f.dateFormat = "dd.MM."
+        return f
+    }()
+
+    // MARK: Sharing
 
     func shareText(for person: Int) -> String {
         let mine = stops(of: person)
@@ -348,27 +427,31 @@ private struct SplitFocus: Equatable {
     let sequence: Int
 }
 
+/// The splitting screen: a map with a sheet over it, the way Karten shows a
+/// place. Everything that used to float over the map in glass — the tool
+/// buttons, the hint pill, the person chips — is back where iOS puts it: the
+/// navigation bar for the screen's own actions, the sheet for the current
+/// person and their stops.
 private struct TourSplitMapView: View {
     @State var state: SplitState
+    /// Called after a share has become a tour and the driver asked to open
+    /// it: the whole splitting screen steps out of the way.
+    var onOpenedTour: () -> Void
+
     @Environment(\.dismiss) private var dismiss
 
     @State private var person = 0
-    @State private var drawing = true
-    @State private var lassoActive = false
-    @State private var showingResult = false
     @State private var detent: PresentationDetent = SplitPanel.collapsed
     @State private var fitToken = 0
     @State private var focus: SplitFocus?
-    @State private var tapTick = 0
     @State private var confirmingClose = false
+    @State private var tapTick = 0
     @State private var lassoTick = 0
-
-    private var color: Color { SplitState.colors[person] }
 
     var body: some View {
         NavigationStack {
             SplitMapView(
-                stops: state.stops, owner: state.owner, person: person, drawing: drawing,
+                stops: state.stops, owner: state.owner, person: person,
                 fitToken: fitToken, focus: focus,
                 onTap: { id in
                     withAnimation(.snappy) { state.toggle(id, for: person) }
@@ -377,20 +460,41 @@ private struct TourSplitMapView: View {
                 onLasso: { ids in
                     let added = withAnimation(.snappy) { state.claim(ids, for: person) }
                     if added > 0 { lassoTick += 1 }
-                },
-                onLassoActive: { lassoActive = $0 }
+                }
             )
             .ignoresSafeArea()
-            .overlay(alignment: .topTrailing) { mapButtons }
-            .overlay(alignment: .top) { hint }
             .navigationTitle(state.tourName)
+            .navigationSubtitle(subtitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Schließen", systemImage: "xmark") {
+                    Button("Schließen") {
                         // Nothing here is saved, so a split that is half done
                         // is not closed on one stray tap.
                         if state.owner.isEmpty { dismiss() } else { confirmingClose = true }
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Rückgängig", systemImage: "arrow.uturn.backward") {
+                            withAnimation(.snappy) { state.undo() }
+                        }
+                        .disabled(!state.canUndo)
+                        Button("Rest an Person \(person + 1)", systemImage: "tray.and.arrow.down") {
+                            withAnimation(.snappy) {
+                                state.claim(state.stops(of: nil).map(\.id), for: person)
+                            }
+                        }
+                        .disabled(state.freeCount == 0)
+                        Divider()
+                        Button("Alle Stopps zeigen", systemImage: "arrow.down.left.and.arrow.up.right") {
+                            fitToken += 1
+                        }
+                        Button("Alles zurücksetzen", systemImage: "arrow.counterclockwise", role: .destructive) {
+                            withAnimation(.snappy) { state.reset() }
+                        }
+                    } label: {
+                        Label("Mehr", systemImage: "ellipsis")
                     }
                 }
             }
@@ -399,76 +503,27 @@ private struct TourSplitMapView: View {
         }
         .sheet(isPresented: .constant(true)) {
             SplitPanel(
-                state: $state, person: $person, showingResult: $showingResult,
+                state: $state, person: $person, detent: $detent,
                 confirmingClose: $confirmingClose,
                 onClose: { dismiss() },
+                onOpenedTour: onOpenedTour,
                 onFocus: { stop in
                     focus = SplitFocus(id: stop.id, sequence: (focus?.sequence ?? 0) + 1)
                 }
             )
             .presentationDetents([SplitPanel.collapsed, .medium, .large], selection: $detent)
             .presentationBackgroundInteraction(.enabled)
+            .presentationDragIndicator(.visible)
             .interactiveDismissDisabled()
         }
     }
 
-    private var mapButtons: some View {
-        VStack(spacing: 10) {
-            mapButton(
-                "lasso", label: drawing ? "Einkreisen aus" : "Einkreisen an",
-                tint: drawing ? color : nil
-            ) {
-                drawing.toggle()
-            }
-            mapButton("arrow.uturn.backward", label: "Rückgängig") {
-                withAnimation(.snappy) { state.undo() }
-            }
-            .disabled(!state.canUndo)
-            .opacity(state.canUndo ? 1 : 0.4)
-            mapButton("arrow.down.left.and.arrow.up.right", label: "Alle Stopps zeigen") {
-                fitToken += 1
-            }
-        }
-        .padding(.trailing, 12)
-        .padding(.top, 8)
-    }
-
-    private func mapButton(
-        _ symbol: String, label: String, tint: Color? = nil, action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(tint == nil ? Color.primary : Color.white)
-                .frame(width: 48, height: 48)
-                .contentShape(.circle)
-        }
-        .buttonStyle(.plain)
-        .glassEffect(
-            tint.map { .regular.tint($0).interactive() } ?? .regular.interactive(), in: .circle)
-        .accessibilityLabel(label)
-    }
-
-    @ViewBuilder
-    private var hint: some View {
-        if !lassoActive {
-            HStack(spacing: 8) {
-                Circle().fill(color).frame(width: 10, height: 10)
-                Text(
-                    drawing
-                        ? "Person \(person + 1): einkreisen oder antippen"
-                        : "Person \(person + 1): Stopps antippen")
-                    .font(.subheadline.weight(.medium))
-                    .contentTransition(.numericText())
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .glassEffect(.regular, in: .capsule)
-            .padding(.top, 8)
-            .allowsHitTesting(false)
-            .transition(.opacity.combined(with: .scale(scale: 0.95)))
-            .animation(.snappy, value: person)
-        }
+    /// Under the tour's name, where every other screen in this app puts the
+    /// line saying how far along it is.
+    private var subtitle: String {
+        state.freeCount == 0
+            ? "Alle Stopps verteilt"
+            : "\(state.freeCount) von \(state.stops.count) noch frei"
     }
 }
 
@@ -480,12 +535,10 @@ private struct SplitMapView: UIViewRepresentable {
     let stops: [SplitStop]
     let owner: [Int: Int]
     let person: Int
-    let drawing: Bool
     let fitToken: Int
     let focus: SplitFocus?
     var onTap: (Int) -> Void
     var onLasso: ([Int]) -> Void
-    var onLassoActive: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -560,7 +613,7 @@ private struct SplitMapView: UIViewRepresentable {
     func updateUIView(_ map: SplitMKMapView, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
-        coordinator.setDrawing(drawing)
+        coordinator.armLasso()
         coordinator.refreshPins()
         if fitToken != coordinator.lastFit {
             coordinator.lastFit = fitToken
@@ -582,7 +635,7 @@ private struct SplitMapView: UIViewRepresentable {
         let lassoLayer = CAShapeLayer()
         var lastFit = 0
         var lastFocus: SplitFocus?
-        private var drawing: Bool?
+        private var armed = false
         private var stroke: [CGPoint] = []
         private var pending: Set<Int> = []
 
@@ -590,15 +643,17 @@ private struct SplitMapView: UIViewRepresentable {
 
         // MARK: Drawing
 
-        /// In drawing mode the map's own panning is moved to two fingers, so
-        /// a single finger is free for the lasso.
-        func setDrawing(_ on: Bool) {
-            guard drawing != on, let map else { return }
-            drawing = on
-            lassoRecognizer.isEnabled = on
+        /// One finger draws, two move the map — so the map's own panning is
+        /// handed to two fingers and the single finger is left free for the
+        /// lasso. There is no mode to be in the wrong one of, which is why
+        /// there is no control for it either.
+        func armLasso() {
+            guard !armed, let map else { return }
+            armed = true
+            lassoRecognizer.isEnabled = true
             for recognizer in Self.recognizers(in: map) where recognizer !== lassoRecognizer {
                 if let pan = recognizer as? UIPanGestureRecognizer, pan.maximumNumberOfTouches > 1 {
-                    pan.minimumNumberOfTouches = on ? 2 : 1
+                    pan.minimumNumberOfTouches = 2
                 }
             }
         }
@@ -617,7 +672,6 @@ private struct SplitMapView: UIViewRepresentable {
                 let moved = recognizer.translation(in: map)
                 stroke = [CGPoint(x: point.x - moved.x, y: point.y - moved.y), point]
                 lassoLayer.opacity = 1
-                parent.onLassoActive(true)
                 redraw()
             case .changed:
                 stroke.append(point)
@@ -678,7 +732,6 @@ private struct SplitMapView: UIViewRepresentable {
             let wasPending = pending
             pending = []
             for id in wasPending { configure(id) }
-            parent.onLassoActive(false)
         }
 
         // MARK: Pins
@@ -908,23 +961,25 @@ extension UIFont {
     }
 }
 
-// MARK: - Panel
+// MARK: - The sheet over the map
 
-/// Apple Maps' kind of sheet: always there, the map stays usable behind it,
-/// and it lists — by name — what the current person has so far.
+/// What Karten puts in its sheet: who this is about, and the list belonging to
+/// them. The mode switch is a segmented control rather than a floating tool
+/// button, which also says out loud what the two gestures do; the person is a
+/// pop-up button, which holds eight people as comfortably as two.
 private struct SplitPanel: View {
-    static let collapsed = PresentationDetent.height(150)
+    static let collapsed = PresentationDetent.height(190)
 
     @Binding var state: SplitState
     @Binding var person: Int
-    @Binding var showingResult: Bool
-    /// Asked from here rather than from the map underneath: this panel is the
+    @Binding var detent: PresentationDetent
+    /// Asked from here rather than from the map underneath: this sheet is the
     /// screen in front, and only the one in front can present anything.
     @Binding var confirmingClose: Bool
     var onClose: () -> Void
+    var onOpenedTour: () -> Void
     var onFocus: (SplitStop) -> Void
 
-    private var isLast: Bool { person == state.people - 1 }
     private var color: Color { SplitState.colors[person] }
 
     var body: some View {
@@ -933,7 +988,7 @@ private struct SplitPanel: View {
                 Section {
                     let mine = state.stops(of: person)
                     if mine.isEmpty {
-                        Text("Noch keine Stopps — auf der Karte einkreisen oder antippen.")
+                        Text("Noch keine Stopps.")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(mine) { stop in
@@ -943,41 +998,25 @@ private struct SplitPanel: View {
                             StopLine(stop: stop).contentShape(.rect)
                         }
                         .buttonStyle(.plain)
-                            .swipeActions {
-                                Button("Entfernen", role: .destructive) {
-                                    withAnimation { state.toggle(stop.id, for: person) }
-                                }
+                        .swipeActions {
+                            Button("Entfernen", role: .destructive) {
+                                withAnimation { state.toggle(stop.id, for: person) }
                             }
+                        }
                     }
                 } header: {
-                    Text("Person \(person + 1) · \(Format.stops(state.stops(of: person).count))")
+                    personHeader
+                } footer: {
+                    Text(
+                        "Mit einem Finger einkreisen, mit zwei Fingern die Karte bewegen "
+                            + "und zoomen. Ein einzelner Stopp lässt sich antippen.")
                 }
 
                 let unplaced = state.stops.filter { $0.coordinate == nil }
                 if !unplaced.isEmpty {
                     Section {
                         ForEach(unplaced) { stop in
-                            let owner = state.owner(of: stop)
-                            let mine = owner == person
-                            Button {
-                                withAnimation { state.toggle(stop.id, for: person) }
-                            } label: {
-                                HStack {
-                                    StopLine(stop: stop)
-                                    Spacer()
-                                    if let owner, !mine {
-                                        Text("Person \(owner + 1)")
-                                            .font(.footnote.weight(.semibold))
-                                            .foregroundStyle(SplitState.colors[owner])
-                                    } else {
-                                        Image(systemName: mine ? "checkmark.circle.fill" : "plus.circle")
-                                            .font(.title3)
-                                            .foregroundStyle(mine ? color : .secondary)
-                                    }
-                                }
-                                .contentShape(.rect)
-                            }
-                            .buttonStyle(.plain)
+                            unplacedRow(stop)
                         }
                     } header: {
                         Text("Nicht auf der Karte")
@@ -985,14 +1024,18 @@ private struct SplitPanel: View {
                         Text("Adresse nicht gefunden — hier antippen, um sie zuzuteilen.")
                     }
                 }
+
+                Section {
+                    NavigationLink("Übersicht und Touren") {
+                        SplitOverview(state: $state, onOpenedTour: onOpenedTour)
+                            .onAppear { detent = .large }
+                    }
+                }
             }
             .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            .safeAreaInset(edge: .top, spacing: 0) { header }
+            .navigationTitle("Aufteilen")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
-        }
-        .sheet(isPresented: $showingResult) {
-            SplitResultSheet(state: state)
         }
         .confirmationDialog(
             "Aufteilung verwerfen?", isPresented: $confirmingClose, titleVisibility: .visible
@@ -1004,105 +1047,61 @@ private struct SplitPanel: View {
         }
     }
 
-    private var header: some View {
-        VStack(spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Aufteilen").font(.title3.bold())
-                    Text(state.freeCount == 0 ? "Alle Stopps verteilt" : "\(state.freeCount) von \(state.stops.count) noch frei")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .contentTransition(.numericText())
-                }
-                Spacer()
-                Menu {
-                    Button("Rest an Person \(person + 1)", systemImage: "tray.and.arrow.down") {
-                        withAnimation {
-                            state.claim(state.stops(of: nil).map(\.id), for: person)
-                        }
+    /// The person whose turn it is, as a pop-up button — the control iOS uses
+    /// when one of several things is being chosen and the choice is the
+    /// heading of what is underneath it.
+    private var personHeader: some View {
+        HStack {
+            Menu {
+                Picker("Person", selection: $person) {
+                    ForEach(0..<state.people, id: \.self) { index in
+                        Text("Person \(index + 1) · \(Format.stops(state.stops(of: index).count))")
+                            .tag(index)
                     }
-                    .disabled(state.freeCount == 0)
-                    Button("Übersicht", systemImage: "list.bullet") { showingResult = true }
-                    Button("Alles zurücksetzen", systemImage: "arrow.counterclockwise", role: .destructive) {
-                        withAnimation { state.reset() }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 36, height: 36)
                 }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.circle)
-
-                if isLast || state.freeCount == 0 {
-                    Button("Fertig") { showingResult = true }
-                        .buttonStyle(.borderedProminent)
-                } else {
-                    Button {
-                        withAnimation(.snappy) { person += 1 }
-                    } label: {
-                        Label("Person \(person + 2)", systemImage: "chevron.right")
-                            .labelStyle(TrailingIconLabelStyle())
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(SplitState.colors[person + 1])
+            } label: {
+                HStack(spacing: 6) {
+                    Circle().fill(color).frame(width: 10, height: 10)
+                    Text("Person \(person + 1)")
+                        .font(.headline)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.semibold))
                 }
+                .foregroundStyle(Color.primary)
+                .textCase(nil)
             }
-
-            ScrollViewReader { scroller in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(0..<state.people, id: \.self) { index in
-                            chip(index).id(index)
-                        }
-                    }
-                    .padding(.horizontal, 20)
-                }
-                .padding(.horizontal, -20)
-                .onChange(of: person) { _, index in
-                    withAnimation { scroller.scrollTo(index) }
-                }
-            }
+            Spacer()
+            Text(Format.stops(state.stops(of: person).count))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .textCase(nil)
+                .contentTransition(.numericText())
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 20)
-        .padding(.bottom, 4)
-        .animation(.snappy, value: state.freeCount)
+        .animation(.snappy, value: state.owner.count)
     }
 
-    private func chip(_ index: Int) -> some View {
-        let selected = index == person
-        let tint = SplitState.colors[index]
+    private func unplacedRow(_ stop: SplitStop) -> some View {
+        let owner = state.owner(of: stop)
+        let mine = owner == person
         return Button {
-            withAnimation(.snappy) { person = index }
+            withAnimation { state.toggle(stop.id, for: person) }
         } label: {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(selected ? Color.white : tint)
-                    .frame(width: 8, height: 8)
-                Text("Person \(index + 1)")
-                Text("\(state.stops(of: index).count)")
-                    .monospacedDigit()
-                    .opacity(0.75)
-                    .contentTransition(.numericText())
+            HStack {
+                StopLine(stop: stop)
+                Spacer()
+                if let owner, !mine {
+                    Text("Person \(owner + 1)")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(SplitState.colors[owner])
+                } else {
+                    Image(systemName: mine ? "checkmark.circle.fill" : "plus.circle")
+                        .font(.title3)
+                        .foregroundStyle(mine ? color : .secondary)
+                }
             }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(selected ? Color.white : Color.primary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(selected ? tint : Color(.tertiarySystemFill), in: .capsule)
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
-private struct TrailingIconLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 4) {
-            configuration.title
-            configuration.icon.font(.footnote.weight(.bold))
-        }
     }
 }
 
@@ -1119,53 +1118,159 @@ private struct StopLine: View {
     }
 }
 
-// MARK: - Result
+// MARK: - Übersicht, and turning a share into a tour
 
-private struct SplitResultSheet: View {
-    let state: SplitState
-    @Environment(\.dismiss) private var dismiss
+/// Everyone's share on one screen — and the one thing this feature could not
+/// do until now: hand a share to the app itself.
+///
+/// "Als Tour anlegen" goes through exactly what every other bulk import goes
+/// through: the entries are fetched, a route is created, and `ImportReviewView`
+/// shows them for checking before a single stop is written. A review the driver
+/// backs out of takes the empty route with it.
+private struct SplitOverview: View {
+    @Binding var state: SplitState
+    var onOpenedTour: () -> Void
+
+    @Environment(\.modelContext) private var context
+    @Environment(RouteFocus.self) private var focus
+
+    @State private var busy: String?
+    @State private var task: Task<Void, Never>?
+    @State private var error: AppError?
+    @State private var review: ReviewContext?
+    /// The same context, kept across the dismissal: `sheet(item:)` clears its
+    /// own binding *before* `onDismiss` runs, so reading `review` in there
+    /// found nothing — and the screen then neither recorded the tour it had
+    /// just created nor cleaned up after a review that saved nothing.
+    @State private var pending: ReviewContext?
+    @State private var imported = false
+    /// Which people already have a tour on this phone, so the row says so
+    /// instead of offering to make a second one.
+    @State private var created: [Int: UUID] = [:]
+
+    struct ReviewContext: Identifiable {
+        let id = UUID()
+        let route: Route
+        let entries: [CustomerJSON]
+        let person: Int
+    }
 
     var body: some View {
-        NavigationStack {
-            List {
-                ForEach(0..<state.people, id: \.self) { person in
-                    let mine = state.stops(of: person)
-                    Section {
-                        if mine.isEmpty {
-                            Text("Keine Stopps").foregroundStyle(.secondary)
-                        }
-                        ForEach(mine) { StopLine(stop: $0) }
-                    } header: {
-                        HStack(spacing: 6) {
-                            Circle().fill(SplitState.colors[person]).frame(width: 10, height: 10)
-                            Text("Person \(person + 1) · \(mine.count)")
-                            Spacer()
-                            ShareLink(item: state.shareText(for: person)) {
-                                Image(systemName: "square.and.arrow.up")
-                            }
-                            .accessibilityLabel("Person \(person + 1) teilen")
-                        }
-                    }
-                }
-                let rest = state.stops(of: nil)
-                if !rest.isEmpty {
-                    Section("Nicht zugeteilt · \(rest.count)") {
-                        ForEach(rest) { StopLine(stop: $0) }
-                    }
-                }
+        List {
+            ForEach(0..<state.people, id: \.self) { person in
+                section(for: person)
             }
-            .navigationTitle("Übersicht")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Zurück") { dismiss() }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    ShareLink(item: state.shareText) {
-                        Label("Alle teilen", systemImage: "square.and.arrow.up")
-                    }
+            let rest = state.stops(of: nil)
+            if !rest.isEmpty {
+                Section("Nicht zugeteilt · \(rest.count)") {
+                    ForEach(rest) { StopLine(stop: $0) }
                 }
             }
         }
+        .navigationTitle("Übersicht")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                ShareLink(item: state.shareText) {
+                    Label("Alle teilen", systemImage: "square.and.arrow.up")
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let busy {
+                BusyBanner(text: busy, onCancel: { task?.cancel() })
+                    .padding(.bottom, 8)
+            }
+        }
+        .animation(.snappy, value: busy)
+        .errorAlert($error)
+        .sheet(item: $review, onDismiss: reviewDismissed) { ctx in
+            ImportReviewView(route: ctx.route, entries: ctx.entries) { imported = true }
+        }
+    }
+
+    @ViewBuilder
+    private func section(for person: Int) -> some View {
+        let mine = state.stops(of: person)
+        Section {
+            if mine.isEmpty {
+                Text("Keine Stopps").foregroundStyle(.secondary)
+            }
+            ForEach(mine) { StopLine(stop: $0) }
+
+            if let id = created[person] {
+                Button {
+                    open(id)
+                } label: {
+                    Label("Tour öffnen", systemImage: "arrow.forward.circle")
+                }
+            } else if !mine.isEmpty {
+                Button {
+                    task = Task { await createTour(for: person) }
+                } label: {
+                    Label("Als Tour anlegen", systemImage: "plus.circle")
+                }
+                .disabled(busy != nil)
+            }
+        } header: {
+            HStack(spacing: 6) {
+                Circle().fill(SplitState.colors[person]).frame(width: 10, height: 10)
+                Text("Person \(person + 1) · \(mine.count)")
+                Spacer()
+                if !mine.isEmpty {
+                    ShareLink(item: state.shareText(for: person)) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("Person \(person + 1) teilen")
+                }
+            }
+            .textCase(nil)
+        }
+    }
+
+    // MARK: Actions
+
+    private func createTour(for person: Int) async {
+        busy = "Paket wird geladen …"
+        defer { busy = nil }
+
+        let entries = await state.entries(for: person) { done, total in
+            Task { @MainActor in busy = "Paket \(done) von \(total) wird geladen …" }
+        }
+        guard !entries.isEmpty, !Task.isCancelled else { return }
+
+        do {
+            let open = FetchDescriptor<Route>(predicate: #Predicate { $0.statusRaw == "active" })
+            let taken = Set(((try? context.fetch(open)) ?? []).map(\.name))
+            let route = try RouteStore.createRoute(
+                name: state.routeName(for: person, taken: taken), in: context)
+            let ctx = ReviewContext(route: route, entries: entries, person: person)
+            pending = ctx
+            review = ctx
+        } catch {
+            self.error = AppError.message("Die Tour konnte nicht angelegt werden.")
+        }
+    }
+
+    /// Runs once the review is gone, whichever way it went — the same bargain
+    /// the portal import makes: a route created for a review that saved
+    /// nothing is deleted again rather than left behind empty.
+    private func reviewDismissed() {
+        guard let ctx = pending else { return }
+        pending = nil
+        defer { imported = false }
+        if imported {
+            created[ctx.person] = ctx.route.id
+        } else {
+            try? RouteStore.delete(ctx.route, in: context)
+        }
+    }
+
+    private func open(_ routeID: UUID) {
+        let all = (try? context.fetch(FetchDescriptor<Route>())) ?? []
+        guard let route = all.first(where: { $0.id == routeID }) else { return }
+        focus.open(route)
+        onOpenedTour()
     }
 }
