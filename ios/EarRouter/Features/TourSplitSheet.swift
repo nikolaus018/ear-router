@@ -29,9 +29,7 @@ struct TourSplitSheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let split {
-                    TourSplitMapView(state: split) { self.split = nil }
-                } else if GourmetCredentialsStore.load() == nil {
+                if GourmetCredentialsStore.load() == nil {
                     ContentUnavailableView(
                         "Nicht angemeldet", systemImage: "person.crop.circle.badge.questionmark",
                         description: Text(
@@ -40,7 +38,7 @@ struct TourSplitSheet: View {
                     form
                 }
             }
-            .navigationTitle(split == nil ? "Tour aufteilen" : "")
+            .navigationTitle("Tour aufteilen")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -58,12 +56,16 @@ struct TourSplitSheet: View {
             }
             .animation(.snappy, value: busy)
             .errorAlert($error)
-            .interactiveDismissDisabled(busy != nil || split != nil)
+            .interactiveDismissDisabled(busy != nil)
             .task {
                 if GourmetCredentialsStore.load() != nil { await loadTours() }
             }
             .onChange(of: date) { _, _ in reconcileSelection() }
         }
+        // Full screen, not a sheet: a sheet's own swipe-to-dismiss claims any
+        // downward stroke, which cancelled the circle half-way round and left
+        // nothing picked.
+        .fullScreenCover(item: $split) { TourSplitMapView(state: $0) }
     }
 
     private var form: some View {
@@ -216,21 +218,86 @@ struct SplitStop: Identifiable {
     let coordinate: CLLocationCoordinate2D?
 }
 
-/// Everything a split is, held only for as long as the sheet is open.
-struct SplitState {
+/// Everything a split is, held only for as long as the screen is open.
+struct SplitState: Identifiable {
     static let maxPeople = 8
-    static let colors: [Color] = [.blue, .orange, .green, .purple, .pink, .teal, .brown, .red]
+    static let colors: [Color] = [.blue, .orange, .green, .purple, .pink, .teal, .indigo, .red]
 
+    let id = UUID()
     let tourName: String
     let people: Int
     let stops: [SplitStop]
     /// Delivery id → person index. A stop with no entry is still free.
-    var owner: [Int: Int] = [:]
+    private(set) var owner: [Int: Int] = [:]
+    private var history: [[Int: Int]] = []
+
+    init(tourName: String, people: Int, stops: [SplitStop]) {
+        self.tourName = tourName
+        self.people = people
+        self.stops = stops
+    }
+
+    var canUndo: Bool { !history.isEmpty }
+    var freeCount: Int { stops.count - owner.count }
+
+    func owner(of stop: SplitStop) -> Int? { owner[stop.id] }
+
+    func stops(of person: Int?) -> [SplitStop] {
+        stops.filter { owner[$0.id] == person }
+    }
+
+    /// Gives every free stop among `ids` to `person`. Stops that already
+    /// belong to someone stay theirs. Returns how many were added.
+    @discardableResult
+    mutating func claim(_ ids: [Int], for person: Int) -> Int {
+        let free = ids.filter { owner[$0] == nil }
+        guard !free.isEmpty else { return 0 }
+        history.append(owner)
+        for id in free { owner[id] = person }
+        return free.count
+    }
+
+    /// A free stop goes to `person`; one of theirs is freed again. Someone
+    /// else's is left alone.
+    mutating func toggle(_ id: Int, for person: Int) {
+        let current = owner[id]
+        guard current == nil || current == person else { return }
+        history.append(owner)
+        owner[id] = current == nil ? person : nil
+    }
+
+    mutating func undo() {
+        if let last = history.popLast() { owner = last }
+    }
+
+    mutating func reset() {
+        guard !owner.isEmpty else { return }
+        history.append(owner)
+        owner = [:]
+    }
+
+    func shareText(for person: Int) -> String {
+        let mine = stops(of: person)
+        return (["Person \(person + 1) (\(mine.count))"]
+            + mine.map { "• \($0.name) – \($0.address)" })
+            .joined(separator: "\n")
+    }
+
+    var shareText: String {
+        var sections = (0..<people).map(shareText(for:))
+        let rest = stops(of: nil)
+        if !rest.isEmpty {
+            sections.append(
+                (["Nicht zugeteilt (\(rest.count))"] + rest.map { "• \($0.name) – \($0.address)" })
+                    .joined(separator: "\n"))
+        }
+        return "\(tourName)\n\n" + sections.joined(separator: "\n\n")
+    }
 }
 
-/// Point-in-polygon by ray casting, in screen points. The lasso is whatever
-/// shape a thumb draws, closed straight back to where it started.
+/// What a finger drew round, in screen points.
 enum Lasso {
+    /// Ray casting, with the shape closed straight back to where it started.
     static func contains(_ point: CGPoint, in polygon: [CGPoint]) -> Bool {
         guard polygon.count >= 3 else { return false }
         var inside = false
@@ -246,250 +313,438 @@ enum Lasso {
         }
         return inside
     }
+
+    /// Inside, or touched by the line itself. A circle drawn tight round a pin
+    /// usually clips the pin's edge, and the driver meant it.
+    static func catches(_ point: CGPoint, in polygon: [CGPoint], radius: CGFloat) -> Bool {
+        if contains(point, in: polygon) { return true }
+        guard polygon.count >= 2 else { return false }
+        for i in polygon.indices {
+            let a = polygon[i], b = polygon[(i + 1) % polygon.count]
+            if distance(from: point, toSegment: a, b) <= radius { return true }
+        }
+        return false
+    }
+
+    private static func distance(from p: CGPoint, toSegment a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0 else { return hypot(p.x - a.x, p.y - a.y) }
+        let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared))
+        return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+    }
 }
 
 // MARK: - Map
 
 private struct TourSplitMapView: View {
     @State var state: SplitState
-    var onBack: () -> Void
+    @Environment(\.dismiss) private var dismiss
 
     @State private var person = 0
     @State private var camera: MapCameraPosition = .automatic
     @State private var drawing = true
     @State private var lasso: [CGPoint] = []
-    @State private var history: [[Int: Int]] = []
-    @State private var showingUnplaced = false
+    @State private var claimed = 0
     @State private var showingResult = false
+    @State private var detent: PresentationDetent = SplitPanel.collapsed
+
+    private static let space = "split-map"
+    private static let pinSize: CGFloat = 28
 
     private var color: Color { SplitState.colors[person] }
-    private var freeCount: Int { state.stops.count - state.owner.count }
-    private var mineCount: Int { state.owner.values.filter { $0 == person }.count }
-    private var unplaced: [SplitStop] { state.stops.filter { $0.coordinate == nil } }
-    private var isLast: Bool { person == state.people - 1 }
 
     var body: some View {
-        MapReader { proxy in
-            ZStack {
-                Map(position: $camera) {
-                    ForEach(state.stops.filter { $0.coordinate != nil }) { stop in
-                        Annotation(stop.name, coordinate: stop.coordinate!) {
-                            pin(for: stop)
-                        }
-                        .annotationTitles(.hidden)
+        NavigationStack {
+            MapReader { proxy in
+                ZStack {
+                    map
+                    if drawing {
+                        lassoLayer(proxy)
                     }
                 }
-                .mapStyle(.standard(pointsOfInterest: .excludingAll))
+                .coordinateSpace(.named(Self.space))
+            }
+            .ignoresSafeArea()
+            .overlay(alignment: .topTrailing) { mapButtons }
+            .overlay(alignment: .top) { hint }
+            .navigationTitle(state.tourName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Schließen", systemImage: "xmark") { dismiss() }
+                }
+            }
+            .sensoryFeedback(.impact(weight: .medium), trigger: claimed)
+            .onAppear(perform: fit)
+        }
+        .sheet(isPresented: .constant(true)) {
+            SplitPanel(
+                state: $state, person: $person, showingResult: $showingResult)
+                .presentationDetents(
+                    [SplitPanel.collapsed, .medium, .large], selection: $detent)
+                .presentationBackgroundInteraction(.enabled)
+                .interactiveDismissDisabled()
+        }
+    }
 
-                if drawing {
-                    Color.clear
-                        .contentShape(.rect)
-                        .gesture(
-                            DragGesture(minimumDistance: 0, coordinateSpace: .named("split"))
-                                .onChanged { lasso.append($0.location) }
-                                .onEnded { _ in finishLasso(proxy) })
-                    Path { path in
-                        guard let first = lasso.first else { return }
-                        path.move(to: first)
-                        for point in lasso.dropFirst() { path.addLine(to: point) }
+    private var map: some View {
+        Map(position: $camera) {
+            UserAnnotation()
+            ForEach(state.stops.filter { $0.coordinate != nil }) { stop in
+                Annotation(stop.name, coordinate: stop.coordinate!, anchor: .center) {
+                    SplitPin(owner: state.owner(of: stop), current: person, size: Self.pinSize)
+                        .onTapGesture { toggle(stop) }
+                }
+                .annotationTitles(.hidden)
+            }
+        }
+        .mapStyle(.standard(pointsOfInterest: .excludingAll))
+        .mapControls {}
+    }
+
+    private func lassoLayer(_ proxy: MapProxy) -> some View {
+        ZStack {
+            Color.clear
+                .contentShape(.rect)
+                .gesture(
+                    DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.space))
+                        .onChanged { lasso.append($0.location) }
+                        .onEnded { _ in finishLasso(proxy) })
+            if lasso.count > 1 {
+                Path { path in
+                    path.addLines(lasso)
+                    path.closeSubpath()
+                }
+                .fill(color.opacity(0.15))
+                Path { path in path.addLines(lasso) }
+                    .stroke(
+                        color,
+                        style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                    .shadow(color: .black.opacity(0.2), radius: 2)
+            }
+        }
+        .allowsHitTesting(true)
+    }
+
+    private var mapButtons: some View {
+        VStack(spacing: 10) {
+            mapButton(
+                drawing ? "lasso" : "hand.point.up.left",
+                label: drawing ? "Einkreisen aktiv" : "Karte bewegen",
+                tint: drawing ? color : nil
+            ) {
+                drawing.toggle()
+            }
+            mapButton("arrow.uturn.backward", label: "Rückgängig") {
+                withAnimation(.snappy) { state.undo() }
+            }
+            .disabled(!state.canUndo)
+            .opacity(state.canUndo ? 1 : 0.4)
+            mapButton("arrow.down.left.and.arrow.up.right", label: "Alle Stopps zeigen") {
+                fit()
+            }
+        }
+        .padding(.trailing, 12)
+        .padding(.top, 8)
+    }
+
+    private func mapButton(
+        _ symbol: String, label: String, tint: Color? = nil, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(tint == nil ? Color.primary : Color.white)
+                .frame(width: 48, height: 48)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(tint.map { .regular.tint($0).interactive() } ?? .regular.interactive(), in: .circle)
+        .accessibilityLabel(label)
+    }
+
+    @ViewBuilder
+    private var hint: some View {
+        if lasso.isEmpty {
+            HStack(spacing: 8) {
+                Circle().fill(color).frame(width: 10, height: 10)
+                Text(
+                    drawing
+                        ? "Stopps für Person \(person + 1) einkreisen"
+                        : "Karte bewegen — zum Einkreisen \(Image(systemName: "lasso")) tippen")
+                    .font(.subheadline.weight(.medium))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .glassEffect(.regular, in: .capsule)
+            .padding(.top, 8)
+            .allowsHitTesting(false)
+            .transition(.opacity)
+        }
+    }
+
+    private func finishLasso(_ proxy: MapProxy) {
+        let stroke = lasso
+        withAnimation(.easeOut(duration: 0.2)) { lasso = [] }
+
+        func screenPoint(_ stop: SplitStop) -> CGPoint? {
+            stop.coordinate.flatMap { proxy.convert($0, to: .named(Self.space)) }
+        }
+
+        // Barely moved: a tap. The lasso layer sits over the pins, so it
+        // hands the tap to the pin under the finger itself.
+        let span = stroke.reduce(into: CGRect.null) { $0 = $0.union(CGRect(origin: $1, size: .zero)) }
+        guard span.width > 20 || span.height > 20 else {
+            guard let tap = stroke.last else { return }
+            let nearest = state.stops
+                .compactMap { stop in screenPoint(stop).map { (stop, hypot($0.x - tap.x, $0.y - tap.y)) } }
+                .filter { $0.1 <= Self.pinSize }
+                .min { $0.1 < $1.1 }
+            if let nearest { toggle(nearest.0) }
+            return
+        }
+
+        let caught = state.stops.compactMap { stop -> Int? in
+            guard let point = screenPoint(stop),
+                Lasso.catches(point, in: stroke, radius: Self.pinSize / 2)
+            else { return nil }
+            return stop.id
+        }
+        let added = withAnimation(.snappy) { state.claim(caught, for: person) }
+        if added > 0 { claimed += 1 }
+    }
+
+    private func toggle(_ stop: SplitStop) {
+        let before = state.owner(of: stop)
+        withAnimation(.snappy) { state.toggle(stop.id, for: person) }
+        if state.owner(of: stop) != before { claimed += 1 }
+    }
+
+    /// Frames every pin, kept clear of the panel along the bottom.
+    private func fit() {
+        let points = state.stops.compactMap(\.coordinate)
+        guard var region = MKCoordinateRegion(fitting: points) else { return }
+        region.span.latitudeDelta *= 1.8
+        region.span.longitudeDelta *= 1.3
+        region.center.latitude -= region.span.latitudeDelta * 0.18
+        withAnimation(.easeInOut) { camera = .region(region) }
+    }
+}
+
+private struct SplitPin: View {
+    let owner: Int?
+    let current: Int
+    let size: CGFloat
+
+    var body: some View {
+        let mine = owner == current
+        ZStack {
+            if let owner {
+                Circle().fill(SplitState.colors[owner])
+                Text("\(owner + 1)")
+                    .font(.system(size: size * 0.45, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+            } else {
+                Circle().fill(.white)
+                Circle().fill(Color.gray.opacity(0.55)).padding(size * 0.3)
+            }
+            Circle().strokeBorder(.white, lineWidth: 2)
+        }
+        .frame(width: size, height: size)
+        .opacity(owner == nil || mine ? 1 : 0.45)
+        .scaleEffect(mine ? 1.12 : 1)
+        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+        .animation(.snappy, value: owner)
+        .animation(.snappy, value: current)
+    }
+}
+
+// MARK: - Panel
+
+/// Apple Maps' kind of sheet: always there, the map stays usable behind it,
+/// and it lists — by name — what the current person has so far.
+private struct SplitPanel: View {
+    static let collapsed = PresentationDetent.height(150)
+
+    @Binding var state: SplitState
+    @Binding var person: Int
+    @Binding var showingResult: Bool
+
+    private var isLast: Bool { person == state.people - 1 }
+    private var color: Color { SplitState.colors[person] }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    let mine = state.stops(of: person)
+                    if mine.isEmpty {
+                        Text("Noch keine Stopps — auf der Karte einkreisen.")
+                            .foregroundStyle(.secondary)
                     }
-                    .stroke(color, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [8, 6]))
-                    .allowsHitTesting(false)
+                    ForEach(mine) { stop in
+                        StopLine(stop: stop)
+                            .swipeActions {
+                                Button("Entfernen", role: .destructive) {
+                                    withAnimation { state.toggle(stop.id, for: person) }
+                                }
+                            }
+                    }
+                } header: {
+                    Text("Person \(person + 1) · \(state.stops(of: person).count) Stopps")
+                }
+
+                let unplaced = state.stops.filter {
+                    $0.coordinate == nil && (state.owner(of: $0) == nil || state.owner(of: $0) == person)
+                }
+                if !unplaced.isEmpty {
+                    Section {
+                        ForEach(unplaced) { stop in
+                            let mine = state.owner(of: stop) == person
+                            Button {
+                                withAnimation { state.toggle(stop.id, for: person) }
+                            } label: {
+                                HStack {
+                                    StopLine(stop: stop)
+                                    Spacer()
+                                    Image(systemName: mine ? "checkmark.circle.fill" : "plus.circle")
+                                        .font(.title3)
+                                        .foregroundStyle(mine ? color : .secondary)
+                                }
+                                .contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    } header: {
+                        Text("Nicht auf der Karte")
+                    } footer: {
+                        Text("Adresse nicht gefunden — hier antippen, um sie zuzuteilen.")
+                    }
                 }
             }
-            .coordinateSpace(.named("split"))
-        }
-        .ignoresSafeArea(edges: .bottom)
-        .safeAreaInset(edge: .top) { header }
-        .safeAreaInset(edge: .bottom) { controls }
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text(state.tourName).font(.headline).lineLimit(1)
-            }
-        }
-        .onAppear(perform: fit)
-        .sheet(isPresented: $showingUnplaced) {
-            UnplacedSheet(state: $state, person: person)
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .safeAreaInset(edge: .top, spacing: 0) { header }
+            .toolbar(.hidden, for: .navigationBar)
         }
         .sheet(isPresented: $showingResult) {
             SplitResultSheet(state: state)
         }
     }
 
-    private func pin(for stop: SplitStop) -> some View {
-        let owner = state.owner[stop.id]
-        let fill: Color = owner.map { $0 == person ? SplitState.colors[$0] : Color.gray } ?? .white
-        return ZStack {
-            Circle().fill(fill)
-            Circle().strokeBorder(owner == nil ? color : .white, lineWidth: 2)
-            if let owner {
-                Text("\(owner + 1)").font(.caption2.bold()).foregroundStyle(.white)
-            }
-        }
-        .frame(width: 22, height: 22)
-        .opacity(owner != nil && owner != person ? 0.5 : 1)
-        .onTapGesture { toggle(stop) }
-    }
-
     private var header: some View {
-        HStack(spacing: 10) {
-            Circle().fill(color).frame(width: 14, height: 14)
-            Text("Person \(person + 1) von \(state.people)").font(.subheadline.weight(.semibold))
-            Spacer()
-            Text("\(mineCount) Stopps · \(freeCount) frei")
-                .font(.subheadline.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .contentTransition(.numericText())
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .glassEffect(.regular, in: .capsule)
-        .padding(.horizontal, 12)
-        .animation(.snappy, value: state.owner.count)
-    }
-
-    private var controls: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                Button {
-                    drawing.toggle()
-                } label: {
-                    Label(
-                        drawing ? "Einkreisen" : "Verschieben",
-                        systemImage: drawing ? "lasso" : "hand.draw")
-                }
-                Button {
-                    if let last = history.popLast() { state.owner = last }
-                } label: {
-                    Label("Rückgängig", systemImage: "arrow.uturn.backward")
-                }
-                .disabled(history.isEmpty)
-                if !unplaced.isEmpty {
-                    Button {
-                        showingUnplaced = true
-                    } label: {
-                        Label("\(unplaced.count) ohne Karte", systemImage: "mappin.slash")
-                    }
-                }
-            }
-            .buttonStyle(.bordered)
-            .font(.footnote.weight(.semibold))
-
-            HStack(spacing: 10) {
-                Button(person == 0 ? "Zurück" : "Person \(person)") {
-                    if person == 0 { onBack() } else { person -= 1 }
-                }
-                .buttonStyle(.bordered)
-                if freeCount > 0 {
-                    Button("Rest") { assignRest() }
-                        .buttonStyle(.bordered)
+        VStack(spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Aufteilen").font(.title3.bold())
+                    Text(state.freeCount == 0 ? "Alle Stopps verteilt" : "\(state.freeCount) von \(state.stops.count) noch frei")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .contentTransition(.numericText())
                 }
                 Spacer()
-                if isLast || freeCount == 0 {
+                Menu {
+                    Button("Rest an Person \(person + 1)", systemImage: "tray.and.arrow.down") {
+                        withAnimation {
+                            state.claim(state.stops(of: nil).map(\.id), for: person)
+                        }
+                    }
+                    .disabled(state.freeCount == 0)
+                    Button("Übersicht", systemImage: "list.bullet") { showingResult = true }
+                    Button("Alles zurücksetzen", systemImage: "arrow.counterclockwise", role: .destructive) {
+                        withAnimation { state.reset() }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.body.weight(.semibold))
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
+
+                if isLast || state.freeCount == 0 {
                     Button("Fertig") { showingResult = true }
                         .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Weiter zu Person \(person + 2)") { person += 1 }
-                        .buttonStyle(.borderedProminent)
+                    Button {
+                        withAnimation(.snappy) { person += 1 }
+                    } label: {
+                        Label("Person \(person + 2)", systemImage: "chevron.right")
+                            .labelStyle(TrailingIconLabelStyle())
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(SplitState.colors[person + 1])
+                }
+            }
+
+            ScrollViewReader { scroller in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(0..<state.people, id: \.self) { index in
+                            chip(index).id(index)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                }
+                .padding(.horizontal, -20)
+                .onChange(of: person) { _, index in
+                    withAnimation { scroller.scrollTo(index, anchor: .center) }
                 }
             }
         }
-        .padding(12)
-        .glassEffect(.regular, in: .rect(cornerRadius: 22))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 20)
+        .padding(.top, 20)
+        .padding(.bottom, 4)
+        .animation(.snappy, value: state.freeCount)
     }
 
-    private func finishLasso(_ proxy: MapProxy) {
-        defer { lasso = [] }
-        // A tap rather than a circle: the lasso layer sits over the pins, so
-        // it toggles whichever one is under the finger itself.
-        guard lasso.count >= 8 else {
-            guard let tap = lasso.last else { return }
-            let hit = state.stops.first { stop in
-                guard let coordinate = stop.coordinate,
-                    let point = proxy.convert(coordinate, to: .named("split"))
-                else { return false }
-                return hypot(point.x - tap.x, point.y - tap.y) < 22
+    private func chip(_ index: Int) -> some View {
+        let selected = index == person
+        let tint = SplitState.colors[index]
+        return Button {
+            withAnimation(.snappy) { person = index }
+        } label: {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(selected ? Color.white : tint)
+                    .frame(width: 8, height: 8)
+                Text("Person \(index + 1)")
+                Text("\(state.stops(of: index).count)")
+                    .monospacedDigit()
+                    .opacity(0.75)
+                    .contentTransition(.numericText())
             }
-            if let hit { toggle(hit) }
-            return
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(selected ? tint : Color(.tertiarySystemFill), in: .capsule)
         }
-        var owner = state.owner
-        for stop in state.stops where owner[stop.id] == nil {
-            guard let coordinate = stop.coordinate,
-                let point = proxy.convert(coordinate, to: .named("split")),
-                Lasso.contains(point, in: lasso)
-            else { continue }
-            owner[stop.id] = person
-        }
-        guard owner != state.owner else { return }
-        history.append(state.owner)
-        state.owner = owner
-    }
-
-    /// A free stop goes to the current person; one of theirs is freed again.
-    /// Someone else's is left alone — go back to that person to change it.
-    private func toggle(_ stop: SplitStop) {
-        let current = state.owner[stop.id]
-        guard current == nil || current == person else { return }
-        history.append(state.owner)
-        state.owner[stop.id] = current == nil ? person : nil
-    }
-
-    private func assignRest() {
-        history.append(state.owner)
-        for stop in state.stops where state.owner[stop.id] == nil {
-            state.owner[stop.id] = person
-        }
-    }
-
-    private func fit() {
-        let points = state.stops.compactMap(\.coordinate)
-        if let region = MKCoordinateRegion(fitting: points) { camera = .region(region) }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
-// MARK: - Stops without a pin
+private struct TrailingIconLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) {
+            configuration.title
+            configuration.icon.font(.footnote.weight(.bold))
+        }
+    }
+}
 
-private struct UnplacedSheet: View {
-    @Binding var state: SplitState
-    let person: Int
-    @Environment(\.dismiss) private var dismiss
+private struct StopLine: View {
+    let stop: SplitStop
 
     var body: some View {
-        NavigationStack {
-            List(state.stops.filter { $0.coordinate == nil }) { stop in
-                let owner = state.owner[stop.id]
-                Button {
-                    guard owner == nil || owner == person else { return }
-                    state.owner[stop.id] = owner == nil ? person : nil
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(stop.name).foregroundStyle(Color.primary)
-                            Text(stop.address).font(.subheadline).foregroundStyle(Color.secondary)
-                        }
-                        Spacer()
-                        if let owner {
-                            Text("Person \(owner + 1)")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(SplitState.colors[owner])
-                        }
-                    }
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-            }
-            .navigationTitle("Ohne Karte")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Fertig") { dismiss() }
-                }
-            }
+        VStack(alignment: .leading, spacing: 2) {
+            Text(stop.name)
+            Text(stop.address.isEmpty ? "Keine Adresse" : stop.address)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         }
-        .presentationDetents([.medium, .large])
     }
 }
 
@@ -499,64 +754,47 @@ private struct SplitResultSheet: View {
     let state: SplitState
     @Environment(\.dismiss) private var dismiss
 
-    private func stops(of person: Int?) -> [SplitStop] {
-        state.stops.filter { state.owner[$0.id] == person }
-    }
-
-    private var shareText: String {
-        var sections: [String] = []
-        for person in 0..<state.people {
-            let mine = stops(of: person)
-            let lines = mine.map { "• \($0.name) – \($0.address)" }
-            sections.append((["Person \(person + 1) (\(mine.count))"] + lines).joined(separator: "\n"))
-        }
-        let rest = stops(of: nil)
-        if !rest.isEmpty {
-            sections.append(
-                (["Nicht zugeteilt (\(rest.count))"] + rest.map { "• \($0.name) – \($0.address)" })
-                    .joined(separator: "\n"))
-        }
-        return "\(state.tourName)\n\n" + sections.joined(separator: "\n\n")
-    }
-
     var body: some View {
         NavigationStack {
             List {
                 ForEach(0..<state.people, id: \.self) { person in
-                    let mine = stops(of: person)
+                    let mine = state.stops(of: person)
                     Section {
-                        ForEach(mine) { row($0) }
+                        if mine.isEmpty {
+                            Text("Keine Stopps").foregroundStyle(.secondary)
+                        }
+                        ForEach(mine) { StopLine(stop: $0) }
                     } header: {
                         HStack(spacing: 6) {
                             Circle().fill(SplitState.colors[person]).frame(width: 10, height: 10)
                             Text("Person \(person + 1) · \(mine.count)")
+                            Spacer()
+                            ShareLink(item: state.shareText(for: person)) {
+                                Image(systemName: "square.and.arrow.up")
+                            }
+                            .accessibilityLabel("Person \(person + 1) teilen")
                         }
                     }
                 }
-                let rest = stops(of: nil)
+                let rest = state.stops(of: nil)
                 if !rest.isEmpty {
                     Section("Nicht zugeteilt · \(rest.count)") {
-                        ForEach(rest) { row($0) }
+                        ForEach(rest) { StopLine(stop: $0) }
                     }
                 }
             }
-            .navigationTitle("Aufteilung")
+            .navigationTitle("Übersicht")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Zurück") { dismiss() }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    ShareLink(item: shareText)
+                    ShareLink(item: state.shareText) {
+                        Label("Alle teilen", systemImage: "square.and.arrow.up")
+                    }
                 }
             }
-        }
-    }
-
-    private func row(_ stop: SplitStop) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(stop.name)
-            Text(stop.address).font(.subheadline).foregroundStyle(.secondary)
         }
     }
 }
