@@ -4,6 +4,14 @@ ios/DerivedData/
 **/xcuserdata/
 .DS_Store
 
+# Xcode rewrites the project file on its own — reordering sections, no real
+# change — and that noise sat in every `git status`. The file itself stays
+# tracked (without it the project cannot be opened from a fresh clone); it is
+# marked skip-worktree instead, so local rewrites are ignored:
+#     git update-index --skip-worktree ios/EarRouter.xcodeproj/project.pbxproj
+# To commit a genuine project change, undo that first with --no-skip-worktree.
+ios/EarRouter.xcodeproj/project.pbxproj
+
 # Local-only debug credentials for the Zusteller-Portal (Simulator/Debug
 # fallback in GourmetCredentialsStore) — never committed.
 .gourmet-debug-credentials
