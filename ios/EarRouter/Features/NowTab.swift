@@ -685,7 +685,7 @@ private struct TourDoneView: View {
                 .accessibilityHidden(true)
 
             VStack(spacing: 4) {
-                Text(allDelivered ? "Alle geliefert" : "Tour gefahren")
+                Text(allDelivered && delivered == count ? "Alle geliefert" : "Tour gefahren")
                     .font(.title2.bold())
                 Text(detail)
                     .font(.subheadline)
@@ -736,8 +736,11 @@ private struct TourDoneView: View {
         .padding(.vertical, 12)
     }
 
+    /// Counted off the meals that actually left the van. "30 Stopps
+    /// zugestellt" over a tour with two abbestellt customers on it was a
+    /// sentence two meals too generous.
     private var detail: String {
-        let handed = allDelivered
+        let handed = delivered == count
             ? (count == 1 ? "1 Stopp zugestellt" : "\(count) Stopps zugestellt")
             : "\(delivered) von \(count) zugestellt"
         guard homeKm >= 0.05, let km = Format.km(homeKm) else { return handed }

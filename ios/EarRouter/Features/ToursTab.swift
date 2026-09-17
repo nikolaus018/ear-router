@@ -238,7 +238,7 @@ struct TourRow: View {
         // Named on the row, not left to be discovered by opening the tour. It
         // is the one fact about a day that somebody still has to do something
         // about.
-        if stats.missed > 0 { parts.append("\(stats.missed) nicht angetroffen") }
+        if stats.notHome > 0 { parts.append("\(stats.notHome) nicht angetroffen") }
         if stats.km > 0, let formatted = Format.km(stats.km) { parts.append(formatted) }
         return parts.joined(separator: " · ")
     }
@@ -251,23 +251,27 @@ struct TourRow: View {
         /// nobody was home for is behind the driver, and a bar that refused to
         /// move for them sat at 29 of 30 for the rest of the afternoon.
         let settled: Int
+        /// Only the doors nobody opened. Settled-but-not-delivered also takes
+        /// in an abbestellt customer, who was never owed a meal and must not
+        /// be named on the row as somebody nobody found at home.
+        let notHome: Int
         let km: Double
 
-        var missed: Int { settled - delivered }
-
         init(_ route: Route) {
-            var customers = 0, delivered = 0, settled = 0, km = 0.0
+            var customers = 0, delivered = 0, settled = 0, notHome = 0, km = 0.0
             for s in route.stops {
                 if s.kind == .customer {
                     customers += 1
                     if s.delivered { delivered += 1 }
                     if s.isSettled { settled += 1 }
+                    if s.outcome?.needsFollowUp == true { notHome += 1 }
                 }
                 if !s.excluded { km += s.nextLegKm ?? 0 }
             }
             self.customers = customers
             self.delivered = delivered
             self.settled = settled
+            self.notHome = notHome
             self.km = km
         }
     }
