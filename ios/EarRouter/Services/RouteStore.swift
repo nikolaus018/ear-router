@@ -657,6 +657,14 @@ enum RouteStore {
 
         var moved = false
         for (index, (entry, existingStop)) in needsGeocode.enumerated() {
+            // Checked here as well as by the lookup below: an address already
+            // in the cache comes back without ever reaching a cancellation
+            // point, so a re-import of a known list carried on inserting stops
+            // after "Stoppen" had been pressed.
+            if Task.isCancelled {
+                result.cancelled = true
+                break
+            }
             onProgress?(index, needsGeocode.count)
             let hit: GeocodeResult
             do {
