@@ -343,10 +343,15 @@ struct SplitState: Identifiable {
         }
     }
 
-    /// "VM 4 DO Vormittag – Person 2", with the date added only when a tour of
-    /// that name is already open — the same rule the portal import follows.
+    /// "VM 4 DO Vormittag · P2", with the date added only when a tour of that
+    /// name is already open — the same rule the portal import follows.
+    ///
+    /// "· P2" rather than "– Person 2": the tour's own name is already most of
+    /// a large title, and the screens a driver reads it on — Touren, Jetzt,
+    /// the Karte — cut what does not fit. Four characters say which share this
+    /// is; eleven push the tour's own name off the screen.
     func routeName(for person: Int, taken: Set<String> = []) -> String {
-        let base = "\(tourName.trimmed) – Person \(person + 1)"
+        let base = "\(tourName.trimmed) · P\(person + 1)"
         guard taken.contains(base) else { return base }
         return "\(base) – \(Self.dayFormatter.string(from: date))"
     }

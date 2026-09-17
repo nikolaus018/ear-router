@@ -82,6 +82,10 @@ struct StockwerkForm: View {
     @State private var dontAsk = false
     @State private var loaded = false
     @State private var saveError: String?
+    /// What the fields held when the sheet opened — a floor typed at a door
+    /// and a note two lines long are worth one question before they go.
+    @State private var original = CustomerInfo()
+    @State private var confirmingDiscard = false
     @FocusState private var focused: Bool
 
     /// The floors that come up over and over in a Viennese stairwell, from the
@@ -193,7 +197,16 @@ struct StockwerkForm: View {
                     // "Später", not "Abbrechen": after a delivery nothing is
                     // being cancelled — the meal is already ticked off — and
                     // the customer is simply asked about again next time.
-                    Button(askingAfterDelivery ? "Später" : "Abbrechen") { dismiss() }
+                    Button(askingAfterDelivery ? "Später" : "Abbrechen") {
+                        if info == original { dismiss() } else { confirmingDiscard = true }
+                    }
+                    .confirmationDialog(
+                        "Änderungen verwerfen?", isPresented: $confirmingDiscard,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Änderungen verwerfen", role: .destructive) { dismiss() }
+                        Button("Weiter bearbeiten", role: .cancel) {}
+                    }
                 }
             }
             // No automatic keyboard. The floor is one tap on a quick pick,
@@ -205,6 +218,7 @@ struct StockwerkForm: View {
                 text = initial?.stockwerk ?? ""
                 notiz = initial?.notiz ?? ""
                 dontAsk = initial?.dontAsk ?? false
+                original = info
             }
         }
         // Full height, with no `presentationDetents`.
@@ -217,6 +231,7 @@ struct StockwerkForm: View {
         // first control anyone tried. Dropping the detents fixes it outright;
         // the content is a card's worth of form either way.
         .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(info != original)
     }
 
     /// Saving nothing at all is not an answer — except when there was something

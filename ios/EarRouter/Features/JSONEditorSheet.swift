@@ -29,6 +29,11 @@ struct JSONEditorSheet: View {
     /// dropped the driver back into a screen of raw JSON with nothing left to
     /// do on it but find "Schließen".
     @State private var imported = false
+    /// The text as it was loaded, so closing can tell a look from an edit —
+    /// the same question every other editing sheet in this app asks before it
+    /// throws work away.
+    @State private var loadedText = ""
+    @State private var confirmingDiscard = false
 
     var body: some View {
         NavigationStack {
@@ -53,7 +58,16 @@ struct JSONEditorSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Schließen") { dismiss() }
+                    Button("Schließen") {
+                        if text == loadedText { dismiss() } else { confirmingDiscard = true }
+                    }
+                    .confirmationDialog(
+                        "Änderungen verwerfen?", isPresented: $confirmingDiscard,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Änderungen verwerfen", role: .destructive) { dismiss() }
+                        Button("Weiter bearbeiten", role: .cancel) {}
+                    }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     // "Weiter", not "Übernehmen": this button no longer changes
@@ -99,6 +113,9 @@ struct JSONEditorSheet: View {
                 }
             }
             .errorAlert($error)
+            // A swipe is the easiest gesture to make by accident, and what it
+            // would throw away here is a pasted day's list.
+            .interactiveDismissDisabled(text != loadedText)
             // Loaded once, not on every appearance. `onAppear` fires again when
             // a sheet presented over this one goes away — and the sheet
             // presented over this one is the import report, so a partly-failed
@@ -115,6 +132,7 @@ struct JSONEditorSheet: View {
                 // applying "[]" to a route that has no stops did nothing
                 // anyway.
                 text = route.customerCount == 0 ? "" : RouteStore.exportJSON(route)
+                loadedText = text
             }
         }
         // The parsed list, before any of it is applied. Full screen, because

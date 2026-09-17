@@ -149,15 +149,19 @@ struct LadelisteView: View {
             .navigationSubtitle(progressLabel(ladung))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Fertig") { dismiss() }
-                }
-                ToolbarItem(placement: .primaryAction) {
+                // "Fertig" trailing, where every other sheet in this app — and
+                // on this phone — puts it. It sat on the left, opposite every
+                // one of them, which is the corner a driver's thumb goes to
+                // for "Abbrechen".
+                ToolbarItem(placement: .topBarLeading) {
                     Button("Zurücksetzen", systemImage: "arrow.counterclockwise") {
                         checked.removeAll()
                         save()
                     }
                     .disabled(checked.isEmpty)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Fertig") { dismiss() }
                 }
             }
             .onAppear(perform: load)

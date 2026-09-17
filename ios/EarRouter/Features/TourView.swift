@@ -368,7 +368,11 @@ struct TourView: View {
                 }
                 Button("Tagesabschluss", systemImage: "doc.text") { showingReport = true }
                 Divider()
-                Button("Ladeliste", systemImage: "checklist") { showingLadeliste = true }
+                // `shippingbox`, not a second checklist: "Tour vorbereiten"
+                // two rows above already wears one, and the pair sat in the
+                // same menu as two near-identical glyphs. What this list is
+                // about is what goes in the van, which is the box.
+                Button("Ladeliste", systemImage: "shippingbox") { showingLadeliste = true }
                 Button("JSON einsetzen", systemImage: "curlybraces") {
                     showingJSON = true
                 }
