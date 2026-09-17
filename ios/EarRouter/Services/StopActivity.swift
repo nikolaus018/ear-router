@@ -37,13 +37,17 @@ enum StopActivity {
     static func refresh(in context: ModelContext) {
         guard available else { return }
 
-        guard let route = activeRoute(in: context),
-              let stop = RouteSnapshot(route).nextOpen
-        else {
+        // One snapshot, not two: it walks every stop on the tour, and this
+        // runs after every tick.
+        guard let route = activeRoute(in: context) else {
             end()
             return
         }
         let snapshot = RouteSnapshot(route)
+        guard let stop = snapshot.nextOpen else {
+            end()
+            return
+        }
         // What the app knows about this customer from every previous tour —
         // the floor, and whatever the driver wrote down at the door once. The
         // same lookup the Jetzt tab and Siri do; a stop with nothing stored
