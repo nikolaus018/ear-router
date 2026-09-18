@@ -502,6 +502,7 @@ private struct TourSplitMapView: View {
                         Button("Alles zurücksetzen", systemImage: "arrow.counterclockwise", role: .destructive) {
                             withAnimation(.snappy) { state.reset() }
                         }
+                        .disabled(state.owner.isEmpty)
                     } label: {
                         Label("Mehr", systemImage: "ellipsis")
                     }
@@ -680,6 +681,9 @@ private struct SplitMapView: UIViewRepresentable {
                 // the stroke starts where the finger first came down.
                 let moved = recognizer.translation(in: map)
                 stroke = [CGPoint(x: point.x - moved.x, y: point.y - moved.y), point]
+                // The last stroke may still be fading out; without this the
+                // new one inherits that animation and draws itself away.
+                lassoLayer.removeAnimation(forKey: "fade")
                 lassoLayer.opacity = 1
                 redraw()
             case .changed:
@@ -710,6 +714,18 @@ private struct SplitMapView: UIViewRepresentable {
         /// theirs. Tapping a pin does — that is the deliberate way.
         private func caughtStops() -> [Int] {
             guard let map, stroke.count > 2 else { return [] }
+            // The stroke's own box first: this runs on every touch move, and
+            // measuring every stop against every segment of a long circle is
+            // work almost all of them lose on the first comparison. A tour's
+            // stops are spread over a district; the circle covers a corner of
+            // it.
+            let reach = SplitPinView.disc / 2
+            var box = CGRect(origin: stroke[0], size: .zero)
+            for point in stroke.dropFirst() {
+                box = box.union(CGRect(origin: point, size: .zero))
+            }
+            box = box.insetBy(dx: -reach, dy: -reach)
+
             return annotations.values.compactMap { annotation in
                 guard parent.owner[annotation.id] == nil else { return nil }
                 var point = map.convert(annotation.coordinate, toPointTo: map)
@@ -717,8 +733,8 @@ private struct SplitMapView: UIViewRepresentable {
                     point.x += offset.x
                     point.y += offset.y
                 }
-                return Lasso.catches(point, in: stroke, radius: SplitPinView.disc / 2)
-                    ? annotation.id : nil
+                guard box.contains(point) else { return nil }
+                return Lasso.catches(point, in: stroke, radius: reach) ? annotation.id : nil
             }
         }
 

@@ -218,7 +218,10 @@ struct StockwerkForm: View {
                 text = initial?.stockwerk ?? ""
                 notiz = initial?.notiz ?? ""
                 dontAsk = initial?.dontAsk ?? false
-                original = info
+                // Off `initial`, not off the three fields just written: what
+                // "unchanged" means here must not depend on when SwiftUI makes
+                // a `@State` write readable again.
+                original = initial.map(CustomerInfo.init) ?? CustomerInfo()
             }
         }
         // Full height, with no `presentationDetents`.

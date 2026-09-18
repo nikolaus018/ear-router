@@ -131,8 +131,9 @@ struct JSONEditorSheet: View {
                 // "Übernehmen" is disabled on empty text, so nothing is lost:
                 // applying "[]" to a route that has no stops did nothing
                 // anyway.
-                text = route.customerCount == 0 ? "" : RouteStore.exportJSON(route)
-                loadedText = text
+                let loaded = route.customerCount == 0 ? "" : RouteStore.exportJSON(route)
+                text = loaded
+                loadedText = loaded
             }
         }
         // The parsed list, before any of it is applied. Full screen, because
