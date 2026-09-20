@@ -1188,6 +1188,14 @@ struct StopPreviewSheet: View {
     /// can no longer sit beside each other — see `actions`.
     @Environment(\.dynamicTypeSize) private var typeSize
 
+    /// Presses of this card's own tick, and nothing else — it drives the
+    /// haptic. The same counter `StopRow` and Jetzt keep, for the same reason,
+    /// and this card was the one control still keyed on the stored value: off
+    /// `stop.delivered` it thumped for a tick made on another screen, and —
+    /// because re-opening a door nobody answered leaves that flag false either
+    /// way — gave no feedback at all for the one press hardest to be sure of.
+    @State private var ticks = 0
+
     private var isCustomer: Bool { stop.kind == .customer }
 
     var body: some View {
@@ -1224,15 +1232,17 @@ struct StopPreviewSheet: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
             if let number {
-                Text("\(number)")
-                    .font(.footnote.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.white)
-                    .frame(width: badgeSize, height: badgeSize)
-                    .background(
-                        Circle().fill(stop.isSettled && stop.delivered
-                            ? Color.delivered
-                            : (stop.isSettled ? Color.attention : Color.accentColor)))
-                    .accessibilityHidden(true)
+                // The badge itself, not a disc of this card's own making. Drawn
+                // here by hand it was a solid accent circle for an open stop —
+                // which in the stop list means "the door you are standing at" —
+                // and solid green for a delivered one, where the list shows
+                // grey. The same customer, the same number, two designs,
+                // depending on which screen you read it off; and the list of
+                // everyone at a shared pin, three hundred lines further down
+                // this same file, already drew it the other way.
+                StopNumberBadge(
+                    number: number, kind: .of(stop), size: badgeSize,
+                    font: .footnote.weight(.semibold).monospacedDigit())
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1253,7 +1263,10 @@ struct StopPreviewSheet: View {
             // The same control the list row carries, so ticking a stop off from
             // the map is the same gesture at the same size in the same colours.
             if isCustomer {
-                Button(action: onToggleDelivered) {
+                Button {
+                    ticks += 1
+                    onToggleDelivered()
+                } label: {
                     Image(systemName: stop.outcome.map {
                         $0.handedOver ? "checkmark.circle.fill" : $0.symbol
                     } ?? "circle")
@@ -1267,7 +1280,7 @@ struct StopPreviewSheet: View {
                 .buttonStyle(.borderless)
                 .accessibilityLabel(
                     stop.isSettled ? "Stopp wieder öffnen" : "Als zugestellt markieren")
-                .sensoryFeedback(.impact(weight: .medium), trigger: stop.delivered)
+                .sensoryFeedback(.impact(weight: .medium), trigger: ticks)
             }
         }
     }
@@ -1281,6 +1294,18 @@ struct StopPreviewSheet: View {
             // in the floor's grey, which made a two-line note the loudest thing
             // on the card.
             VStack(alignment: .leading, spacing: 8) {
+                // What happened at this door, when it was not the ordinary
+                // thing — the line the stop's own row and the shared-pin list
+                // both carry, and the one this card left out. A meal left with
+                // a neighbour and a meal handed to the customer are both
+                // `handedOver`, so they wear the same green tick up in the
+                // header; without this the card could not tell them apart, and
+                // "nicht angetroffen" read as a plain undelivered stop.
+                if let outcome = StopFacts.outcome(stop.outcome) {
+                    outcome
+                        .font(.subheadline)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let paket = StopFacts.paket(stop.displayPaket) {
                     paket
                         .font(.subheadline)
@@ -1342,6 +1367,7 @@ struct StopPreviewSheet: View {
     private var hasDetails: Bool {
         !(stop.displayPaket?.trimmed ?? "").isEmpty || !(stop.notiz?.trimmed ?? "").isEmpty
             || stop.precision != nil || !(stockwerk?.trimmed ?? "").isEmpty
+            || StopFacts.outcome(stop.outcome) != nil
     }
 }
 
@@ -1385,7 +1411,7 @@ private struct SharedPinSheet: View {
 
     private func row(_ stop: Stop) -> some View {
         HStack(spacing: 12) {
-            StopNumberBadge(number: number(stop), kind: badgeKind(stop), size: badgeSize)
+            StopNumberBadge(number: number(stop), kind: .of(stop), size: badgeSize)
             VStack(alignment: .leading, spacing: 2) {
                 Text(stop.kunde ?? "Stopp")
                     .strikethrough(stop.delivered)
@@ -1407,11 +1433,6 @@ private struct SharedPinSheet: View {
         .contentShape(.rect)
         .accessibilityElement(children: .combine)
         .accessibilityHint("Öffnet diesen Stopp")
-    }
-
-    private func badgeKind(_ stop: Stop) -> StopNumberBadge.Kind {
-        guard let outcome = stop.outcome else { return .open }
-        return outcome.handedOver ? .done : .missed
     }
 }
 

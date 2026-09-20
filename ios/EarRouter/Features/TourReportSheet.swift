@@ -15,8 +15,16 @@ struct TourReportSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    @AppStorage(Kilometerstand.lastKey) private var storedReading = 0.0
-    @AppStorage(Kilometerstand.hasLastKey) private var hasStoredReading = false
+    // No odometer reading here, deliberately. `TourReport` takes an
+    // `odometerKm` and prints a "Laut Tacho" line from it, and this screen used
+    // to hold the two `@AppStorage` values for it — read nowhere, passed
+    // nowhere, so the line has never once appeared. Wiring them up as they
+    // stood would have been worse than leaving them dead: `Kilometerstand`
+    // remembers a *reading*, not a distance, and this sheet opens the moment a
+    // tour is filed — before the driver has been anywhere near the odometer
+    // tool. The line would have been absent exactly when it was wanted, or
+    // carried yesterday's figure. The parameter stays for a caller that has a
+    // real number; this screen does not have one.
 
     @State private var sharing: SharedText?
 

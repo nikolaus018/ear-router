@@ -104,6 +104,17 @@ struct StockwerkForm: View {
     /// stairwell with both hands full.
     private let quick = ["EG", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "DG"]
 
+    /// The floor follows the user's text setting, like the quick picks under it
+    /// and like every other field in the app.
+    ///
+    /// It was a hard-coded 20pt, so on a phone with the text turned up this one
+    /// field stayed put while the buttons that fill it, the labels around it
+    /// and the note field below it all grew past it — and this is the field
+    /// typed one-handed in a stairwell, which is where a driver is most likely
+    /// to have turned the text up in the first place.
+    @ScaledMetric(relativeTo: .title3) private var floorBase: CGFloat = 20
+    private var floorSize: CGFloat { min(floorBase, 36) }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -124,7 +135,7 @@ struct StockwerkForm: View {
 
                 Section {
                     TextField("z. B. 3 oder 2/Tür 14", text: $text)
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: floorSize, weight: .semibold))
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
                         .submitLabel(.done)
@@ -249,6 +260,13 @@ struct StockwerkForm: View {
         CustomerInfo(stockwerk: text, notiz: notiz, dontAsk: dontAsk)
     }
 
+    /// The narrowest a quick pick may be, and it grows with the text like
+    /// everything else on this sheet. Held at a fixed 48 the column stayed put
+    /// while the label inside it grew, so at an accessibility size "DG" — two
+    /// letters — broke across two lines and the row of picks turned into a
+    /// ragged block of stacked characters.
+    @ScaledMetric(relativeTo: .subheadline) private var pickWidth: CGFloat = 48
+
     /// A grid rather than a row.
     ///
     /// Six picks fitted across a phone; eight do not — at 44 points each, the
@@ -258,7 +276,7 @@ struct StockwerkForm: View {
     /// and keeps wrapping as the driver's text size goes up.
     private var quickPicks: some View {
         LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 48), spacing: 8)],
+            columns: [GridItem(.adaptive(minimum: pickWidth), spacing: 8)],
             spacing: 8
         ) {
             ForEach(quick, id: \.self) { value in
@@ -278,6 +296,10 @@ struct StockwerkForm: View {
         } label: {
             Text(value)
                 .font(.subheadline.weight(.semibold))
+                // "EG" and "DG" are one token each, never two lines of one
+                // letter: the column can still be narrower than the word at a
+                // large text size, and a wrapped floor is not a floor.
+                .lineLimit(1)
                 // 44 points tall at the smallest, which is Apple's minimum
                 // touch target. Sized by its padding alone it came out at about
                 // 40 — and this is the button a driver presses in a stairwell,

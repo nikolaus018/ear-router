@@ -113,3 +113,51 @@ struct IDOrderingTests {
         #expect(!UUID.idOrderedBefore(b, a))
     }
 }
+
+/// The number in the disc beside a customer's name.
+///
+/// One rule, because three screens draw it: the stop list, the map's pin card
+/// and the map's list of everyone at a shared address. The card used to answer
+/// this question with a hand-rolled circle of its own, so the same customer
+/// carried a solid accent disc there — which in the list means "the door you
+/// are standing at" — while the list showed them grey. A number that means
+/// something different depending on which screen it is read from is worse than
+/// no number.
+struct StopBadgeKindTests {
+
+    private func customer(_ outcome: DeliveryOutcome?) -> Stop {
+        let stop = Stop(kind: .customer, kunde: "Fam. Gruber", lat: 48.2, lon: 16.36)
+        stop.record(outcome)
+        return stop
+    }
+
+    @Test func anOpenDoorIsOpen() {
+        #expect(StopNumberBadge.Kind.of(customer(nil)) == .open)
+    }
+
+    /// Only the stop list knows which door is the current one, and only it
+    /// passes `isNext`. A card about a single stop has no such context.
+    @Test func theDoorTheDriverIsAtIsTheLoudOne() {
+        #expect(StopNumberBadge.Kind.of(customer(nil), isNext: true) == .current)
+    }
+
+    /// The line that matters: the meal left the van, however it left it.
+    @Test func aMealThatLeftTheVanRecedes() {
+        #expect(StopNumberBadge.Kind.of(customer(.delivered)) == .done)
+        #expect(StopNumberBadge.Kind.of(customer(.neighbour)) == .done)
+    }
+
+    /// A door the van has been to where the meal came back is neither done nor
+    /// still to do, and wears its own shade.
+    @Test func aDoorNobodyOpenedIsItsOwnState() {
+        #expect(StopNumberBadge.Kind.of(customer(.notHome)) == .missed)
+        #expect(StopNumberBadge.Kind.of(customer(.cancelled)) == .missed)
+    }
+
+    /// `isNext` is only ever consulted for a door still owed a visit: a stop
+    /// already answered for reports what happened, not where the driver is.
+    @Test func aSettledStopIgnoresIsNext() {
+        #expect(StopNumberBadge.Kind.of(customer(.delivered), isNext: true) == .done)
+        #expect(StopNumberBadge.Kind.of(customer(.notHome), isNext: true) == .missed)
+    }
+}

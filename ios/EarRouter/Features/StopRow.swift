@@ -146,10 +146,10 @@ struct StopRow: View {
     /// where the meal did not leave it. Grey would file it with the deliveries
     /// and open would put it back on the list of things still to do, and it is
     /// neither.
-    private var badgeKind: StopNumberBadge.Kind {
-        guard let outcome = stop.outcome else { return isNext ? .current : .open }
-        return outcome.handedOver ? .done : .missed
-    }
+    ///
+    /// The rule itself lives on `StopNumberBadge.Kind`, because the map draws
+    /// this badge too and used to answer the question differently.
+    private var badgeKind: StopNumberBadge.Kind { .of(stop, isNext: isNext) }
 
     private func fixedIcon(_ name: String) -> some View {
         Image(systemName: name)

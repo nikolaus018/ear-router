@@ -91,6 +91,17 @@ struct KilometerSheet: View {
     /// they are drawn.
     @ScaledMetric(relativeTo: .subheadline) private var titleWidth: CGFloat = 34
 
+    /// The typed reading follows the user's text setting, like the answer below
+    /// it and like Türcode's input field.
+    ///
+    /// It was a hard-coded 22pt — the one thing on this screen that did not
+    /// move. With the text turned up, "Alt" and "km" grew to two or three times
+    /// the height of the number sitting between them, on a screen whose entire
+    /// content is two numbers. Capped, so the longest reading an odometer can
+    /// show still fits on the line beside its label.
+    @ScaledMetric(relativeTo: .title2) private var fieldBase: CGFloat = 22
+    private var fieldSize: CGFloat { min(fieldBase, 40) }
+
     private func field(_ title: String, text: Binding<String>, field: Field) -> some View {
         HStack(spacing: 12) {
             Text(title)
@@ -103,7 +114,7 @@ struct KilometerSheet: View {
                 .frame(width: titleWidth, alignment: .leading)
 
             TextField("0", text: text)
-                .font(.system(size: 22, weight: .semibold, design: .monospaced))
+                .font(.system(size: fieldSize, weight: .semibold, design: .monospaced))
                 .multilineTextAlignment(.trailing)
                 .keyboardType(.decimalPad)
                 .textFieldStyle(.plain)

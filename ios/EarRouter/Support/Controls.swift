@@ -103,3 +103,24 @@ struct StopNumberBadge: View {
         }
     }
 }
+
+extension StopNumberBadge.Kind {
+    /// Which of the four a stop wears — the one rule, in the one place.
+    ///
+    /// It was written out three times: on the stop row, on the map's shared-pin
+    /// list, and — differently — on the map's own pin card, which drew its own
+    /// disc instead of this badge and so gave an open stop the solid accent
+    /// that everywhere else means "the door you are at", and a delivered one a
+    /// solid green where the list shows grey. One customer, one number, two
+    /// designs, depending on which screen you read it from. Deriving it here is
+    /// what makes the badge in `StopNumberBadge`'s own comment — "the same in
+    /// the stop list and on Jetzt" — true of the map as well.
+    ///
+    /// `isNext` is the stop list's business: it is the only screen that shows a
+    /// tour in order and can say which door is the current one. A card about
+    /// one stop has no such context, so it does not pass it.
+    static func of(_ stop: Stop, isNext: Bool = false) -> Self {
+        guard let outcome = stop.outcome else { return isNext ? .current : .open }
+        return outcome.handedOver ? .done : .missed
+    }
+}
