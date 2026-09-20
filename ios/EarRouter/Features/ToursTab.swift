@@ -39,6 +39,7 @@ struct ToursTab: View {
     @State private var creating = false
     @State private var newName = ""
     @State private var showingGourmetImport = false
+    @State private var showingErayImport = false
     @State private var error: AppError?
     @State private var pendingDeletion = PendingRouteDeletion()
     /// Once per launch. Without the flag the restore would fire again every
@@ -57,6 +58,7 @@ struct ToursTab: View {
                     Button("Neue Tour") { startCreate() }
                         .buttonStyle(.borderedProminent)
                     Button("Vom Zusteller-Portal") { showingGourmetImport = true }
+                    Button("Eray-Liste einsetzen") { showingErayImport = true }
                 }
             } else {
                 List {
@@ -110,9 +112,20 @@ struct ToursTab: View {
                     Button("Vom Zusteller-Portal", systemImage: "arrow.down.circle") {
                         showingGourmetImport = true
                     }
+                    Button("Eray-Liste einsetzen", systemImage: "list.bullet.rectangle") {
+                        showingErayImport = true
+                    }
                 } label: {
                     Label("Neue Tour", systemImage: "plus")
                 }
+            }
+        }
+        .sheet(isPresented: $showingErayImport) {
+            // Named after the document's own tour, and landing in it the same
+            // way the portal import below does.
+            ErayImportSheet(mode: .newRoute) { route in
+                focus.focus(route)
+                focus.toursPath.append(route.id)
             }
         }
         .sheet(isPresented: $showingGourmetImport) {
