@@ -52,8 +52,8 @@ struct NowTab: View {
     struct DeliveredTick: Equatable {
         let id: UUID
         let name: String
-        /// What was recorded, so the banner can say it. "„Fam. Gruber“
-        /// zugestellt" over a door nobody opened would be the app's own
+        /// What was recorded, so the banner can say it. „Fam. Gruber“
+        /// zugestellt over a door nobody opened would be the app's own
         /// summary of the day quietly disagreeing with the driver's.
         var outcome: DeliveryOutcome = .delivered
         /// Lager or Ziel, which are "erledigt" rather than "geliefert".
@@ -204,16 +204,17 @@ struct NowTab: View {
                     focus.showOnMap(stop: current, of: route)
                 }
             }
-            // Not on Lager or Ziel: nothing there to edit, and no floor.
-            if current.kind == .customer {
+            if current.kind == .customer || current.kind == .start || current.kind == .end {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Bearbeiten", systemImage: "pencil") { editingStop = current }
-                        Button(
-                            hasFloor ? "Stockwerk ändern" : "Stockwerk eintragen",
-                            systemImage: "stairs"
-                        ) {
-                            stockwerkStop = current
+                        if current.kind == .customer {
+                            Button(
+                                hasFloor ? "Stockwerk ändern" : "Stockwerk eintragen",
+                                systemImage: "stairs"
+                            ) {
+                                stockwerkStop = current
+                            }
                         }
                     } label: {
                         Label("Mehr", systemImage: "ellipsis")

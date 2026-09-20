@@ -469,6 +469,8 @@ struct StopListRow: View {
             .accessibilityHint(
                 isCustomer
                     ? "Doppeltippen zum Bearbeiten"
+                    : (stop.kind == .start || stop.kind == .end)
+                    ? "Doppeltippen zum Bearbeiten"
                     : stop.isCheckpoint
                     ? "Auslassen über das Kontextmenü"
                     : (stop.excluded
@@ -582,6 +584,9 @@ struct StopListRow: View {
                     stop.isSettled ? "Als offen markieren" : "Als erledigt markieren",
                     systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark.circle",
                     action: onToggleDelivered)
+            }
+            if stop.kind == .start || stop.kind == .end {
+                Button("Bearbeiten", systemImage: "pencil", action: onTap)
             }
             Divider()
             Button(

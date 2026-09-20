@@ -2,9 +2,10 @@ import SwiftUI
 import SwiftData
 import MapKit
 
-/// Add or edit one customer stop. Also the way into the pin-drop map, which is
-/// what a driver reaches for when the geocoder cannot place an address — or has
-/// placed it on the wrong side of a Gemeindebau.
+/// Add or edit one customer stop or edit fixed point addresses (Start / Ziel).
+/// Also the way into the pin-drop map, which is what a driver reaches for when
+/// the geocoder cannot place an address — or has placed it on the wrong side
+/// of a Gemeindebau.
 struct StopEditorSheet: View {
     let route: Route
     let stop: Stop?
@@ -64,6 +65,7 @@ struct StopEditorSheet: View {
     private enum Field: Hashable { case kunde, telefon, strasse, plz, paket, notiz }
 
     private var isEditing: Bool { stop != nil }
+    private var isCustomer: Bool { stop == nil || stop?.kind == .customer }
 
     /// True when this stop will keep a hand-placed position — either one just
     /// dropped, or one already stored and not discarded.
@@ -86,24 +88,36 @@ struct StopEditorSheet: View {
         loaded && (draft != original || droppedPin != nil || discardStoredPin)
     }
 
+    private var titleText: String {
+        guard let stop else { return "Neuer Stopp" }
+        switch stop.kind {
+        case .start: return "Start bearbeiten"
+        case .end: return "Ziel bearbeiten"
+        case .via: return "Lager bearbeiten"
+        case .customer: return "Stopp"
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
-                Section("Kunde") {
-                    TextField("Name", text: $kunde)
-                        .textContentType(.name)
-                        .autocorrectionDisabled()
-                        .submitLabel(.next)
-                        .focused($focusedField, equals: .kunde)
-                        .onSubmit { focusedField = .telefon }
-                        .limited(to: FieldLimits.kunde, text: $kunde)
-                    TextField("Telefon", text: $telefon)
-                        .textContentType(.telephoneNumber)
-                        .keyboardType(.phonePad)
-                        .submitLabel(.next)
-                        .focused($focusedField, equals: .telefon)
-                        .onSubmit { focusedField = .strasse }
-                        .limited(to: FieldLimits.telefon, text: $telefon)
+                if isCustomer {
+                    Section("Kunde") {
+                        TextField("Name", text: $kunde)
+                            .textContentType(.name)
+                            .autocorrectionDisabled()
+                            .submitLabel(.next)
+                            .focused($focusedField, equals: .kunde)
+                            .onSubmit { focusedField = .telefon }
+                            .limited(to: FieldLimits.kunde, text: $kunde)
+                        TextField("Telefon", text: $telefon)
+                            .textContentType(.telephoneNumber)
+                            .keyboardType(.phonePad)
+                            .submitLabel(.next)
+                            .focused($focusedField, equals: .telefon)
+                            .onSubmit { focusedField = .strasse }
+                            .limited(to: FieldLimits.telefon, text: $telefon)
+                    }
                 }
 
                 Section {
@@ -120,27 +134,29 @@ struct StopEditorSheet: View {
                     addressFooter
                 }
 
-                Section {
-                    TextField("Paket (z. B. 2x Menü)", text: $paket)
-                        // Both fields carry door codes, Stiege numbers and
-                        // shorthand that no dictionary knows. Autocorrect
-                        // silently rewrote a typed "Tuercode ENVV" to "Zürcher
-                        // ENVV" — and a quietly corrupted door code is a driver
-                        // standing outside a building they cannot get into.
-                        .autocorrectionDisabled()
-                        .submitLabel(.next)
-                        .focused($focusedField, equals: .paket)
-                        .onSubmit { focusedField = .notiz }
-                        .limited(to: FieldLimits.paket, text: $paket)
-                    TextField("Notiz", text: $notiz, axis: .vertical)
-                        .lineLimit(2...6)
-                        .autocorrectionDisabled()
-                        .focused($focusedField, equals: .notiz)
-                        .limited(to: FieldLimits.notiz, text: $notiz)
-                } header: {
-                    Text("Lieferung")
-                } footer: {
-                    Text("Autokorrektur ist hier aus — Türcodes und Stiegen bleiben, wie du sie tippst.")
+                if isCustomer {
+                    Section {
+                        TextField("Paket (z. B. 2x Menü)", text: $paket)
+                            // Both fields carry door codes, Stiege numbers and
+                            // shorthand that no dictionary knows. Autocorrect
+                            // silently rewrote a typed "Tuercode ENVV" to "Zürcher
+                            // ENVV" — and a quietly corrupted door code is a driver
+                            // standing outside a building they cannot get into.
+                            .autocorrectionDisabled()
+                            .submitLabel(.next)
+                            .focused($focusedField, equals: .paket)
+                            .onSubmit { focusedField = .notiz }
+                            .limited(to: FieldLimits.paket, text: $paket)
+                        TextField("Notiz", text: $notiz, axis: .vertical)
+                            .lineLimit(2...6)
+                            .autocorrectionDisabled()
+                            .focused($focusedField, equals: .notiz)
+                            .limited(to: FieldLimits.notiz, text: $notiz)
+                    } header: {
+                        Text("Lieferung")
+                    } footer: {
+                        Text("Autokorrektur ist hier aus — Türcodes und Stiegen bleiben, wie du sie tippst.")
+                    }
                 }
 
                 Section {
@@ -163,7 +179,7 @@ struct StopEditorSheet: View {
                     }
                 }
 
-                if let stop, stop.kind == .customer {
+                if let stop {
                     Section {
                         // "Navigation starten", as it is everywhere else in the
                         // app. "In Karten öffnen" named Apple's app — and on a
@@ -177,13 +193,13 @@ struct StopEditorSheet: View {
                         // Off the field being typed here, not off the stored
                         // value — so a number just corrected can be called
                         // straight away, before the field is even saved.
-                        if let url = PhoneNumbers.dialURL(for: telefon) {
+                        if stop.kind == .customer, let url = PhoneNumbers.dialURL(for: telefon) {
                             Button("Anrufen", systemImage: "phone") { openURL(url) }
                         }
                     }
                 }
 
-                if isEditing, let onDelete {
+                if isEditing, let onDelete, stop?.kind == .customer {
                     Section {
                         // The role colours the *title* red and leaves the glyph
                         // on the sheet's accent, so the destructive button came
@@ -213,10 +229,7 @@ struct StopEditorSheet: View {
             // using them — and sits here, under the toolbar in the chain,
             // rather than over it, so that it does not also reach Abbrechen.
             .disabled(saving)
-            // Short on purpose. "Stopp bearbeiten" between the two glass toolbar
-            // buttons truncated to "Stopp bearb…", which looks like a bug in a
-            // screen whose whole job is careful data entry.
-            .navigationTitle(isEditing ? "Stopp" : "Neuer Stopp")
+            .navigationTitle(titleText)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -279,7 +292,7 @@ struct StopEditorSheet: View {
                         ?? CLLocationCoordinate2D(
                             latitude: Coordinates.viennaCenter.lat,
                             longitude: Coordinates.viennaCenter.lon),
-                    label: kunde.isEmpty ? strasse : kunde,
+                    label: isCustomer ? (kunde.isEmpty ? strasse : kunde) : (stop?.fixedTitle ?? strasse),
                     plz: plz
                 ) { coordinate in
                     droppedPin = coordinate
@@ -420,7 +433,7 @@ struct StopEditorSheet: View {
             original = draft
             return
         }
-        kunde = stop.kunde ?? ""
+        kunde = stop.kind == .customer ? (stop.kunde ?? "") : stop.fixedTitle
         strasse = stop.strasse ?? ""
         plz = stop.plz ?? ""
         paket = stop.paket ?? ""
