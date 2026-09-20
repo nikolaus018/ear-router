@@ -392,21 +392,47 @@ struct GourmetImportSheet: View {
 /// searchable checklist so the driver can drop stops that are not theirs to
 /// drive before any of them pay for a detail fetch — every entry starts
 /// selected, since keeping everything is the common case.
+///
+/// The order the stops are picked in is kept and handed on: the Prüfen list
+/// arrives in that order rather than in the portal's. Tapping everything off
+/// and then back on in driving order is the cheapest way there is to say what
+/// the round actually looks like, and it costs nothing to remember.
 struct GourmetStopSelectionView: View {
     let deliveries: [GourmetPortal.Delivery]
     var onContinue: ([GourmetPortal.Delivery]) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var selected: Set<Int>
+    /// The chosen deliveries in the order they were chosen, not a `Set`:
+    /// picking a stop appends it, and that sequence is what „Weiter“ passes
+    /// on. Picking a stop off and on again therefore moves it to the back,
+    /// which is the whole point — it is how a driver puts the list in the
+    /// order they drive it without leaving this screen.
+    @State private var selected: [Int]
     @State private var search = ""
 
     init(deliveries: [GourmetPortal.Delivery], onContinue: @escaping ([GourmetPortal.Delivery]) -> Void) {
         self.deliveries = deliveries
         self.onContinue = onContinue
-        _selected = State(initialValue: Set(deliveries.map(\.id)))
+        _selected = State(initialValue: deliveries.map(\.id))
     }
 
     private var allSelected: Bool { selected.count == deliveries.count }
+
+    /// Each picked stop's place in the order, counted from 1 — what the row
+    /// badges draw, and what says a row is picked at all.
+    private var positions: [Int: Int] {
+        Dictionary(
+            selected.enumerated().map { ($0.element, $0.offset + 1) },
+            uniquingKeysWith: { first, _ in first })
+    }
+
+    /// What was picked, as deliveries and in the picked order. Built through a
+    /// lookup rather than by filtering `deliveries`, because filtering would
+    /// quietly put the portal's order back.
+    private var chosen: [GourmetPortal.Delivery] {
+        let byID = Dictionary(deliveries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return selected.compactMap { byID[$0] }
+    }
 
     /// Folded and tokenised the way the tour's own search is, so "Doebling"
     /// finds "Döbling" and "gruber gentz" finds Fam. Gruber in the Gentzgasse.
@@ -424,8 +450,12 @@ struct GourmetStopSelectionView: View {
     var body: some View {
         NavigationStack {
             List {
+                // Hoisted out of the rows: one pass over the picked list for
+                // the whole list, rather than a linear search per row. Doubles
+                // as the membership test — a stop with no number is not picked.
+                let positions = self.positions
                 ForEach(filtered, id: \.id) { delivery in
-                    row(delivery)
+                    row(delivery, position: positions[delivery.id])
                 }
             }
             .listStyle(.insetGrouped)
@@ -454,7 +484,15 @@ struct GourmetStopSelectionView: View {
                         .animation(.snappy, value: selected.count)
                     Spacer(minLength: 8)
                     Button(allSelected ? "Keine auswählen" : "Alle auswählen") {
-                        selected = allSelected ? [] : Set(deliveries.map(\.id))
+                        if allSelected {
+                            selected = []
+                        } else {
+                            // Behind what is already picked, in the portal's
+                            // order. A driver who has put six stops in order
+                            // and then wants the rest along keeps those six.
+                            let picked = Set(selected)
+                            selected += deliveries.map(\.id).filter { !picked.contains($0) }
+                        }
                     }
                     .font(.footnote.weight(.semibold))
                 }
@@ -467,20 +505,21 @@ struct GourmetStopSelectionView: View {
                     Button("Abbrechen") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Weiter") {
-                        onContinue(deliveries.filter { selected.contains($0.id) })
-                    }
+                    Button("Weiter") { onContinue(chosen) }
                     .disabled(selected.isEmpty)
                 }
             }
         }
     }
 
-    private func row(_ delivery: GourmetPortal.Delivery) -> some View {
+    private func row(_ delivery: GourmetPortal.Delivery, position: Int?) -> some View {
         let (name, address) = GourmetPortal.summary(delivery)
-        let isSelected = selected.contains(delivery.id)
         return Button {
-            if isSelected { selected.remove(delivery.id) } else { selected.insert(delivery.id) }
+            if position != nil {
+                selected.removeAll { $0 == delivery.id }
+            } else {
+                selected.append(delivery.id)
+            }
         } label: {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -491,15 +530,32 @@ struct GourmetStopSelectionView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                    .font(.title3)
-                    .symbolRenderingMode(.hierarchical)
+                marker(position)
             }
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityAddTraits(position != nil ? .isSelected : [])
+        .accessibilityValue(position.map { "Nummer \($0)" } ?? "nicht ausgewählt")
+    }
+
+    /// A tick said the stop was coming along; the number says where in the
+    /// round it comes, which is the thing this screen now decides. It is the
+    /// badge the tour's own rows wear, in the shade an undelivered stop wears
+    /// there — because a picked stop is exactly that, one row before it exists.
+    ///
+    /// The empty circle is drawn at the badge's own 26pt rather than left as
+    /// an SF Symbol at its optical size, so the column does not breathe in and
+    /// out as stops are picked and dropped.
+    @ViewBuilder
+    private func marker(_ position: Int?) -> some View {
+        if let position {
+            StopNumberBadge(number: position, kind: .open)
+        } else {
+            Circle()
+                .strokeBorder(.tertiary, lineWidth: 1.5)
+                .frame(width: 26, height: 26)
+        }
     }
 }
 
