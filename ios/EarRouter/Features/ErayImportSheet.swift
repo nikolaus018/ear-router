@@ -102,15 +102,12 @@ struct ErayImportSheet: View {
             Button("Fertig") { editing = false }
         }
         ToolbarItemGroup(placement: .bottomBar) {
-            // The system paste control rather than reading the pasteboard
-            // ourselves, which would raise iOS's own "would like to paste
-            // from…" alert every time — in the middle of the one action this
-            // screen exists for. See `JSONEditorSheet`.
-            PasteButton(payloadType: String.self) { items in
-                if let first = items.first { text = first }
-            }
-            .labelStyle(.titleAndIcon)
-            .buttonBorderShape(.capsule)
+            // The system paste control still, so no "would like to paste
+            // from…" alert lands in the middle of the one action this screen
+            // exists for — but greyed out when the clipboard has nothing on
+            // it, which is what it would not do on its own. See
+            // `PasteTextButton`, which the JSON editor uses too.
+            PasteTextButton { text = $0 }
             Spacer()
             Button("Leeren", role: .destructive) { text = "" }
                 .disabled(text.isEmpty)

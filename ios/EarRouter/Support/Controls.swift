@@ -124,3 +124,55 @@ extension StopNumberBadge.Kind {
         return outcome.handedOver ? .done : .missed
     }
 }
+
+/// "Einsetzen" — the clipboard into a text editor, and grey when there is
+/// nothing on it to put there.
+///
+/// Still the system `PasteButton` underneath, and deliberately: reading
+/// `UIPasteboard.general` ourselves raises iOS's own "… would like to paste
+/// from …" alert, whose *default* button is **Don't Allow Paste**. A driver
+/// tapping through that at speed denies the paste and lands back on an empty
+/// editor — which is the very failure this control is being fixed for, only
+/// now with a dialog in front of it. The system control pastes with no alert
+/// at all, because the tap on it *is* the permission.
+///
+/// What it could not do on its own is say when it has nothing to give. A
+/// `UIPasteControl` renders exactly as blue and exactly as tappable over an
+/// empty pasteboard, and a tap then does nothing whatsoever: no text, no
+/// message, no reason — while "Leeren" a few points to its right greys out
+/// honestly. That pair is what read as broken. `hasStrings` is what fixes it
+/// and costs nothing: it is an existence check, not a read, and raises no
+/// alert of its own.
+struct PasteTextButton: View {
+    let onPaste: (String) -> Void
+
+    /// Whether the pasteboard has text, as of the last time it was worth
+    /// asking. Not computed in `body`: that would ask on every redraw of the
+    /// screen, including every keystroke typed into the editor beside it.
+    @State private var canPaste = UIPasteboard.general.hasStrings
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        PasteButton(payloadType: String.self) { items in
+            guard let first = items.first, !first.isEmpty else { return }
+            onPaste(first)
+        }
+        .labelStyle(.titleAndIcon)
+        .buttonBorderShape(.capsule)
+        .disabled(!canPaste)
+        .onAppear { canPaste = UIPasteboard.general.hasStrings }
+        // Copying happens in the *other* app — the planner, a mail, Safari — so
+        // the answer this button needs is usually the one that changed while
+        // EAR Router was in the background.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { canPaste = UIPasteboard.general.hasStrings }
+        }
+        // …but not always. A document copied on the Mac arrives over Universal
+        // Clipboard without this app ever leaving the foreground, and a screen
+        // that was opened before the copy would otherwise sit there with the
+        // button honestly, and wrongly, greyed out.
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+            canPaste = UIPasteboard.general.hasStrings
+        }
+    }
+}
