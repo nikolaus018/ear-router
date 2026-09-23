@@ -217,29 +217,45 @@ actor Geocoder {
         let key = "\(AddressText.matchKey(simplified))|\(plz)"
         if let known = entrances[key] { return known.point }
 
-        guard let features = await ogdFetch(simplified) else { return nil }
+        // An empty answer is as good as none: the register returns nothing at
+        // all for a house it does not know, and the entrance layer may still.
+        let features = await ogdFetch(simplified) ?? []
         let streetKey = AddressText.matchKey(AddressText.streetNameOnly(simplified))
         // Only for the number that was asked for. For a number it does not
         // know, the register answers with the nearest one it does — "Gentzgasse
         // 999" comes back as 170, ranked in the hundreds — and that entrance is
         // a precise point at the wrong house, worse than sending the address.
-        let asked = simplified.split(separator: " ").last
-            .flatMap { Self.entranceNumber(String($0)) }
-        guard let asked,
-              let feature = Self.pickFeature(
-                features, plz: plz, streetKey: streetKey, requireSub: nil),
-              (feature.properties.ranking ?? .greatestFiniteMagnitude) < 1.0,
-              let street = feature.properties.streetName,
-              let number = feature.properties.streetNumber.flatMap(Self.entranceNumber),
-              number == asked
+        //
+        // Picked among the answers carrying that number, not taken as the best
+        // answer overall: asked for "Serravagasse 2" the register ranks
+        // "Serravagasse 2E" first, and "Rabengasse 3" first as "3A" — the house
+        // next door, whose number then did not match, and the Rabenhof went to
+        // navigation as bare address text.
+        guard let asked = simplified.split(separator: " ").last
+            .flatMap({ Self.entranceNumber(String($0)) })
         else {
             entrances[key] = Known(point: nil)
             return nil
         }
+        let sameNumber = features.filter {
+            $0.properties.streetNumber.flatMap(Self.entranceNumber) == asked
+        }
+        // The register does not know every house the entrance layer does
+        // (Stachegasse 22, Linke Wasserzeile 14). Then the entrance layer is
+        // asked directly, with the street as typed.
+        let street: String
+        if let feature = Self.pickFeature(
+               sameNumber, plz: plz, streetKey: streetKey, requireSub: nil),
+           (feature.properties.ranking ?? .greatestFiniteMagnitude) < 1.0,
+           let name = feature.properties.streetName {
+            street = name
+        } else {
+            street = AddressText.streetNameOnly(simplified)
+        }
 
-        guard let candidates = await entranceFetch(street: street, number: number, plz: plz)
+        guard let candidates = await entranceFetch(street: street, number: asked, plz: plz)
         else { return nil }
-        let point = Self.pickEntrance(candidates, number: number, plz: plz)
+        let point = Self.pickEntrance(candidates, number: asked, plz: plz)
         entrances[key] = Known(point: point)
         return point
     }
