@@ -52,15 +52,7 @@ actor Geocoder {
     /// register knows the address but files it under a different postcode —
     /// which is by far the likeliest reason a lookup fails, and turns a vague
     /// pin into a one-tap fix.
-    ///
-    /// `fresh` asks again instead of serving a cached *approximate* answer —
-    /// "Adressen prüfen", whose whole point is that the lookup may do better
-    /// now. Without it, that button answered every "≈" stop from the cache for
-    /// thirty days and could never improve one. Exact answers are still served
-    /// from the cache; there is nothing better to find.
-    func geocode(
-        strasse: String, plz: String, fresh: Bool = false
-    ) async throws -> GeocodeResult {
+    func geocode(strasse: String, plz: String) async throws -> GeocodeResult {
         // "1210 Wien, Österreich" inside the city, "2201 Österreich" outside
         // it. Not cosmetic: Nominatim's search is fuzzy and "Wien" is a strong
         // enough token to carry a query on its own, so a Gerasdorf address
@@ -75,39 +67,7 @@ actor Geocoder {
         let normalized = AddressText.normalize(strasse)
         let key = "\(normalized.lowercased()), \(place.lowercased())"
 
-        if let hit = await GeocodeCache.shared.lookup(key),
-           !(fresh && hit.precision != .exact) {
-            // A cached *district centroid* is the app admitting it never found
-            // this address — and the likeliest reason is that the district it
-            // was filed under is wrong. Worth one unthrottled register call to
-            // say so, because otherwise the cache keeps that vague pin (and
-            // the mystery behind it) alive for the whole TTL. Exact and
-            // street-level hits are served straight from the cache, so this
-            // costs nothing on the common path.
-            //
-            // Inside the city only, for the same reason the fresh lookup below
-            // skips both register phases outside it: `districtHint` asks the
-            // *city's* register, which has never heard of Gerasdorf and answers
-            // with whichever Viennese street happens to share the name. Without
-            // this guard a Gerasdorf address that had once fallen back to a
-            // district centroid was told, on every lookup after the first, that
-            // it "really" belongs to a Vienna district — and offered a one-tap
-            // button to move it there.
-            if hit.precision == .district, Postcodes.isVienna(plz) {
-                // The same check the fresh lookup makes between every one of
-                // its phases, and for the same reason: `districtHint` answers
-                // `nil` rather than throwing when its call fails, so a lookup
-                // cancelled while it was in flight would read as "the register
-                // has nothing to say" and return the cached pin as though the
-                // driver had waited for it. This was the one path into
-                // `districtHint` that did not check — and it is the path a
-                // re-check of thirty approximate addresses takes, once per
-                // address, after the driver has pressed Stoppen.
-                try Task.checkCancellation()
-                if let actual = await districtHint(normalized: normalized, plz: plz) {
-                    throw AppError.wrongDistrict(strasse.trimmed, actualPlz: actual)
-                }
-            }
+        if let hit = await GeocodeCache.shared.lookup(key) {
             return GeocodeResult(
                 lat: hit.lat, lon: hit.lon,
                 displayName: hit.displayName, precision: hit.precision)

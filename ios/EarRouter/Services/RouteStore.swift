@@ -471,8 +471,7 @@ enum RouteStore {
             onProgress?(index, candidates.count)
             guard let strasse = stop.strasse, let plz = stop.plz else { continue }
             do {
-                let hit = try await Geocoder.shared.geocode(
-                    strasse: strasse, plz: plz, fresh: true)
+                let hit = try await Geocoder.shared.geocode(strasse: strasse, plz: plz)
                 let newPrecision: Precision? = hit.precision == .exact ? nil : hit.precision
                 // Only an actual improvement is written. Re-storing the same
                 // approximation would churn the route's geometry for nothing.

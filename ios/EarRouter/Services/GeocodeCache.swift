@@ -9,16 +9,20 @@ struct CachedGeocode: Codable, Sendable {
     var lon: Double
     var displayName: String
     var precision: Precision
-    /// When this entry was (last) written. Only consulted for a non-exact
-    /// precision — an exact hit stays true forever, but a street- or
-    /// district-level approximation is an admitted guess that a geocoder
-    /// catching up later (a new building finally getting mapped) should
-    /// eventually get to override, instead of this app serving the same coarse
-    /// pin to that address for good.
+    /// When this entry was (last) written — what the trim goes by.
     var cachedAt: Date
 }
 
 /// The geocode cache and its negative twin.
+///
+/// Exact answers only. A confirmed door does not move, so remembering one
+/// costs nothing and saves the half-second lookup on every daily import of the
+/// same customers. An approximation is the opposite: an admitted guess that a
+/// better lookup — or a fix to this app's own matching — should replace the
+/// next time it is asked. Cached, it was served for thirty days after the
+/// lookup had learned to place it ("Pfenningeldgasse" kept its "≈", and
+/// "Pfenninggeldgasse 9/2/15" its pin on the wrong house). So an "≈" address
+/// is simply asked again, every time.
 ///
 /// Kept in a plain JSON file rather than in SwiftData: none of this is user
 /// data, none of it is ever shown in a list or edited, and it is written from
@@ -27,9 +31,6 @@ struct CachedGeocode: Codable, Sendable {
 actor GeocodeCache {
     static let shared = GeocodeCache()
 
-    /// An exact hit never expires on its own — a confirmed door does not move.
-    /// This is the ceiling for the approximate ones.
-    private static let approxTTL: TimeInterval = 30 * 24 * 60 * 60
     /// A "no geocoder has this address" verdict is remembered only for a few
     /// hours, so a genuinely new building that gets registered tomorrow is not
     /// blacklisted for good.
@@ -87,31 +88,22 @@ actor GeocodeCache {
     // MARK: - Lookup
 
     /// `now` is only for tests, the same way `SideloadExpiry.remaining` takes
-    /// one: the two things this table promises are both about the passage of
-    /// time — an exact hit that never goes stale and an approximation that
-    /// does — and a test that had to wait thirty days to say so would not be
-    /// written at all.
+    /// one: an exact hit that never goes stale is a promise about time, and a
+    /// test that had to wait years to say so would not be written at all.
     func lookup(_ key: String, now: Date = Date()) -> CachedGeocode? {
         load(now: now)
-        guard let hit = hits[key] else { return nil }
-        if hit.precision != .exact,
-           now.timeIntervalSince(hit.cachedAt) > Self.approxTTL {
-            hits.removeValue(forKey: key)
-            dirty = true
-            // Scheduled, like every other write in here. Marked dirty and left
-            // to somebody else — which is what this did — the drop reached the
-            // file only if an unrelated store or miss happened to follow it
-            // before the app was backgrounded.
-            scheduleSave()
-            return nil
-        }
+        // A file written before only exact answers were kept can still hold
+        // approximations; they are not answers any more.
+        guard let hit = hits[key], hit.precision == .exact else { return nil }
         return hit
     }
 
+    /// Remembers an exact answer. Anything less is not kept — see the type.
     func store(
         _ key: String, lat: Double, lon: Double,
         displayName: String, precision: Precision
     ) {
+        guard precision == .exact else { return }
         load()
         hits[key] = CachedGeocode(
             lat: lat, lon: lon, displayName: displayName,

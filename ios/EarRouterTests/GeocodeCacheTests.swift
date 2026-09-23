@@ -32,8 +32,7 @@ struct GeocodeCacheTests {
 
     // MARK: - How long an answer is worth
 
-    /// A confirmed door does not move. This is the whole reason exact hits are
-    /// treated differently from approximate ones.
+    /// A confirmed door does not move.
     @Test func anExactHitNeverGoesStale() async throws {
         let (cache, _) = try makeCache()
         await store(cache, "gentzgasse 129, 1180 wien", precision: .exact)
@@ -44,24 +43,14 @@ struct GeocodeCacheTests {
         #expect(hit?.lat == 48.2301)
     }
 
-    /// An approximation is an admitted guess, and a geocoder that catches up
-    /// later has to be able to override it.
-    @Test func anApproximationExpiresAfterAMonth() async throws {
+    /// An approximation is an admitted guess, asked again every time rather
+    /// than remembered — so a better lookup replaces it at once.
+    @Test func anApproximationIsNotKept() async throws {
         let (cache, _) = try makeCache()
         await store(cache, "neubaugasse 1, 1070 wien", precision: .street)
-
-        let inAWeek = Date().addingTimeInterval(7 * 24 * 60 * 60)
-        #expect(await cache.lookup("neubaugasse 1, 1070 wien", now: inAWeek) != nil)
-
-        let inTwoMonths = Date().addingTimeInterval(60 * 24 * 60 * 60)
-        #expect(await cache.lookup("neubaugasse 1, 1070 wien", now: inTwoMonths) == nil)
-    }
-
-    @Test func aDistrictCentroidExpiresTheSameWay() async throws {
-        let (cache, _) = try makeCache()
         await store(cache, "irgendwo, 1210 wien", precision: .district)
-        let inTwoMonths = Date().addingTimeInterval(60 * 24 * 60 * 60)
-        #expect(await cache.lookup("irgendwo, 1210 wien", now: inTwoMonths) == nil)
+        #expect(await cache.lookup("neubaugasse 1, 1070 wien") == nil)
+        #expect(await cache.lookup("irgendwo, 1210 wien") == nil)
     }
 
     @Test func anAddressNobodyAskedAboutIsNotAHit() async throws {
