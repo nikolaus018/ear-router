@@ -58,7 +58,12 @@ actor GeocodeCache {
     /// against the register too. Both of those approximations are cached, and a
     /// driver who never clears the cache by hand would otherwise keep the old
     /// "≈" answer for every one of them.
-    private static let generation = 4
+    ///
+    /// 5: a street one letter off the register's spelling is now accepted
+    /// ("Pfenningeldgasse" for Pfenninggeldgasse), and a matching Stiege on a
+    /// different house number no longer is ("9/2" answered with "6-12/2").
+    /// The first left an "≈" pin, the second an "≈" pin on the wrong house.
+    private static let generation = 5
 
     private var hits: [String: CachedGeocode] = [:]
     private var misses: [String: Date] = [:]
