@@ -52,7 +52,15 @@ actor Geocoder {
     /// register knows the address but files it under a different postcode —
     /// which is by far the likeliest reason a lookup fails, and turns a vague
     /// pin into a one-tap fix.
-    func geocode(strasse: String, plz: String) async throws -> GeocodeResult {
+    ///
+    /// `fresh` asks again instead of serving a cached *approximate* answer —
+    /// "Adressen prüfen", whose whole point is that the lookup may do better
+    /// now. Without it, that button answered every "≈" stop from the cache for
+    /// thirty days and could never improve one. Exact answers are still served
+    /// from the cache; there is nothing better to find.
+    func geocode(
+        strasse: String, plz: String, fresh: Bool = false
+    ) async throws -> GeocodeResult {
         // "1210 Wien, Österreich" inside the city, "2201 Österreich" outside
         // it. Not cosmetic: Nominatim's search is fuzzy and "Wien" is a strong
         // enough token to carry a query on its own, so a Gerasdorf address
@@ -67,7 +75,8 @@ actor Geocoder {
         let normalized = AddressText.normalize(strasse)
         let key = "\(normalized.lowercased()), \(place.lowercased())"
 
-        if let hit = await GeocodeCache.shared.lookup(key) {
+        if let hit = await GeocodeCache.shared.lookup(key),
+           !(fresh && hit.precision != .exact) {
             // A cached *district centroid* is the app admitting it never found
             // this address — and the likeliest reason is that the district it
             // was filed under is wrong. Worth one unthrottled register call to
@@ -507,25 +516,49 @@ actor Geocoder {
     /// several features for one query, and if the single best-ranked one is in
     /// a neighbouring district, the whole lookup reports "not found" even
     /// though the right address was sitting in the same response.
+    ///
+    /// One letter of slack on the street name, and only as a second choice:
+    /// "Pfenningeldgasse 9" is how the office's list spells Pfenninggeldgasse,
+    /// and the register answers it with the right building at `Ranking`
+    /// 0.0015 — which the exact comparison threw away, leaving the driver an
+    /// "≈ Straße" pin and no entrance to navigate to. Accepted only when no
+    /// candidate matches exactly, only in the right postcode, only on a name
+    /// long enough that one letter is a typo rather than another street, and
+    /// only when the register itself placed the house number (`Ranking` < 1).
     static func pickFeature(
         _ features: [OGDFeature], plz: String, streetKey: String, requireSub: String?
     ) -> OGDFeature? {
+        let inDistrict = features.filter { $0.properties.postalCode == plz }
+        // Compared through `matchKey`, which is what the other two "is this
+        // the street we asked for?" checks in this file already use — and
+        // what this one has to use as well, because the register is
+        // *tolerant on input and canonical on output*. Ask it for
+        // "Dr. Karl Lueger-Platz 1" — how anyone actually types it — and it
+        // answers with the right building at `Ranking` 0.0 under the name
+        // "Dr.-Karl-Lueger-Platz". A lowercased raw comparison, which is
+        // what this did, then threw that exact answer away over the two
+        // hyphens, fell through to Nominatim, and left the driver with an
+        // "≈ Straße" pin for an address the city had placed precisely.
+        // `matchKey` collapses the punctuation and keeps every letter in
+        // order, so it still tells "Anton-Baumann-Gasse" apart from the
+        // "Anton-Baumann-Park" the register offers for it.
+        func name(_ f: OGDFeature) -> String {
+            AddressText.matchKey(f.properties.streetName ?? "")
+        }
+        if let exact = pick(
+            inDistrict.filter { name($0) == streetKey }, requireSub: requireSub) {
+            return exact
+        }
+        return pick(
+            inDistrict.filter {
+                ($0.properties.ranking ?? .greatestFiniteMagnitude) < 1.0
+                    && AddressText.isOneTypoApart(name($0), streetKey)
+            },
+            requireSub: requireSub)
+    }
+
+    private static func pick(_ features: [OGDFeature], requireSub: String?) -> OGDFeature? {
         features
-            .filter { $0.properties.postalCode == plz }
-            // Compared through `matchKey`, which is what the other two "is this
-            // the street we asked for?" checks in this file already use — and
-            // what this one has to use as well, because the register is
-            // *tolerant on input and canonical on output*. Ask it for
-            // "Dr. Karl Lueger-Platz 1" — how anyone actually types it — and it
-            // answers with the right building at `Ranking` 0.0 under the name
-            // "Dr.-Karl-Lueger-Platz". A lowercased raw comparison, which is
-            // what this did, then threw that exact answer away over the two
-            // hyphens, fell through to Nominatim, and left the driver with an
-            // "≈ Straße" pin for an address the city had placed precisely.
-            // `matchKey` collapses the punctuation and keeps every letter in
-            // order, so it still tells "Anton-Baumann-Gasse" apart from the
-            // "Anton-Baumann-Park" the register offers for it.
-            .filter { AddressText.matchKey($0.properties.streetName ?? "") == streetKey }
             // A sub-address query only counts if the register came back with
             // *that* sub-address. Asked for one it has never heard of, the
             // service answers with a neighbour at a near-zero `Ranking` —

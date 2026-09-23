@@ -236,6 +236,52 @@ struct OGDFeaturePickingTests {
         #expect(picked == nil)
     }
 
+    /// What the register answers for "Pfenningeldgasse 9/2/15": the right
+    /// building, spelled with the second g the office's list left out.
+    @Test func acceptsTheRightBuildingOneLetterAway() {
+        let picked = Geocoder.pickFeature(
+            [feature(street: "Pfenninggeldgasse", plz: "1160", ranking: 0.0015,
+                     adresse: "Pfenninggeldgasse 9")],
+            plz: "1160",
+            streetKey: AddressText.matchKey("Pfenningeldgasse"),
+            requireSub: nil)
+        #expect(picked?.properties.streetName == "Pfenninggeldgasse")
+    }
+
+    /// One letter away, but the register did not place the house number —
+    /// that is a street it guessed at, not the building asked for.
+    @Test func refusesOneLetterAwayWhenTheNumberWasNotFound() {
+        let picked = Geocoder.pickFeature(
+            [feature(street: "Pfenninggeldgasse", plz: "1160", ranking: 300)],
+            plz: "1160",
+            streetKey: AddressText.matchKey("Pfenningeldgasse"),
+            requireSub: nil)
+        #expect(picked == nil)
+    }
+
+    /// The exact street wins over one a letter away, whatever the ranking.
+    @Test func prefersTheExactStreetOverOneLetterAway() {
+        let picked = Geocoder.pickFeature(
+            [feature(street: "Pfenninggeldgasse", plz: "1160", ranking: 0.0),
+             feature(street: "Pfenningeldgasse", plz: "1160", ranking: 0.5)],
+            plz: "1160",
+            streetKey: AddressText.matchKey("Pfenningeldgasse"),
+            requireSub: nil)
+        #expect(picked?.properties.streetName == "Pfenningeldgasse")
+    }
+
+    @Test func oneTypoMeansExactlyOneLetter() {
+        #expect(AddressText.isOneTypoApart("pfenningeldgasse", "pfenninggeldgasse"))
+        #expect(AddressText.isOneTypoApart("gentzgasse", "genzgasse"))
+        #expect(AddressText.isOneTypoApart("hernalser hauptstrasse", "hernalser hauptstrase"))
+        #expect(AddressText.isOneTypoApart("thaliastrasse", "thaliastrasze"))
+        // Not a typo: the same name, two letters off, or too short to tell.
+        #expect(!AddressText.isOneTypoApart("gentzgasse", "gentzgasse"))
+        #expect(!AddressText.isOneTypoApart("pfenningeldgasse", "pfennigeldgase"))
+        #expect(!AddressText.isOneTypoApart("anton baumann gasse", "anton baumann park"))
+        #expect(!AddressText.isOneTypoApart("hofgasse", "hofgase"))
+    }
+
     @Test func refusesAnotherDistrictEvenOnTheRightStreet() {
         let picked = Geocoder.pickFeature(
             [feature(street: "Hauptstraße", plz: "1030", ranking: 0.0)],

@@ -193,6 +193,27 @@ enum AddressText {
     /// the same one gets written: the driver types "9/Parz.68", the register
     /// answers "Großfeldstraße 9 Parz. 68", and a Stiege comes back as "/1".
     /// Everything that isn't a letter or a digit is noise here, and so is case.
+    /// Whether two street keys differ by exactly one letter — one missing,
+    /// one extra, or one swapped for another. Only for names of eight letters
+    /// or more: on a short name one letter is as likely another street as a
+    /// typo.
+    static func isOneTypoApart(_ a: String, _ b: String) -> Bool {
+        let x = Array(a), y = Array(b)
+        guard x != y, min(x.count, y.count) >= 8, abs(x.count - y.count) <= 1 else {
+            return false
+        }
+        var i = 0, j = 0, edits = 0
+        while i < x.count && j < y.count {
+            if x[i] == y[j] { i += 1; j += 1; continue }
+            edits += 1
+            if edits > 1 { return false }
+            if x.count > y.count { i += 1 }
+            else if x.count < y.count { j += 1 }
+            else { i += 1; j += 1 }
+        }
+        return edits + (x.count - i) + (y.count - j) == 1
+    }
+
     static func subAddressKey(_ sub: String) -> String {
         germanFold(sub.lowercased()).filter { $0.isLetter || $0.isNumber }
     }
