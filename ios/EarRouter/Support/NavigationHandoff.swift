@@ -113,11 +113,43 @@ enum NavigationHandoff {
         }
     }
 
+    /// How far a Stiege may be from its house number's entrance before the
+    /// Stiege itself is the better place to be sent.
+    ///
+    /// Measured on real buildings: an ordinary house keeps every Stiege within
+    /// about 40 m of the entrance (Gentzgasse 129: 9–36 m), so sending the
+    /// entrance costs nothing there and avoids the Stiege point's one failure —
+    /// a navigation app routing to whichever road is nearest to a courtyard,
+    /// round the back. A large Gemeindebau is another thing: Rennbahnweg 27 has
+    /// one entrance point for 66 Stiegen up to 429 m away, the Karl-Marx-Hof
+    /// up to 437 m. There the entrance is the wrong end of the block.
+    static let stiegeDistance: CLLocationDistance = 50
+
+    /// The stop's own point is a Stiege the register matched exactly, and far
+    /// enough from the house number's entrance to be worth driving to instead.
+    ///
+    /// Only for an address that names a Stiege and was placed exactly: without
+    /// one, `lat`/`lon` are the house number's own point, which says nothing
+    /// about which door is the driver's.
+    static func farStiege(_ stop: Stop, entrance: CLLocationCoordinate2D) -> Bool {
+        guard stop.precision == nil,
+              AddressText.housenumberWithSub(AddressText.normalize(stop.strasse ?? "")) != nil
+        else { return false }
+        let stiege = CLLocation(latitude: stop.lat, longitude: stop.lon)
+        let door = CLLocation(latitude: entrance.latitude, longitude: entrance.longitude)
+        return stiege.distance(from: door) > stiegeDistance
+    }
+
     static func destination(for stop: Stop) -> Destination {
         let plausible = Coordinates.isPlausible(
             lat: stop.lat, lon: stop.lon, forPlz: stop.plz ?? "")
         if stop.pinned, plausible { return .point(lat: stop.lat, lon: stop.lon) }
-        if let e = stop.entrance { return .point(lat: e.latitude, lon: e.longitude) }
+        if let e = stop.entrance {
+            if plausible, farStiege(stop, entrance: e) {
+                return .point(lat: stop.lat, lon: stop.lon)
+            }
+            return .point(lat: e.latitude, lon: e.longitude)
+        }
         let address = stop.navigationAddress
         if !address.isEmpty { return .address(address) }
         return plausible ? .point(lat: stop.lat, lon: stop.lon) : .none

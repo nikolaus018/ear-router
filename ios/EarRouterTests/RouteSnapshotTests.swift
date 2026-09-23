@@ -431,13 +431,44 @@ struct HandoffAndUpstreamTests {
         #expect(!url.contains("48.230100"))
     }
 
-    /// The register's entrance for the house number goes over as a point.
+    /// The register's entrance for the house number goes over as a point —
+    /// here the Stiege is a few metres from it, as on an ordinary house.
     @Test func sendsTheEntranceWhenItIsKnown() {
         let stop = Stop(
             kind: .customer, kunde: "Fam. A", strasse: "Gentzgasse 129/1", plz: "1180",
-            lat: 48.2301, lon: 16.3201)
+            lat: 48.23060, lon: 16.33070)
         stop.setEntrance((48.23054851, 16.33060367))
         #expect(NavigationHandoff.destination(for: stop) == .point(lat: 48.23054851, lon: 16.33060367))
+    }
+
+    /// A Stiege of a large Gemeindebau, far from the house number's one
+    /// entrance: the Stiege itself is where the driver is sent.
+    @Test func aFarStiegeBeatsTheEntrance() {
+        // Rennbahnweg 27: a Stiege about 280 m from the entrance point.
+        let stop = Stop(
+            kind: .customer, kunde: "Fam. B", strasse: "Rennbahnweg 27/14/3", plz: "1220",
+            lat: 48.2560, lon: 16.4520)
+        stop.setEntrance((48.2545, 16.4495))
+        #expect(NavigationHandoff.destination(for: stop) == .point(lat: 48.2560, lon: 16.4520))
+    }
+
+    /// Far from the entrance, but the address names no Stiege — the point is
+    /// the house number's own, which says nothing about the door.
+    @Test func withoutAStiegeTheEntranceStands() {
+        let stop = Stop(
+            kind: .customer, kunde: "Fam. B", strasse: "Rennbahnweg 27", plz: "1220",
+            lat: 48.2560, lon: 16.4520)
+        stop.setEntrance((48.2545, 16.4495))
+        #expect(NavigationHandoff.destination(for: stop) == .point(lat: 48.2545, lon: 16.4495))
+    }
+
+    /// A Stiege the register did not match exactly is a guess, not a door.
+    @Test func anApproximateStiegeDoesNotBeatTheEntrance() {
+        let stop = Stop(
+            kind: .customer, kunde: "Fam. B", strasse: "Rennbahnweg 27/14/3", plz: "1220",
+            lat: 48.2560, lon: 16.4520, precision: .street)
+        stop.setEntrance((48.2545, 16.4495))
+        #expect(NavigationHandoff.destination(for: stop) == .point(lat: 48.2545, lon: 16.4495))
     }
 
     /// A pin placed by hand beats the entrance: the driver stood at the door.
