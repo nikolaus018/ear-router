@@ -584,10 +584,18 @@ actor Geocoder {
             // than as raw text, because the register writes what the driver
             // typed as "9/Parz.68" as "Großfeldstraße 9 Parz. 68" — the same
             // address, spelled with a space and an abbreviation dot.
+            //
+            // And only on the house number asked for. "Pfenninggeldgasse
+            // 9/2/15": number 9 has no Stiege 2, the house across the street,
+            // 6-12, does — and the register offers "6-12/2", ranked in the
+            // thousands for the wrong number. Taken for its matching Stiege,
+            // it put the pin on the wrong house instead of falling through to
+            // plain "Pfenninggeldgasse 9", which the register knows exactly.
             .filter { f in
                 guard let want = requireSub else { return true }
                 guard let adresse = f.properties.adresse,
-                      let got = AddressText.subAddressOf(adresse)
+                      let got = AddressText.subAddressOf(adresse),
+                      (f.properties.ranking ?? .greatestFiniteMagnitude) < 1.0
                 else { return false }
                 return got == want
             }

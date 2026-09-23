@@ -270,6 +270,32 @@ struct OGDFeaturePickingTests {
         #expect(picked?.properties.streetName == "Pfenningeldgasse")
     }
 
+    /// What the register answers for "Pfenninggeldgasse 9/2": house 9 with no
+    /// Stiege, and Stiege 2 of the house across the street, 6-12, ranked for
+    /// the wrong number. The matching Stiege on the wrong house must not win.
+    @Test func refusesTheRightStiegeOnTheWrongHouse() {
+        let picked = Geocoder.pickFeature(
+            [feature(street: "Pfenninggeldgasse", plz: "1160", ranking: 0.0002,
+                     adresse: "Pfenninggeldgasse 9"),
+             feature(street: "Pfenninggeldgasse", plz: "1160", ranking: 3.001,
+                     adresse: "Pfenninggeldgasse 6-12/2")],
+            plz: "1160",
+            streetKey: AddressText.matchKey("Pfenninggeldgasse"),
+            requireSub: "2")
+        #expect(picked == nil)
+    }
+
+    /// The Stiege asked for, on the house asked for, is still taken.
+    @Test func takesTheStiegeOnTheRightHouse() {
+        let picked = Geocoder.pickFeature(
+            [feature(street: "Gentzgasse", plz: "1180", ranking: 0.0001,
+                     adresse: "Gentzgasse 129/1")],
+            plz: "1180",
+            streetKey: AddressText.matchKey("Gentzgasse"),
+            requireSub: "1")
+        #expect(picked?.properties.adresse == "Gentzgasse 129/1")
+    }
+
     @Test func oneTypoMeansExactlyOneLetter() {
         #expect(AddressText.isOneTypoApart("pfenningeldgasse", "pfenninggeldgasse"))
         #expect(AddressText.isOneTypoApart("gentzgasse", "genzgasse"))
