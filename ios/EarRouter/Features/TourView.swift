@@ -68,8 +68,7 @@ struct TourView: View {
     /// about the same tour at its two ends.
     @State private var showingReport = false
     @State private var showingPreflight = false
-    /// "Reihenfolge ändern": the list shows drag handles, and nothing else on
-    /// the screen can be touched until Fertig.
+    /// "Reihenfolge ändern" — see `ReorderSheet`.
     @State private var reordering = false
     /// "Neu optimieren" on a hand-sorted tour, waiting to be confirmed.
     @State private var confirmingReoptimize = false
@@ -199,6 +198,9 @@ struct TourView: View {
         .sheet(isPresented: $showingLadeliste) {
             LadelisteView(route: route)
         }
+        .sheet(isPresented: $reordering) {
+            ReorderSheet(route: route)
+        }
         .alert("Tour umbenennen", isPresented: $renaming) {
             TextField("Name", text: $newName)
                 .limited(to: FieldLimits.routeName, text: $newName)
@@ -279,14 +281,7 @@ struct TourView: View {
             Section {
                 ForEach(visible) { stop in
                     row(for: stop, in: snapshot, info: info)
-                        // Depot, Lager and Ziel stay where they are. Dragging a
-                        // customer past them is allowed and simply lands it
-                        // first or last among the customers.
-                        .moveDisabled(stop.kind != .customer)
                 }
-                .onMove(perform: reordering && search.isEmpty ? { from, to in
-                    move(visible, from: from, to: to)
-                } : nil)
             } header: {
                 Text(listHeader(snapshot, visible: visible))
             } footer: {
@@ -307,7 +302,6 @@ struct TourView: View {
                 }
             }
         }
-        .environment(\.editMode, .constant(reordering ? .active : .inactive))
         // The moment the last meal is ticked off. Every individual tick already
         // gives its own impact; this is the one that says the tour is done, and
         // it is worth feeling through a coat pocket without looking.
@@ -380,17 +374,6 @@ struct TourView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        if reordering {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Fertig") { reordering = false }
-            }
-        } else {
-            standardToolbar
-        }
-    }
-
-    @ToolbarContentBuilder
-    private var standardToolbar: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             // Stays a plus, disabled, while work is in flight. Swapping it for
             // a spinner moved the button the driver was aiming at and said less
@@ -431,7 +414,6 @@ struct TourView: View {
                     }
                 }
                 Button("Reihenfolge ändern", systemImage: "arrow.up.arrow.down") {
-                    search = ""
                     reordering = true
                 }
                 .disabled(route.customerCount < 2)
@@ -654,21 +636,6 @@ struct TourView: View {
         } catch {
             self.error = AppError.message("Konnte den Stopp nicht ändern.")
         }
-    }
-
-    /// A drop in "Reihenfolge ändern". Only the customers' order is taken
-    /// from it; where the fixed points ended up in `visible` does not matter.
-    private func move(_ visible: [Stop], from source: IndexSet, to destination: Int) {
-        var list = visible
-        list.move(fromOffsets: source, toOffset: destination)
-        let ids = list.filter { $0.kind == .customer }.map(\.id)
-        do {
-            guard try RouteStore.reorder(route, customerIDs: ids, in: context) else { return }
-        } catch {
-            self.error = AppError.message("Die neue Reihenfolge konnte nicht gespeichert werden.")
-            return
-        }
-        Task { await RouteOptimizer.optimizeBestEffort(route, in: context, keepOrder: true) }
     }
 
     private func delete(_ stop: Stop) async {
