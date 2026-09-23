@@ -64,6 +64,9 @@ struct BackupArchive: Codable, Sendable {
         /// Dropped from the file on purpose — see `BackupArchive.make`.
         var geometryFlat: [Double]?
         var stops: [StopBackup]
+        /// Put in order by hand. Missing from files written before it existed,
+        /// which is the same as false.
+        var handOrdered: Bool? = nil
     }
 
     struct StopBackup: Codable, Sendable {
@@ -216,7 +219,8 @@ extension BackupArchive {
                 completedAt: route.completedAt,
                 needsOptimize: true,
                 geometryFlat: nil,
-                stops: route.stops.sorted(by: Stop.displayBefore).map(StopBackup.init))
+                stops: route.stops.sorted(by: Stop.displayBefore).map(StopBackup.init),
+                handOrdered: route.handOrdered)
         }
         archive.stockwerke = notes.map(StockwerkBackup.init)
         return archive
@@ -461,6 +465,8 @@ enum BackupRestore {
         // again — and this is the flag that says so, with the button attached.
         route.needsOptimize = true
         route.geometryFlat = []
+        // Restored tours are routed again; a hand-sorted one keeps its order.
+        route.handOrdered = backup.handOrdered ?? false
         context.insert(route)
 
         for s in backup.stops {

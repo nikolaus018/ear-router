@@ -68,6 +68,11 @@ struct TourView: View {
     /// about the same tour at its two ends.
     @State private var showingReport = false
     @State private var showingPreflight = false
+    /// "Reihenfolge ändern": the list shows drag handles, and nothing else on
+    /// the screen can be touched until Fertig.
+    @State private var reordering = false
+    /// "Neu optimieren" on a hand-sorted tour, waiting to be confirmed.
+    @State private var confirmingReoptimize = false
 
     /// Every door ever answered for. Queried whole rather than per row: this is
     /// a few thousand short rows after years of tours, one pass turns it into
@@ -224,6 +229,15 @@ struct TourView: View {
             Text("„\(stop.kunde ?? "Dieser Stopp")“ wird aus der Tour entfernt.")
         }
         .confirmationDialog(
+            "Neu optimieren?", isPresented: $confirmingReoptimize,
+            titleVisibility: .visible
+        ) {
+            Button("Neu optimieren") { startLongJob { await optimize(afresh: true) } }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Deine eigene Reihenfolge wird durch die optimierte ersetzt.")
+        }
+        .confirmationDialog(
             "Lieferstatus zurücksetzen?", isPresented: $confirmingReset,
             titleVisibility: .visible
         ) {
@@ -256,14 +270,23 @@ struct TourView: View {
         List {
             if route.needsOptimize {
                 Section {
-                    OptimizeBanner(busy: busy != nil) { startLongJob { await optimize() } }
+                    OptimizeBanner(busy: busy != nil, handOrdered: route.handOrdered) {
+                        startLongJob { await optimize() }
+                    }
                 }
             }
 
             Section {
                 ForEach(visible) { stop in
                     row(for: stop, in: snapshot, info: info)
+                        // Depot, Lager and Ziel stay where they are. Dragging a
+                        // customer past them is allowed and simply lands it
+                        // first or last among the customers.
+                        .moveDisabled(stop.kind != .customer)
                 }
+                .onMove(perform: reordering && search.isEmpty ? { from, to in
+                    move(visible, from: from, to: to)
+                } : nil)
             } header: {
                 Text(listHeader(snapshot, visible: visible))
             } footer: {
@@ -284,6 +307,7 @@ struct TourView: View {
                 }
             }
         }
+        .environment(\.editMode, .constant(reordering ? .active : .inactive))
         // The moment the last meal is ticked off. Every individual tick already
         // gives its own impact; this is the one that says the tour is done, and
         // it is worth feeling through a coat pocket without looking.
@@ -356,6 +380,17 @@ struct TourView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        if reordering {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Fertig") { reordering = false }
+            }
+        } else {
+            standardToolbar
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var standardToolbar: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             // Stays a plus, disabled, while work is in flight. Swapping it for
             // a spinner moved the button the driver was aiming at and said less
@@ -389,8 +424,17 @@ struct TourView: View {
                 }
                 Divider()
                 Button("Neu optimieren", systemImage: "arrow.triangle.2.circlepath") {
-                    startLongJob { await optimize() }
+                    if route.handOrdered {
+                        confirmingReoptimize = true
+                    } else {
+                        startLongJob { await optimize(afresh: true) }
+                    }
                 }
+                Button("Reihenfolge ändern", systemImage: "arrow.up.arrow.down") {
+                    search = ""
+                    reordering = true
+                }
+                .disabled(route.customerCount < 2)
                 Button("Adressen prüfen", systemImage: "mappin.and.ellipse") {
                     startLongJob { await recheck() }
                 }
@@ -612,6 +656,21 @@ struct TourView: View {
         }
     }
 
+    /// A drop in "Reihenfolge ändern". Only the customers' order is taken
+    /// from it; where the fixed points ended up in `visible` does not matter.
+    private func move(_ visible: [Stop], from source: IndexSet, to destination: Int) {
+        var list = visible
+        list.move(fromOffsets: source, toOffset: destination)
+        let ids = list.filter { $0.kind == .customer }.map(\.id)
+        do {
+            guard try RouteStore.reorder(route, customerIDs: ids, in: context) else { return }
+        } catch {
+            self.error = AppError.message("Die neue Reihenfolge konnte nicht gespeichert werden.")
+            return
+        }
+        Task { await RouteOptimizer.optimizeBestEffort(route, in: context, keepOrder: true) }
+    }
+
     private func delete(_ stop: Stop) async {
         let banner = ownsBanner
         if banner { busy = "Wird entfernt …" }
@@ -621,12 +680,17 @@ struct TourView: View {
         }
     }
 
-    private func optimize() async {
+    /// `afresh` is "Neu optimieren" from the menu: a new order, even on a
+    /// tour sorted by hand. Everything else — the banner, pull-to-refresh,
+    /// Tour vorbereiten — brings the route up to date and keeps a hand-sorted
+    /// order as it is.
+    private func optimize(afresh: Bool = false) async {
         guard !isBusy else { return }
-        busy = "Route wird optimiert …"
+        let keepOrder = route.handOrdered && !afresh
+        busy = keepOrder ? "Route wird aktualisiert …" : "Route wird optimiert …"
         defer { busy = nil }
         do {
-            try await RouteOptimizer.optimize(route, in: context)
+            try await RouteOptimizer.optimize(route, in: context, keepOrder: keepOrder)
         } catch is CancellationError {
             // Stopped from the banner. The route keeps its `needsOptimize`
             // flag, so the amber "Route nicht aktuell" row is still there to
@@ -815,6 +879,9 @@ struct BusyBanner: View {
 /// right, which is what every actionable row on this phone looks like.
 struct OptimizeBanner: View {
     let busy: Bool
+    /// A hand-sorted tour keeps its order, so only the line and the
+    /// distances are out of date — and the button does not reorder anything.
+    var handOrdered = false
     let retry: () async -> Void
 
     var body: some View {
@@ -825,12 +892,14 @@ struct OptimizeBanner: View {
                 .symbolRenderingMode(.monochrome)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Route nicht aktuell").font(.subheadline.weight(.semibold))
-                Text("Reihenfolge und Distanzen stimmen nicht mehr.")
+                Text(handOrdered
+                     ? "Linie und Distanzen stimmen nicht mehr."
+                     : "Reihenfolge und Distanzen stimmen nicht mehr.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
-            Button("Optimieren") { Task { await retry() } }
+            Button(handOrdered ? "Aktualisieren" : "Optimieren") { Task { await retry() } }
                 .font(.subheadline.weight(.semibold))
                 .buttonStyle(.plain)
                 .foregroundStyle(busy ? Color.secondary : Color.accentColor)

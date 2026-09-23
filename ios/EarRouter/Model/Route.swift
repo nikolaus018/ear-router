@@ -35,6 +35,11 @@ final class Route {
     /// than a route quietly claiming to be current.
     var needsOptimize: Bool = false
 
+    /// Put in order by hand ("Reihenfolge ändern"). Re-routing after an edit
+    /// then keeps the driver's order and only redraws the line; only "Neu
+    /// optimieren" orders the tour again, and clears this.
+    var handOrdered: Bool = false
+
     @Relationship(deleteRule: .cascade, inverse: \Stop.route)
     var stops: [Stop] = []
 

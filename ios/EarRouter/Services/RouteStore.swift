@@ -402,6 +402,41 @@ enum RouteStore {
         await RouteOptimizer.optimizeBestEffort(route, in: context)
     }
 
+    /// Puts the customers in the order the driver dragged them into, and marks
+    /// the tour hand-sorted so later edits keep that order. Returns
+    /// whether anything moved; if so, the route is flagged and wants
+    /// `RouteOptimizer.optimizeBestEffort(_:in:keepOrder: true)` next, which
+    /// draws the line and the distances through exactly that order.
+    ///
+    /// Synchronous, so the list shows the drop in the same frame as the drag.
+    /// Customers missing from `customerIDs` keep their place after the ones
+    /// named. The fixed points are not in the list at all — they stay at the
+    /// top and the bottom whatever was dragged past them.
+    @discardableResult
+    static func reorder(
+        _ route: Route, customerIDs: [UUID], in context: ModelContext
+    ) throws -> Bool {
+        let customers = route.customerStops
+        let byID = Dictionary(customers.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let named = customerIDs.compactMap { byID[$0] }
+        let namedIDs = Set(named.map(\.id))
+        let order = named + customers.filter { !namedIDs.contains($0.id) }
+        guard order.map(\.id) != customers.map(\.id) else { return false }
+
+        let fixed = route.orderedStops.filter { $0.kind != .customer }
+        let head = fixed.filter { $0.kind != .end }
+        let tail = fixed.filter { $0.kind == .end }
+        for (index, stop) in (head + order + tail).enumerated() {
+            stop.orderIndex = index
+            stop.nextLegKm = nil
+            stop.nextLegMin = nil
+        }
+        route.handOrdered = true
+        route.markRoutingStale()
+        try context.save()
+        return true
+    }
+
     // MARK: - Re-check addresses
 
     /// Re-resolves every approximate stop on the route, in case a geocoder has

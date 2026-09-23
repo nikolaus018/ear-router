@@ -76,6 +76,35 @@ actor OSRMClient {
         return (route.distance, route.duration, Self.toPolyline(route.geometry))
     }
 
+    /// Distance, duration and geometry along `coords` in exactly the order
+    /// given — for a tour the driver has put in order by hand, where nothing
+    /// may be moved. Legs are in that order: `legs[i]` runs from `coords[i]`
+    /// to `coords[i + 1]`.
+    func routeThrough(
+        _ coords: [(lat: Double, lon: Double)]
+    ) async throws -> (legs: [(Double, Double)], geometry: [[Double]]) {
+        guard coords.count >= 2 else {
+            throw AppError.message("OSRM: Routenabschnitt mit weniger als zwei Punkten")
+        }
+        guard coords.count <= osrmMaxTripCoords else {
+            throw AppError.message(
+                "Zu viele Stopps für die Route (\(coords.count) Wegpunkte, "
+                    + "max. \(osrmMaxTripCoords)). Bitte die Route auf mehrere Touren aufteilen.")
+        }
+        let path = "/route/v1/driving/\(Self.coordString(coords))"
+            + "?overview=full&geometries=geojson"
+        let resp: RouteResponse = try await get(path, waypoints: coords.count)
+        guard resp.code == "Ok" else {
+            throw Self.failure(code: resp.code)
+        }
+        guard let route = resp.routes.first else {
+            throw AppError.message("OSRM: keine Route gefunden")
+        }
+        let legs = route.legs ?? []
+        try Self.checkLegCount(legs.count, waypoints: coords.count)
+        return (legs.map { ($0.distance, $0.duration) }, Self.toPolyline(route.geometry))
+    }
+
     /// Solves the multi-stop ordering problem via OSRM's `/trip` endpoint,
     /// with every point that is not pinned free to be reordered however
     /// minimizes total travel time.
@@ -400,6 +429,9 @@ actor OSRMClient {
         let geometry: Geometry
         let distance: Double
         let duration: Double
+        /// Only `routeThrough` reads these; `routeLeg` has one and uses the
+        /// totals above.
+        let legs: [Leg]?
     }
     private struct TripResponse: Decodable {
         let code: String

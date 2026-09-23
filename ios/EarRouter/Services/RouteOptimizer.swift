@@ -76,7 +76,14 @@ enum RouteOptimizer {
     /// The explicit "Neu optimieren" action. Failures surface, because here
     /// the optimization *is* the request — failing quietly would mean a tap
     /// that appears to do nothing at all.
-    static func optimize(_ route: Route, in context: ModelContext) async throws {
+    ///
+    /// `keepOrder` routes the customers in the order the list already shows
+    /// them instead of asking OSRM for one — a tour the driver has put in order
+    /// by hand. Queued behind, and ahead of, ordinary runs just the same.
+    /// Without it the tour is ordered afresh and stops being hand-sorted.
+    static func optimize(
+        _ route: Route, in context: ModelContext, keepOrder: Bool = false
+    ) async throws {
         let routeID = route.id
         // Each run waits for its predecessor *inside its own task*, so the map
         // always holds the newest link in the chain. Awaiting the predecessor
@@ -86,7 +93,7 @@ enum RouteOptimizer {
         let previous = inFlight[routeID]
         let task = Task {
             _ = try? await previous?.value
-            try await run(route, in: context)
+            try await run(route, in: context, keepOrder: keepOrder)
         }
         inFlight[routeID] = task
         defer {
@@ -117,9 +124,16 @@ enum RouteOptimizer {
     /// instead hands the driver a red failure toast for an action that
     /// demonstrably worked — and the obvious response to that toast, doing it
     /// again, silently adds the same stop twice.
-    static func optimizeBestEffort(_ route: Route, in context: ModelContext) async {
+    ///
+    /// A hand-sorted tour always keeps its order here. None of these callers
+    /// asked for a new order — an address was corrected, a stop was added —
+    /// and throwing the driver's own order away over that would be a surprise.
+    static func optimizeBestEffort(
+        _ route: Route, in context: ModelContext, keepOrder: Bool = false
+    ) async {
         do {
-            try await optimize(route, in: context)
+            try await optimize(
+                route, in: context, keepOrder: keepOrder || route.handOrdered)
         } catch {
             log.warning("best-effort optimize failed: \(error.localizedDescription)")
         }
@@ -127,9 +141,14 @@ enum RouteOptimizer {
 
     // MARK: - The solve
 
-    private static func run(_ route: Route, in context: ModelContext) async throws {
+    private static func run(
+        _ route: Route, in context: ModelContext, keepOrder: Bool
+    ) async throws {
+        if keepOrder { return try await runAsListed(route, in: context) }
+
         // --- read ---
         let (nodes, plannedFrom) = snapshot(route)
+        let wasHandOrdered = route.handOrdered
 
         let plan = Self.plan(nodes)
 
@@ -173,9 +192,52 @@ enum RouteOptimizer {
         // is lost by dropping this answer on the floor.
         try Task.checkCancellation()
 
+        // Sorted by hand while OSRM was answering. That drag has queued its
+        // own run; this answer would only undo it.
+        if route.handOrdered && !wasHandOrdered { return }
+        route.handOrdered = false
+
         try Self.apply(
             nodes, routed: routed, legs: legs, geometry: geometry,
             plannedFrom: plannedFrom, to: route, in: context)
+    }
+
+    /// The same read → await → write, with the order taken from the list
+    /// rather than from `/trip`: one `/route` call through every driven point,
+    /// for the line on the map and the distance on each row.
+    private static func runAsListed(_ route: Route, in context: ModelContext) async throws {
+        // --- read ---
+        let (nodes, plannedFrom) = snapshot(route)
+        let listed = route.customerStops.map(\.planningSnapshot)
+        let routed = Self.listedDrivingOrder(nodes, customers: listed)
+
+        // --- await ---
+        var legs: [(Double, Double)] = []
+        var geometry: [[Double]] = []
+        if routed.count >= 2 {
+            let through = try await OSRMClient.shared.routeThrough(
+                routed.map { (lat: $0.lat, lon: $0.lon) })
+            legs = through.legs
+            geometry = through.geometry
+        }
+
+        // --- write ---
+        try Task.checkCancellation()
+        // Dragged again while this one was routing. Writing it would put the
+        // rows back where they were a moment ago; the drag that moved them
+        // has already queued its own run behind this one.
+        guard route.customerStops.map(\.id) == listed.map(\.id) else { return }
+
+        try Self.apply(
+            nodes, routed: routed, legs: legs, geometry: geometry,
+            plannedFrom: plannedFrom, to: route, in: context)
+    }
+
+    /// The driving order of a hand-sorted tour: the fixed head, the customers
+    /// exactly as listed, then the destination — skipping whichever fixed
+    /// points this tour has switched off.
+    static func listedDrivingOrder(_ nodes: Nodes, customers: [StopCoord]) -> [StopCoord] {
+        nodes.head + customers + [nodes.end?.active].compactMap { $0 }
     }
 
     /// Writes one finished solution back onto the route.
