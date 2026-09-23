@@ -68,6 +68,7 @@ struct RootView: View {
         // phone can show it without being unlocked. Here rather than on one of
         // the tabs because it has to hold whichever tab is in front.
         .syncingLiveActivity()
+        .keepingScreenAwakeDuringTour()
     }
 }
 
