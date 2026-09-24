@@ -339,8 +339,20 @@ struct TourView: View {
             onToggleExcluded: { Task { await toggleExcluded(stop) } })
             // The id is the scroll target `reveal` aims at.
             .id(stop.id)
-            .listRowBackground(
-                highlighted == stop.id ? Color.accentColor.opacity(0.12) : nil)
+            .listRowBackground(rowBackground(for: stop))
+    }
+
+    /// Highlighted takes priority — it only ever lands on the row `reveal`
+    /// just scrolled to, and losing that flash under a permanent tint would
+    /// defeat the point of it. Otherwise a stop whose address the geocoder
+    /// only narrowed to a street or a district, never a door, gets a soft red
+    /// wash: the list is where a driver decides what to trust before setting
+    /// off, and a precise-looking row for an address nobody actually pinned
+    /// is the wrong moment to find that out.
+    private func rowBackground(for stop: Stop) -> Color? {
+        if highlighted == stop.id { return Color.accentColor.opacity(0.12) }
+        if let precision = stop.precision, precision != .exact { return Color.red.opacity(0.12) }
+        return nil
     }
 
     // MARK: - Finishing
