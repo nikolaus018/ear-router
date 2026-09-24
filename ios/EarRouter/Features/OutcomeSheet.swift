@@ -111,9 +111,19 @@ struct OutcomeSheet: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .tint(outcome.needsFollowUp ? .attention : .accentColor)
+                .tint(tint(outcome))
             }
         }
+    }
+
+    /// Each outcome in the colour it wears everywhere else: a meal left with a
+    /// neighbour was handed over, so green like the tick; a door nobody opened
+    /// amber; abbestellt grey, like its pin. Both of those used to be the
+    /// accent blue here — the colour of "tap me", saying nothing about which
+    /// answer was which.
+    private func tint(_ outcome: DeliveryOutcome) -> Color {
+        if outcome.handedOver { return .delivered }
+        return outcome.needsFollowUp ? .attention : .fixture
     }
 
     /// The customer's own number, or one written into the note. The same two
