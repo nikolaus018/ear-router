@@ -590,6 +590,8 @@ enum RouteStore {
             // at a throttled round trip each, and reported every one of them as
             // "weiter offen".
             if Task.isCancelled { break }
+            // Deleted from Touren while this was looking addresses up.
+            if RouteOptimizer.isGone(route) { return (improved, unchanged, failed, true) }
             onProgress?(index, candidates.count)
             guard let strasse = stop.strasse, let plz = stop.plz else { continue }
             do {
@@ -634,6 +636,7 @@ enum RouteStore {
         // Every stop still without an entrance gets one looked up — which is
         // also how a tour imported before entrances existed catches up.
         let filled = Task.isCancelled ? 0 : await fillEntrances(route.customerStops)
+        if RouteOptimizer.isGone(route) { return (improved, unchanged, failed, true) }
 
         guard moved else {
             guard filled > 0 else { return (improved, unchanged, failed, true) }

@@ -571,6 +571,15 @@ struct OptimizerWriteBackTests {
         #expect(route.orderedStops.map(\.kind).prefix(2) == [.start, .via])
     }
 
+    /// A tour deleted while its solve was out is recognised as gone before
+    /// anything is written to it.
+    @Test func aTourDeletedMidSolveIsGone() throws {
+        let (route, context, _) = try makeRoute()
+        #expect(!RouteOptimizer.isGone(route))
+        try RouteStore.delete(route, in: context)
+        #expect(RouteOptimizer.isGone(route))
+    }
+
     // MARK: - Abbestellt
 
     /// A door owed nothing today is not driven: not handed to OSRM, no leg,

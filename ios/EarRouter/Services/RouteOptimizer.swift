@@ -179,6 +179,7 @@ enum RouteOptimizer {
     ) async throws {
         await fetchStartFixIfNeeded(route)
         try Task.checkCancellation()
+        guard !isGone(route) else { return }
         if keepOrder { return try await runAsListed(route, in: context) }
 
         // --- read ---
@@ -228,6 +229,7 @@ enum RouteOptimizer {
         // `needsOptimize` is still set, so the amber banner stays and nothing
         // is lost by dropping this answer on the floor.
         try Task.checkCancellation()
+        guard !isGone(route) else { return }
 
         // Sorted by hand while OSRM was answering. That drag has queued its
         // own run; this answer would only undo it.
@@ -262,6 +264,7 @@ enum RouteOptimizer {
 
         // --- write ---
         try Task.checkCancellation()
+        guard !isGone(route) else { return }
         // Dragged again while this one was routing. Writing it would put the
         // rows back where they were a moment ago; the drag that moved them
         // has already queued its own run behind this one.
@@ -446,6 +449,14 @@ enum RouteOptimizer {
     }
 
     // MARK: - Helpers
+
+    /// Deleted while this run was waiting on OSRM or on a GPS fix — swiped
+    /// away in Touren, or dropped with an import that was never kept. The
+    /// answer has nothing left to describe, and writing it into a deleted
+    /// row is what SwiftData traps on.
+    static func isGone(_ route: Route) -> Bool {
+        route.isDeleted || route.modelContext == nil
+    }
 
     static func snapshot(_ route: Route) -> (Nodes, Fingerprint) {
         // Ordered by creation so "the first customer" means the one entered
