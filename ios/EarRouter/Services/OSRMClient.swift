@@ -241,6 +241,12 @@ actor OSRMClient {
             return AppError.message(
                 "Die Tour hat zu viele Stopps für die Routenoptimierung. Bitte auf mehrere "
                     + "Touren aufteilen.")
+        case "NotImplemented":
+            // The server answered — it only cannot plan a tour of this shape.
+            // "Nicht erreichbar" sent the driver to check a server that was up.
+            return AppError.message(
+                "Der Routing-Server kann diese Tour so nicht berechnen. Bitte Start oder "
+                    + "Ziel wieder einplanen.")
         default:
             return AppError.routerUnavailable
         }
@@ -315,6 +321,13 @@ actor OSRMClient {
                 // did not wait for. And there is nothing to fall back *to*: the
                 // answer is no longer wanted.
                 throw CancellationError()
+            } catch let refusal as Refusal where refusal.code == "NotImplemented" && !primaryIsFallback {
+                // Not this tour's fault but this server's version: the home
+                // OSRM answers a trip with one open end — Ziel switched off —
+                // "NotImplemented", and the public server routes it. Up, so no
+                // cooldown; this one request goes to the fallback.
+                log.warning("primary OSRM cannot do this request, asking the public server")
+                primaryDownSince = nil
             } catch let refusal as Refusal {
                 // The server is up and has answered: this request cannot be
                 // routed. Asking the demo server the same question gets the

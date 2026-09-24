@@ -108,11 +108,20 @@ struct UpstreamDecisionTests {
     /// protocol.
     @Test func anyOtherCodeIsNeverShownToTheDriver() {
         let unavailable: String = AppError.routerUnavailable.message
-        for code in ["InvalidValue", "InvalidQuery", "NotImplemented", "Zzz"] {
+        for code in ["InvalidValue", "InvalidQuery", "Zzz"] {
             let message: String = OSRMClient.failure(code: code).message
             #expect(message == unavailable)
             #expect(message.contains(code) == false)
         }
+    }
+
+    /// A server that answered "NotImplemented" is up; saying it is not
+    /// reachable sent the driver to check a server that was fine.
+    @Test func aTourTheServerCannotPlanIsNotCalledUnreachable() {
+        let message = OSRMClient.failure(code: "NotImplemented").message
+        #expect(message != AppError.routerUnavailable.message)
+        #expect(message.contains("Ziel"))
+        #expect(!message.contains("NotImplemented"))
     }
 
     // MARK: - How far the register's answer can be trusted
