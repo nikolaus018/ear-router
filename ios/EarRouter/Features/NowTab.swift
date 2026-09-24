@@ -249,9 +249,19 @@ struct NowTab: View {
                 Image(systemName: undo.outcome.symbol)
                     .foregroundStyle(undo.outcome.handedOver ? Color.delivered : Color.attention)
                     .accessibilityHidden(true)
-                Text("„\(undo.name)“ — \(undo.label)")
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
+                // Two runs, so a long name gives way and the outcome does not.
+                // As one line it was the outcome that got cut — „Hr. Novak“ —
+                // nicht anget… — and the outcome is what the banner is for.
+                HStack(spacing: 0) {
+                    Text("„\(undo.name)“")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(" — \(undo.label)")
+                        .lineLimit(1)
+                        .fixedSize()
+                        .layoutPriority(1)
+                }
+                .font(.subheadline.weight(.medium))
                 Spacer(minLength: 8)
                 Button("Rückgängig") { takeBack(undo, in: route) }
                     .font(.subheadline.weight(.semibold))
