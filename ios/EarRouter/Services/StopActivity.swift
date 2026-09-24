@@ -65,18 +65,37 @@ enum StopActivity {
             stockwerk: info?.stockwerk?.trimmed.nilIfEmpty.map(Format.floor),
             kundeninfo: info?.notiz?.trimmed.nilIfEmpty,
             number: snapshot.number(stop))
-        let tour = route.name
-
-        Task { await sync(tour: tour, state: state) }
+        enqueue(tour: route.name, state: state)
     }
 
     /// Takes the activity down — the tour is finished, deleted, or there is no
     /// longer one running.
     static func end() {
-        Task { await sync(tour: nil, state: nil) }
+        enqueue(tour: nil, state: nil)
     }
 
     // MARK: - Private
+
+    /// The last hand-off to ActivityKit, which the next one waits for.
+    ///
+    /// Each refresh used to start a task of its own, and two close together —
+    /// a launch and the first save after it, two ticks at a shared door — ran
+    /// side by side. Both could look for the tour's card, find none yet, and
+    /// each request one: two cards on the lock screen, only the first of them
+    /// ever updated again. Or the older state's update landed after the newer
+    /// one's, and the card showed a door already done. In a line, each sees
+    /// exactly what the one before it left.
+    private static var pending: Task<Void, Never>?
+
+    private static func enqueue(
+        tour: String?, state: StopActivityAttributes.ContentState?
+    ) {
+        let previous = pending
+        pending = Task {
+            await previous?.value
+            await sync(tour: tour, state: state)
+        }
+    }
 
     /// Every call into ActivityKit, in one `nonisolated` place.
     ///
