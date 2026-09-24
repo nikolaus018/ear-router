@@ -146,6 +146,20 @@ enum Format {
         text.replacingOccurrences(of: " ", with: "\u{00A0}")
     }
 
+    /// "24.09.2026" — the form a tour's default name carries its day in (see
+    /// `RouteStore.defaultRouteName`), so a screen can tell when the name
+    /// already says which day it was.
+    static func numericDate(_ date: Date) -> String {
+        numericDateFormatter.string(from: date)
+    }
+
+    private static let numericDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "de_AT")
+        f.dateFormat = "dd.MM.yyyy"
+        return f
+    }()
+
     static func date(_ date: Date) -> String {
         date.formatted(.dateTime.day().month().year().locale(atLocale))
     }

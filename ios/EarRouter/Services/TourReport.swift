@@ -46,6 +46,15 @@ struct TourReport {
     /// Meals that left the van, by either route.
     var handedOverCount: Int { deliveredCount + neighbourCount }
 
+    /// Whether the tour's name already says which day it was — "Tour
+    /// 24.09.2026", the default. Then the day is not written a second time,
+    /// in a second format, right beside it.
+    var nameShowsDay: Bool { routeName.contains(Format.numericDate(day)) }
+
+    /// Meals owed: every customer but the abbestellt ones — the figure the
+    /// tour's own header counts against.
+    var owedCount: Int { customerCount - cancelledCount }
+
     /// Whether anything on this tour needs somebody's attention today.
     var needsAttention: Bool { !notHome.isEmpty || !stillOpen.isEmpty }
 
@@ -113,13 +122,17 @@ extension TourReport {
     /// before the kilometres because nobody has ever rung about the kilometres.
     var text: String {
         var lines: [String] = []
-        lines.append("\(routeName) — \(Format.date(day))")
+        lines.append(nameShowsDay ? routeName : "\(routeName) — \(Format.date(day))")
 
         if let span = timeSpan { lines.append(span) }
         lines.append("")
 
-        lines.append("Geliefert: \(deliveredCount) von \(Format.stops(customerCount))")
-        if neighbourCount > 0 { lines.append("Bei Nachbarn abgegeben: \(neighbourCount)") }
+        // The same arithmetic as the tour's header: every meal that left the
+        // van, against the meals owed. Counted off all customers, with the
+        // neighbour's meals left out of it, the report said "1 von 8" of a day
+        // the screen had just called "2 von 6 geliefert".
+        lines.append("Geliefert: \(handedOverCount) von \(Format.stops(owedCount))")
+        if neighbourCount > 0 { lines.append("davon bei Nachbarn abgegeben: \(neighbourCount)") }
         if cancelledCount > 0 { lines.append("Abbestellt: \(cancelledCount)") }
 
         if !notHome.isEmpty {

@@ -69,6 +69,24 @@ struct TourReportTests {
         #expect(report.needsAttention)
     }
 
+    /// The report counts the day the way the tour's header does: every meal
+    /// that left the van, neighbours included, against the meals owed.
+    @Test func theReportCountsLikeTheTourHeader() throws {
+        let context = try store()
+        let route = emptyRoute(in: context)
+        add("Geliefert", to: route, in: context, outcome: .delivered)
+        add("Nachbar", to: route, in: context, outcome: .neighbour)
+        add("Abbestellt", to: route, in: context, outcome: .cancelled)
+        add("Niemand da", to: route, in: context, outcome: .notHome)
+        try context.save()
+
+        let report = TourReport(route)
+        #expect(report.owedCount == 3)
+        #expect(report.text.contains("Geliefert: 2 von 3 Stopps"))
+        #expect(report.text.contains("davon bei Nachbarn abgegeben: 1"))
+        #expect(RouteSnapshot(route).deliveryLine.hasPrefix("2 von 3 geliefert"))
+    }
+
     /// A tour closed early leaves customers who were never driven to at all.
     /// That is a different failure from a locked door and is reported as one.
     @Test func customersNeverDrivenToAreListedSeparately() throws {

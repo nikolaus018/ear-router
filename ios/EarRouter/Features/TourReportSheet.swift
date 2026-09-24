@@ -34,12 +34,14 @@ struct TourReportSheet: View {
         return NavigationStack {
             List {
                 Section {
+                    // Counted the way the tour's header counts: meals handed
+                    // over, neighbours included, against the meals owed.
                     LabeledContent("Geliefert") {
-                        Text("\(report.deliveredCount) von \(report.customerCount)")
+                        Text("\(report.handedOverCount) von \(report.owedCount)")
                             .monospacedDigit()
                     }
                     if report.neighbourCount > 0 {
-                        LabeledContent("Bei Nachbarn") {
+                        LabeledContent("davon bei Nachbarn") {
                             Text("\(report.neighbourCount)").monospacedDigit()
                         }
                     }
@@ -55,7 +57,12 @@ struct TourReportSheet: View {
                         LabeledContent("Strecke", value: km)
                     }
                 } header: {
-                    Text(Format.date(report.day))
+                    // Not when the title above already says it: "Tour
+                    // 24.09.2026" over "24. Sep. 2026" was one day, twice,
+                    // in two formats.
+                    if !report.nameShowsDay {
+                        Text(Format.date(report.day))
+                    }
                 }
 
                 // The part of the report anybody actually reads, and the reason
