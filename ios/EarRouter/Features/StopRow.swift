@@ -455,6 +455,11 @@ struct StopListRow: View {
 
     @Environment(\.openURL) private var openURL
 
+    /// Copies of the address from the menu, and nothing else — it drives the
+    /// haptic. The menu closes on the tap, so a feel is the one answer there
+    /// is room for.
+    @State private var copies = 0
+
     private var isCustomer: Bool { stop.kind == .customer }
 
     var body: some View {
@@ -477,6 +482,7 @@ struct StopListRow: View {
             .swipeActions(edge: .leading) { leadingSwipes }
             .swipeActions(edge: .trailing) { trailingSwipes }
             .contextMenu { menu }
+            .sensoryFeedback(.success, trigger: copies)
     }
 
     /// A button, so the row greys under the finger the way every tappable
@@ -581,9 +587,14 @@ struct StopListRow: View {
         // The same two Jetzt offers, so a stop that is not the current one can
         // be copied or called from its row — "1 Stunde vorher anrufen" is a note
         // about a door the driver has not reached yet.
-        Button("Adresse kopieren", systemImage: "doc.on.doc") {
-            // Street and house number only, like Jetzt's copy button.
-            UIPasteboard.general.string = stop.strasse?.trimmed ?? ""
+        // Only with a street to copy, like Jetzt's button: a stop carrying a
+        // postcode alone copied an empty string.
+        if let street = stop.strasse?.trimmed, !street.isEmpty {
+            Button("Adresse kopieren", systemImage: "doc.on.doc") {
+                // Street and house number only, like Jetzt's copy button.
+                UIPasteboard.general.string = street
+                copies += 1
+            }
         }
 
         if isCustomer {

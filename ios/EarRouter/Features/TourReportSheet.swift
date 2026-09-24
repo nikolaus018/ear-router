@@ -27,6 +27,10 @@ struct TourReportSheet: View {
     // real number; this screen does not have one.
 
     @State private var sharing: SharedText?
+    /// Briefly true after the report went onto the clipboard, so the button
+    /// can say so — the same answer Jetzt's copy button gives.
+    @State private var copied = false
+    @State private var copyTask: Task<Void, Never>?
 
     var body: some View {
         let report = TourReport(route)
@@ -91,14 +95,31 @@ struct TourReportSheet: View {
                     .controlSize(.large)
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                    // Two free-standing buttons, not two rows of a list: the
+                    // hairline the list drew between them cut across the gap.
+                    .listRowSeparator(.hidden)
 
+                    // Says "Kopiert" for a moment. It used to do nothing a
+                    // driver could see or feel, and the only way to know the
+                    // report had gone anywhere was to paste it somewhere.
                     Button {
                         UIPasteboard.general.string = report.text
+                        copyTask?.cancel()
+                        withAnimation(.snappy) { copied = true }
+                        copyTask = Task {
+                            try? await Task.sleep(for: .seconds(1.5))
+                            guard !Task.isCancelled else { return }
+                            withAnimation(.snappy) { copied = false }
+                        }
                     } label: {
-                        WideButtonLabel("Bericht kopieren", systemImage: "doc.on.doc")
+                        WideButtonLabel(
+                            copied ? "Kopiert" : "Bericht kopieren",
+                            systemImage: copied ? "checkmark" : "doc.on.doc")
                     }
                     .buttonStyle(.bordered)
+                    .sensoryFeedback(.success, trigger: copied) { _, now in now }
                     .controlSize(.large)
+                    .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
                 } footer: {
