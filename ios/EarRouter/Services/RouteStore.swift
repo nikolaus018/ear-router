@@ -307,6 +307,7 @@ enum RouteStore {
         stop.setEntrance(entrance)
         stop.route = route
         context.insert(stop)
+        keepZielLast(in: route)
         route.markRoutingStale()
         try context.save()
 
@@ -957,6 +958,7 @@ enum RouteStore {
         }
 
         if moved {
+            keepZielLast(in: route)
             route.markRoutingStale()
         }
         // New and moved stops, and any already on the route from before
@@ -1127,6 +1129,19 @@ enum RouteStore {
         var highest = 0
         for s in route.stops where s.orderIndex > highest { highest = s.orderIndex }
         return highest + 1
+    }
+
+    /// Moves Ziel back below every stop appended after it. New stops go on
+    /// the end until the optimizer places them — which, with OSRM slow or
+    /// down, can be all day — and until then the list showed them under Ziel,
+    /// as if they were to be driven after the van was back.
+    static func keepZielLast(in route: Route) {
+        guard let end = route.stops.first(where: { $0.kind == .end }) else { return }
+        var highest = Int.min
+        for s in route.stops where s.id != end.id && s.orderIndex > highest {
+            highest = s.orderIndex
+        }
+        if highest >= end.orderIndex { end.orderIndex = highest + 1 }
     }
 
     // MARK: - Matching a paste against the route

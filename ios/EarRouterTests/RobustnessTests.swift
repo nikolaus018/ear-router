@@ -526,6 +526,22 @@ struct StatedRuleTests {
         #expect(RouteStore.nextOrderIndex(in: route) > added.orderIndex)
     }
 
+    /// Until the optimizer places a new stop, Ziel stays below it rather
+    /// than above a stop "driven" after the van is back.
+    @Test func zielStaysBelowANewStopUntilItIsRouted() throws {
+        let context = try makeContext()
+        let route = try RouteStore.createRoute(name: "Tour", in: context)
+        let added = Stop(
+            kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 129", plz: "1180",
+            lat: 48.2301, lon: 16.3201,
+            orderIndex: RouteStore.nextOrderIndex(in: route))
+        added.route = route
+        context.insert(added)
+        RouteStore.keepZielLast(in: route)
+
+        #expect(route.orderedStops.map(\.kind) == [.start, .via, .customer, .end])
+    }
+
     // MARK: - "A list that reshuffles its own rows between two draws"
 
     /// `orderIndex` is meant to be unique across a route and normally is — but
