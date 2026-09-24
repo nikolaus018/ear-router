@@ -46,6 +46,10 @@ struct TourReport {
     /// Meals that left the van, by either route.
     var handedOverCount: Int { deliveredCount + neighbourCount }
 
+    /// The meals this tour actually owed: every customer but the abbestellt
+    /// ones. What "geliefert" is counted against, here as on every screen.
+    var owedCount: Int { customerCount - cancelledCount }
+
     /// Whether anything on this tour needs somebody's attention today.
     var needsAttention: Bool { !notHome.isEmpty || !stillOpen.isEmpty }
 
@@ -118,8 +122,13 @@ extension TourReport {
         if let span = timeSpan { lines.append(span) }
         lines.append("")
 
-        lines.append("Geliefert: \(deliveredCount) von \(Format.stops(customerCount))")
-        if neighbourCount > 0 { lines.append("Bei Nachbarn abgegeben: \(neighbourCount)") }
+        // Counted the way every screen counts it — `RouteSnapshot.deliveryLine`:
+        // every meal that left the van, against the meals the tour owed. It
+        // read "Geliefert: 15 von 20 Stopps" here over a tour the driver had
+        // just watched say "17 von 18 geliefert", abbestellt customers counted
+        // as owed and a meal left next door counted as not delivered.
+        lines.append("Geliefert: \(handedOverCount) von \(Format.stops(owedCount))")
+        if neighbourCount > 0 { lines.append("davon bei Nachbarn abgegeben: \(neighbourCount)") }
         if cancelledCount > 0 { lines.append("Abbestellt: \(cancelledCount)") }
 
         if !notHome.isEmpty {

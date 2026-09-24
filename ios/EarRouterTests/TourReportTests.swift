@@ -186,8 +186,28 @@ struct TourReportTests {
         try context.save()
 
         let text = TourReport(route).text
-        #expect(!text.contains("Bei Nachbarn"))
+        #expect(!text.contains("bei Nachbarn"))
         #expect(!text.contains("Abbestellt"))
         #expect(!text.contains("Nicht angetroffen"))
+    }
+
+    /// The same count the screens give: every meal that left the van, against
+    /// the meals owed. The text sent to the office used to count a meal left
+    /// next door as undelivered and an abbestellt customer as owed — "1 von 4"
+    /// over a tour the screen had just called "2 von 3 geliefert".
+    @Test func theSharedTextCountsLikeTheScreens() throws {
+        let context = try store()
+        let route = emptyRoute(in: context)
+        add("A", to: route, in: context, outcome: .delivered)
+        add("B", to: route, in: context, outcome: .neighbour, at: 5)
+        add("C", to: route, in: context, outcome: .notHome, at: 10)
+        add("D", to: route, in: context, outcome: .cancelled)
+        try context.save()
+
+        let text = TourReport(route).text
+        #expect(text.contains("Geliefert: 2 von 3 Stopps"))
+        #expect(text.contains("davon bei Nachbarn abgegeben: 1"))
+        #expect(text.contains("Abbestellt: 1"))
+        #expect(RouteSnapshot(route).deliveryLine.hasPrefix("2 von 3 geliefert"))
     }
 }
