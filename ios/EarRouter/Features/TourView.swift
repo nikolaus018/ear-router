@@ -844,7 +844,13 @@ struct BusyBanner: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
-        .glassEffect(.regular, in: .capsule)
+        // Glass tinted towards the background. Clear glass let the list show
+        // through at full contrast, and in Prüfen "Adresse 8 von 8 wird
+        // gesucht …" sat on top of a stop's own address, the two lines of text
+        // tangled together. The tint keeps the glass and gives the words a
+        // ground of their own.
+        .glassEffect(
+            .regular.tint(Color(.systemBackground).opacity(0.7)), in: .capsule)
         // Outside the capsule: this is what stops the pill growing past the
         // screen. Without it nothing proposes a narrower width, so the text
         // never wraps and the shape simply overflows.
