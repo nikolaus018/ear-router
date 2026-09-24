@@ -186,6 +186,27 @@ struct ArrivalEstimateTests {
         #expect(pace.minutesPerStop == 5)
     }
 
+    /// An abbestellt ticked in the yard, when the office rang, before the van
+    /// had moved. Counted as a door it moved the start of the clock back to
+    /// the yard: four deliveries two minutes apart at the door measured as
+    /// twelve, and every arrival after them slid by hours.
+    @Test func anAbbestelltTickedInTheYardDoesNotSkewThePace() throws {
+        var stops: [Stop] = []
+        for i in 1...20 { stops.append(customer("K\(i)", minutes: 4)) }
+        let route = try route(stops)
+        stops[19].record(.cancelled, at: noon)
+        stops[0].record(.delivered, at: noon.addingTimeInterval(30 * 60))
+        stops[1].record(.delivered, at: noon.addingTimeInterval(36 * 60))
+        stops[2].record(.delivered, at: noon.addingTimeInterval(42 * 60))
+        stops[3].record(.delivered, at: noon.addingTimeInterval(48 * 60))
+
+        // 18 minutes between the first and last delivery, 12 of them driving,
+        // over three doors.
+        let pace = RouteSnapshot(route).pace
+        #expect(pace.measured)
+        #expect(pace.minutesPerStop == 2)
+    }
+
     /// A driver catching up on three ticks at a red light would otherwise have
     /// the app promise the whole round by half past ten.
     @Test func animplausiblyFastMeasurementIsRefused() throws {

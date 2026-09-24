@@ -278,6 +278,12 @@ extension Stop {
     /// A stop still to be ticked off, delivery or checkpoint.
     var isOpenStop: Bool { countsAsStop && !isSettled }
 
+    /// A customer whose meal goes in the van: every one of them except those
+    /// marked abbestellt. That tick is usually made in the yard, when the
+    /// office rings, before a single box is loaded — and the Ladeliste went on
+    /// counting the meal, and "Tour vorbereiten" on asking for it to be loaded.
+    var isOwedAMeal: Bool { kind == .customer && outcome != .cancelled }
+
     /// Records what happened here, or re-opens the stop with `nil`.
     ///
     /// The three facts are written together and only here, so they cannot drift:

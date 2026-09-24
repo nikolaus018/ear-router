@@ -350,6 +350,18 @@ struct RouteSnapshotTests {
         #expect(snap.doorCount(b) == 2)
         #expect(snap.doorCount(c) == 1)
     }
+
+    /// "2 an dieser Tür" is two meals carried up. With one household
+    /// abbestellt it is one, and the card must not send the driver up the
+    /// stairs with a second box.
+    @Test func anAbbestelltHouseholdIsNotCountedAtItsDoor() throws {
+        let a = customer("Fam. Gruber", at: 1, strasse: "Gentzgasse 129/1")
+        let b = customer("Fam. Novak", at: 2, strasse: "Gentzgasse 129/1")
+        let r = try route([a, b])
+        b.record(.cancelled)
+
+        #expect(RouteSnapshot(r).doorCount(a) == 1)
+    }
 }
 
 /// `counts` exists so the stop list never builds a route's worth of

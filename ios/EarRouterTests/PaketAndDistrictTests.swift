@@ -293,6 +293,24 @@ struct LadelisteTests {
         #expect(PaketParser.items(for: try route([])).isEmpty)
         #expect(PaketParser.items(for: try route(["", "  "])).isEmpty)
     }
+
+    /// Abbestellt is ticked in the yard, when the office rings — before a box
+    /// is loaded. That meal does not go in the van.
+    @Test func anAbbestelltMealIsNotLoaded() throws {
+        let r = try route(["2x Menü", "1x Menü"])
+        try #require(r.customerStops.last).record(.cancelled)
+
+        #expect(PaketParser.items(for: r).first?.qty == 2)
+    }
+
+    /// Every other answer still loads: a door nobody opened had its meal in
+    /// the van when the van got there.
+    @Test func aMealForADoorNobodyOpenedWasStillLoaded() throws {
+        let r = try route(["2x Menü", "1x Menü"])
+        try #require(r.customerStops.last).record(.notHome)
+
+        #expect(PaketParser.items(for: r).first?.qty == 3)
+    }
 }
 
 /// Which of the two loading lists a tour opens with, and what the TK one says.
@@ -391,5 +409,16 @@ struct LadelisteModeTests {
 
     @Test func aTourWithNoStopsHasNoLoadingOrder() throws {
         #expect(LadungPlan.loadingOrder(for: try route("TK1")).isEmpty)
+    }
+
+    /// An abbestellt customer's parcel is not loaded, and the others are
+    /// numbered without a gap where it would have been.
+    @Test func anAbbestelltCustomerIsNotLoaded() throws {
+        let r = try route("TK1", kunden: [("Erste", nil), ("Zweite", nil), ("Letzte", nil)])
+        try #require(r.customerStops.first { $0.kunde == "Zweite" }).record(.cancelled)
+
+        let order = LadungPlan.loadingOrder(for: r)
+        #expect(order.map(\.name) == ["Letzte", "Erste"])
+        #expect(order.map(\.position) == [1, 2])
     }
 }

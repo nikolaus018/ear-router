@@ -214,7 +214,9 @@ struct RouteSnapshot {
         // negative "still to drive" is worse than a zero.
         self.remainingKm = max(0, km - drivenKm)
         self.remainingMinutes = max(0, minutes - drivenMinutes)
-        self.doorCounts = SameDoor.counts(for: ordered)
+        // Not an abbestellt household: "2 an dieser Tür" is two meals carried
+        // up, and a door owed nothing today is not one of them.
+        self.doorCounts = SameDoor.counts(for: ordered.filter { $0.outcome != .cancelled })
         self.pace = Self.measurePace(ordered, arrivals: arrivals)
     }
 }
@@ -234,9 +236,15 @@ extension RouteSnapshot {
     /// Stops carrying no `settledAt` are simply not in it. Every tour settled
     /// before that field existed is one of those, which is why the assumption
     /// has to be good enough to stand on its own.
+    ///
+    /// Nor is an abbestellt customer. Nobody went to that door, and the tick
+    /// is made whenever the office rings — in the yard at half past seven, as
+    /// often as not. Counted, it was a door with no time at it that also moved
+    /// the start of the clock back to the yard: four deliveries two minutes
+    /// apart at the door measured as twelve, and "fertig gegen" slid by hours.
     static func measurePace(_ ordered: [Stop], arrivals: [UUID: Double]) -> Pace {
         let stamped = ordered
-            .filter { $0.kind == .customer && $0.isSettled }
+            .filter { $0.kind == .customer && $0.isSettled && $0.outcome != .cancelled }
             .compactMap { stop -> (Date, Double)? in
                 guard let at = stop.settledAt, let driving = arrivals[stop.id] else { return nil }
                 return (at, driving)

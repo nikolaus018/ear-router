@@ -150,9 +150,12 @@ struct Preflight {
         // the parcels carry the customers' names. Reporting "38 Positionen" and
         // then opening a Ladeliste that lists sixteen customers was two answers
         // to one question.
+        //
+        // And only for the meals actually owed — see `Stop.isOwedAMeal`.
+        let loaded = customers.filter(\.isOwedAMeal)
         switch LadelisteMode.effective(for: route) {
         case .vm:
-            let pieces = customers.reduce(0) { $0 + PaketParser.totalQty($1.paket) }
+            let pieces = loaded.reduce(0) { $0 + PaketParser.totalQty($1.paket) }
             if pieces > 0 {
                 findings.append(
                     Finding(
@@ -162,7 +165,7 @@ struct Preflight {
                         action: .openLadeliste))
             }
         case .tk:
-            let doors = customers.count
+            let doors = loaded.count
             if doors > 0 {
                 findings.append(
                     Finding(
@@ -187,8 +190,9 @@ struct Preflight {
         // 6. Stairwells nobody has been up yet. A note rather than a problem:
         // it is the normal state of a new customer, and the app asks on its own
         // at the door. It is here because a stand-in driver on somebody else's
-        // round wants to know it is twelve and not one.
-        let unknownFloors = customers.count { !floorsKnown.contains($0.id) }
+        // round wants to know it is twelve and not one. Only doors being
+        // delivered to: nobody climbs an abbestellt customer's stairs today.
+        let unknownFloors = loaded.count { !floorsKnown.contains($0.id) }
         if unknownFloors > 0 {
             findings.append(
                 Finding(

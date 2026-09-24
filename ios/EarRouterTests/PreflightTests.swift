@@ -223,6 +223,18 @@ struct PreflightTests {
         #expect(finding(preflight, "stockwerke") == nil)
     }
 
+    /// What goes in the van leaves out a meal abbestellt in the yard — the
+    /// count here and the Ladeliste it opens have to agree.
+    @Test func anAbbestelltMealIsNotCountedToLoad() throws {
+        let context = try store()
+        let route = try readyRoute(in: context, customers: 3)
+        for stop in route.customerStops { stop.paket = "1x Menü" }
+        try #require(route.customerStops.first).record(.cancelled, at: thisMorning)
+
+        let ladung = try #require(finding(check(route), "ladung"))
+        #expect(ladung.title.hasPrefix("2 Positionen"))
+    }
+
     /// "Zuerst anfahren" is gone: a stop still carrying the old flag is not
     /// read back as coming first.
     @Test func theOldPriorityFlagIsIgnored() throws {
