@@ -146,10 +146,10 @@ struct TourView: View {
         // a handful of times a week, given a fixed slot on the screen they look
         // at all day.
         .searchable(text: $search, prompt: "Kunde, Adresse, Paket oder Notiz")
-        // Awaited, so pull-to-refresh keeps its own spinner for exactly as long
-        // as the optimization runs — but started the same way as the menu item,
-        // so it is the same cancellable job with the same stop button.
-        .refreshable { await startLongJob { await optimize() }?.value }
+        // No pull-to-refresh. It re-optimized the tour, and pulling down is the
+        // same move a thumb makes to get back to the top of a long list — so a
+        // driver scrolling up mid-tour could reorder the doors still ahead
+        // without meaning to. The amber row and "Neu optimieren" say what they do.
         .toolbar { toolbar }
         .sheet(isPresented: $addingStop) {
             StopEditorSheet(route: route, stop: nil)
@@ -591,11 +591,10 @@ struct TourView: View {
     ///
     /// Guards the two long-running, repeatable jobs against being started on
     /// top of each other. The toolbar disables itself while `busy` is set, but
-    /// pull-to-refresh cannot be disabled, so a driver could pull the list to
-    /// optimize during a minute-long address re-check. Neither corrupts
-    /// anything (the optimizer serializes per route), but the two share one
-    /// banner, and whichever finished first cleared it and left the other
-    /// running invisibly.
+    /// the amber row and Tour vorbereiten can still start one. Neither
+    /// corrupts anything (the optimizer serializes per route), but the two
+    /// share one banner, and whichever finished first cleared it and left the
+    /// other running invisibly.
     ///
     /// Deliberately *not* applied to deleting a stop or switching a fixed point
     /// out: those are one-shot answers to something the driver just asked for,
@@ -637,9 +636,8 @@ struct TourView: View {
     }
 
     /// `afresh` is "Neu optimieren" from the menu: a new order, even on a
-    /// tour sorted by hand. Everything else — the banner, pull-to-refresh,
-    /// Tour vorbereiten — brings the route up to date and keeps a hand-sorted
-    /// order as it is.
+    /// tour sorted by hand. Everything else — the banner, Tour vorbereiten —
+    /// brings the route up to date and keeps a hand-sorted order as it is.
     private func optimize(afresh: Bool = false) async {
         guard !isBusy else { return }
         let keepOrder = route.handOrdered && !afresh
