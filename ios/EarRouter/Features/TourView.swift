@@ -513,18 +513,13 @@ struct TourView: View {
 
     // MARK: - Actions
 
-    /// Tapping a fixed stop switches it in or out of this tour; tapping a
-    /// customer opens the editor.
+    /// Tapping a customer, Start or Ziel opens the editor. The Lager has
+    /// nothing to edit, so a tap on it does nothing — switching it back into
+    /// the tour is the ↺ on its row or the context menu, never a stray tap on
+    /// a greyed-out line that re-plans the whole tour.
     private func tapped(_ stop: Stop) {
-        if stop.kind == .start || stop.kind == .end {
-            editingStop = stop
-        } else if stop.isCheckpoint {
-            return
-        } else if stop.kind.isFixed {
-            Task { await toggleExcluded(stop) }
-        } else {
-            editingStop = stop
-        }
+        guard stop.kind != .via else { return }
+        editingStop = stop
     }
 
     /// Ticking a delivery off — and, on the way past, the one moment worth

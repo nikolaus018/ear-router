@@ -478,11 +478,9 @@ struct StopListRow: View {
                     ? "Doppeltippen zum Bearbeiten"
                     : (stop.kind == .start || stop.kind == .end)
                     ? "Doppeltippen zum Bearbeiten"
-                    : stop.isCheckpoint
-                    ? "Auslassen über das Kontextmenü"
-                    : (stop.excluded
-                        ? "Doppeltippen, um diesen Punkt wieder einzuplanen"
-                        : "Doppeltippen, um diesen Punkt für diese Tour auszulassen"))
+                    : stop.excluded
+                    ? "Wieder einplanen über die Taste am Zeilenende"
+                    : "Auslassen über das Kontextmenü")
             // Both swipes are second paths to something already visible on
             // the row, which is what a swipe should be. Leading was briefly
             // "Route" — the only way to navigate to a stop that was not the
