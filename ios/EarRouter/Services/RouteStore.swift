@@ -191,6 +191,10 @@ enum RouteStore {
             route.completedAt = nil
         }
         try context.save()
+        // The Ladeliste starts the day again with the doors. Its ticks outlived
+        // the reset, so a tour driven again opened with yesterday's boxes
+        // already marked as loaded.
+        LadelisteState.clearChecked(for: route.id)
     }
 
     /// What "Lieferstatus zurücksetzen" is about to do, counted at the moment

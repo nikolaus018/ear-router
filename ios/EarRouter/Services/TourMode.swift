@@ -77,6 +77,12 @@ enum LadelisteState {
         UserDefaults.standard.set(mode.rawValue, forKey: modeKey(routeID))
     }
 
+    /// Unticks every line, and keeps the VM/TK choice — that belongs to the
+    /// tour, not to the day.
+    static func clearChecked(for routeID: UUID) {
+        UserDefaults.standard.removeObject(forKey: key(routeID))
+    }
+
     static func forget(_ routeID: UUID) {
         UserDefaults.standard.removeObject(forKey: key(routeID))
         UserDefaults.standard.removeObject(forKey: modeKey(routeID))

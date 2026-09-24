@@ -925,6 +925,25 @@ struct LadelisteStateTests {
         }
     }
 
+    /// A tour driven again: "Lieferstatus zurücksetzen" starts the day over,
+    /// and the Ladeliste with it — but the VM/TK choice belongs to the tour.
+    @Test func resettingTheTourUnticksItsLadeliste() throws {
+        let context = ModelContext(
+            try ModelContainer(
+                for: Route.self, Stop.self, StockwerkNote.self,
+                configurations: ModelConfiguration(isStoredInMemoryOnly: true)))
+        let route = try RouteStore.createRoute(name: "Test", in: context)
+        try clean([route.id]) {
+            LadelisteState.store(["menü"], for: route.id)
+            LadelisteState.store(.tk, for: route.id)
+
+            try RouteStore.resetDelivered(route, in: context)
+
+            #expect(LadelisteState.checked(for: route.id).isEmpty)
+            #expect(LadelisteState.mode(for: route.id) == .tk)
+        }
+    }
+
     /// The mode is an override, not a setting: absent until the driver picks
     /// one, so a tour nobody has switched by hand keeps following its name —
     /// including after a rename.
