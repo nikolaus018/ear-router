@@ -53,8 +53,13 @@ struct Preflight {
 
     /// `floorsKnown` is the set of stop ids whose customer's floor this app has
     /// already been told, passed in rather than fetched so this stays pure —
-    /// the caller has the notes from its own query anyway.
-    init(route: Route, snapshot: RouteSnapshot, floorsKnown: Set<UUID>) {
+    /// the caller has the notes from its own query anyway. `now` and
+    /// `calendar` decide what "today" is, for the ticks below, and are only
+    /// ever passed by tests.
+    init(
+        route: Route, snapshot: RouteSnapshot, floorsKnown: Set<UUID>,
+        now: Date = Date(), calendar: Calendar = .current
+    ) {
         var findings: [Finding] = []
 
         if snapshot.customerCount == 0 {
@@ -105,19 +110,37 @@ struct Preflight {
                     action: .recheckAddresses))
         }
 
-        // 3. A tour still carrying yesterday's ticks.
+        // 3. A tour still carrying an earlier day's ticks.
         //
         // The one that looks like nothing and costs the most: a driver who sets
         // off on a list where half the doors are already struck through skips
         // them, and finds out at four o'clock.
-        let alreadySettled = customers.count(where: \.isSettled)
-        if alreadySettled > 0 {
+        //
+        // Only an earlier day's. Today's ticks are the tour being driven, and
+        // this checklist is opened mid-shift too — it is where "Voraussichtlich
+        // fertig" lives. Counting them put "12 Stopps sind schon abgehakt" and a
+        // reset button over a morning's deliveries, one tap from gone. A tick
+        // with no time on it predates timestamps altogether, so it is older
+        // than today by definition.
+        //
+        // And not an abbestellt. That is said about a delivery still ahead —
+        // the office rings the evening before as often as the morning of — and
+        // "reset it" would put a meal back on the round for somebody in
+        // hospital.
+        let startOfToday = calendar.startOfDay(for: now)
+        let stale = customers.count { stop in
+            guard stop.isSettled, stop.outcome != .cancelled else { return false }
+            guard let at = stop.settledAt else { return true }
+            return at < startOfToday
+        }
+        if stale > 0 {
             findings.append(
                 Finding(
-                    id: "settled", severity: alreadySettled == customers.count ? .problem : .note,
+                    id: "settled", severity: .problem,
                     symbol: "checkmark.circle.badge.xmark",
-                    title: "\(alreadySettled) \(alreadySettled == 1 ? "Stopp ist" : "Stopps sind") schon abgehakt",
-                    detail: "Wenn das von gestern ist, setz den Lieferstatus zurück.",
+                    title: "\(stale) \(stale == 1 ? "Stopp ist" : "Stopps sind") noch von "
+                        + "einem früheren Tag abgehakt",
+                    detail: "Setz den Lieferstatus zurück, bevor du losfährst.",
                     action: .resetDelivered))
         }
 

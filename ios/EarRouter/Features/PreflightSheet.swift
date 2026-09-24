@@ -22,6 +22,9 @@ struct PreflightSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Query private var stockwerkNotes: [StockwerkNote]
+    /// "Lieferstatus zurücksetzen", waiting to be confirmed — the same question
+    /// the tour's own menu asks before it clears every tick of the day.
+    @State private var confirmingReset = false
 
     var body: some View {
         let snapshot = RouteSnapshot(route)
@@ -64,6 +67,18 @@ struct PreflightSheet: View {
                     Button("Fertig") { dismiss() }
                 }
             }
+            .confirmationDialog(
+                "Lieferstatus zurücksetzen?", isPresented: $confirmingReset,
+                titleVisibility: .visible
+            ) {
+                Button("Zurücksetzen", role: .destructive) {
+                    onResetDelivered()
+                    dismiss()
+                }
+                Button("Abbrechen", role: .cancel) {}
+            } message: {
+                Text(RouteStore.resetDeliveredMessage(for: route))
+            }
         }
     }
 
@@ -89,6 +104,14 @@ struct PreflightSheet: View {
 
             if let action = finding.action {
                 Button(actionLabel(action)) {
+                    // The one action here that takes something away asks
+                    // first. It used to run straight from this button: one
+                    // tap, every outcome and every time of the day gone, and
+                    // no undo anywhere in the app.
+                    guard action != .resetDelivered else {
+                        confirmingReset = true
+                        return
+                    }
                     perform(action)
                     // The two long jobs put their own banner on the screen
                     // behind this one, where the driver can watch them and stop

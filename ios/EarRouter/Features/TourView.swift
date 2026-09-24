@@ -250,7 +250,7 @@ struct TourView: View {
             }
             Button("Abbrechen", role: .cancel) {}
         } message: {
-            Text(resetMessage)
+            Text(RouteStore.resetDeliveredMessage(for: route))
         }
         .errorAlert($error)
         // An alert only where there is something to report. "Route optimiert"
@@ -461,20 +461,6 @@ struct TourView: View {
         let missed = snapshot.settledCount - snapshot.deliveredCount
         let base = "\(snapshot.deliveredCount) von \(snapshot.customerCount) geliefert"
         return missed > 0 ? "\(base) · \(missed) nicht" : base
-    }
-
-    /// Says what is at stake, counted at the moment of asking.
-    private var resetMessage: String {
-        // Settled, not delivered. This clears a "nicht angetroffen" too, and a
-        // dialog that promised to reset three stops while quietly reopening
-        // five was understating what the button does.
-        let n = route.settledCount
-        let what = n == 1
-            ? "1 abgehakter Stopp wird wieder auf offen gesetzt"
-            : "\(n) abgehakte Stopps werden wieder auf offen gesetzt"
-        return route.status == .completed
-            ? "\(what), und die Tour wird wieder aktiviert."
-            : "\(what)."
     }
 
     private var recheckAlert: Binding<Bool> {

@@ -181,6 +181,23 @@ enum RouteStore {
         try context.save()
     }
 
+    /// What "Lieferstatus zurücksetzen" is about to do, counted at the moment
+    /// of asking. One sentence for both places that ask — the tour's menu and
+    /// "Tour vorbereiten" — so they cannot describe the same button two ways.
+    ///
+    /// Settled, not delivered: this clears a "nicht angetroffen" too, and a
+    /// dialog that promised to reset three stops while quietly reopening five
+    /// was understating what the button does.
+    static func resetDeliveredMessage(for route: Route) -> String {
+        let n = route.settledCount
+        let what = n == 1
+            ? "1 abgehakter Stopp wird wieder auf offen gesetzt"
+            : "\(n) abgehakte Stopps werden wieder auf offen gesetzt"
+        return route.status == .completed
+            ? "\(what), und die Tour wird wieder aktiviert."
+            : "\(what)."
+    }
+
     // MARK: - Stops
 
     /// Adds a customer stop, geocoding the address unless coordinates were

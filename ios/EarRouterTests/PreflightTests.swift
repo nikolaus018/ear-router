@@ -38,9 +38,21 @@ struct PreflightTests {
         return route
     }
 
+    /// A fixed afternoon in Vienna, so "today" is the same day whenever and
+    /// wherever the suite runs.
+    private let now = Date(timeIntervalSince1970: 1_788_696_000)
+    private var yesterday: Date { now.addingTimeInterval(-86_400) }
+    private var thisMorning: Date { now.addingTimeInterval(-4 * 3_600) }
+    private var vienna: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Vienna")!
+        return calendar
+    }
+
     private func check(_ route: Route, floorsKnown: Set<UUID> = []) -> Preflight {
         Preflight(
-            route: route, snapshot: RouteSnapshot(route), floorsKnown: floorsKnown)
+            route: route, snapshot: RouteSnapshot(route), floorsKnown: floorsKnown,
+            now: now, calendar: vienna)
     }
 
     private func finding(_ preflight: Preflight, _ id: String) -> Preflight.Finding? {
@@ -107,7 +119,7 @@ struct PreflightTests {
     @Test func aTourStillFullyTickedOffFromYesterdayIsAProblem() throws {
         let context = try store()
         let route = try readyRoute(in: context)
-        for stop in route.customerStops { stop.record(.delivered) }
+        for stop in route.customerStops { stop.record(.delivered, at: yesterday) }
 
         let preflight = check(route)
         let settled = try #require(finding(preflight, "settled"))
@@ -117,15 +129,53 @@ struct PreflightTests {
     }
 
     /// Part-way through is the ordinary state of a tour at eleven in the
-    /// morning, and must not read as an emergency.
-    @Test func aTourPartWayThroughIsWorthSayingButNotStoppingFor() throws {
+    /// morning. Today's ticks are the tour being driven, not a finding — and
+    /// certainly not one carrying a button that clears them.
+    @Test func todaysTicksAreProgressAndNotAFinding() throws {
         let context = try store()
         let route = try readyRoute(in: context)
-        try #require(route.customerStops.first).record(.delivered)
+        try #require(route.customerStops.first).record(.delivered, at: thisMorning)
 
         let preflight = check(route)
-        #expect(finding(preflight, "settled")?.severity == .note)
+        #expect(finding(preflight, "settled") == nil)
         #expect(preflight.isReady)
+    }
+
+    /// One door still ticked from an earlier day is a door the driver will skip
+    /// today, whatever else on the tour has been ticked since.
+    @Test func oneTickFromAnEarlierDayAmongTodaysIsStillAProblem() throws {
+        let context = try store()
+        let route = try readyRoute(in: context)
+        let stops = route.customerStops
+        stops[0].record(.delivered, at: yesterday)
+        stops[1].record(.delivered, at: thisMorning)
+
+        let settled = try #require(finding(check(route), "settled"))
+        #expect(settled.severity == .problem)
+        #expect(settled.title.hasPrefix("1 Stopp"))
+    }
+
+    /// An abbestellt entered the evening before is about today's delivery, not
+    /// a leftover from the last one — resetting it would put a meal back on the
+    /// round for somebody who cancelled it.
+    @Test func anAbbestelltFromLastNightIsNotALeftoverTick() throws {
+        let context = try store()
+        let route = try readyRoute(in: context)
+        try #require(route.customerStops.first).record(.cancelled, at: yesterday)
+
+        #expect(finding(check(route), "settled") == nil)
+    }
+
+    /// A tick with no time on it predates timestamps, so it is from an earlier
+    /// day by definition.
+    @Test func aTickWithNoTimeIsFromAnEarlierDay() throws {
+        let context = try store()
+        let route = try readyRoute(in: context)
+        let stop = try #require(route.customerStops.first)
+        stop.delivered = true
+        stop.settledAt = nil
+
+        #expect(finding(check(route), "settled")?.severity == .problem)
     }
 
     /// A door nobody opened counts as answered for here too — it is still a
@@ -133,7 +183,7 @@ struct PreflightTests {
     @Test func aDoorNobodyOpenedCountsAsAlreadyAnsweredFor() throws {
         let context = try store()
         let route = try readyRoute(in: context)
-        for stop in route.customerStops { stop.record(.notHome) }
+        for stop in route.customerStops { stop.record(.notHome, at: yesterday) }
 
         #expect(finding(check(route), "settled")?.severity == .problem)
     }
