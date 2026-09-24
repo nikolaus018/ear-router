@@ -1197,10 +1197,9 @@ enum RouteStore {
         // --- Pass 2: same name, different address — a customer who moved ---
         // Address matching alone cannot tell "Fam. Gruber moved to a new flat"
         // apart from "Fam. Gruber left the route and someone new joined". It
-        // resolves both as a delete plus an insert — which loses everything
-        // the stop carried that is not in the paste, and what it carries is
-        // `delivered`. Re-pasting a corrected list at midday would silently
-        // un-tick a customer who had already had their meal.
+        // resolves both as a delete plus an insert: the import then warns
+        // that a customer is about to be removed who is plainly still on the
+        // list, and reports one customer gone and another new.
         //
         // Deliberately conservative: a name must be unambiguous on *both*
         // sides — exactly one unclaimed existing stop and exactly one
@@ -1208,14 +1207,23 @@ enum RouteStore {
         // delete/insert behaviour stands. Guessing between two customers
         // called "Fam. Gruber" would be worse than not guessing at all.
         //
+        // Never a stop already answered for. A list is what is still to do —
+        // the portal leaves done doors out — so a settled stop missing from it
+        // is simply done, and a new "Maria Huber" somewhere else is somebody
+        // else: matched by name, she arrived already ticked and got no meal,
+        // and the morning's delivery was rewritten to her address. The same
+        // holds for pass 3, a new household at a done door's exact address.
+        // A settled stop is only ever the match for its own name at its own
+        // address (pass 1); anything else becomes a stop of its own.
+        //
         // Ahead of pass 3 for the reason pass 1 is: a new household at the
         // address the customer moved *out* of would otherwise take their stop
         // as a rename first, and the customer who moved would arrive as a new
-        // stop without their tick.
+        // stop.
         var submittedNameCounts: [String: Int] = [:]
         for i in open { submittedNameCounts[nameKey(entries[i].kunde), default: 0] += 1 }
         var existingByName: [String: [Stop]] = [:]
-        for s in existing where !taken.contains(s.id) {
+        for s in existing where !taken.contains(s.id) && !s.isSettled {
             existingByName[nameKey(s.kunde ?? ""), default: []].append(s)
         }
         for i in open {
@@ -1236,8 +1244,8 @@ enum RouteStore {
             let key = AddressKey(entries[i].strasse, entries[i].plz)
             guard var bucket = byAddress[key] else { continue }
             bucket.removeAll { taken.contains($0.id) }
-            if !bucket.isEmpty {
-                let stop = bucket.removeFirst()
+            if let stop = bucket.first(where: { !$0.isSettled }) {
+                bucket.removeAll { $0.id == stop.id }
                 atAddress[i] = stop
                 taken.insert(stop.id)
             }

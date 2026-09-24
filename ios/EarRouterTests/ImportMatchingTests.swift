@@ -139,7 +139,7 @@ struct ImportMatchingTests {
     /// Gruber's old stop to the newcomer before looking for Gruber by name gave
     /// the newcomer Gruber's tick and made Gruber a new, open stop.
     @Test func aCustomerWhoMovedKeepsTheirStopWhenSomeoneMovesIntoTheirOldFlat() throws {
-        let gruber = stop("Fam. Gruber", "Gentzgasse 129", delivered: true)
+        let gruber = stop("Fam. Gruber", "Gentzgasse 129")
         let (route, _) = try makeRoute([gruber])
 
         let match = RouteStore.match(
@@ -155,13 +155,39 @@ struct ImportMatchingTests {
     /// still the same customers — the rule the addresses beside them already
     /// follow.
     @Test func aNameSpelledWithoutItsUmlautsIsTheSameCustomer() throws {
-        let gruber = stop("Fam. Grüber", "Gentzgasse 129", delivered: true)
+        let gruber = stop("Fam. Grüber", "Gentzgasse 129")
         let (route, _) = try makeRoute([gruber])
 
         let match = RouteStore.match(
             [entry("Fam Grueber", "Alser Straße 21", "1080")], against: route.customerStops)
 
         #expect(match.unresolved.first?.existing?.id == gruber.id)
+    }
+
+    /// A door already done is only ever matched by its own name at its own
+    /// address. The portal leaves done doors out of a midday list, so a
+    /// same-named customer elsewhere, or a new household at the same address,
+    /// is somebody else — taking the done stop, they arrived already ticked
+    /// and got no meal.
+    @Test func aDoneStopIsNeverTakenByAWeakerMatch() throws {
+        let done = stop("Maria Huber", "Gentzgasse 129")
+        done.record(.delivered)
+        let (route, _) = try makeRoute([done])
+
+        let elsewhere = RouteStore.match(
+            [entry("Maria Huber", "Alser Straße 21", "1080")], against: route.customerStops)
+        #expect(elsewhere.unresolved.first?.existing == nil)
+        #expect(elsewhere.matched.isEmpty)
+
+        let sameDoor = RouteStore.match(
+            [entry("Hr. Novak", "Gentzgasse 129")], against: route.customerStops)
+        #expect(sameDoor.toUpdate.isEmpty)
+        #expect(sameDoor.unresolved.first?.existing == nil)
+
+        // Its own name at its own address is still its own stop.
+        let own = RouteStore.match(
+            [entry("Maria Huber", "Gentzgasse 129")], against: route.customerStops)
+        #expect(own.toUpdate.first?.1.id == done.id)
     }
 
     /// The list is what is still to do. A customer already answered for today
