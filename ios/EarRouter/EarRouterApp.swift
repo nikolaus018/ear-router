@@ -86,33 +86,44 @@ final class Store {
     private(set) var failure: String?
 
     init() {
+        let reason: String
         do {
             container = try AppSchema.container()
             return
         } catch {
             log.error("store did not open: \(error.localizedDescription)")
+            reason = error.localizedDescription
         }
 
         do {
-            try Self.parkExistingStore()
+            let parked = try Self.parkExistingStore()
             container = try AppSchema.container()
             log.warning("opened a fresh store; the previous one was moved aside")
+            // Remembered, so the driver is told — see `ParkedStore`. Only once
+            // the fresh store is open: if it is not, `StoreFailureView` says so
+            // itself.
+            ParkedStore.remember(parked, reason: reason)
         } catch {
             log.fault("store recovery failed: \(error.localizedDescription)")
             failure = error.localizedDescription
         }
     }
 
-    /// Renames the store files out of the way, keeping them for recovery.
-    private static func parkExistingStore() throws {
+    /// Renames the store files out of the way, keeping them for recovery, and
+    /// says where they went.
+    private static func parkExistingStore() throws -> [URL] {
         let fm = FileManager.default
         let dir = URL.applicationSupportDirectory
         let stamp = Int(Date().timeIntervalSince1970)
+        var parked: [URL] = []
         for name in ["default.store", "default.store-shm", "default.store-wal"] {
             let url = dir.appending(path: name)
             guard fm.fileExists(atPath: url.path) else { continue }
-            try fm.moveItem(at: url, to: dir.appending(path: "\(name).broken-\(stamp)"))
+            let target = dir.appending(path: "\(name).broken-\(stamp)")
+            try fm.moveItem(at: url, to: target)
+            parked.append(target)
         }
+        return parked
     }
 }
 

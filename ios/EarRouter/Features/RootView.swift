@@ -69,6 +69,9 @@ struct RootView: View {
         // the tabs because it has to hold whichever tab is in front.
         .syncingLiveActivity()
         .keepingScreenAwakeDuringTour()
+        // The one message that has to reach the driver whatever tab is open:
+        // the tours they had could not be read and were set aside.
+        .noticingParkedStore()
     }
 }
 
