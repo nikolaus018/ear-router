@@ -741,6 +741,23 @@ struct TourSummaryTests {
         #expect(summary.contains("km"))
     }
 
+    /// The customers alone. Lager and Ziel still ahead made it "Noch 5 Stopps"
+    /// over a tour Touren lists as 3.
+    @MainActor
+    @Test func aRunningTourCountsItsCustomersNotItsFixedPoints() throws {
+        let route = try tour(delivered: 0, of: 3)
+        for fixed in route.stops where fixed.kind.isFixed { fixed.excluded = false }
+        #expect(RouteSnapshot(route).summary(of: route).hasPrefix("Noch 3 Stopps"))
+    }
+
+    /// Every door answered but Ziel still to tick off: not a stop count at all.
+    @MainActor
+    @Test func onlyZielLeftSaysTheCustomersAreDone() throws {
+        let route = try tour(delivered: 2, of: 2)
+        for fixed in route.stops where fixed.kind == .end { fixed.excluded = false }
+        #expect(RouteSnapshot(route).summary(of: route).hasPrefix("Alle Kunden erledigt"))
+    }
+
     /// A finished tour is history, and history has no "still to drive". It was
     /// answering "Noch 4 Stopps · 11,7 km" under a tour filed in Erledigt — a
     /// forecast about a day that is over.

@@ -325,7 +325,15 @@ extension RouteSnapshot {
             else { return "Alle erledigt" }
             return "Alle erledigt · Rückfahrt \(back)"
         }
-        let stops = "Noch \(Format.stops(openCount))"
+        // Customers, not `openCount`: Lager and Ziel counted in made this "Noch
+        // 28 Stopps" over a tour Touren lists as 26 and whose header reads
+        // "0 von 26 geliefert" — three numbers for one tour on two screens.
+        guard openDoors > 0 else {
+            guard let back = Format.km(remainingKm), remainingKm >= 0.05
+            else { return "Alle Kunden erledigt" }
+            return "Alle Kunden erledigt · Rückfahrt \(back)"
+        }
+        let stops = "Noch \(Format.stops(openDoors))"
         guard let km = Format.km(remainingKm), remainingKm >= 0.05 else { return stops }
         return "\(stops) · \(km)"
     }
