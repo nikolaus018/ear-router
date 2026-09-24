@@ -260,6 +260,21 @@ struct PreflightTests {
         #expect(ladung.title.hasPrefix("2 Positionen"))
     }
 
+    /// An abbestellt door is not driven to: its pin and its note do not hold
+    /// up the day.
+    @Test func anAbbestelltDoorsPinAndNoteAreNotFindings() throws {
+        let context = try store()
+        let route = try readyRoute(in: context)
+        let stop = try #require(route.customerStops.first)
+        stop.precision = .district
+        stop.notiz = "Hund"
+        stop.record(.cancelled, at: thisMorning)
+
+        let preflight = check(route)
+        #expect(finding(preflight, "pins")?.severity == .ok)
+        #expect(finding(preflight, "notizen") == nil)
+    }
+
     /// "Zuerst anfahren" is gone: a stop still carrying the old flag is not
     /// read back as coming first.
     @Test func theOldPriorityFlagIsIgnored() throws {

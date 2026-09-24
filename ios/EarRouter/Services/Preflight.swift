@@ -94,8 +94,12 @@ struct Preflight {
                     action: nil))
         }
 
-        // 2. Pins the van cannot actually be driven to.
-        let approximate = customers.filter { $0.precision != nil && !$0.pinned }
+        // 2. Pins the van cannot actually be driven to. Not an abbestellt
+        // door's: nobody drives there today, and a pin that does not matter
+        // must not hold the checklist at "not ready".
+        let approximate = customers.filter {
+            $0.isOwedAMeal && $0.precision != nil && !$0.pinned
+        }
         if approximate.isEmpty {
             findings.append(
                 Finding(
@@ -176,8 +180,9 @@ struct Preflight {
             }
         }
 
-        // 5. Doors that want reading before the bell, not after it.
-        let notes = customers.count { !($0.notiz?.trimmed.isEmpty ?? true) }
+        // 5. Doors that want reading before the bell, not after it — the bells
+        // actually rung today.
+        let notes = loaded.count { !($0.notiz?.trimmed.isEmpty ?? true) }
         if notes > 0 {
             findings.append(
                 Finding(
