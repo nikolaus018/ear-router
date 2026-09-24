@@ -190,7 +190,13 @@ struct RouteSnapshot {
                     // ways to be wrong about it, telling a driver a tour is
                     // shorter than it is, at midday, with meals going cold, is
                     // the one that costs something.
-                    if next == nil {
+                    //
+                    // And never an abbestellt door. It is not driven at all —
+                    // it sits in the list with no leg, after the doors that
+                    // are — so it says nothing about where the van is. Taken
+                    // as a position, one listed after the last delivery moved
+                    // the mark past the drive home, and "Rückfahrt" vanished.
+                    if next == nil && stop.outcome != .cancelled {
                         drivenKm = km
                         drivenMinutes = minutes
                     }

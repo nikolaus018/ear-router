@@ -337,6 +337,23 @@ struct RouteSnapshotTests {
         #expect(r.nextOpenStop?.id == end.id)
     }
 
+    /// An abbestellt door is listed after the driven ones and not driven at
+    /// all: it is not where the van is, so the drive home is still ahead.
+    @Test func anAbbestelltDoorAfterTheLastDeliveryLeavesTheDriveHome() throws {
+        let x = customer("X", at: 3)
+        x.record(.cancelled)
+        let r = try route([
+            fixed(.start, km: 20, done: false),
+            customer("A", at: 1, delivered: true, km: 2, minutes: 4),
+            customer("B", at: 2, delivered: true, km: 6, minutes: 9),
+            x,
+            fixed(.end),
+        ])
+        let snap = RouteSnapshot(r)
+        #expect(snap.remainingKm == 6)
+        #expect(snap.summary(of: r).contains("Rückfahrt"))
+    }
+
     /// A switched-off fixed point is not driven, so it cannot be part of what
     /// is left either — the same rule the totals already follow.
     @Test func whatIsLeftLeavesOutExcludedStopsToo() throws {
