@@ -123,19 +123,20 @@ struct TourView: View {
                 stops(snapshot, visible: visible, info: info)
             }
         }
+        // Floated rather than given room of its own — see `floatingBanner`.
+        // Applied before the finish button's inset, so it hangs above it.
+        .floatingBanner {
+            if let busy {
+                BusyBanner(text: busy, onCancel: busyTask.map { task in { task.cancel() } })
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
         // `safeAreaInset`, not an overlay: the list runs underneath the
         // floating tab bar, so anything pinned to the bottom of its frame would
         // be drawn behind it. An inset is placed *inside* the safe area, above
-        // the bar, and takes up no room at all when there is nothing in it.
+        // the bar. The button appears once, when the tour is done, and stays.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 8) {
-                if let busy {
-                    BusyBanner(text: busy, onCancel: busyTask.map { task in { task.cancel() } })
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-                finishButton(snapshot)
-            }
-            .padding(.bottom, 8)
+            finishButton(snapshot)
         }
         .animation(.snappy, value: busy)
         .navigationTitle(route.name)
@@ -379,6 +380,7 @@ struct TourView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .padding(.horizontal, 20)
+            .padding(.bottom, 8)
         }
     }
 

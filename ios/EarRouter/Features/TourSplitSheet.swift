@@ -56,9 +56,9 @@ struct TourSplitSheet: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
+            .floatingBanner {
                 if let busy {
-                    BusyBanner(text: busy).padding(.bottom, 8)
+                    BusyBanner(text: busy)
                 }
             }
             .animation(.snappy, value: busy)
@@ -1245,10 +1245,9 @@ private struct SplitOverview: View {
                 }
             }
         }
-        .safeAreaInset(edge: .bottom) {
+        .floatingBanner {
             if let busy {
                 BusyBanner(text: busy, onCancel: { task?.cancel() })
-                    .padding(.bottom, 8)
             }
         }
         .animation(.snappy, value: busy)

@@ -142,10 +142,9 @@ struct ImportReviewView: View {
             .navigationTitle("Prüfen")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
-            .safeAreaInset(edge: .bottom) {
+            .floatingBanner {
                 if let progress {
                     BusyBanner(text: progress)
-                        .padding(.bottom, 8)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }

@@ -176,3 +176,34 @@ struct PasteTextButton: View {
         }
     }
 }
+
+extension View {
+    /// A passing pill — "Route wird optimiert …" — floated just above the
+    /// bottom of the safe area, over the content rather than beside it.
+    ///
+    /// These pills used to sit in a `safeAreaInset` of their own, which
+    /// reserves room for them, and that was the trouble: the pill arriving and
+    /// leaving changed the list's safe area, the change animated along with
+    /// the pill, and for the length of that animation the list ended short of
+    /// the bottom with a bar of bare black background under the pill. Here the
+    /// inset is zero points tall and never changes; the pill hangs above it in
+    /// an overlay, so nothing but the pill moves.
+    ///
+    /// Still an inset rather than an overlay on the content itself: a list
+    /// runs underneath the floating tab bar, and an inset is what places the
+    /// pill above the bar — and above any inset applied after this one, such
+    /// as the tour's "Tour abschließen" button.
+    func floatingBanner<Banner: View>(@ViewBuilder _ banner: () -> Banner) -> some View {
+        safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: 0)
+                .overlay(alignment: .bottom) {
+                    banner()
+                        // Its own height, not the zero-point one it hangs from.
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, 8)
+                }
+        }
+    }
+}

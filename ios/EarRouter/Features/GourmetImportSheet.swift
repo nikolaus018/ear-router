@@ -109,10 +109,9 @@ struct GourmetImportSheet: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
+            .floatingBanner {
                 if let busy {
                     BusyBanner(text: busy)
-                        .padding(.bottom, 8)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
