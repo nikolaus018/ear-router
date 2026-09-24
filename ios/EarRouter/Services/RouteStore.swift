@@ -872,9 +872,10 @@ enum RouteStore {
         }
         // New and moved stops, and any already on the route from before
         // entrances existed. Best effort: a stop left without one is still
-        // navigated to by its address.
+        // navigated to by its address. Not the ones just deleted, which would
+        // be looked up only to be thrown away with the save below.
         if !result.cancelled {
-            await fillEntrances(route.customerStops)
+            await fillEntrances(route.customerStops.filter { !$0.isDeleted })
         }
         try context.save()
         if moved && reroute {
