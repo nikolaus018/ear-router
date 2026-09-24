@@ -81,6 +81,13 @@ struct AddressTextTests {
         #expect(AddressText.subAddressOf("Gentzgasse 129/1") == "1")
     }
 
+    @Test func aGemeindebauBlockMatchesWithoutTheWordHaus() {
+        // The register spells a lettered block as "57 Haus A/1"; a driver's
+        // list, and `housenumberWithSub`'s own query, never carry "Haus".
+        #expect(AddressText.subAddressOf("Promenadegasse 57 Haus A/1") == "a1")
+        #expect(AddressText.housenumberWithSub("Promenadegasse 57/A1/1")?.key == "a1")
+    }
+
     @Test func aRegisterAnswerWithNoSubAddressReadsAsNone() {
         #expect(AddressText.subAddressOf("Hauptstraße 12") == nil)
     }

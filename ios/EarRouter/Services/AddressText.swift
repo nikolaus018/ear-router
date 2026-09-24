@@ -259,15 +259,27 @@ enum AddressText {
         return out
     }
 
+    private static let hausWord = try! NSRegularExpression(
+        pattern: #"\bhaus\b"#, options: [.caseInsensitive])
+
     /// The sub-address of an address string as the *register* spells it —
     /// everything after "{street} {housenumber}", normalized by
     /// `subAddressKey`. `nil` when the register answered with a bare
     /// housenumber and no sub-address at all.
+    ///
+    /// A Gemeindebau block lettered A/B/C/D — several buildings sharing one
+    /// housenumber — comes back from the register as "57 Haus A/1", the word
+    /// "Haus" included. No driver ever types that word; a printed list
+    /// already writes the same door as "57/A1". Left in, the two sides key as
+    /// "hausa1" and "a1" — four letters apart — and a `require`d match on the
+    /// exact door silently misses, falling back to whichever neighbouring
+    /// building the plain housenumber query happens to rank first.
     static func subAddressOf(_ adresse: String) -> String? {
         guard let m = firstMatch(housenumberTail, in: adresse),
               let tail = m.group(1, in: adresse)?.trimmed
         else { return nil }
-        let key = subAddressKey(tail)
+        let withoutHaus = replacing(hausWord, in: tail, with: "")
+        let key = subAddressKey(withoutHaus)
         return key.isEmpty ? nil : key
     }
 
