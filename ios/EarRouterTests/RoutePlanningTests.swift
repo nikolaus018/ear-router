@@ -571,6 +571,72 @@ struct OptimizerWriteBackTests {
         #expect(route.orderedStops.map(\.kind).prefix(2) == [.start, .via])
     }
 
+    // MARK: - Abbestellt
+
+    /// A door owed nothing today is not driven: not handed to OSRM, no leg,
+    /// and listed after the doors that are.
+    @Test func anAbbestelltDoorIsNotDriven() throws {
+        let (route, context, customers) = try makeRoute()
+        customers[0].record(.cancelled)
+        try context.save()
+
+        let (nodes, _) = RouteOptimizer.snapshot(route)
+        #expect(!nodes.customers.contains { $0.id == customers[0].id })
+        #expect(nodes.skipped.map(\.id) == [customers[0].id])
+        let plan = RouteOptimizer.plan(nodes)
+        #expect(!plan.tripNodes.contains { $0.id == customers[0].id })
+
+        try optimize(route, in: context)
+        #expect(customers[0].nextLegKm == nil)
+        let kinds = route.orderedStops.map { $0.kind == .customer ? ($0.kunde ?? "") : "\($0.kind)" }
+        #expect(kinds == ["start", "via", "Hr. Novak", "Fr. Huber", "Fam. Gruber", "end"])
+        #expect(!route.needsOptimize)
+    }
+
+    /// Marked abbestellt while OSRM was answering: that answer still drives
+    /// to the door, so the route stays flagged.
+    @Test func anAbbestelltTickDuringASolveLeavesTheRouteFlagged() throws {
+        let (route, context, customers) = try makeRoute()
+        let plannedFrom = RouteOptimizer.snapshot(route).1
+        customers[1].record(.cancelled)
+        try context.save()
+        #expect(RouteOptimizer.snapshot(route).1 != plannedFrom)
+    }
+
+    /// A hand-sorted tour keeps every row where the driver put it; only the
+    /// driving skips the abbestellt door.
+    @Test func aHandSortedTourKeepsAnAbbestelltRowInPlace() throws {
+        let (route, context, customers) = try makeRoute()
+        customers[1].record(.cancelled)
+        try context.save()
+        let (nodes, taken) = RouteOptimizer.snapshot(route)
+        let listed = route.customerStops.map(\.planningSnapshot)
+        let routed = RouteOptimizer.listedDrivingOrder(
+            nodes, customers: listed.filter { $0.id != customers[1].id })
+        let legs = (0..<(routed.count - 1)).map { (Double($0 + 1) * 1000, 60.0) }
+        try RouteOptimizer.apply(
+            nodes, routed: routed, legs: legs, geometry: [[48.2, 16.3]],
+            plannedFrom: taken, listed: listed, to: route, in: context)
+
+        #expect(route.customerStops.map(\.id) == listed.map(\.id))
+        #expect(customers[1].nextLegKm == nil)
+        #expect(customers[0].nextLegKm != nil)
+    }
+
+    /// Marking a door abbestellt, or taking it back, is a change to the
+    /// route; any other answer is not.
+    @Test func onlyAnAbbestelltChangeFlagsTheRoute() throws {
+        let (route, context, customers) = try makeRoute()
+        route.needsOptimize = false
+        try RouteStore.record(.delivered, for: customers[0], reroute: false, in: context)
+        #expect(!route.needsOptimize)
+        try RouteStore.record(.cancelled, for: customers[1], reroute: false, in: context)
+        #expect(route.needsOptimize)
+        route.needsOptimize = false
+        try RouteStore.record(.notHome, for: customers[1], reroute: false, in: context)
+        #expect(route.needsOptimize)
+    }
+
     // MARK: - The flag
 
     @Test func aSolutionThatStillDescribesTheRouteClearsTheBanner() throws {

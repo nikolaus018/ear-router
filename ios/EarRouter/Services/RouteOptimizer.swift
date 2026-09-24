@@ -27,6 +27,12 @@ enum RouteOptimizer {
         var via: FixedStop?
         var end: FixedStop?
         var customers: [StopCoord] = []
+        /// The customers marked abbestellt, in list order. Not driven at all:
+        /// nobody is owed a meal there today, and routing through the door
+        /// anyway put a detour into the line, the kilometres, every arrival
+        /// time after it and the day's report. Still listed — after the doors
+        /// that are driven — so the row stays where the driver can find it.
+        var skipped: [StopCoord] = []
         /// The customers already driven to, in the order they are listed, with
         /// the one answered for last at the end — where the van is now. Empty
         /// until the first door of the day, which leaves a fresh tour planned
@@ -86,6 +92,8 @@ enum RouteOptimizer {
             let lat: Double
             let lon: Double
             let excluded: Bool
+            /// Abbestellt — whether the stop is driven at all.
+            var skipped = false
         }
     }
 
@@ -238,7 +246,9 @@ enum RouteOptimizer {
         // --- read ---
         let (nodes, plannedFrom) = snapshot(route)
         let listed = route.customerStops.map(\.planningSnapshot)
-        let routed = Self.listedDrivingOrder(nodes, customers: listed)
+        let skippedIDs = Set(nodes.skipped.map(\.id))
+        let routed = Self.listedDrivingOrder(
+            nodes, customers: listed.filter { !skippedIDs.contains($0.id) })
 
         // --- await ---
         var legs: [(Double, Double)] = []
@@ -259,7 +269,7 @@ enum RouteOptimizer {
 
         try Self.apply(
             nodes, routed: routed, legs: legs, geometry: geometry,
-            plannedFrom: plannedFrom, to: route, in: context)
+            plannedFrom: plannedFrom, listed: listed, to: route, in: context)
     }
 
     /// The driving order of a hand-sorted tour: the fixed head, the customers
@@ -295,9 +305,12 @@ enum RouteOptimizer {
     /// either way, because a fresher-than-nothing solution beats the old one,
     /// but the flag clears only when this solution really describes the route
     /// on disk.
+    ///
+    /// `listed` is a hand-sorted tour's own order, abbestellt doors included,
+    /// which the list keeps as it is; `nil` lists the customers as driven.
     static func apply(
         _ nodes: Nodes, routed: [StopCoord], legs: [(Double, Double)],
-        geometry: [[Double]], plannedFrom: Fingerprint,
+        geometry: [[Double]], plannedFrom: Fingerprint, listed: [StopCoord]? = nil,
         to route: Route, in context: ModelContext
     ) throws {
         let legFor = Self.legIndex(routed: routed, legs: legs)
@@ -308,7 +321,7 @@ enum RouteOptimizer {
         }
 
         let byID = Dictionary(route.stops.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        for (pos, node) in displayOrder(nodes, routed: routed).enumerated() {
+        for (pos, node) in displayOrder(nodes, routed: routed, listed: listed).enumerated() {
             guard let stop = byID[node.id] else { continue }
             stop.orderIndex = pos
             if let leg = legFor[node.id] {
@@ -442,6 +455,7 @@ enum RouteOptimizer {
         for s in stops {
             let coord = s.planningSnapshot
             let fixed = FixedStop(coord: coord, excluded: s.excluded)
+            if s.kind == .customer, s.outcome == .cancelled { continue }
             // `excluded` is only ever written to a fixed stop, and a customer
             // row carrying it anyway must not silently disappear from the tour
             // — hence matching on the kind rather than on the flag.
@@ -453,6 +467,9 @@ enum RouteOptimizer {
                 nodes.customers.append(coord)
             }
         }
+        nodes.skipped = route.customerStops
+            .filter { $0.outcome == .cancelled }
+            .map(\.planningSnapshot)
         nodes.driven = driven(route)
         // Before the first door only: after it the trip starts at the door,
         // and a fix taken then — or after a relaunch mid-tour — would draw
@@ -501,7 +518,8 @@ enum RouteOptimizer {
                 .sorted(by: Stop.createdBefore)
                 .map {
                     Fingerprint.Entry(
-                        id: $0.id, lat: $0.lat, lon: $0.lon, excluded: $0.excluded)
+                        id: $0.id, lat: $0.lat, lon: $0.lon, excluded: $0.excluded,
+                        skipped: $0.kind == .customer && $0.outcome == .cancelled)
                 })
     }
 
@@ -511,13 +529,22 @@ enum RouteOptimizer {
     /// the bottom — rather than flushed to the end, where "Start" would sit
     /// underneath the last customer of the day. Only the customers are placed
     /// by `routed`; that ordering is the whole point of the optimization.
-    static func displayOrder(_ nodes: Nodes, routed: [StopCoord]) -> [StopCoord] {
+    /// Abbestellt doors follow the driven ones — or, on a hand-sorted tour,
+    /// keep their place in `listed`, the driver's own order.
+    static func displayOrder(
+        _ nodes: Nodes, routed: [StopCoord], listed: [StopCoord]? = nil
+    ) -> [StopCoord] {
         let customerIDs = nodes.customerIDs
         var out: [StopCoord] = []
-        out.reserveCapacity(routed.count + 3)
+        out.reserveCapacity(routed.count + nodes.skipped.count + 3)
         if let s = nodes.start?.coord { out.append(s) }
         if let v = nodes.via?.coord { out.append(v) }
-        out.append(contentsOf: routed.filter { customerIDs.contains($0.id) })
+        if let listed {
+            out.append(contentsOf: listed)
+        } else {
+            out.append(contentsOf: routed.filter { customerIDs.contains($0.id) })
+            out.append(contentsOf: nodes.skipped)
+        }
         if let e = nodes.end?.coord { out.append(e) }
         return out
     }

@@ -409,16 +409,26 @@ enum RouteStore {
     /// way home. Auto-completing also moved the route straight out of the
     /// active list from under the screen they were standing on. "Tour
     /// abschließen" is on the tour's own screen for exactly this.
+    ///
+    /// Abbestellt is the one answer that changes the route: that door is not
+    /// driven — see `RouteOptimizer.Nodes.skipped` — so marking it, or taking
+    /// it back, plans the tour again behind itself. `reroute: false` leaves
+    /// the route flagged for the caller; only tests use it.
     static func record(
         _ outcome: DeliveryOutcome?, for stop: Stop, at date: Date = Date(),
-        in context: ModelContext
+        reroute: Bool = true, in context: ModelContext
     ) throws {
         let wasPassing = stop.passesLager
+        let wasSkipped = stop.outcome == .cancelled
         let previousAt = stop.settledAt
         stop.record(outcome, at: date)
         if let outcome { tickLagerIfPassed(by: stop, outcome) }
         if wasPassing, !stop.passesLager { untickLagerIfOnlyPassedBy(stop, at: previousAt) }
+        let route = stop.kind == .customer && wasSkipped != (outcome == .cancelled)
+            ? stop.route : nil
+        route?.markRoutingStale()
         try context.save()
+        if let route, reroute { rerouteBehind(route, in: context) }
     }
 
     /// A door answered for means the van has loaded, so an open Lager is ticked
@@ -456,9 +466,9 @@ enum RouteStore {
     /// The plain tick, which is still what happens at twenty-nine doors out of
     /// thirty: on means delivered, off means not answered for yet.
     static func setDelivered(
-        _ stop: Stop, _ delivered: Bool, in context: ModelContext
+        _ stop: Stop, _ delivered: Bool, reroute: Bool = true, in context: ModelContext
     ) throws {
-        try record(delivered ? .delivered : nil, for: stop, in: context)
+        try record(delivered ? .delivered : nil, for: stop, reroute: reroute, in: context)
     }
 
     /// Takes one delivery back, found by the id the undo banner is holding.

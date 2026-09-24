@@ -246,7 +246,7 @@ struct DeliveryOutcomeTests {
         a.route = route
         context.insert(a)
 
-        try RouteStore.record(.cancelled, for: a, in: context)
+        try RouteStore.record(.cancelled, for: a, reroute: false, in: context)
         #expect(route.nextOpenStop?.kunde == "Lager")
     }
 
@@ -267,7 +267,7 @@ struct DeliveryOutcomeTests {
 
         // Changed to abbestellt instead: not loaded either.
         try RouteStore.setDelivered(a, true, in: context)
-        try RouteStore.record(.cancelled, for: a, in: context)
+        try RouteStore.record(.cancelled, for: a, reroute: false, in: context)
         #expect(route.nextOpenStop?.kunde == "Lager")
     }
 
