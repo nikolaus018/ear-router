@@ -140,11 +140,11 @@ struct TourView: View {
         .animation(.snappy, value: busy)
         .navigationTitle(route.name)
         .navigationSubtitle(snapshot.summary(of: route))
-        // Default placement, which on iOS 26 is a search button in the toolbar
-        // that opens the field. Pinned into the title's drawer it was a bar
-        // permanently parked under the tour's name — a control the driver uses
-        // a handful of times a week, given a fixed slot on the screen they look
-        // at all day.
+        // Default placement: tucked above the list, revealed by pulling it down,
+        // as in Mail or Settings — a control the driver uses a handful of times
+        // a week, not given a fixed slot on the screen they look at all day.
+        // Pulling down used to re-optimize the tour as well, which is why this
+        // field was as good as unreachable.
         .searchable(text: $search, prompt: "Kunde, Adresse, Paket oder Notiz")
         // No pull-to-refresh. It re-optimized the tour, and pulling down is the
         // same move a thumb makes to get back to the top of a long list — so a
