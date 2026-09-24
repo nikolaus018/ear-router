@@ -45,7 +45,7 @@ enum LadungPlan {
                 id: stop.id,
                 position: position + 1,
                 name: kunde.isEmpty ? "Stopp" : kunde,
-                address: Format.address(stop.listAddress),
+                address: stop.listAddress,
                 paketCount: stop.paketCount)
         }
     }
@@ -247,7 +247,8 @@ struct LadelisteView: View {
     /// "3 Pakete" is the whole reason this is here.
     private func addressAndParcels(_ stop: LadungStop) -> String? {
         let parcels = stop.paketCount.map { $0 == 1 ? "1 Paket" : "\($0) Pakete" }
-        switch (stop.address.isEmpty ? nil : stop.address, parcels) {
+        // The on-screen form — see `Format.address`.
+        switch (stop.address.isEmpty ? nil : Format.address(stop.address), parcels) {
         case (nil, nil): return nil
         case (let address?, nil): return address
         case (nil, let parcels?): return parcels
