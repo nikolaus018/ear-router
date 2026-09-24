@@ -237,7 +237,10 @@ struct MapTab: View {
                         }
                     }
                 } label: {
-                    Label("Optionen", systemImage: "ellipsis.circle")
+                    // The bare glyph, like every other screen's menu. The
+                    // toolbar already draws the glass circle around it, so
+                    // `ellipsis.circle` came out as a circle in a circle.
+                    Label("Optionen", systemImage: "ellipsis")
                 }
             }
         }
