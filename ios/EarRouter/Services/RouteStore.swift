@@ -714,6 +714,18 @@ enum RouteStore {
         let toUpdate = match.toUpdate
         let unresolved = match.unresolved
 
+        // The whole tour after this paste, not only the paste: 60 stops plus 50
+        // new ones used to save and then fail to optimize. Checked before
+        // anything is written, as if the paste's deletions all go through.
+        let adding = unresolved.count { $0.existing == nil }
+        let dropping = existing.count { !matched.contains($0.id) && !$0.isSettled }
+        let total = existing.count - dropping + adding
+        guard total <= maxBulkStops else {
+            throw AppError.message(
+                "Die Tour hätte danach \(total) Kundenstopps, max. \(maxBulkStops). "
+                    + "Bitte auf mehrere Touren aufteilen.")
+        }
+
         // --- apply the cheap matches ---
         // The address is rewritten too, even though matching on it is what got
         // us here: the match key collapses "Hauptstr. 5" and "Hauptstraße 5"

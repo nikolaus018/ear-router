@@ -365,6 +365,30 @@ struct ImportMatchingTests {
             _ = try await RouteStore.importJSON(tooMany, into: route, in: context)
         }
     }
+
+    /// The tour as a whole, not the paste: a settled stop stays whatever the
+    /// list says, and the new ones come on top of it. Refused before anything
+    /// is written.
+    @Test func refusesAPasteThatWouldTakeTheTourPastTheLimit() async throws {
+        let done = stop("Fam. Gruber", "Gentzgasse 129", delivered: true)
+        let (route, context) = try makeRoute([done])
+        let full = (0..<maxBulkStops).map { entry("K\($0)", "Gasse \($0)") }
+        await #expect(throws: AppError.self) {
+            _ = try await RouteStore.importJSON(full, into: route, in: context)
+        }
+        #expect(route.customerCount == 1)
+    }
+
+    /// A paste that replaces open stops frees their room first.
+    @Test func stopsThePasteDropsDoNotCountAgainstTheLimit() async throws {
+        let open = stop("Fam. Gruber", "Gentzgasse 129")
+        let (route, context) = try makeRoute([open])
+        let full = (0..<maxBulkStops).map { entry("K\($0)", "Gasse \($0)", "0999") }
+        // PLZ 0999 fails validation before any lookup, so this stays offline;
+        // what matters is that the size check let it through.
+        let result = try await RouteStore.importJSON(full, into: route, in: context)
+        #expect(result.inserted == 0)
+    }
 }
 
 /// The JSON either side of the bulk editor: what it accepts from a paste, and
