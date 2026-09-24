@@ -34,7 +34,7 @@ struct BackupView: View {
             Section {
                 LabeledContent("Touren", value: "\(routes.count)")
                 LabeledContent("Stopps", value: "\(stopCount)")
-                LabeledContent("Stockwerke", value: "\(stockwerkNotes.count)")
+                LabeledContent("Globale Infos", value: "\(stockwerkNotes.count)")
             } header: {
                 Text("Auf diesem Gerät")
             }
@@ -55,7 +55,7 @@ struct BackupView: View {
             } footer: {
                 Text(
                     "Schreibt alles in eine JSON-Datei — Touren, Stopps, Lieferstatus und "
-                        + "Stockwerke — und öffnet das Teilen-Menü: AirDrop, an sich selbst "
+                        + "Globale Infos — und öffnet das Teilen-Menü: AirDrop, an sich selbst "
                         + "schicken, oder in „Dateien“ sichern. Am besten irgendwohin, wo sie "
                         + "nicht auf demselben Gerät liegt wie das Original.")
             }
@@ -133,7 +133,7 @@ struct BackupView: View {
         } message: {
             Text(
                 "\(routes.count == 1 ? "1 Tour" : "\(routes.count) Touren") und "
-                    + "\(stockwerkNotes.count == 1 ? "1 Stockwerk" : "\(stockwerkNotes.count) Stockwerke") "
+                    + "\(Format.globaleInfos(stockwerkNotes.count)) "
                     + "auf diesem Gerät werden gelöscht und durch die Sicherung ersetzt. "
                     + "Das lässt sich nicht rückgängig machen.")
         }
@@ -164,7 +164,7 @@ struct BackupView: View {
             Vom \(Format.date(archive.createdAt)) · \
             \(archive.routeCount == 1 ? "1 Tour" : "\(archive.routeCount) Touren") · \
             \(stops == 1 ? "1 Stopp" : "\(stops) Stopps") · \
-            \(archive.stockwerkCount == 1 ? "1 Stockwerk" : "\(archive.stockwerkCount) Stockwerke")
+            \(Format.globaleInfos(archive.stockwerkCount))
             """
     }
 

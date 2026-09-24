@@ -99,6 +99,13 @@ enum Format {
         count == 1 ? "1 Stopp" : "\(count) Stopps"
     }
 
+    /// "1 Globale Info" / "3 Globale Infos" — entries in the list of what is
+    /// kept about customers across tours. Not "Stockwerke": an entry may hold
+    /// only a note.
+    static func globaleInfos(_ count: Int) -> String {
+        count == 1 ? "1 Globale Info" : "\(count) Globale Infos"
+    }
+
     static func date(_ date: Date) -> String {
         date.formatted(.dateTime.day().month().year().locale(atLocale))
     }

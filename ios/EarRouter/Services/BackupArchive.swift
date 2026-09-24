@@ -352,7 +352,7 @@ struct RestoreResult: Sendable {
                     ? "1 bereits vorhandene übersprungen"
                     : "\(routesSkipped) bereits vorhandene übersprungen")
         }
-        parts.append(stockwerkeWritten == 1 ? "1 Stockwerk" : "\(stockwerkeWritten) Stockwerke")
+        parts.append(Format.globaleInfos(stockwerkeWritten))
         return parts.joined(separator: " · ")
     }
 }
