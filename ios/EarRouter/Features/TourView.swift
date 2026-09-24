@@ -458,7 +458,13 @@ struct TourView: View {
                 // meal over at by midday are not something to lose to a thumb
                 // that was aiming for "Umbenennen". Deleting one stop asks;
                 // this took all of them back without a word.
-                Button("Lieferstatus zurücksetzen", systemImage: "arrow.counterclockwise") {
+                //
+                // Red in the menu, the way iOS marks the one entry that takes
+                // something away — it was drawn exactly like "Umbenennen".
+                Button(
+                    "Lieferstatus zurücksetzen", systemImage: "arrow.counterclockwise",
+                    role: .destructive
+                ) {
                     confirmingReset = true
                 }
                 .disabled(route.settledCount == 0)
