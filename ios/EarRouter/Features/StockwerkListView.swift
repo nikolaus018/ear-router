@@ -204,7 +204,8 @@ struct StockwerkListView: View {
             var archive = BackupArchive()
             archive.app = BackupArchive.appVersion
             archive.stockwerke = notes.map(BackupArchive.StockwerkBackup.init)
-            sharedFile = SharedFile(url: try archive.writeForSharing())
+            sharedFile = SharedFile(
+                url: try archive.writeForSharing(named: BackupArchive.customerInfoPrefix))
         } catch {
             self.error = AppError.message("Die globalen Infos konnten nicht geteilt werden.")
         }

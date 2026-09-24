@@ -358,6 +358,26 @@ struct BackupTests {
         #expect(reread.stockwerkCount == archive.stockwerkCount)
     }
 
+    /// Globale Infos shared with a stand-in go out under a name of their own.
+    /// Named like a backup, the file read as a whole phone's worth — and a
+    /// full replace from it leaves no tours at all.
+    @Test func sharedGlobaleInfosAreNotNamedLikeABackup() throws {
+        var archive = BackupArchive()
+        archive.stockwerke = [
+            BackupArchive.StockwerkBackup(
+                key: "fam gruber|gentzgasse 129|1180", kunde: "Fam. Gruber",
+                strasse: "Gentzgasse 129", plz: "1180", stockwerk: "3", dontAsk: false,
+                updatedAt: Date())
+        ]
+        let url = try archive.writeForSharing(
+            named: BackupArchive.customerInfoPrefix,
+            now: Date(timeIntervalSince1970: 1_788_696_000))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        #expect(url.lastPathComponent == "EAR-Router-Globale-Infos-2026-09-06.json")
+        #expect(try BackupArchive.decode(try Data(contentsOf: url)).stockwerkCount == 1)
+    }
+
     /// Each export replaces the last. These files are a full copy of every
     /// customer's name and address, and one per tap would pile up in the
     /// temporary folder for the life of the install.

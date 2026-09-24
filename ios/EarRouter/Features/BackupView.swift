@@ -106,7 +106,14 @@ struct BackupView: View {
             Button("Dazu laden") { apply(archive, mode: .merge) }
             // The ellipsis is doing real work here: it is the only thing on
             // screen saying that one of the two buttons stops to ask again.
-            Button("Alles ersetzen …", role: .destructive) { confirmingReplace = true }
+            //
+            // Not for a file with no tours in it — Globale Infos shared from
+            // another phone. Replacing everything with that deletes every tour
+            // on this one and puts nothing in their place, which is never what
+            // somebody loading a colleague's floors wants.
+            if !archive.routes.isEmpty {
+                Button("Alles ersetzen …", role: .destructive) { confirmingReplace = true }
+            }
             Button("Abbrechen", role: .cancel) { pending = nil }
         } message: { archive in
             Text(describe(archive))

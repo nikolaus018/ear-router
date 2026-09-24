@@ -250,23 +250,33 @@ extension BackupArchive {
     /// without this the temporary folder would keep one per tap for the life of
     /// the install — each of them a full copy of every customer's name and
     /// address.
-    func writeForSharing(now: Date = Date()) throws -> URL {
+    ///
+    /// `named` is what the file is called before its date. A file of Globale
+    /// Infos alone goes out under its own name: sent to a stand-in driver as
+    /// "EAR-Router-Sicherung-…", it read as a whole phone's backup — and its
+    /// "Alles ersetzen" would have left them with no tours at all.
+    func writeForSharing(
+        named prefix: String = BackupArchive.backupPrefix, now: Date = Date()
+    ) throws -> URL {
         let fm = FileManager.default
         let dir = URL.temporaryDirectory.appending(path: "Sicherung", directoryHint: .isDirectory)
         try? fm.removeItem(at: dir)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        let url = dir.appending(path: Self.filename(now: now))
+        let url = dir.appending(path: Self.filename(prefix, now: now))
         try encoded().write(to: url, options: .atomic)
         return url
     }
 
+    static let backupPrefix = "EAR-Router-Sicherung"
+    static let customerInfoPrefix = "EAR-Router-Globale-Infos"
+
     /// "EAR-Router-Sicherung-2026-09-06.json".
-    static func filename(now: Date = Date()) -> String {
+    static func filename(_ prefix: String = backupPrefix, now: Date = Date()) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
-        return "EAR-Router-Sicherung-\(f.string(from: now)).json"
+        return "\(prefix)-\(f.string(from: now)).json"
     }
 }
 
