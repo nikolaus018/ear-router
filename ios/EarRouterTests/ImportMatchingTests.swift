@@ -112,6 +112,58 @@ struct ImportMatchingTests {
         #expect(!novak.delivered)
     }
 
+    /// A new household listed ahead of an existing one at the same door. The
+    /// address-only fallback ran in the same loop as the name match, so the
+    /// newcomer took the first stop at that door — Gruber's, delivered tick and
+    /// all — and Gruber was handed whatever was left.
+    @Test func aNewHouseholdListedFirstDoesNotTakeAnExistingOnesStop() throws {
+        let gruber = stop("Fam. Gruber", "Gentzgasse 129/1/5", delivered: true)
+        let meier = stop("Fam. Meier", "Gentzgasse 129/1/5")
+        let (route, _) = try makeRoute([gruber, meier])
+
+        let match = RouteStore.match(
+            [entry("Fam. Huber", "Gentzgasse 129/1/5"), entry("Fam. Gruber", "Gentzgasse 129/1/5")],
+            against: route.customerStops)
+
+        let byName = Dictionary(
+            match.toUpdate.map { ($0.0.kunde, $0.1.id) }, uniquingKeysWith: { a, _ in a })
+        #expect(byName["Fam. Gruber"] == gruber.id)
+        // Meier left and Huber arrived at the same door: the one stop nobody
+        // named is the one renamed.
+        #expect(byName["Fam. Huber"] == meier.id)
+        // In the order of the paste, whichever pass found them.
+        #expect(match.toUpdate.map(\.0.kunde) == ["Fam. Huber", "Fam. Gruber"])
+    }
+
+    /// Fam. Gruber moved out and somebody new moved into the flat. Renaming
+    /// Gruber's old stop to the newcomer before looking for Gruber by name gave
+    /// the newcomer Gruber's tick and made Gruber a new, open stop.
+    @Test func aCustomerWhoMovedKeepsTheirStopWhenSomeoneMovesIntoTheirOldFlat() throws {
+        let gruber = stop("Fam. Gruber", "Gentzgasse 129", delivered: true)
+        let (route, _) = try makeRoute([gruber])
+
+        let match = RouteStore.match(
+            [entry("Fam. Novak", "Gentzgasse 129"), entry("Fam. Gruber", "Alser Straße 21", "1080")],
+            against: route.customerStops)
+
+        #expect(match.toUpdate.isEmpty)
+        #expect(match.unresolved.first { $0.entry.kunde == "Fam. Gruber" }?.existing?.id == gruber.id)
+        #expect(match.unresolved.first { $0.entry.kunde == "Fam. Novak" }?.existing == nil)
+    }
+
+    /// A list re-exported by a system that strips umlauts and full stops is
+    /// still the same customers — the rule the addresses beside them already
+    /// follow.
+    @Test func aNameSpelledWithoutItsUmlautsIsTheSameCustomer() throws {
+        let gruber = stop("Fam. Grüber", "Gentzgasse 129", delivered: true)
+        let (route, _) = try makeRoute([gruber])
+
+        let match = RouteStore.match(
+            [entry("Fam Grueber", "Alser Straße 21", "1080")], against: route.customerStops)
+
+        #expect(match.unresolved.first?.existing?.id == gruber.id)
+    }
+
     /// Stops picked in the driver's own order arrive as a tour in that order,
     /// sorted by hand so the routing draws the line through it.
     @Test func aListInTheDriversOwnOrderKeepsIt() async throws {

@@ -1013,20 +1013,37 @@ enum RouteStore {
     /// exactly the same rules the import will.
     struct PasteMatch {
         /// Entries that landed on a stop whose address already matches — the
-        /// cheap case, with nothing to geocode.
+        /// cheap case, with nothing to geocode. In the order of the entries.
         var toUpdate: [(CustomerJSON, Stop)] = []
         /// Entries with no address match. `existing` is set where pass 2 could
-        /// still tie the entry to a stop by name — a customer who moved.
+        /// still tie the entry to a stop by name — a customer who moved. In
+        /// the order of the entries.
         var unresolved: [(entry: CustomerJSON, existing: Stop?)] = []
         /// Every stop the paste accounted for. Anything on the route that is
         /// not in here is a customer the paste dropped.
         var matched = Set<UUID>()
     }
 
+    /// Three passes, each finishing over the whole paste before the next one
+    /// starts, and in this order because each is a weaker claim than the one
+    /// before it: the same name at the same address, then the same name
+    /// somewhere else, then the same address under another name. Run in one
+    /// loop — which is what this did — a weak claim made early could take the
+    /// stop a strong claim later in the paste was owed, and which one won
+    /// depended on nothing but the order the list happened to be in.
     static func match(_ entries: [CustomerJSON], against existing: [Stop]) -> PasteMatch {
-        var out = PasteMatch()
+        var byAddress: [AddressKey: [Stop]] = [:]
+        for s in existing {
+            byAddress[AddressKey(s.strasse ?? "", s.plz ?? ""), default: []].append(s)
+        }
 
-        // --- Pass 1: match on address ---
+        // Which stop each entry is, by the entry's position, so the answer
+        // comes back in the paste's own order whichever pass found it.
+        var atAddress: [Int: Stop] = [:]
+        var movedFrom: [Int: Stop] = [:]
+        var taken = Set<UUID>()
+
+        // --- Pass 1: same address, same name ---
         // The common case, and the cheap one — an unchanged address means an
         // unchanged location, so there is nothing to geocode and nothing to
         // re-route.
@@ -1039,31 +1056,26 @@ enum RouteStore {
         // order the store happens to hold them; re-paste with the rows swapped
         // and each one claims the *other's* stop, writing the names over each
         // other while `delivered` stays where it was.
-        var byAddress: [AddressKey: [Stop]] = [:]
-        for s in existing {
-            byAddress[AddressKey(s.strasse ?? "", s.plz ?? ""), default: []].append(s)
-        }
-
-        for entry in entries {
+        //
+        // Every entry gets its own name before any entry may take a stop by
+        // address alone (pass 3). Done in one loop, a new household listed
+        // ahead of an existing one at the same door was handed the existing
+        // one's stop — delivered tick and all — and the existing customer got
+        // whatever was left.
+        for (i, entry) in entries.enumerated() {
             let key = AddressKey(entry.strasse, entry.plz)
-            guard var bucket = byAddress[key], !bucket.isEmpty else {
-                out.unresolved.append((entry, nil))
-                continue
-            }
-            // The same name at the same address is the same stop, whatever
-            // order either side lists them in. Falling back to the first
-            // unclaimed one when no name matches keeps the behaviour that was
-            // right for a customer renamed in place at an unchanged address —
-            // an edit of that stop, not a new one.
             let wanted = nameKey(entry.kunde)
-            let pos = bucket.firstIndex { nameKey($0.kunde ?? "") == wanted } ?? 0
+            guard var bucket = byAddress[key],
+                  let pos = bucket.firstIndex(where: { nameKey($0.kunde ?? "") == wanted })
+            else { continue }
             let stop = bucket.remove(at: pos)
             byAddress[key] = bucket
-            out.matched.insert(stop.id)
-            out.toUpdate.append((entry, stop))
+            atAddress[i] = stop
+            taken.insert(stop.id)
         }
+        let open = entries.indices.filter { atAddress[$0] == nil }
 
-        // --- Pass 2: match the leftovers on customer name ---
+        // --- Pass 2: same name, different address — a customer who moved ---
         // Address matching alone cannot tell "Fam. Gruber moved to a new flat"
         // apart from "Fam. Gruber left the route and someone new joined". It
         // resolves both as a delete plus an insert — which loses everything
@@ -1076,24 +1088,52 @@ enum RouteStore {
         // unclaimed submitted entry — or the pass declines and the
         // delete/insert behaviour stands. Guessing between two customers
         // called "Fam. Gruber" would be worse than not guessing at all.
+        //
+        // Ahead of pass 3 for the reason pass 1 is: a new household at the
+        // address the customer moved *out* of would otherwise take their stop
+        // as a rename first, and the customer who moved would arrive as a new
+        // stop without their tick.
         var submittedNameCounts: [String: Int] = [:]
-        for u in out.unresolved {
-            submittedNameCounts[nameKey(u.entry.kunde), default: 0] += 1
-        }
+        for i in open { submittedNameCounts[nameKey(entries[i].kunde), default: 0] += 1 }
         var existingByName: [String: [Stop]] = [:]
-        for s in existing where !out.matched.contains(s.id) {
+        for s in existing where !taken.contains(s.id) {
             existingByName[nameKey(s.kunde ?? ""), default: []].append(s)
         }
-        for i in out.unresolved.indices {
-            let key = nameKey(out.unresolved[i].entry.kunde)
+        for i in open {
+            let key = nameKey(entries[i].kunde)
             guard submittedNameCounts[key] == 1,
-                  let ids = existingByName[key], ids.count == 1
+                  let stops = existingByName[key], stops.count == 1
             else { continue }
-            out.matched.insert(ids[0].id)
+            movedFrom[i] = stops[0]
+            taken.insert(stops[0].id)
             existingByName.removeValue(forKey: key)
-            out.unresolved[i].existing = ids[0]
         }
 
+        // --- Pass 3: same address, another name — renamed in place ---
+        // Whatever is still unclaimed at an address once every name has been
+        // placed: an edit of that stop rather than a new one, which is right
+        // for a customer whose name was corrected at an unchanged address.
+        for i in open where movedFrom[i] == nil {
+            let key = AddressKey(entries[i].strasse, entries[i].plz)
+            guard var bucket = byAddress[key] else { continue }
+            bucket.removeAll { taken.contains($0.id) }
+            if !bucket.isEmpty {
+                let stop = bucket.removeFirst()
+                atAddress[i] = stop
+                taken.insert(stop.id)
+            }
+            byAddress[key] = bucket
+        }
+
+        var out = PasteMatch()
+        out.matched = taken
+        for (i, entry) in entries.enumerated() {
+            if let stop = atAddress[i] {
+                out.toUpdate.append((entry, stop))
+            } else {
+                out.unresolved.append((entry, movedFrom[i]))
+            }
+        }
         return out
     }
 
@@ -1162,9 +1202,15 @@ enum RouteStore {
         }
     }
 
+    /// A customer's name in the form two lists are compared in — through
+    /// `AddressText.matchKey`, the rule the address beside it already follows:
+    /// case, spacing and punctuation folded away, and ä/ö/ü/ß spelled out.
+    /// "Fam. Grüber" and "Fam Grueber" are one household. Only case and spacing
+    /// were folded here, so a list re-exported by a system that strips umlauts
+    /// matched every address and no name, and a customer who had moved flat
+    /// lost their tick over it.
     private static func nameKey(_ kunde: String) -> String {
-        kunde.split(separator: " ", omittingEmptySubsequences: true)
-            .joined(separator: " ").lowercased()
+        AddressText.matchKey(kunde)
     }
 }
 
