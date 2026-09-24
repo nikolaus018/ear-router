@@ -349,11 +349,15 @@ struct StopRow: View {
             // the row — the same gesture that opens the editor on every row
             // above it, doing something else entirely, with nothing on screen
             // saying so. The glyph names the *action*, not the state.
+            //
+            // Smaller and fainter than the tick beside the customers below it.
+            // At the tick's size and grey, the ⊖ on Start sat in the column
+            // every delivery is ticked in and read as a delete button.
             Button(action: onToggleExcluded) {
                 Image(systemName: stop.excluded
                     ? "arrow.uturn.backward.circle" : "minus.circle")
-                    .font(.system(size: disc, weight: .regular))
-                    .foregroundStyle(stop.excluded ? Color.accentColor : Color.secondary)
+                    .font(.system(size: disc * 0.75, weight: .regular))
+                    .foregroundStyle(stop.excluded ? Color.accentColor : Color(.tertiaryLabel))
                     .frame(width: target, height: target)
                     .contentShape(.rect)
             }
