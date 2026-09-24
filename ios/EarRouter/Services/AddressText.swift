@@ -214,8 +214,53 @@ enum AddressText {
     /// the same one gets written: the driver types "9/Parz.68", the register
     /// answers "Großfeldstraße 9 Parz. 68", and a Stiege comes back as "/1".
     /// Everything that isn't a letter or a digit is noise here, and so is case.
+    ///
+    /// "Haus", "Stiege" and "Stg." are dropped too. The register writes a
+    /// lettered Gemeindebau block as "57 Haus A/1" and a staircase sometimes
+    /// as "Stg. 2"; a printed list writes the same doors as "57/A1" and "/2",
+    /// and a driver may type either. Left in, one side keys as "hausa1" and
+    /// the other as "a1", and the exact door is missed.
     static func subAddressKey(_ sub: String) -> String {
-        germanFold(sub.lowercased()).filter { $0.isLetter || $0.isNumber }
+        let bare = replacing(genericSubWord, in: sub, with: " ")
+        return germanFold(bare.lowercased()).filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static let genericSubWord = try! NSRegularExpression(
+        pattern: #"\b(haus|stiege|stg)\b"#, options: [.caseInsensitive])
+    private static let anySubLabel = try! NSRegularExpression(
+        pattern: #"\b(haus|stiege|stg|obj|objekt|pav|pavillon|parz|parzelle|gruppe|grp)\b"#,
+        options: [.caseInsensitive])
+
+    /// A sub-address as the bare numbers and letters that identify it, with
+    /// every label word gone: "Gruppe F Parz. 7" and "F/7" are both
+    /// ["f", "7"], "Obj. 62A" and "62A" both ["62a"]. Looser than
+    /// `subAddressKey`, so only ever used when that finds nothing, and only
+    /// trusted when it singles out one door.
+    static func subAddressTokens(_ sub: String) -> [String] {
+        let bare = germanFold(replacing(anySubLabel, in: sub, with: " ").lowercased())
+        return bare.split(whereSeparator: { !($0.isLetter || $0.isNumber) }).map(String.init)
+    }
+
+    /// Everything after "{street} {housenumber}" in what the driver typed, one
+    /// entry per slash: "Promenadegasse 57/A1/1" → ["A1", "1"].
+    static func subAddressSegments(_ strasse: String) -> [String] {
+        guard let m = firstMatch(subAddressAll, in: strasse),
+              let tail = m.group(1, in: strasse)
+        else { return [] }
+        return tail.split(separator: "/").map { String($0).trimmed }.filter { !$0.isEmpty }
+    }
+
+    private static let subAddressAll = try! NSRegularExpression(
+        pattern: #"^.+?\s+\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?(?:/|\s+)(.+)$"#)
+
+    /// The register's own sub-address text — "Haus A/1", "Parz. 68", "/2" —
+    /// or `nil` when it answered with a bare housenumber.
+    static func subAddressTail(_ adresse: String) -> String? {
+        guard let m = firstMatch(housenumberTail, in: adresse),
+              let tail = m.group(1, in: adresse)?.trimmed,
+              !tail.isEmpty
+        else { return nil }
+        return tail
     }
 
     /// Folds the German letters a driver may or may not have typed onto one
@@ -259,27 +304,13 @@ enum AddressText {
         return out
     }
 
-    private static let hausWord = try! NSRegularExpression(
-        pattern: #"\bhaus\b"#, options: [.caseInsensitive])
-
     /// The sub-address of an address string as the *register* spells it —
     /// everything after "{street} {housenumber}", normalized by
     /// `subAddressKey`. `nil` when the register answered with a bare
     /// housenumber and no sub-address at all.
-    ///
-    /// A Gemeindebau block lettered A/B/C/D — several buildings sharing one
-    /// housenumber — comes back from the register as "57 Haus A/1", the word
-    /// "Haus" included. No driver ever types that word; a printed list
-    /// already writes the same door as "57/A1". Left in, the two sides key as
-    /// "hausa1" and "a1" — four letters apart — and a `require`d match on the
-    /// exact door silently misses, falling back to whichever neighbouring
-    /// building the plain housenumber query happens to rank first.
     static func subAddressOf(_ adresse: String) -> String? {
-        guard let m = firstMatch(housenumberTail, in: adresse),
-              let tail = m.group(1, in: adresse)?.trimmed
-        else { return nil }
-        let withoutHaus = replacing(hausWord, in: tail, with: "")
-        let key = subAddressKey(withoutHaus)
+        guard let tail = subAddressTail(adresse) else { return nil }
+        let key = subAddressKey(tail)
         return key.isEmpty ? nil : key
     }
 
