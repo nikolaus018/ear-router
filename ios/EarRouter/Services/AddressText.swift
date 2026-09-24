@@ -72,6 +72,14 @@ enum AddressText {
         return "\(street) \(num)"
     }
 
+    /// Just the housenumber (or range) — "129" out of "Gentzgasse 129/1/2",
+    /// "28-34" out of "…Straße 28-34/Haus 2". `nil` for an address that is not
+    /// "street + number" at all.
+    static func housenumberOnly(_ strasse: String) -> String? {
+        guard let m = firstMatch(housenumber, in: strasse) else { return nil }
+        return m.group(2, in: strasse)
+    }
+
     /// Just the street-name portion, no housenumber — used to cross-check
     /// that a geocoder result landed on the street we asked for rather than
     /// a fuzzy string-similarity match onto a different street entirely.

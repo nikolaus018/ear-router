@@ -433,8 +433,32 @@ enum RouteStore {
         _ id: UUID, on route: Route, in context: ModelContext
     ) throws -> Bool {
         guard let stop = route.stops.first(where: { $0.id == id }) else { return false }
-        try setDelivered(stop, false, in: context)
+        let settledAt = stop.settledAt
+        stop.record(nil)
+        reopenLagerIfTickedBy(stop, at: settledAt, on: route)
+        try context.save()
         return true
+    }
+
+    /// Takes back the Lager tick that `tickLagerIfPassed` made along with the
+    /// delivery being undone — and only that one.
+    ///
+    /// The undo exists for a tap made by mistake, and the likeliest one is the
+    /// first door of the day, hit in the yard. That tap also ticked the Lager;
+    /// undone on its own, it left the warehouse marked as loaded before
+    /// anything had been, and Jetzt skipped straight past it. Recognised by
+    /// its time — the automatic tick carries the delivery's own — and left
+    /// alone once any other door has been answered for, because then the van
+    /// really has loaded.
+    private static func reopenLagerIfTickedBy(_ stop: Stop, at settledAt: Date?, on route: Route) {
+        guard stop.kind == .customer, let settledAt,
+              let lager = route.stops.first(where: { $0.kind == .via }),
+              lager.isSettled, lager.settledAt == settledAt,
+              !route.stops.contains(where: {
+                  $0.kind == .customer && $0.isSettled && $0.outcome != .cancelled
+              })
+        else { return }
+        lager.record(nil)
     }
 
     /// Switches a fixed stop off (or back on) for this route.
@@ -726,39 +750,12 @@ enum RouteStore {
                     + "Bitte auf mehrere Touren aufteilen.")
         }
 
-        // --- apply the cheap matches ---
-        // The address is rewritten too, even though matching on it is what got
-        // us here: the match key collapses "Hauptstr. 5" and "Hauptstraße 5"
-        // onto one door on purpose, so an entry can carry a tidied spelling of
-        // an address the store still holds in its old form. Same door, same
-        // coordinates, nothing to geocode — but the list should read back what
-        // the driver last pasted rather than a spelling they already corrected.
-        // Written only when it actually differs, so an unchanged paste is not
-        // turned into a store full of dirty rows.
-        //
-        // Every field is written only where it actually differs, and the entry
-        // counts as "Aktualisiert" only if at least one of them did. Both for
-        // the same reason: re-pasting this morning's unchanged list is the
-        // normal case, and it used to mark every row in the route dirty and
-        // then report "Aktualisiert: 30" for an import that changed nothing.
-        for (entry, stop) in toUpdate {
-            var changed = false
-            if stop.kunde != entry.kunde {
-                // Same door, new spelling of the name: the Globale Infos go with it.
-                let infoKey = StockwerkKey.make(for: stop)
-                stop.kunde = entry.kunde
-                try StockwerkStore.carry(from: infoKey, to: stop, in: context)
-                changed = true
-            }
-            if stop.strasse != entry.strasse { stop.strasse = entry.strasse; changed = true }
-            if stop.plz != entry.plz { stop.plz = entry.plz; changed = true }
-            if stop.paket != entry.paket { stop.paket = entry.paket; changed = true }
-            if stop.notiz != entry.notiz { stop.notiz = entry.notiz; changed = true }
-            if stop.telefon != entry.telefon { stop.telefon = entry.telefon; changed = true }
-            if changed { result.updated += 1 }
-        }
-
         // --- geocode whatever is left ---
+        // Looked up first, written afterwards. Nothing on the route changes
+        // until every address has been tried, because only then is it known
+        // whether this round may delete anything — and so how big the tour
+        // is about to be. See the size check below.
+        //
         // Invalid postcodes are split off first: no network call is worth
         // spending on a PLZ that cannot possibly be an Austrian address.
         var needsGeocode: [(CustomerJSON, Stop?)] = []
@@ -771,14 +768,7 @@ enum RouteStore {
             needsGeocode.append((u.entry, u.existing))
         }
 
-        // Handed out one at a time as stops are inserted. Read off the route
-        // inside the loop — which is what this did — every insert re-scanned
-        // every stop on the route to find the highest index, and relied on
-        // SwiftData having already threaded the new stop onto the inverse
-        // relationship for the next one to see it. A counter needs neither.
-        var nextIndex = nextOrderIndex(in: route)
-
-        var moved = false
+        var resolved: [(entry: CustomerJSON, existing: Stop?, hit: GeocodeResult)] = []
         for (index, (entry, existingStop)) in needsGeocode.enumerated() {
             // Checked here as well as by the lookup below: an address already
             // in the cache comes back without ever reaching a cancellation
@@ -812,7 +802,89 @@ enum RouteStore {
                 result.geocodeFailures.append(failure)
                 continue
             }
+            resolved.append((entry, existingStop, hit))
+        }
 
+        // If anything failed, we cannot tell "this address was genuinely
+        // removed" from "this is an edited address that just failed to
+        // resolve" — both look identical here, as "not in `matched`". So a
+        // round with any failure deletes nothing at all, rather than risk
+        // dropping a customer who was only ever the victim of an unrelated typo
+        // elsewhere in the same paste.
+        //
+        // Validation failures count, not just geocoding ones: an entry that
+        // never passed validation never got a chance to match anything either.
+        // Without that, a paste where *every* entry was rejected has zero
+        // geocode failures, nothing skips deletion, and every customer stop on
+        // the route is deleted as "no longer present" — a whole tour wiped by
+        // one malformed paste, which is the worst thing this screen could do.
+        result.deletionsSkipped =
+            !result.geocodeFailures.isEmpty || !result.validationFailures.isEmpty
+            || result.cancelled
+
+        // The size check again, now with what this round will really do. The
+        // one above assumed every stop the paste drops goes — but a single
+        // address that could not be found keeps all of them, and a tour of
+        // sixty open stops re-pasted as sixty new ones with one typo came out
+        // at 119: past what OSRM will plan, flagged "Route nicht aktuell" for
+        // good, with a retry that could never succeed. Refused here, before
+        // anything is written; every lookup that got this far is cached, so
+        // the next attempt costs nothing.
+        let inserting = resolved.count { $0.existing == nil }
+        let finalTotal =
+            existing.count - (result.deletionsSkipped ? 0 : dropping) + inserting
+        guard finalTotal <= maxBulkStops else {
+            let why = result.deletionsSkipped
+                ? "Weil nicht alle Adressen übernommen werden konnten, wird diesmal "
+                    + "kein Stopp entfernt. Bitte die fehlerhaften Adressen korrigieren "
+                    + "oder die Tour aufteilen."
+                : "Bitte auf mehrere Touren aufteilen."
+            throw AppError.message(
+                "Die Tour hätte danach \(finalTotal) Kundenstopps, max. \(maxBulkStops). "
+                    + why)
+        }
+
+        // --- apply the cheap matches ---
+        // The address is rewritten too, even though matching on it is what got
+        // us here: the match key collapses "Hauptstr. 5" and "Hauptstraße 5"
+        // onto one door on purpose, so an entry can carry a tidied spelling of
+        // an address the store still holds in its old form. Same door, same
+        // coordinates, nothing to geocode — but the list should read back what
+        // the driver last pasted rather than a spelling they already corrected.
+        // Written only when it actually differs, so an unchanged paste is not
+        // turned into a store full of dirty rows.
+        //
+        // Every field is written only where it actually differs, and the entry
+        // counts as "Aktualisiert" only if at least one of them did. Both for
+        // the same reason: re-pasting this morning's unchanged list is the
+        // normal case, and it used to mark every row in the route dirty and
+        // then report "Aktualisiert: 30" for an import that changed nothing.
+        for (entry, stop) in toUpdate {
+            var changed = false
+            if stop.kunde != entry.kunde {
+                // Same door, new spelling of the name: the Globale Infos go with it.
+                let infoKey = StockwerkKey.make(for: stop)
+                stop.kunde = entry.kunde
+                try StockwerkStore.carry(from: infoKey, to: stop, in: context)
+                changed = true
+            }
+            if stop.strasse != entry.strasse { stop.strasse = entry.strasse; changed = true }
+            if stop.plz != entry.plz { stop.plz = entry.plz; changed = true }
+            if stop.paket != entry.paket { stop.paket = entry.paket; changed = true }
+            if stop.notiz != entry.notiz { stop.notiz = entry.notiz; changed = true }
+            if stop.telefon != entry.telefon { stop.telefon = entry.telefon; changed = true }
+            if changed { result.updated += 1 }
+        }
+
+        // Handed out one at a time as stops are inserted. Read off the route
+        // inside the loop — which is what this did — every insert re-scanned
+        // every stop on the route to find the highest index, and relied on
+        // SwiftData having already threaded the new stop onto the inverse
+        // relationship for the next one to see it. A counter needs neither.
+        var nextIndex = nextOrderIndex(in: route)
+
+        var moved = false
+        for (entry, existingStop, hit) in resolved {
             let precision: Precision? = hit.precision == .exact ? nil : hit.precision
             if let precision {
                 result.approximate.append((entry.kunde, precision))
@@ -851,29 +923,13 @@ enum RouteStore {
 
         // --- delete what the paste dropped ---
         //
-        // If anything failed, we cannot tell "this address was genuinely
-        // removed" from "this is an edited address that just failed to
-        // resolve" — both look identical here, as "not in `matched`". So a
-        // round with any failure deletes nothing at all, rather than risk
-        // dropping a customer who was only ever the victim of an unrelated typo
-        // elsewhere in the same paste.
-        //
-        // Validation failures count, not just geocoding ones: an entry that
-        // never passed validation never got a chance to match anything either.
-        // Without that, a paste where *every* entry was rejected has zero
-        // geocode failures, nothing skips deletion, and every customer stop on
-        // the route is deleted as "no longer present" — a whole tour wiped by
-        // one malformed paste, which is the worst thing this screen could do.
-        //
-        // And never a stop the driver has already answered for. A list is what
-        // is still to do: the portal only hands over deliveries that are still
-        // open, and a list re-sent at midday leaves out the doors already
-        // done. Read as "no longer on the round", every one of them was
-        // deleted — outcome, time and all — the day's record of who got a
-        // meal, taken out of the tour a report is about to be written from.
-        result.deletionsSkipped =
-            !result.geocodeFailures.isEmpty || !result.validationFailures.isEmpty
-            || result.cancelled
+        // Only when nothing failed — see `deletionsSkipped` above. And never a
+        // stop the driver has already answered for. A list is what is still
+        // to do: the portal only hands over deliveries that are still open,
+        // and a list re-sent at midday leaves out the doors already done. Read
+        // as "no longer on the round", every one of them was deleted —
+        // outcome, time and all — the day's record of who got a meal, taken
+        // out of the tour a report is about to be written from.
         if !result.deletionsSkipped {
             for stop in existing where !matched.contains(stop.id) && !stop.isSettled {
                 context.delete(stop)
@@ -1165,12 +1221,19 @@ enum RouteStore {
         // Whatever is still unclaimed at an address once every name has been
         // placed: an edit of that stop rather than a new one, which is right
         // for a customer whose name was corrected at an unchanged address.
+        //
+        // An open stop before a settled one. Two households at one door, one of
+        // them already delivered, and a midday list carrying only the other —
+        // under a slightly different spelling of its name: taken in stored
+        // order, the entry claimed the delivered household's stop, so the
+        // customer still waiting read as delivered, and their own open stop
+        // was deleted as dropped from the list.
         for i in open where movedFrom[i] == nil {
             let key = AddressKey(entries[i].strasse, entries[i].plz)
             guard var bucket = byAddress[key] else { continue }
             bucket.removeAll { taken.contains($0.id) }
-            if !bucket.isEmpty {
-                let stop = bucket.removeFirst()
+            if let pos = bucket.firstIndex(where: { !$0.isSettled }) ?? bucket.indices.first {
+                let stop = bucket.remove(at: pos)
                 atAddress[i] = stop
                 taken.insert(stop.id)
             }

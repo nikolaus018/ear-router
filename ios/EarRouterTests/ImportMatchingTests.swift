@@ -379,12 +379,54 @@ struct ImportMatchingTests {
         #expect(route.customerCount == 1)
     }
 
+    /// The room a paste frees is only freed if the paste may delete — and one
+    /// address that cannot be found means it may not. Sixty open stops
+    /// re-pasted as sixty new ones plus one unfindable entry used to keep all
+    /// sixty and add the new ones on top: 120 stops, past what OSRM will plan.
+    /// Refused instead, with nothing written.
+    @Test func aPasteThatCannotDeleteIsCountedWithoutItsDeletions() async throws {
+        let open = (0..<60).map { stop("Alt \($0)", "Altgasse \($0)") }
+        let (route, context) = try makeRoute(open)
+        // Seeded exact answers, so the lookups resolve from the cache and this
+        // stays offline.
+        var fresh: [CustomerJSON] = []
+        for i in 0..<60 {
+            let street = "Limitprobegasse \(i)"
+            await GeocodeCache.shared.store(
+                Geocoder.cacheKey(strasse: street, plz: "1180"),
+                lat: 48.23, lon: 16.32, displayName: street, precision: .exact)
+            fresh.append(entry("Neu \(i)", street))
+        }
+        fresh.append(entry("Tippfehler", "Irgendwo 1", "0999"))
+
+        await #expect(throws: AppError.self) {
+            _ = try await RouteStore.importJSON(fresh, into: route, in: context, reroute: false)
+        }
+        #expect(route.customerCount == 60)
+        #expect(route.customerStops.allSatisfy { $0.kunde?.hasPrefix("Alt") == true })
+    }
+
+    /// A renamed entry at a shared door takes the household still waiting,
+    /// not the one already delivered.
+    @Test func aRenameAtASharedDoorPrefersTheOpenStop() throws {
+        let done = stop("Fam. Aigner", "Gentzgasse 129/1", delivered: true)
+        let waiting = stop("Fam. Berger", "Gentzgasse 129/1")
+        let (route, _) = try makeRoute([done, waiting])
+
+        // The midday list: only the open household, its name spelled anew.
+        let m = RouteStore.match(
+            [entry("Familie Berger", "Gentzgasse 129/1")], against: route.customerStops)
+
+        #expect(m.toUpdate.map { $0.1.id } == [waiting.id])
+        #expect(m.matched == [waiting.id])
+    }
+
     /// A paste that replaces open stops frees their room first.
     @Test func stopsThePasteDropsDoNotCountAgainstTheLimit() async throws {
         let open = stop("Fam. Gruber", "Gentzgasse 129")
         let (route, context) = try makeRoute([open])
         let full = (0..<maxBulkStops).map { entry("K\($0)", "Gasse \($0)", "0999") }
-        // PLZ 0999 fails validation before any lookup, so this stays offline;
+        // PLZ 0999 is refused before any lookup, so this stays offline;
         // what matters is that the size check let it through.
         let result = try await RouteStore.importJSON(full, into: route, in: context)
         #expect(result.inserted == 0)

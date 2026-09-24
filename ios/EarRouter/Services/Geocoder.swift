@@ -65,7 +65,7 @@ actor Geocoder {
         // ways and all resolve identically, so keying on the raw text would
         // pay a throttled round trip again for each spelling.
         let normalized = AddressText.normalize(strasse)
-        let key = "\(normalized.lowercased()), \(place.lowercased())"
+        let key = Self.cacheKey(strasse: strasse, plz: plz)
 
         if let hit = await GeocodeCache.shared.lookup(key) {
             return GeocodeResult(
@@ -119,16 +119,17 @@ actor Geocoder {
         // finds nothing.
         let simplified = AddressText.simplifyHousenumber(normalized)
         let wantedStreet = AddressText.matchKey(AddressText.streetNameOnly(normalized))
+        let wantedNumber = AddressText.housenumberOnly(normalized)
 
         try Task.checkCancellation()
         var result = try await nominatimSearchOne(
             query: "\(simplified), \(place)",
-            wantedStreet: wantedStreet, plz: plz)
+            wantedStreet: wantedStreet, wantedNumber: wantedNumber, plz: plz)
 
         if result == nil, simplified != normalized {
             result = try await nominatimSearchOne(
                 query: "\(normalized), \(place)",
-                wantedStreet: wantedStreet, plz: plz)
+                wantedStreet: wantedStreet, wantedNumber: wantedNumber, plz: plz)
         }
 
         // Last resort: the street itself was not found at all (a typo, or a
@@ -154,6 +155,15 @@ actor Geocoder {
             key, lat: result.lat, lon: result.lon,
             displayName: result.displayName, precision: result.precision)
         return result
+    }
+
+    /// What `GeocodeCache` files an address under: the normalized street and
+    /// the place suffix, lowercased. One definition, so a test that seeds the
+    /// cache to stay off the network cannot drift from the key a lookup asks
+    /// for.
+    static func cacheKey(strasse: String, plz: String) -> String {
+        let place = Postcodes.placeSuffix(for: plz)
+        return "\(AddressText.normalize(strasse).lowercased()), \(place.lowercased())"
     }
 
     // MARK: - Entrance
@@ -754,8 +764,22 @@ actor Geocoder {
         return true
     }
 
+    /// Whether the house number Nominatim placed is the one that was asked
+    /// for. Its search is fuzzy about numbers as about everything else: asked
+    /// for a number it does not have, it can answer with a neighbour's, and a
+    /// hit that merely *has* a house number was taken as an exact one — a
+    /// confident pin on the wrong house, with no "≈" to say so.
+    ///
+    /// Compared through `entranceNumber`, the register's own reading of a
+    /// number, so "82-92" is the house "82" and "12a" is not "12". An address
+    /// asked for with no number at all has nothing to check.
+    static func houseNumberMatches(asked: String?, got: String) -> Bool {
+        guard let asked, let want = entranceNumber(asked) else { return true }
+        return entranceNumber(got) == want
+    }
+
     private func nominatimSearchOne(
-        query: String, wantedStreet: String, plz: String
+        query: String, wantedStreet: String, wantedNumber: String?, plz: String
     ) async throws -> GeocodeResult? {
         guard let top = try await nominatimRawSearch(query) else { return nil }
         guard Self.hitMatches(
@@ -785,7 +809,8 @@ actor Geocoder {
         }
 
         let precision: Precision
-        if top.address?.houseNumber != nil {
+        if let number = top.address?.houseNumber,
+           Self.houseNumberMatches(asked: wantedNumber, got: number) {
             precision = .exact
         } else if top.address?.road != nil {
             precision = .street

@@ -250,4 +250,44 @@ struct DeliveryOutcomeTests {
         try RouteStore.record(.delivered, for: a, in: context)
         #expect(!lager.isSettled)
     }
+
+    /// The undo exists for a mistaken tap, and the likeliest one is the first
+    /// door, hit in the yard. Taking it back takes back the Lager it ticked.
+    @Test func undoingTheFirstDoorReopensTheLagerItTicked() throws {
+        let context = try store()
+        let route = try RouteStore.createRoute(name: "Test", in: context)
+        let a = customer("A")
+        a.orderIndex = 10
+        a.route = route
+        context.insert(a)
+
+        try RouteStore.setDelivered(a, true, in: context)
+        let lager = try #require(route.stops.first { $0.kind == .via })
+        #expect(lager.isSettled)
+
+        #expect(try RouteStore.undoDelivery(a.id, on: route, in: context))
+        #expect(!lager.isSettled)
+        #expect(route.nextOpenStop?.kunde == "Lager")
+    }
+
+    /// Once another door has been answered for, the van has loaded, whichever
+    /// tick is taken back.
+    @Test func undoingALaterDoorLeavesTheLagerTicked() throws {
+        let context = try store()
+        let route = try RouteStore.createRoute(name: "Test", in: context)
+        let a = customer("A"), b = customer("B")
+        a.orderIndex = 10
+        b.orderIndex = 11
+        for s in [a, b] {
+            s.route = route
+            context.insert(s)
+        }
+
+        try RouteStore.record(.delivered, for: a, at: Date(timeIntervalSince1970: 1_000), in: context)
+        try RouteStore.record(.delivered, for: b, at: Date(timeIntervalSince1970: 2_000), in: context)
+        #expect(try RouteStore.undoDelivery(a.id, on: route, in: context))
+
+        let lager = try #require(route.stops.first { $0.kind == .via })
+        #expect(lager.isSettled)
+    }
 }
