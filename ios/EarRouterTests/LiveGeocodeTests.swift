@@ -26,6 +26,8 @@ import Testing
         var precision: String?
         var display: String?
         var error: String?
+        var entranceLat: Double?
+        var entranceLon: Double?
     }
 
     static var casesPath: String? { ProcessInfo.processInfo.environment["LIVE_GEOCODE_CASES"] }
@@ -53,6 +55,10 @@ import Testing
                         o.precision = "\(r.precision)"; o.display = r.displayName
                     } catch {
                         o.error = error.localizedDescription
+                    }
+                    if c.kind == "user",
+                       let e = await Geocoder.shared.entrance(strasse: c.input, plz: c.plz) {
+                        o.entranceLat = e.lat; o.entranceLon = e.lon
                     }
                     return o
                 }

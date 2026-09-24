@@ -29,8 +29,10 @@ struct SubAddressMatchingTests {
             streetKey: AddressText.matchKey(AddressText.streetNameOnly(simplified)),
             requireSub: AddressText.housenumberWithSub(normalized)?.key,
             segments: AddressText.subAddressSegments(normalized),
-            number: simplified.split(separator: " ").last
-                .flatMap { Geocoder.entranceNumber(String($0)) }
+            numbers: Geocoder.askedNumbers(
+                simplified.split(separator: " ").last
+                    .flatMap { Geocoder.entranceNumber(String($0)) },
+                segments: AddressText.subAddressSegments(normalized))
         )?.properties.adresse
     }
 
@@ -121,11 +123,22 @@ struct SubAddressMatchingTests {
 
     // MARK: - isUncertainDoor
 
+    @Test func aLetterTypedApartFromItsNumberStillCounts() {
+        #expect(Geocoder.askedNumbers("12", segments: ["A"]) == ["12", "12a"])
+        #expect(Geocoder.askedNumbers("12", segments: ["A", "3"]) == ["12", "12a"])
+        #expect(Geocoder.askedNumbers("12", segments: ["3"]) == ["12"])
+        #expect(Geocoder.askedNumbers("12a", segments: ["B"]) == ["12a"])
+        let a = f("Doningasse 8B", number: "8B", plz: "1220", ranking: 1e-08)
+        #expect(!Geocoder.isUncertainDoor(
+            a, among: [a], streetKey: AddressText.matchKey("Doningasse"),
+            numbers: Geocoder.askedNumbers("8", segments: ["B"]), subAsked: false))
+    }
+
     @Test func aNeighbouringLetteredNumberIsOnlyApproximate() {
         let b = f("Doningasse 8B", number: "8B", plz: "1220", ranking: 1e-08)
         #expect(Geocoder.isUncertainDoor(
             b, among: [b], streetKey: AddressText.matchKey("Doningasse"),
-            number: "8", subAsked: false))
+            numbers: ["8"], subAsked: false))
     }
 
     @Test func theBareNumberOfASplitSiteIsOnlyApproximate() {
@@ -135,10 +148,10 @@ struct SubAddressMatchingTests {
                     at: [16.2765, 48.1702])
         let key = AddressText.matchKey("Wolkersbergenstraße")
         #expect(Geocoder.isUncertainDoor(
-            bare, among: [bare, obj], streetKey: key, number: "1", subAsked: true))
+            bare, among: [bare, obj], streetKey: key, numbers: ["1"], subAsked: true))
         // Nothing asked beyond the number: the bare number is the answer.
         #expect(!Geocoder.isUncertainDoor(
-            bare, among: [bare, obj], streetKey: key, number: "1", subAsked: false))
+            bare, among: [bare, obj], streetKey: key, numbers: ["1"], subAsked: false))
     }
 
     @Test func theStiegenOfOneHouseDoNotMakeItsNumberUncertain() {
@@ -150,7 +163,7 @@ struct SubAddressMatchingTests {
                        at: [16.3342, 48.2291])
         #expect(!Geocoder.isUncertainDoor(
             bare, among: [bare, stiege], streetKey: AddressText.matchKey("Gentzgasse"),
-            number: "129", subAsked: true))
+            numbers: ["129"], subAsked: true))
     }
 
     @Test func aHouseTheRegisterDoesNotSplitStaysExact() {
@@ -160,7 +173,7 @@ struct SubAddressMatchingTests {
         let next = f("Pappenheimgasse 67/1", number: "67/1", plz: "1200", ranking: 1.0067)
         #expect(!Geocoder.isUncertainDoor(
             house, among: [house, next], streetKey: AddressText.matchKey("Pappenheimgasse"),
-            number: "66", subAsked: true))
+            numbers: ["66"], subAsked: true))
     }
 
     // MARK: - AddressText

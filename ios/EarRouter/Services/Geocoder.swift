@@ -173,8 +173,17 @@ actor Geocoder {
     /// an answer and is asked again next time.
     func entrance(strasse: String, plz: String) async -> (lat: Double, lon: Double)? {
         guard Postcodes.isVienna(plz) else { return nil }
-        let simplified = AddressText.simplifyHousenumber(AddressText.normalize(strasse))
-        let key = "\(AddressText.matchKey(simplified))|\(plz)"
+        let normalized = AddressText.normalize(strasse)
+        let simplified = AddressText.simplifyHousenumber(normalized)
+        // "Töllergasse 26 A" is house 26A, whose entrance is its own — see
+        // `askedNumbers`. Tried first, and part of the key.
+        let lettered = simplified.split(separator: " ").last
+            .flatMap { Self.entranceNumber(String($0)) }
+            .flatMap { n in
+                Self.askedNumbers(n, segments: AddressText.subAddressSegments(normalized))
+                    .first { $0 != n }
+            }
+        let key = "\(AddressText.matchKey(simplified))\(lettered ?? "")|\(plz)"
         if let known = entrances[key] { return known.point }
 
         // An empty answer is as good as none: the register returns nothing at
@@ -215,7 +224,8 @@ actor Geocoder {
 
         guard let candidates = await entranceFetch(street: street, number: asked, plz: plz)
         else { return nil }
-        let point = Self.pickEntrance(candidates, number: asked, plz: plz)
+        let point = lettered.flatMap { Self.pickEntrance(candidates, number: $0, plz: plz) }
+            ?? Self.pickEntrance(candidates, number: asked, plz: plz)
         entrances[key] = Known(point: point)
         return point
     }
@@ -357,27 +367,53 @@ actor Geocoder {
         let sub = AddressText.housenumberWithSub(normalized)
         let number = simplified.split(separator: " ").last
             .flatMap { Self.entranceNumber(String($0)) }
+        let segments = AddressText.subAddressSegments(normalized)
+        let numbers = Self.askedNumbers(number, segments: segments)
 
         if let sub {
             if let hit = await ogdSearchOne(
                 query: sub.query, plz: plz, subCheck: .require(sub.key),
-                segments: AddressText.subAddressSegments(normalized), number: number) {
+                segments: segments, numbers: numbers) {
                 return hit
             }
+        }
+
+        // "Töllergasse 26 A" and "26/B" are the houses 26A and 26B when the
+        // register has them — not house 26, which is where they used to land,
+        // as exact. Only an answer carrying that lettered number is taken.
+        if let number, let lettered = numbers.first(where: { $0 != number }),
+           let hit = await ogdSearchOne(
+               query: "\(AddressText.streetNameOnly(simplified)) \(lettered.uppercased())",
+               plz: plz, subCheck: .absent, numbers: [lettered]),
+           hit.precision == .exact {
+            return hit
         }
 
         let fallbackCheck: SubCheck = sub.map { .downgrade($0.key) } ?? .absent
 
         if let hit = await ogdSearchOne(
-            query: simplified, plz: plz, subCheck: fallbackCheck, number: number) {
+            query: simplified, plz: plz, subCheck: fallbackCheck, numbers: numbers) {
             return hit
         }
         if simplified != normalized,
            let hit = await ogdSearchOne(
-            query: normalized, plz: plz, subCheck: fallbackCheck, number: number) {
+            query: normalized, plz: plz, subCheck: fallbackCheck, numbers: numbers) {
             return hit
         }
         return nil
+    }
+
+    /// The house numbers an answer may carry and still be the one asked for:
+    /// "12" — and "12a" too when the letter was typed apart from it,
+    /// "Hauptstraße 12 A" or "12/A/3". Without that the register's own "12A"
+    /// was demoted to "≈" as a neighbouring number.
+    static func askedNumbers(_ number: String?, segments: [String]) -> Set<String> {
+        guard let number else { return [] }
+        guard number.last?.isNumber == true,
+              let first = segments.first?.split(separator: " ").first,
+              first.count == 1, let letter = first.first, letter.isLetter
+        else { return [number] }
+        return [number, number + letter.lowercased()]
     }
 
     /// What the caller knows about the address's sub-address, and how strictly
@@ -413,21 +449,21 @@ actor Geocoder {
 
     private func ogdSearchOne(
         query: String, plz: String, subCheck: SubCheck, segments: [String] = [],
-        number: String?
+        numbers: Set<String>
     ) async -> GeocodeResult? {
         guard let features = await ogdFetch(query) else { return nil }
         // `matchKey`, not a lowercased raw string — see `pickFeature`.
         let ourStreet = AddressText.matchKey(AddressText.streetNameOnly(query))
         guard let best = Self.pickFeature(
             features, plz: plz, streetKey: ourStreet, requireSub: subCheck.required,
-            segments: segments, number: number)
+            segments: segments, numbers: numbers)
         else { return nil }
 
         guard let hit = Self.result(from: best, query: query, plz: plz, subCheck: subCheck)
         else { return nil }
         guard hit.precision == .exact,
               Self.isUncertainDoor(
-                best, among: features, streetKey: ourStreet, number: number,
+                best, among: features, streetKey: ourStreet, numbers: numbers,
                 subAsked: { if case .downgrade = subCheck { return true }; return false }())
         else { return hit }
         log.debug("OGD answer is not provably the door asked for, downgrading to street precision")
@@ -449,13 +485,13 @@ actor Geocoder {
     /// on it is a Stiege inside it that no register knows.
     static func isUncertainDoor(
         _ chosen: OGDFeature, among features: [OGDFeature], streetKey: String,
-        number: String?, subAsked: Bool
+        numbers: Set<String>, subAsked: Bool
     ) -> Bool {
-        guard let number else { return false }
+        guard !numbers.isEmpty else { return false }
         func numberOf(_ f: OGDFeature) -> String? {
             f.properties.streetNumber.flatMap(entranceNumber)
         }
-        if let theirs = numberOf(chosen), theirs != number { return true }
+        if let theirs = numberOf(chosen), !numbers.contains(theirs) { return true }
         guard subAsked,
               chosen.properties.adresse.flatMap(AddressText.subAddressTail) == nil
         else { return false }
@@ -464,7 +500,7 @@ actor Geocoder {
         // dozen metres from the number's own point, and "129/5/12" with its
         // Stock and Tür is still that house.
         return features.contains {
-            numberOf($0) == number
+            numberOf($0).map(numbers.contains) == true
                 && AddressText.matchKey($0.properties.streetName ?? "") == streetKey
                 && ($0.properties.ranking ?? .greatestFiniteMagnitude) < 1.0
                 && $0.properties.adresse.flatMap(AddressText.subAddressTail) != nil
@@ -569,7 +605,7 @@ actor Geocoder {
     /// the right building was thrown away and a neighbour taken instead.
     static func pickFeature(
         _ features: [OGDFeature], plz: String, streetKey: String, requireSub: String?,
-        segments: [String] = [], number: String? = nil
+        segments: [String] = [], numbers: Set<String> = []
     ) -> OGDFeature? {
         let bezirk = Districts.byPlz[plz]?.bezirk
         let inDistrict = features.filter {
@@ -596,7 +632,7 @@ actor Geocoder {
         }
         if let exact = pick(
             inDistrict.filter { name($0) == streetKey }, requireSub: requireSub,
-            segments: segments, number: number) {
+            segments: segments, numbers: numbers) {
             return exact
         }
         return pick(
@@ -604,11 +640,11 @@ actor Geocoder {
                 ($0.properties.ranking ?? .greatestFiniteMagnitude) < 1.0
                     && AddressText.isOneTypoApart(name($0), streetKey)
             },
-            requireSub: requireSub, segments: segments, number: number)
+            requireSub: requireSub, segments: segments, numbers: numbers)
     }
 
     private static func pick(
-        _ features: [OGDFeature], requireSub: String?, segments: [String], number: String?
+        _ features: [OGDFeature], requireSub: String?, segments: [String], numbers: Set<String>
     ) -> OGDFeature? {
         if let hit = pickExactSub(features, requireSub: requireSub, segments: segments) {
             return hit
@@ -624,8 +660,8 @@ actor Geocoder {
         // for "8/1".
         let placed = features.filter {
             ($0.properties.ranking ?? .greatestFiniteMagnitude) < 1.0
-                && (number == nil
-                    || $0.properties.streetNumber.flatMap(entranceNumber) == number)
+                && (numbers.isEmpty
+                    || $0.properties.streetNumber.flatMap(entranceNumber).map(numbers.contains) == true)
         }
         for n in [1, 2] where segments.count >= n {
             let wanted = AddressText.subAddressTokens(segments.prefix(n).joined(separator: "/"))
