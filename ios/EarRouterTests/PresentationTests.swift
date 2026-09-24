@@ -161,3 +161,33 @@ struct StopBadgeKindTests {
         #expect(StopNumberBadge.Kind.of(customer(.notHome), isNext: true) == .missed)
     }
 }
+
+/// What goes to the lock screen has to fit ActivityKit's 4 KB, or the update
+/// is refused and the previous door stays on screen.
+struct LiveActivitySizeTests {
+
+    @Test func theLongestPossibleStateStillFits() throws {
+        let worst = String(repeating: "🍲", count: 1000)
+        let state = StopActivityAttributes.ContentState(
+            kunde: StopActivity.capped(worst) ?? "",
+            adresse: StopActivity.capped(worst) ?? "",
+            paket: StopActivity.capped(worst),
+            notiz: StopActivity.capped(String(repeating: "/\n", count: 1000)),
+            stockwerk: StopActivity.capped(worst),
+            kundeninfo: StopActivity.capped(worst),
+            number: 97)
+        #expect(try JSONEncoder().encode(state).count < 4096)
+    }
+
+    @Test func shortTextIsLeftAlone() {
+        #expect(StopActivity.capped("  Hund  ") == "Hund")
+        #expect(StopActivity.capped("   ") == nil)
+        #expect(StopActivity.capped(nil) == nil)
+    }
+
+    @Test func aCutNeverSplitsACharacter() throws {
+        let cut = try #require(StopActivity.capped(String(repeating: "ü", count: 400)))
+        #expect(cut.utf8.count <= StopActivity.fieldBytes)
+        #expect(cut.allSatisfy { $0 == "ü" })
+    }
+}

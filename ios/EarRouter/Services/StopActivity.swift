@@ -55,21 +55,43 @@ enum StopActivity {
         // same lookup the Jetzt tab and Siri do; a stop with nothing stored
         // simply carries neither.
         let info = (try? StockwerkStore.note(for: stop, in: context)) ?? nil
+        // Every free-text field capped: ActivityKit refuses a state over 4 KB
+        // outright, and the widget shows one to three lines of each anyway. The
+        // Paket alone used to be — a 1000-character Notiz beside a long Globale
+        // Info went over, the update was refused, and the lock screen went on
+        // showing the door before.
         let state = StopActivityAttributes.ContentState(
-            kunde: stop.kunde?.trimmed.nilIfEmpty ?? "Stopp",
-            adresse: stop.strasse?.trimmed.nilIfEmpty ?? "",
-            // Capped: ActivityKit refuses a state over 4 KB outright, and the
-            // widget shows one line of it anyway.
-            paket: stop.displayPaket?.trimmed.nilIfEmpty.map { String($0.prefix(300)) },
-            notiz: stop.notiz?.trimmed.nilIfEmpty,
-            stockwerk: info?.stockwerk?.trimmed.nilIfEmpty.map(Format.floor),
-            kundeninfo: info?.notiz?.trimmed.nilIfEmpty,
+            kunde: Self.capped(stop.kunde) ?? "Stopp",
+            adresse: Self.capped(stop.strasse) ?? "",
+            paket: Self.capped(stop.displayPaket),
+            notiz: Self.capped(stop.notiz),
+            stockwerk: Self.capped(info?.stockwerk).map(Format.floor),
+            kundeninfo: Self.capped(info?.notiz),
             number: snapshot.number(stop))
         enqueue(tour: route.name, state: state)
     }
 
     /// Takes the activity down — the tour is finished, deleted, or there is no
     /// longer one running.
+    /// Trimmed, and cut to at most `fieldBytes` of UTF-8 on a character
+    /// boundary. Bytes rather than characters, because the limit is on the
+    /// encoded state: 250 characters of emoji are a kilobyte. Six fields at
+    /// this cap stay inside 4 KB even with every byte escaped in the JSON.
+    nonisolated static func capped(_ text: String?) -> String? {
+        guard let text = text?.trimmed.nilIfEmpty else { return nil }
+        guard text.utf8.count > fieldBytes else { return text }
+        var out = ""
+        var bytes = 0
+        for c in text {
+            bytes += c.utf8.count
+            if bytes > fieldBytes { break }
+            out.append(c)
+        }
+        return out.nilIfEmpty
+    }
+
+    nonisolated static let fieldBytes = 300
+
     static func end() {
         enqueue(tour: nil, state: nil)
     }
