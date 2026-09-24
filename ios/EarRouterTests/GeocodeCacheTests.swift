@@ -180,6 +180,24 @@ struct GeocodeCacheTests {
         #expect(!String(decoding: onDisk, as: UTF8.self).contains("gentzgasse"))
     }
 
+    /// A file of this generation written before only exact answers were kept.
+    /// Its approximations have not been served since, and must not go on
+    /// being counted as saved addresses or rewritten on every save either.
+    @Test func approximationsInAnOlderFileAreDroppedOnLoad() async throws {
+        let (_, dir) = try makeCache()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = """
+            {"generation":5,"misses":{},"hits":{\
+            "exakt, 1180 wien":{"lat":48.2,"lon":16.3,"displayName":"a","precision":"exact","cachedAt":0},\
+            "ungefähr, 1180 wien":{"lat":48.2,"lon":16.3,"displayName":"b","precision":"street","cachedAt":0}}}
+            """
+        try Data(file.utf8).write(to: dir.appending(path: "geocode-cache.json"))
+
+        let cache = GeocodeCache(directory: dir)
+        #expect(await cache.count == 1)
+        #expect(await cache.lookup("exakt, 1180 wien") != nil)
+    }
+
     // MARK: - The ceiling
 
     /// The only bound anything in this app has. Past it the table is trimmed a

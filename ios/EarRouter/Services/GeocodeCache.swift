@@ -197,7 +197,12 @@ actor GeocodeCache {
             save()
             return
         }
-        hits = payload.hits
+        // Exact answers only, the same rule `store` keeps. A file written
+        // before that rule still holds approximations, which `lookup` has
+        // never served since — but they stayed in the table, counted in
+        // Erweitert's "Gespeicherte Adressen" and rewritten on every save.
+        hits = payload.hits.filter { $0.value.precision == .exact }
+        if hits.count != payload.hits.count { dirty = true }
         // Expired negatives are dead weight — past their TTL they are skipped
         // anyway, so they only ever sit there. Pruned on load rather than on a
         // timer: this table gains a handful of rows a day, and a cold launch
