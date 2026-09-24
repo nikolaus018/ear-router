@@ -42,8 +42,10 @@ enum RouteOptimizer {
         /// Where the driver is, from a recent GPS fix — set only before the
         /// first door. Only ever consulted for `start`, and only when `start`
         /// is switched off: a driver who disables the depot address is not
-        /// skipping a start, they are saying "start from where I am". Its id
-        /// is its own, so the switched-off Start row carries no leg for it.
+        /// skipping a start, they are saying "start from where I am". It
+        /// carries the Start row's id, so the drive from here lands on that
+        /// row: hidden, like every switched-off row's leg, but counted in the
+        /// kilometres and arrival times — see `Stop.legIsDriven`.
         var currentLocation: StopCoord?
 
         /// The fixed points the tour actually drives, in order, before any
@@ -488,7 +490,8 @@ enum RouteOptimizer {
         if nodes.driven.isEmpty,
            let coordinate = LocationAuthorization.shared.recentFix(within: startFixMaxAge) {
             nodes.currentLocation = StopCoord(
-                id: UUID(), lat: coordinate.latitude, lon: coordinate.longitude)
+                id: nodes.start?.coord.id ?? UUID(),
+                lat: coordinate.latitude, lon: coordinate.longitude)
         }
         return (nodes, fingerprint(route))
     }

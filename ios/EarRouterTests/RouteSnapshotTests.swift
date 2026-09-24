@@ -125,6 +125,20 @@ struct RouteSnapshotTests {
         #expect(r.totals.minutes == snap.totalMinutes)
     }
 
+    /// With Start switched off, its row carries the drive from where the
+    /// driver is — hidden on the row, but part of the day.
+    @Test func aSwitchedOffStartsLegIsTheDriveFromHere() throws {
+        let r = try route([
+            fixed(.start, excluded: true, km: 7),
+            fixed(.via, excluded: true, km: 15),
+            customer("A", at: 1, km: 2, minutes: 4),
+            customer("B", at: 2),
+        ])
+        let snap = RouteSnapshot(r)
+        #expect(snap.totalKm == 9)
+        #expect(r.totals.km == 9)
+    }
+
     // MARK: - What is still to drive
 
     /// Before the first delivery there is nothing behind the driver, so the

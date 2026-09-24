@@ -129,7 +129,7 @@ extension Route {
     /// pass — the three it used to take each allocated an intermediate array.
     var totals: (km: Double, minutes: Double) {
         var km = 0.0, minutes = 0.0
-        for s in stops where !s.excluded {
+        for s in stops where s.legIsDriven {
             km += s.nextLegKm ?? 0
             minutes += s.nextLegMin ?? 0
         }

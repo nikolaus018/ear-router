@@ -208,7 +208,7 @@ struct RouteSnapshot {
                 }
             }
             // Only the legs actually driven count towards the tour's totals.
-            guard !stop.excluded else { continue }
+            guard stop.legIsDriven else { continue }
             km += stop.nextLegKm ?? 0
             minutes += stop.nextLegMin ?? 0
         }

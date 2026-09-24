@@ -295,7 +295,7 @@ struct TourRow: View {
                     if s.outcome?.needsFollowUp == true { notHome += 1 }
                     if s.isOwedAMeal { owed += 1 }
                 }
-                if !s.excluded { km += s.nextLegKm ?? 0 }
+                if s.legIsDriven { km += s.nextLegKm ?? 0 }
             }
             self.customers = customers
             self.delivered = delivered

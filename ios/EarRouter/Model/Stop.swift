@@ -181,7 +181,8 @@ final class Stop {
 
     /// Only ever `true` on a fixed stop. An excluded stop stays on the route
     /// (still shown, greyed, switchable back on) but is left out of the OSRM
-    /// optimization entirely and carries no leg distance — a shift that
+    /// optimization entirely and carries no leg distance (but for a Start's
+    /// drive from where the driver is — see `legIsDriven`) — a shift that
     /// starts straight from the warehouse, or ends somewhere other than the
     /// depot, would otherwise be planned around two legs it never drives.
     var excluded: Bool = false
@@ -296,6 +297,16 @@ extension Stop {
         case .customer: false
         }
     }
+
+    /// Whether the leg stored on this row is part of the day's driving.
+    ///
+    /// Every stop that is not switched off — and a switched-off Start, whose
+    /// leg can only be the drive from where the driver is to the first stop:
+    /// see `RouteOptimizer.Nodes.currentLocation`. Left out, every arrival
+    /// time before the first door was early by that drive, and "Noch … km"
+    /// short by it. Any other switched-off stop's leg is one the van never
+    /// drives.
+    var legIsDriven: Bool { !excluded || kind == .start }
 
     /// A stop the tour counts: every customer, and the checkpoints.
     var countsAsStop: Bool { kind == .customer || isCheckpoint }

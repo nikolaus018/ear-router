@@ -502,6 +502,13 @@ enum RouteStore {
     ) async throws {
         guard stop.kind.isFixed, !(stop.kind == .end && excluded) else { return }
         stop.excluded = excluded
+        // The leg it had was the depot's or the warehouse's own. Left until
+        // the new route arrives — or for good, if OSRM is down — a Start
+        // would have it counted as the drive from where the driver is.
+        if excluded {
+            stop.nextLegKm = nil
+            stop.nextLegMin = nil
+        }
         guard let route = stop.route else { return try context.save() }
         route.markRoutingStale()
         try context.save()

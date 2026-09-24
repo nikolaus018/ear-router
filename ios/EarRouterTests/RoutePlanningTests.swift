@@ -69,7 +69,7 @@ struct RoutePlanningTests {
     }
 
     /// Start switched off and a GPS fix known: the tour starts where the
-    /// driver is, then the warehouse — under its own id, so no row's leg is it.
+    /// driver is, then the warehouse.
     @Test func aSwitchedOffStartIsReplacedByWhereTheDriverIs() {
         var (n, _) = nodes(startExcluded: true)
         let here = coord(50)
