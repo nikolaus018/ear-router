@@ -399,14 +399,19 @@ struct TourView: View {
                 // same menu as two near-identical glyphs. What this list is
                 // about is what goes in the van, which is the box.
                 Button("Ladeliste", systemImage: "shippingbox") { showingLadeliste = true }
-                Button("JSON einsetzen", systemImage: "curlybraces") {
-                    showingJSON = true
-                }
-                Button("Eray-Liste einsetzen", systemImage: "list.bullet.rectangle") {
-                    showingErayImport = true
-                }
-                Button("Vom Zusteller-Portal laden", systemImage: "arrow.down.circle") {
-                    showingGourmetImport = true
+                // One entry for the three ways a day's list arrives. Side by
+                // side they made this menu thirteen rows long, and the last
+                // two — the reset and filing the tour — scrolled out of it.
+                Menu("Stopps laden", systemImage: "arrow.down.circle") {
+                    Button("Vom Zusteller-Portal", systemImage: "arrow.down.circle") {
+                        showingGourmetImport = true
+                    }
+                    Button("Eray-Liste einsetzen", systemImage: "list.bullet.rectangle") {
+                        showingErayImport = true
+                    }
+                    Button("JSON einsetzen", systemImage: "curlybraces") {
+                        showingJSON = true
+                    }
                 }
                 Divider()
                 Button("Neu optimieren", systemImage: "arrow.triangle.2.circlepath") {
