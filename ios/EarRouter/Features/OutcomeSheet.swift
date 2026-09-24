@@ -23,6 +23,10 @@ struct OutcomeSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
+    /// How tall the sheet needs to be for everything on it, navigation bar
+    /// included — see the detent below.
+    @State private var fittedHeight: CGFloat?
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -35,6 +39,14 @@ struct OutcomeSheet: View {
                 .padding()
             }
             .scrollBounceBehavior(.basedOnSize)
+            // The content plus the insets the navigation bar and the home
+            // indicator put around it: the whole sheet, measured.
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentSize.height + geometry.contentInsets.top
+                    + geometry.contentInsets.bottom
+            } action: { _, height in
+                if height > 0 { fittedHeight = height }
+            }
             .navigationTitle("Nicht zugestellt")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -43,6 +55,12 @@ struct OutcomeSheet: View {
                 }
             }
         }
+        // As tall as what is on it. At full height the four buttons sat in the
+        // top half of a sheet whose bottom half was empty white — the look of
+        // a screen that failed to load the rest of itself. A note long enough
+        // to need more than the phone has still gets the whole height, and
+        // scrolls.
+        .presentationDetents(fittedHeight.map { [.height($0)] } ?? [.medium])
         .presentationDragIndicator(.visible)
     }
 
