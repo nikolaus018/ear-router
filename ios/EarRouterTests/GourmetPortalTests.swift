@@ -127,6 +127,16 @@ struct GourmetPortalTests {
         #expect(GourmetPortal.customerJSON(from: d).paket == "0.50x Brot")
     }
 
+    /// A number from somebody else's server, and `Int(_:)` traps on a Double
+    /// too large to hold — an import must not be the thing that crashes.
+    @Test func anAbsurdQuantityIsWrittenOutRatherThanCrashing() {
+        let d = delivery(bundles: [
+            GourmetPortal.DeliveryBundle(deliveryLines: [line("Suppe", quantity: 1e20)])
+        ])
+        let paket = GourmetPortal.customerJSON(from: d).paket
+        #expect(paket?.hasSuffix("x Suppe") == true)
+    }
+
     /// "Stopps wählen": an order is the driver's own only if they changed it.
     /// Dropping stops is choosing which to drive, not in what order.
     @MainActor @Test func onlyAChangedOrderIsTheDriversOwn() {
