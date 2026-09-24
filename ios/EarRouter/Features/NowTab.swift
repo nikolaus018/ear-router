@@ -416,7 +416,7 @@ private struct NowStopCard: View {
     let finishesAt: Date?
     let onNavigate: () -> Void
     let onDelivered: () -> Void
-    /// Opens the "Nicht zugestellt" sheet.
+    /// Opens the "Nicht geliefert" sheet.
     let onNotDelivered: () -> Void
 
     @ScaledMetric(relativeTo: .body) private var badge: CGFloat = 28
@@ -594,7 +594,7 @@ private struct NowStopCard: View {
             // Not at Lager or Ziel, where there is nobody to be not at home.
             if !isCheckpoint {
                 Button(action: onNotDelivered) {
-                    WideButtonLabel("Nicht zugestellt", systemImage: "bell.slash")
+                    WideButtonLabel("Nicht geliefert", systemImage: "bell.slash")
                 }
                 .buttonStyle(.bordered)
                 .tint(.attention)
@@ -763,8 +763,8 @@ private struct TourDoneView: View {
     /// sentence two meals too generous.
     private var detail: String {
         let handed = delivered == count
-            ? (count == 1 ? "1 Stopp zugestellt" : "\(count) Stopps zugestellt")
-            : "\(delivered) von \(count) zugestellt"
+            ? (count == 1 ? "1 Stopp geliefert" : "\(count) Stopps geliefert")
+            : "\(delivered) von \(count) geliefert"
         let parts = [handed, cancelled > 0 ? "\(cancelled) abbestellt" : nil]
             .compactMap { $0 }.joined(separator: " · ")
         guard homeKm >= 0.05, let km = Format.km(homeKm) else { return parts }

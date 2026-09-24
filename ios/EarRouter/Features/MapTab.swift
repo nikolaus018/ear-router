@@ -1291,7 +1291,7 @@ struct StopPreviewSheet: View {
                 .accessibilityLabel(
                     stop.isSettled
                         ? "Stopp wieder öffnen"
-                        : (isCustomer ? "Als zugestellt markieren" : "Als erledigt markieren"))
+                        : (isCustomer ? "Als geliefert markieren" : "Als erledigt markieren"))
                 .sensoryFeedback(.impact(weight: .medium), trigger: ticks)
             }
         }

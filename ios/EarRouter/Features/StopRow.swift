@@ -341,7 +341,7 @@ struct StopRow: View {
             .accessibilityLabel(
                 stop.isSettled
                     ? "Stopp wieder öffnen"
-                    : (stop.kind == .customer ? "Als zugestellt markieren" : "Als erledigt markieren"))
+                    : (stop.kind == .customer ? "Als geliefert markieren" : "Als erledigt markieren"))
             .sensoryFeedback(.impact(weight: .medium), trigger: ticks)
         } else if let onToggleExcluded {
             // The affordance this action never had before it was a control:
@@ -446,7 +446,7 @@ struct StopListRow: View {
     let onNavigate: () -> Void
     let onShowOnMap: () -> Void
     var onEditStockwerk: (() -> Void)?
-    /// Opens the "Nicht zugestellt" sheet. `nil` on a screen that has no way
+    /// Opens the "Nicht geliefert" sheet. `nil` on a screen that has no way
     /// to present it.
     var onRecordOutcome: (() -> Void)?
     /// Only ever called for a fixed point — the same action the row's own tap
@@ -539,7 +539,7 @@ struct StopListRow: View {
             // driver with one free hand in the rain finds this first.
             if let onRecordOutcome, !stop.isSettled {
                 Button(action: onRecordOutcome) {
-                    Label("Nicht zugestellt", systemImage: "bell.slash")
+                    Label("Nicht geliefert", systemImage: "bell.slash")
                 }
                 .tint(.attention)
             }
@@ -598,11 +598,11 @@ struct StopListRow: View {
                 }
             }
             Button(
-                stop.isSettled ? "Als offen markieren" : "Als zugestellt markieren",
+                stop.isSettled ? "Als offen markieren" : "Als geliefert markieren",
                 systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark.circle",
                 action: onToggleDelivered)
             if let onRecordOutcome, !stop.isSettled {
-                Button("Nicht zugestellt …", systemImage: "bell.slash", action: onRecordOutcome)
+                Button("Nicht geliefert …", systemImage: "bell.slash", action: onRecordOutcome)
             }
             if let onEditStockwerk {
                 Button(

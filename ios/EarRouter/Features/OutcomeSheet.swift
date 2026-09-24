@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// "Nicht zugestellt" — what to record when the meal does not simply go into
+/// "Nicht geliefert" — what to record when the meal does not simply go into
 /// the customer's hands.
 ///
 /// It opens *before* the driver has decided to give up, which is the whole
@@ -47,7 +47,7 @@ struct OutcomeSheet: View {
             } action: { _, height in
                 if height > 0 { fittedHeight = height }
             }
-            .navigationTitle("Nicht zugestellt")
+            .navigationTitle("Nicht geliefert")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
