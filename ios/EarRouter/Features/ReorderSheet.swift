@@ -33,7 +33,9 @@ struct ReorderSheet: View {
             }
             .listStyle(.plain)
             .environment(\.editMode, .constant(.active))
-            .navigationTitle("Reihenfolge ändern")
+            // "Reihenfolge ändern" — the menu's words — truncated to
+            // "Reihenfolge änd…" between Abbrechen and Fertig.
+            .navigationTitle("Reihenfolge")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
