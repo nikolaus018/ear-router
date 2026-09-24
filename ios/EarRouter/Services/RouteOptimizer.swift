@@ -26,6 +26,11 @@ enum RouteOptimizer {
         var via: FixedStop?
         var end: FixedStop?
         var customers: [StopCoord] = []
+        /// The customers already driven to, in the order they are listed, with
+        /// the one answered for last at the end — where the van is now. Empty
+        /// until the first door of the day, which leaves a fresh tour planned
+        /// exactly as it always was.
+        var driven: [StopCoord] = []
 
         /// The fixed points the tour actually drives, in order, before any
         /// customer. Excluded ones are simply not there.
@@ -160,15 +165,17 @@ enum RouteOptimizer {
 
         // --- await ---
 
-        // Depot → warehouse: fixed, never reordered, so a plain point-to-point
-        // call rather than anything the trip optimizer needs to see. Written
-        // as a loop over pairs because the head is 0, 1 or 2 points depending
-        // on what this tour skips — with either of them off there is no leg.
-        for pair in zip(plan.head, plan.head.dropFirst()) {
-            let leg = try await OSRMClient.shared.routeLeg(
-                from: (pair.0.lat, pair.0.lon), to: (pair.1.lat, pair.1.lon))
-            legs.append((leg.distance, leg.duration))
-            append(&geometry, leg.geometry)
+        // Depot → warehouse, and on through the doors already driven to:
+        // fixed, never reordered, so routed as listed rather than handed to
+        // the trip optimizer. The head is 0, 1 or 2 points depending on what
+        // this tour skips — with nothing driven and either of them off there
+        // is no leg at all.
+        let fixedPath = plan.head + plan.driven
+        if fixedPath.count >= 2 {
+            let through = try await OSRMClient.shared.routeThrough(
+                fixedPath.map { (lat: $0.lat, lon: $0.lon) })
+            legs.append(contentsOf: through.legs)
+            append(&geometry, through.geometry)
         }
 
         var solvedOrder: [Int]?
@@ -308,8 +315,12 @@ enum RouteOptimizer {
     struct Plan: Equatable {
         /// The fixed points driven before any customer, in order.
         let head: [StopCoord]
-        /// The last head point. It is already in the driving order and goes to
-        /// OSRM only to be routed *from*, never to be added a second time.
+        /// The customers already driven to — see `Nodes.driven`.
+        var driven: [StopCoord] = []
+        /// The last point driven before OSRM chooses anything: the last door
+        /// answered for, or else the last head point. It is already in the
+        /// driving order and goes to OSRM only to be routed *from*, never to
+        /// be added a second time.
         let anchor: StopCoord?
         /// Everything handed to `/trip`: the anchor, the customers, the end.
         let tripNodes: [StopCoord]
@@ -323,11 +334,16 @@ enum RouteOptimizer {
     static func plan(_ nodes: Nodes) -> Plan {
         let head = nodes.head
         let end = nodes.end?.active
-        let anchor = head.last
+        // Mid-tour, the trip starts where the van is. Planned from the depot
+        // every time, one stop added after the fifteenth delivery could land
+        // between the third and fourth — become "next", and send the driver
+        // back across town.
+        let anchor = nodes.driven.last ?? head.last
+        let drivenIDs = Set(nodes.driven.map(\.id))
 
         var tripNodes: [StopCoord] = []
         if let anchor { tripNodes.append(anchor) }
-        tripNodes.append(contentsOf: nodes.customers)
+        tripNodes.append(contentsOf: nodes.customers.filter { !drivenIDs.contains($0.id) })
         if let end { tripNodes.append(end) }
 
         // OSRM cannot solve a `roundtrip=false` trip with both ends open. A
@@ -340,6 +356,7 @@ enum RouteOptimizer {
         // already implies.
         return Plan(
             head: head,
+            driven: nodes.driven,
             anchor: anchor,
             tripNodes: tripNodes,
             fixFirst: anchor != nil || end == nil,
@@ -351,11 +368,12 @@ enum RouteOptimizer {
     /// `solvedOrder` is `nil` when there was nothing to optimize, in which case
     /// whatever single point follows the head still belongs in the order.
     ///
-    /// The one thing to get right is the anchor: it is the last head point, it
-    /// is already in the driving order, and it is *also* `tripNodes[0]`. Adding
+    /// The one thing to get right is the anchor: it is the last point already
+    /// driven — a door, or the last head point — it is already in the driving
+    /// order, and it is *also* `tripNodes[0]`. Adding
     /// it again puts the warehouse in the middle of the customer list.
     static func drivingOrder(_ plan: Plan, solvedOrder: [Int]?) -> [StopCoord] {
-        var routed = plan.head
+        var routed = plan.head + plan.driven
         guard let solvedOrder else {
             routed.append(contentsOf: plan.tripNodes.dropFirst(plan.anchor != nil ? 1 : 0))
             return routed
@@ -413,7 +431,24 @@ enum RouteOptimizer {
                 nodes.customers.append(coord)
             }
         }
+        nodes.driven = driven(route)
         return (nodes, fingerprint(route))
+    }
+
+    /// The doors already answered for, as `Nodes.driven` wants them: in list
+    /// order, with the most recent answer moved to the end.
+    ///
+    /// Not abbestellt. That tick is usually made in the yard, before the van
+    /// has been anywhere, so it says nothing about where the van is; those
+    /// stay with the open ones, where they have always been planned.
+    static func driven(_ route: Route) -> [StopCoord] {
+        var done = route.customerStops.filter { $0.isSettled && $0.outcome != .cancelled }
+        if let last = done.indices.max(by: {
+            (done[$0].settledAt ?? .distantPast) < (done[$1].settledAt ?? .distantPast)
+        }) {
+            done.append(done.remove(at: last))
+        }
+        return done.map(\.planningSnapshot)
     }
 
     private static func fingerprint(_ route: Route) -> Fingerprint {

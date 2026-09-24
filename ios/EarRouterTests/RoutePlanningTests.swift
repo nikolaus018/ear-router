@@ -205,6 +205,72 @@ struct RoutePlanningTests {
         let driven = routed.map(\.id).filter { customerIDs.contains($0) }
         #expect(shown == driven)
     }
+
+    // MARK: - Mid-tour
+
+    /// Once doors are answered for, the trip starts at the last one — where
+    /// the van is — and only the open customers are handed to OSRM.
+    @Test func midTourTheTripStartsAtTheLastDoorAnsweredFor() {
+        var (n, customers) = nodes(customers: 4)
+        n.driven = [customers[0], customers[2]]
+        let plan = RouteOptimizer.plan(n)
+
+        #expect(plan.anchor == customers[2])
+        #expect(plan.tripNodes.map(\.id)
+            == [customers[2].id, customers[1].id, customers[3].id, plan.tripNodes.last!.id])
+        #expect(plan.fixFirst)
+    }
+
+    /// The driven doors stay in front, in their order; the open ones follow
+    /// in OSRM's, and nobody is listed twice.
+    @Test func midTourTheDrivenDoorsKeepTheirPlaceInFront() {
+        var (n, customers) = nodes(customers: 4)
+        n.driven = [customers[0], customers[2]]
+        let plan = RouteOptimizer.plan(n)
+        // Anchor, then the two open customers reversed, then the destination.
+        let routed = RouteOptimizer.drivingOrder(plan, solvedOrder: [0, 2, 1, 3])
+        let display = RouteOptimizer.displayOrder(n, routed: routed)
+        let customerIDs = Set(customers.map(\.id))
+
+        #expect(display.map(\.id).filter { customerIDs.contains($0) }
+            == [customers[0], customers[2], customers[3], customers[1]].map(\.id))
+        #expect(Set(routed.map(\.id)).count == routed.count)
+    }
+
+    /// Nothing answered for yet: planned exactly as before.
+    @Test func beforeTheFirstDoorNothingChanges() {
+        let (n, _) = nodes(customers: 3)
+        let plan = RouteOptimizer.plan(n)
+        #expect(plan.driven.isEmpty)
+        #expect(plan.anchor == plan.head.last)
+    }
+
+    /// Where the van is, taken off the times, not the list: and an abbestellt
+    /// tick, made in the yard, says nothing about where it is.
+    @Test func theVanIsAtTheDoorAnsweredForLast() throws {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let route = Route(name: "Test")
+        context.insert(route)
+        let names = ["A", "B", "C", "D"]
+        let stops = names.enumerated().map { i, name in
+            Stop(kind: .customer, kunde: name, strasse: "Gasse \(i)", plz: "1180",
+                 lat: 48.20 + Double(i) / 1000, lon: 16.32, orderIndex: i)
+        }
+        for s in stops {
+            s.route = route
+            context.insert(s)
+        }
+        let t = Date(timeIntervalSince1970: 1_757_000_000)
+        stops[1].record(.delivered, at: t.addingTimeInterval(600))
+        stops[0].record(.notHome, at: t.addingTimeInterval(60))
+        stops[3].record(.cancelled, at: t)
+
+        let driven = RouteOptimizer.driven(route).map(\.id)
+        #expect(driven == [stops[0].id, stops[1].id])
+    }
 }
 
 /// OSRM's answer, before it is trusted.
