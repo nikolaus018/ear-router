@@ -32,7 +32,7 @@ struct ToursTab: View {
 
     /// Unfiltered, and used only to resolve a pushed detail screen. Resolving
     /// through either query above would make the detail vanish the moment the
-    /// route's status changes — which its own "Als erledigt markieren" menu
+    /// route's status changes — which its own "Tour abschließen" menu
     /// item does deliberately.
     @Query private var allRoutes: [Route]
 
@@ -64,9 +64,14 @@ struct ToursTab: View {
                 List {
                     if !active.isEmpty {
                         Section("Aktiv") {
+                            // Marked only when there is a choice to mark: with
+                            // one active tour, it is obviously the one.
+                            let current = active.count > 1
+                                ? Route.current(among: active, working: focus.workingRouteID)?.id
+                                : nil
                             ForEach(active) { route in
                                 NavigationLink(value: route.id) {
-                                    TourRow(route: route)
+                                    TourRow(route: route, isCurrent: route.id == current)
                                 }
                             }
                             .onDelete { pendingDeletion.stage($0, in: active) }
@@ -189,6 +194,9 @@ struct TourRow: View {
     let route: Route
     /// Shown instead of the delivery count once the tour is finished.
     var completedDate: Date?
+    /// The tour Jetzt, the lock screen and Siri are showing. With two active
+    /// tours nothing on this list said which one that was.
+    var isCurrent = false
 
     var body: some View {
         // Walked once, for all four numbers. Read as computed properties, the
@@ -201,6 +209,12 @@ struct TourRow: View {
         return VStack(alignment: .leading, spacing: 3) {
             Text(route.name)
                 .font(.body)
+
+            if isCurrent {
+                Label("Auf Jetzt", systemImage: "door.left.hand.open")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+            }
 
             Text(subtitle)
                 .font(.subheadline)
@@ -227,9 +241,9 @@ struct TourRow: View {
         .padding(.vertical, 2)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            route.needsOptimize
-                ? "\(route.name), \(subtitle), Route nicht aktuell"
-                : "\(route.name), \(subtitle)")
+            [route.name, isCurrent ? "auf Jetzt" : nil, subtitle,
+             route.needsOptimize ? "Route nicht aktuell" : nil]
+                .compactMap { $0 }.joined(separator: ", "))
     }
 
     private func subtitle(_ stats: Stats) -> String {
