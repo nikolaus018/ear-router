@@ -478,18 +478,27 @@ struct StopEditorSheet: View {
 
         let coordinate = droppedPin.map { (lat: $0.latitude, lon: $0.longitude) }
         do {
+            // The sheet closes on the write, and the tour is routed behind it.
+            // The routing used to run under this sheet's spinner — seconds on a
+            // good day, most of a minute with the home server struggling — with
+            // Abbrechen still live over a stop that had already been saved:
+            // pressed there, it closed the sheet and the stop stayed anyway,
+            // the one thing Abbrechen promises will not happen.
             if let stop {
-                try await RouteStore.updateStop(
+                let moved = try await RouteStore.updateStop(
                     stop, kunde: kunde, strasse: strasse, plz: plz,
                     paket: paket, notiz: notiz, telefon: telefon, coordinate: coordinate,
-                    forceGeocode: discardStoredPin, in: context)
+                    forceGeocode: discardStoredPin, reroute: false, in: context)
+                dismiss()
+                if moved, let route = stop.route { reroute(route) }
             } else {
                 try await RouteStore.addStop(
                     to: route, kunde: kunde, strasse: strasse, plz: plz,
                     paket: paket, notiz: notiz, telefon: telefon, coordinate: coordinate,
-                    in: context)
+                    reroute: false, in: context)
+                dismiss()
+                reroute(route)
             }
-            dismiss()
         } catch {
             // Checked before the error itself, because a cancelled lookup does
             // not always surface as `CancellationError` — the geocoder reports
@@ -512,6 +521,14 @@ struct StopEditorSheet: View {
                 self.error = AppError.message("Konnte den Stopp nicht speichern.")
             }
         }
+    }
+
+    /// Routes the tour again once this sheet is out of the way — best effort,
+    /// so a failure leaves the amber "Route nicht aktuell" row with its retry,
+    /// exactly as it always did.
+    private func reroute(_ route: Route) {
+        let context = context
+        Task { await RouteOptimizer.optimizeBestEffort(route, in: context) }
     }
 }
 

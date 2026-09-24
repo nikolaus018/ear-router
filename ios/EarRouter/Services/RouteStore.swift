@@ -202,12 +202,17 @@ enum RouteStore {
 
     /// Adds a customer stop, geocoding the address unless coordinates were
     /// supplied directly (the pin-drop path, which needs no network).
+    ///
+    /// `reroute: false` returns as soon as the stop is written, leaving the
+    /// route flagged for its caller to route — the stop editor, which closes
+    /// on the write and routes behind itself rather than under its spinner.
     @discardableResult
     static func addStop(
         to route: Route,
         kunde: String, strasse: String, plz: String,
         paket: String?, notiz: String?, telefon: String? = nil,
         coordinate: (lat: Double, lon: Double)? = nil,
+        reroute: Bool = true,
         in context: ModelContext
     ) async throws -> Stop {
         try validateCustomerFields(
@@ -260,7 +265,7 @@ enum RouteStore {
         route.markRoutingStale()
         try context.save()
 
-        await RouteOptimizer.optimizeBestEffort(route, in: context)
+        if reroute { await RouteOptimizer.optimizeBestEffort(route, in: context) }
         return stop
     }
 
@@ -271,14 +276,20 @@ enum RouteStore {
     /// `forceGeocode` is the one way back from a hand-placed pin: the address
     /// has not changed, so nothing here would otherwise look it up again, and
     /// the pin would quietly outlive the driver's decision to discard it.
+    ///
+    /// Returns whether the stop moved, which is whether the route needs
+    /// routing again; `reroute: false` leaves that to the caller, the same way
+    /// `addStop` does.
+    @discardableResult
     static func updateStop(
         _ stop: Stop,
         kunde: String, strasse: String, plz: String,
         paket: String?, notiz: String?, telefon: String? = nil,
         coordinate: (lat: Double, lon: Double)? = nil,
         forceGeocode: Bool = false,
+        reroute: Bool = true,
         in context: ModelContext
-    ) async throws {
+    ) async throws -> Bool {
         try validateCustomerFields(
             kunde: kunde, strasse: strasse, paket: paket, notiz: notiz, telefon: telefon)
         guard Postcodes.isValid(plz) else {
@@ -326,10 +337,11 @@ enum RouteStore {
         if moved, let route = stop.route {
             route.markRoutingStale()
             try context.save()
-            await RouteOptimizer.optimizeBestEffort(route, in: context)
+            if reroute { await RouteOptimizer.optimizeBestEffort(route, in: context) }
         } else {
             try context.save()
         }
+        return moved
     }
 
     static func deleteStop(_ stop: Stop, in context: ModelContext) async throws {
