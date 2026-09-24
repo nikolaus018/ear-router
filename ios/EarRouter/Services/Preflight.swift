@@ -51,11 +51,11 @@ struct Preflight {
         }
     }
 
-    /// `floorsKnown` is the set of stop ids whose customer's floor this app has
-    /// already been told, passed in rather than fetched so this stays pure —
-    /// the caller has the notes from its own query anyway. `now` and
-    /// `calendar` decide what "today" is, for the ticks below, and are only
-    /// ever passed by tests.
+    /// `floorsKnown` is the set of stop ids whose customer the app will not ask
+    /// about the floor — the floor is known, or the driver said not to ask —
+    /// passed in rather than fetched so this stays pure: the caller has the
+    /// notes from its own query anyway. `now` and `calendar` decide what
+    /// "today" is, for the ticks below, and are only ever passed by tests.
     init(
         route: Route, snapshot: RouteSnapshot, floorsKnown: Set<UUID>,
         now: Date = Date(), calendar: Calendar = .current

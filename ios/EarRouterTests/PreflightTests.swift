@@ -223,6 +223,31 @@ struct PreflightTests {
         #expect(finding(preflight, "stockwerke") == nil)
     }
 
+    /// "Nicht mehr fragen" closes the question as surely as an answer does. Fed
+    /// the way `PreflightSheet` feeds it, a house the driver told the app to
+    /// stop asking about was counted as a floor the app would ask about at the
+    /// door — which it then never did.
+    @Test func aCustomerNotToBeAskedIsNotAnUnknownFloor() throws {
+        let context = try store()
+        let route = try readyRoute(in: context, customers: 3)
+        let stops = route.customerStops
+        let house = StockwerkNote(
+            key: try #require(StockwerkKey.make(for: stops[0])), kunde: "K0",
+            strasse: "Gentzgasse 0", plz: "1180", dontAsk: true)
+        let known = StockwerkNote(
+            key: try #require(StockwerkKey.make(for: stops[1])), kunde: "K1",
+            strasse: "Gentzgasse 1", plz: "1180", stockwerk: "3")
+        context.insert(house)
+        context.insert(known)
+        try context.save()
+        #expect(!StockwerkStore.shouldAsk(stops[0], in: context))
+
+        let closed = [house, known].floorQuestionClosed(for: route.orderedStops)
+        #expect(closed == [stops[0].id, stops[1].id])
+        let floors = try #require(finding(check(route, floorsKnown: closed), "stockwerke"))
+        #expect(floors.title.hasPrefix("1 Stockwerk"))
+    }
+
     /// What goes in the van leaves out a meal abbestellt in the yard — the
     /// count here and the Ladeliste it opens have to agree.
     @Test func anAbbestelltMealIsNotCountedToLoad() throws {

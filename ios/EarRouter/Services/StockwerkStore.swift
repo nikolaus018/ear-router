@@ -176,6 +176,20 @@ extension Collection where Element == StockwerkNote {
         return out
     }
 
+    /// The stops whose floor the app will not ask about any more: the floor is
+    /// known, or the driver said "Nicht mehr fragen" — the two answers
+    /// `StockwerkStore.shouldAsk` says no to.
+    ///
+    /// What "Tour vorbereiten" counts against. Built off `floors(for:)`, which
+    /// only knows floors, it listed every house and Kleingarten the driver had
+    /// told the app to stop asking about as "Stockwerk unbekannt — die App
+    /// fragt an der Tür danach", which it then never did.
+    func floorQuestionClosed(for stops: [Stop]) -> Set<UUID> {
+        Set(info(for: stops).compactMap { id, note in
+            note.dontAsk || !(note.stockwerk?.trimmed.isEmpty ?? true) ? id : nil
+        })
+    }
+
     /// The floor for each of `stops`, by stop id.
     ///
     /// Built from a list of notes that is already in memory — the stop list has

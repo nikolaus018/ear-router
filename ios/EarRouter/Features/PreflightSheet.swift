@@ -28,7 +28,7 @@ struct PreflightSheet: View {
 
     var body: some View {
         let snapshot = RouteSnapshot(route)
-        let known = Set(stockwerkNotes.floors(for: snapshot.ordered).keys)
+        let known = stockwerkNotes.floorQuestionClosed(for: snapshot.ordered)
         let preflight = Preflight(route: route, snapshot: snapshot, floorsKnown: known)
 
         return NavigationStack {
