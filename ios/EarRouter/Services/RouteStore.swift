@@ -209,7 +209,9 @@ enum RouteStore {
             route.status = .active
             route.completedAt = nil
         }
-        if wasDriven { route.markRoutingStale() }
+        // Flagged, not cleared: the line it has is still a drivable one, and
+        // with no signal in the yard it is better than none.
+        if wasDriven { route.needsOptimize = true }
         try context.save()
         // The Ladeliste starts the day again with the doors. Its ticks outlived
         // the reset, so a tour driven again opened with yesterday's boxes
@@ -427,7 +429,10 @@ enum RouteStore {
         if wasPassing, !stop.passesLager { untickLagerIfOnlyPassedBy(stop, at: previousAt) }
         let route = stop.kind == .customer && wasSkipped != (outcome == .cancelled)
             ? stop.route : nil
-        route?.markRoutingStale()
+        // Flagged, not cleared: the old line still drives past that door — a
+        // detour, not a wrong turn — and with no signal it has to last until
+        // OSRM can be asked again.
+        route?.needsOptimize = true
         try context.save()
         if let route, reroute { rerouteBehind(route, in: context) }
     }

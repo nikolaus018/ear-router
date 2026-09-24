@@ -642,8 +642,11 @@ struct OptimizerWriteBackTests {
         try RouteStore.record(.cancelled, for: customers[1], reroute: false, in: context)
         #expect(route.needsOptimize)
         route.needsOptimize = false
+        route.geometryFlat = [48.2, 16.3, 48.3, 16.4]
         try RouteStore.record(.notHome, for: customers[1], reroute: false, in: context)
         #expect(route.needsOptimize)
+        // The old line is kept until a new one arrives — it still drives.
+        #expect(!route.geometryFlat.isEmpty)
     }
 
     // MARK: - The flag
