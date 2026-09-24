@@ -187,7 +187,7 @@ struct GeocodeCacheTests {
         let (_, dir) = try makeCache()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = """
-            {"generation":5,"misses":{},"hits":{\
+            {"generation":6,"misses":{},"hits":{\
             "exakt, 1180 wien":{"lat":48.2,"lon":16.3,"displayName":"a","precision":"exact","cachedAt":0},\
             "ungefähr, 1180 wien":{"lat":48.2,"lon":16.3,"displayName":"b","precision":"street","cachedAt":0}}}
             """

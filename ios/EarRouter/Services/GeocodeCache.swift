@@ -64,7 +64,11 @@ actor GeocodeCache {
     /// ("Pfenningeldgasse" for Pfenninggeldgasse), and a matching Stiege on a
     /// different house number no longer is ("9/2" answered with "6-12/2").
     /// The first left an "≈" pin, the second an "≈" pin on the wrong house.
-    private static let generation = 5
+    ///
+    /// 6: lettered blocks, "Haus", Kleingarten and Obj./Pav. doors now find
+    /// their own building, register answers without a postcode count, and a
+    /// neighbouring number ("8B" for "8") is no longer cached as exact.
+    private static let generation = 6
 
     private var hits: [String: CachedGeocode] = [:]
     private var misses: [String: Date] = [:]
