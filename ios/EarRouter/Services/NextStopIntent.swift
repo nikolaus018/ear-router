@@ -31,14 +31,8 @@ struct NextStopIntent: AppIntent {
         }
         let context = ModelContext(container)
 
-        // The newest active tour, which is the same one every screen in the app
-        // falls back to when nothing is in focus.
-        var descriptor = FetchDescriptor<Route>(
-            predicate: #Predicate { $0.statusRaw == "active" },
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
-        descriptor.fetchLimit = 1
-
-        guard let route = try? context.fetch(descriptor).first else {
+        // The tour Jetzt is showing — see `Route.current`.
+        guard let route = Route.current(in: context) else {
             return .result(dialog: "Es läuft gerade keine Tour.")
         }
         let snapshot = RouteSnapshot(route)

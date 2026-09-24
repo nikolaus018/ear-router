@@ -63,24 +63,25 @@ enum CarPlayNavigation {
         }
     }
 
-    /// The next door on the newest active tour, and where to send the
-    /// navigation app for it.
+    /// The next door on the current tour, and where to send the navigation app
+    /// for it.
     ///
-    /// The same tour every screen in the app falls back to, and the same
-    /// `nextOpen` the Jetzt tab shows — a stop the driver has already answered
-    /// for is not driven to again, whichever way they answered.
+    /// The same tour and the same `nextOpen` the Jetzt tab shows — see
+    /// `Route.current` — so a stop the driver has already answered for is not
+    /// driven to again, whichever way they answered, and a second active tour
+    /// does not take over the car from the one being driven. `working` is only
+    /// ever passed by tests; the app's own answer is the tour last worked.
     ///
     /// Split out of the intent because an intent's `perform` cannot be reached
     /// from a test, and this is the part that can be wrong in a way that costs
     /// a morning: navigating to yesterday's tour, or to a door already done.
     @MainActor
-    static func destination(in context: ModelContext) throws -> (stop: Stop, url: URL) {
-        var descriptor = FetchDescriptor<Route>(
-            predicate: #Predicate { $0.statusRaw == "active" },
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
-        descriptor.fetchLimit = 1
-
-        guard let route = try? context.fetch(descriptor).first else { throw Failure.noTour }
+    static func destination(
+        in context: ModelContext, working: UUID? = RouteFocus.lastOpenedRouteID
+    ) throws -> (stop: Stop, url: URL) {
+        guard let route = Route.current(in: context, working: working) else {
+            throw Failure.noTour
+        }
         guard let stop = RouteSnapshot(route).nextOpen else { throw Failure.allDone }
         guard let url = NavigationHandoff.url(for: stop) else { throw Failure.noAddress }
         return (stop, url)

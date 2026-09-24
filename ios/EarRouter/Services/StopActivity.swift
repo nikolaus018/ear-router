@@ -8,10 +8,10 @@ private let log = Logger(subsystem: "win.ringtwo.EarRouter", category: "activity
 /// Keeps the lock screen showing the door the driver is on.
 ///
 /// One activity at a time, for the tour the rest of the app is already talking
-/// about: the newest active one. It starts itself when that tour has a door
-/// still owed a visit, follows `nextOpen` as the driver ticks along, and ends
-/// when the last door is answered for — so the thing on the lock screen is
-/// never a stop that is already done.
+/// about: the current one, as `Route.current` decides it. It starts itself when
+/// that tour has a door still owed a visit, follows `nextOpen` as the driver
+/// ticks along, and ends when the last door is answered for — so the thing on
+/// the lock screen is never a stop that is already done.
 ///
 /// Driven from the app rather than from a push: every change it reflects is one
 /// the driver made in the app a moment earlier, so there is always a foreground
@@ -31,15 +31,17 @@ enum StopActivity {
     /// ends, whichever the tour now calls for.
     ///
     /// Safe to call after anything — a tick, an import, a re-optimize, a
-    /// deletion, a launch. It reads the same active tour every screen in the
-    /// app falls back to and works out the rest itself, so no call site has to
+    /// deletion, a launch. It reads the same current tour Jetzt shows — see
+    /// `Route.current` — and works out the rest itself, so no call site has to
     /// know which of the three things is about to happen.
-    static func refresh(in context: ModelContext) {
+    static func refresh(
+        in context: ModelContext, working: UUID? = RouteFocus.lastOpenedRouteID
+    ) {
         guard available else { return }
 
         // One snapshot, not two: it walks every stop on the tour, and this
         // runs after every tick.
-        guard let route = activeRoute(in: context) else {
+        guard let route = Route.current(in: context, working: working) else {
             end()
             return
         }
@@ -122,15 +124,5 @@ enum StopActivity {
             // one-argument form has been deprecated since iOS 16.2.
             await activity.end(nil, dismissalPolicy: .immediate)
         }
-    }
-
-    /// The newest active tour — the same one `NextStopIntent` and
-    /// `CarPlayNavigation` resolve to.
-    private static func activeRoute(in context: ModelContext) -> Route? {
-        var descriptor = FetchDescriptor<Route>(
-            predicate: #Predicate { $0.statusRaw == "active" },
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
-        descriptor.fetchLimit = 1
-        return try? context.fetch(descriptor).first
     }
 }

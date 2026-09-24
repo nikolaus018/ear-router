@@ -16,8 +16,9 @@ import SwiftData
 /// room: one stop and what to do there — and deliberately nothing else. What
 /// comes after it, and the whole list, is one tab to the left.
 ///
-/// The tour shown is the one in focus — the one Touren and Karte are showing —
-/// while it is active, and otherwise the newest active tour.
+/// The tour shown is the one being worked — the last active tour the driver
+/// opened — and otherwise the newest active one: the same answer the lock
+/// screen, Siri and the car get. See `Route.current`.
 struct NowTab: View {
     @Environment(RouteFocus.self) private var focus
     @Environment(\.modelContext) private var context
@@ -63,7 +64,7 @@ struct NowTab: View {
     }
 
     private var route: Route? {
-        active.first { $0.id == focus.currentRouteID } ?? active.first
+        Route.current(among: active, working: focus.workingRouteID)
     }
 
     var body: some View {

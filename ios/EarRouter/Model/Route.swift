@@ -136,3 +136,35 @@ extension Route {
         return (km, minutes)
     }
 }
+
+// MARK: - The current tour
+
+extension Route {
+    /// What every screen means by "the current tour": the one the driver is
+    /// working, while it is still active, and otherwise the newest active one.
+    ///
+    /// One rule for all of them — Jetzt, the lock screen, "Hey Siri, nächster
+    /// Stopp" and the navigation the car starts. They used to answer it two
+    /// ways: Jetzt followed the tour the driver had opened, the other three
+    /// took the newest active tour. With two tours active and the older one
+    /// being driven, plugging the phone in navigated to the other tour's door.
+    ///
+    /// `active` is expected newest first, the way every query of it is sorted.
+    static func current(among active: [Route], working id: UUID?) -> Route? {
+        active.first { $0.id == id } ?? active.first
+    }
+
+    /// The same answer for code with no screen's query to hand: the Live
+    /// Activity and the two App Intents. `working` defaults to the tour the
+    /// app was last working, which `RouteFocus` keeps across launches.
+    @MainActor
+    static func current(
+        in context: ModelContext, working id: UUID? = RouteFocus.lastOpenedRouteID
+    ) -> Route? {
+        let descriptor = FetchDescriptor<Route>(
+            predicate: #Predicate { $0.statusRaw == "active" },
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
+        guard let active = try? context.fetch(descriptor) else { return nil }
+        return current(among: active, working: id)
+    }
+}

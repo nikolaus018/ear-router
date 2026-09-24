@@ -144,8 +144,8 @@ struct StoreFailureView: View {
     }
 }
 
-/// Which route is "in focus" app-wide — the Karte tab shows this one, and it is
-/// the one the app reopens on.
+/// Which route is "in focus" app-wide — the Karte tab shows this one, and the
+/// app reopens on the last active one of them.
 ///
 /// There is one navigation path rather than two. Routen and Verlauf used to
 /// keep a stack each so that a tour pushed from one list did not appear on top
@@ -158,10 +158,30 @@ final class RouteFocus {
 
     var tab: Tab
 
+    /// Seeded from the tour the app was last working, so a relaunch — iOS
+    /// ending the app in the background mid-shift, while the navigation app
+    /// had the screen — comes back to that tour rather than to whichever
+    /// happens to be newest. Jetzt used to reopen on the newest until the
+    /// driver next happened to visit Touren, which was the only screen that
+    /// remembered.
     init(tab: Tab = .tours) {
         self.tab = tab
+        let remembered = Self.lastOpenedRouteID
+        self.currentRouteID = remembered
+        self.workingRouteID = remembered
     }
-    var currentRouteID: UUID?
+
+    /// The tour on screen: what Karte shows, and what Touren last opened. Any
+    /// tour, a finished one included — looking at yesterday is allowed.
+    private(set) var currentRouteID: UUID?
+
+    /// The tour being worked: the last *active* tour opened. What Jetzt, the
+    /// lock screen, Siri and the car's navigation all mean by the current tour
+    /// — see `Route.current`. Kept apart from `currentRouteID` so that opening
+    /// a finished tour to read its report does not move all four of them off
+    /// the tour still being driven.
+    private(set) var workingRouteID: UUID?
+
     var toursPath = NavigationPath()
 
     /// Bumped every time the driver *chooses* Karte from the tab bar.
@@ -197,10 +217,21 @@ final class RouteFocus {
 
     func focus(_ route: Route) {
         currentRouteID = route.id
+        guard route.status == .active else { return }
+        workingRouteID = route.id
         UserDefaults.standard.set(route.id.uuidString, forKey: Self.lastOpenedKey)
     }
 
-    /// The tour the app was last looking at, remembered across launches.
+    /// Lets go of both tours — a restore that replaces everything is about to
+    /// delete whatever they were.
+    func forget() {
+        currentRouteID = nil
+        workingRouteID = nil
+        UserDefaults.standard.removeObject(forKey: Self.lastOpenedKey)
+    }
+
+    /// The tour the app was last working, remembered across launches. Only an
+    /// active one is ever written here; see `focus(_:)`.
     ///
     /// This is what makes a second tab unnecessary. The app used to forget, so
     /// every launch put the driver on a list of tours with one row on it and

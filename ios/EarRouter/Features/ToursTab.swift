@@ -153,16 +153,12 @@ struct ToursTab: View {
         .confirmRouteDeletion($pendingDeletion, in: context, error: $error)
     }
 
-    /// The last tour opened, if it is still active, and otherwise the newest
-    /// active one. The fallback matters on the day the driver finishes a tour
-    /// and creates the next one on a different device — or simply the first
-    /// time, when nothing has been remembered yet.
+    /// The tour being worked, if it is still active, and otherwise the newest
+    /// active one — the same tour Jetzt shows. The fallback matters on the day
+    /// the driver finishes a tour and creates the next one on a different
+    /// device — or simply the first time, when nothing has been remembered yet.
     private func routeToReopen() -> Route? {
-        if let id = RouteFocus.lastOpenedRouteID,
-           let remembered = active.first(where: { $0.id == id }) {
-            return remembered
-        }
-        return active.first
+        Route.current(among: active, working: focus.workingRouteID)
     }
 
     private func startCreate() {

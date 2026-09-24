@@ -103,6 +103,45 @@ struct CarPlayNavigationTests {
         #expect(try CarPlayNavigation.destination(in: context).stop.kunde == "Neue Tour")
     }
 
+    /// Two tours active and the older one being driven: the car goes to *its*
+    /// next door. Newest-wins sent the driver to the other tour's first
+    /// customer every time the phone was plugged in, while Jetzt showed the
+    /// right one.
+    @Test func theTourBeingWorkedWinsOverANewerOne() throws {
+        let context = try context()
+        let vormittag = try tour(
+            "Vormittag", in: context, createdAt: Date(timeIntervalSinceNow: -3_600),
+            kunden: ["Vormittag Erste"])
+        try tour("Nachmittag", in: context, kunden: ["Nachmittag Erste"])
+
+        let (stop, _) = try CarPlayNavigation.destination(in: context, working: vormittag.id)
+        #expect(stop.kunde == "Vormittag Erste")
+    }
+
+    /// The tour being worked has been filed since: the newest active one takes
+    /// over, rather than nothing at all.
+    @Test func aFinishedWorkingTourFallsBackToTheNewestActiveOne() throws {
+        let context = try context()
+        let done = try tour("Fertig", in: context, status: .completed, kunden: ["Alt"])
+        try tour("Heute", in: context, kunden: ["Neu"])
+
+        let (stop, _) = try CarPlayNavigation.destination(in: context, working: done.id)
+        #expect(stop.kunde == "Neu")
+    }
+
+    /// The rule itself, for the screens that already hold the active tours.
+    @Test func theCurrentTourIsTheWorkedOneWhileItIsActive() throws {
+        let context = try context()
+        let older = try tour("A", in: context, createdAt: Date(timeIntervalSinceNow: -60))
+        let newer = try tour("B", in: context)
+        let active = [newer, older]
+
+        #expect(Route.current(among: active, working: older.id)?.id == older.id)
+        #expect(Route.current(among: active, working: nil)?.id == newer.id)
+        #expect(Route.current(among: active, working: UUID())?.id == newer.id)
+        #expect(Route.current(among: [], working: older.id) == nil)
+    }
+
     @Test func aFinishedTourIsNotDrivenAgain() throws {
         let context = try context()
         try tour("VM4", in: context, status: .completed)
@@ -154,6 +193,25 @@ struct CarPlayNavigationTests {
         }
     }
 
+    /// Focus is app-wide, but only an active tour becomes the one the car,
+    /// Siri and the lock screen follow.
+    @Test func focusIsAppWideButOnlyAnActiveTourIsWorked() throws {
+        try RouteFocusTests.preservingLastOpened {
+            let context = try context()
+            let heute = try tour("Heute", in: context)
+            let gestern = try tour("Gestern", in: context, status: .completed)
+
+            let focus = RouteFocus()
+            focus.focus(heute)
+            // Opening yesterday's finished tour to read its report: Karte shows
+            // it, but the lock screen, Siri and the car stay on today's.
+            focus.focus(gestern)
+            #expect(focus.currentRouteID == gestern.id)
+            #expect(focus.workingRouteID == heute.id)
+            #expect(RouteFocus.lastOpenedRouteID == heute.id)
+        }
+    }
+
     /// Whichever maps app the driver picked in Mehr — the car does not get its
     /// own setting.
     @Test func itFollowsTheDriversChosenMapsApp() throws {
@@ -167,5 +225,61 @@ struct CarPlayNavigationTests {
 
         NavigationHandoff.provider = .apple
         #expect(try CarPlayNavigation.destination(in: context).url.host() == "maps.apple.com")
+    }
+}
+
+/// Which tour the app comes back to.
+@MainActor
+struct RouteFocusTests {
+
+    /// The key is the app's own and process-wide, so it is put back as found.
+    static func preservingLastOpened(_ body: () throws -> Void) rethrows {
+        let key = "lastOpenedRouteID"
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previous {
+                UserDefaults.standard.set(previous, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+        try body()
+    }
+
+    /// iOS ends the app in the background mid-shift, and the driver opens it
+    /// again at the next door: it comes back on the tour they were working,
+    /// not on whichever is newest.
+    @Test func aRelaunchComesBackToTheTourBeingWorked() throws {
+        try Self.preservingLastOpened {
+            let context = ModelContext(
+                try ModelContainer(
+                    for: Route.self, Stop.self, StockwerkNote.self,
+                    configurations: ModelConfiguration(isStoredInMemoryOnly: true)))
+            let working = try RouteStore.createRoute(name: "Vormittag", in: context)
+            try RouteStore.createRoute(name: "Nachmittag", in: context)
+
+            RouteFocus().focus(working)
+
+            let relaunched = RouteFocus()
+            #expect(relaunched.workingRouteID == working.id)
+            #expect(relaunched.currentRouteID == working.id)
+        }
+    }
+
+    /// A restore that replaces everything lets go of both.
+    @Test func forgettingLetsGoOfBothTours() throws {
+        try Self.preservingLastOpened {
+            let context = ModelContext(
+                try ModelContainer(
+                    for: Route.self, Stop.self, StockwerkNote.self,
+                    configurations: ModelConfiguration(isStoredInMemoryOnly: true)))
+            let focus = RouteFocus()
+            focus.focus(try RouteStore.createRoute(name: "Tour", in: context))
+
+            focus.forget()
+            #expect(focus.currentRouteID == nil)
+            #expect(focus.workingRouteID == nil)
+            #expect(RouteFocus.lastOpenedRouteID == nil)
+        }
     }
 }

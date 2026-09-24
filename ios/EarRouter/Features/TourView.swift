@@ -262,6 +262,9 @@ struct TourView: View {
             Text(recheckSummary ?? "")
         }
         .onAppear { focus.focus(route) }
+        // "Wieder aktivieren" on the tour on screen makes it a tour that can be
+        // worked again, and this is the screen it was reactivated on.
+        .onChange(of: route.status) { focus.focus(route) }
     }
 
     // MARK: - The list

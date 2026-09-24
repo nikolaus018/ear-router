@@ -389,10 +389,15 @@ struct MapTab: View {
         return (active, recent)
     }
 
+    /// Choosing a tour here focuses it app-wide, exactly as opening it in
+    /// Touren does — an active one becomes the tour being worked, a finished
+    /// one is only looked at. See `RouteFocus.focus`.
     private var routeBinding: Binding<UUID?> {
         Binding(
             get: { focus.currentRouteID ?? routes.first?.id },
-            set: { focus.currentRouteID = $0 })
+            set: { id in
+                if let picked = routes.first(where: { $0.id == id }) { focus.focus(picked) }
+            })
     }
 
     @ViewBuilder

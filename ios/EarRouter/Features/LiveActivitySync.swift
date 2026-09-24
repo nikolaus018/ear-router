@@ -14,6 +14,9 @@ import SwiftUI
 /// bothers ActivityKit when that text actually changed.
 private struct LiveActivitySync: ViewModifier {
     @Environment(\.modelContext) private var context
+    /// Which tour is being worked. Read here as well as in `StopActivity`, so
+    /// switching tours is itself a change of what the card would say.
+    @Environment(RouteFocus.self) private var focus
 
     @Query(
         filter: #Predicate<Route> { $0.statusRaw == "active" },
@@ -31,7 +34,8 @@ private struct LiveActivitySync: ViewModifier {
     /// Cheaper than it looks, and much cheaper than waking ActivityKit on every
     /// save to hand it the values it already has.
     private var signature: String {
-        guard let route = active.first else { return "" }
+        guard let route = Route.current(among: active, working: focus.workingRouteID)
+        else { return "" }
         let snapshot = RouteSnapshot(route)
         guard let stop = snapshot.nextOpen else { return "\(route.id)|fertig" }
         let info = StockwerkKey.make(for: stop).flatMap { key in
@@ -50,8 +54,10 @@ private struct LiveActivitySync: ViewModifier {
             // On launch as well as on change: the app can be reopened onto a
             // tour whose activity was dismissed, or never started because Live
             // Activities were switched on after the tour was.
-            .task { StopActivity.refresh(in: context) }
-            .onChange(of: signature) { StopActivity.refresh(in: context) }
+            .task { StopActivity.refresh(in: context, working: focus.workingRouteID) }
+            .onChange(of: signature) {
+                StopActivity.refresh(in: context, working: focus.workingRouteID)
+            }
     }
 }
 
