@@ -294,6 +294,21 @@ struct RouteSnapshotTests {
         #expect(RouteSnapshot(r).isComplete)
     }
 
+    /// Ziel cannot be switched off — without it the tour ends wherever is
+    /// cheapest — but one switched off before that rule can come back on.
+    @Test func zielCannotBeSwitchedOffOnlyBackOn() async throws {
+        let end = fixed(.end)
+        let r = try route([fixed(.start), fixed(.via), end])
+        #expect(!end.canToggleExcluded)
+        try await RouteStore.setExcluded(end, true, in: r.modelContext!)
+        #expect(!end.excluded)
+
+        #expect(fixed(.end, excluded: true).canToggleExcluded)
+        #expect(fixed(.start).canToggleExcluded)
+        #expect(fixed(.via).canToggleExcluded)
+        #expect(!customer("A", at: 1).canToggleExcluded)
+    }
+
     /// A tour not optimized yet lists Ziel above the customers added after it.
     /// It still waits until they are done.
     @Test func zielWaitsForTheCustomersWhereverItIsListed() throws {

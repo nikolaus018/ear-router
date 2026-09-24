@@ -285,6 +285,18 @@ extension Stop {
     /// Not Start. The driver is standing in it when the tour begins.
     var isCheckpoint: Bool { (kind == .via || kind == .end) && !excluded }
 
+    /// Start and Lager can be switched out of a tour. Ziel cannot: without it
+    /// the tour ends wherever the optimizer finds cheapest, so its address is
+    /// changed instead. A Ziel switched off before that rule can still be
+    /// switched back on.
+    var canToggleExcluded: Bool {
+        switch kind {
+        case .start, .via: true
+        case .end: excluded
+        case .customer: false
+        }
+    }
+
     /// A stop the tour counts: every customer, and the checkpoints.
     var countsAsStop: Bool { kind == .customer || isCheckpoint }
 

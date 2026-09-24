@@ -467,7 +467,7 @@ struct StopListRow: View {
             eta: eta,
             isNext: isNext,
             onToggleDelivered: stop.countsAsStop ? onToggleDelivered : nil,
-            onToggleExcluded: isCustomer ? nil : onToggleExcluded,
+            onToggleExcluded: stop.canToggleExcluded ? onToggleExcluded : nil,
             onNavigate: onNavigate)
             // Opens the editor. The trailing controls are `.borderless`, so
             // they handle their own taps rather than falling through to this.
@@ -593,11 +593,13 @@ struct StopListRow: View {
             if stop.kind == .start || stop.kind == .end {
                 Button("Bearbeiten", systemImage: "pencil", action: onTap)
             }
-            Divider()
-            Button(
-                stop.excluded ? "Wieder einplanen" : "Für diese Tour auslassen",
-                systemImage: stop.excluded ? "arrow.uturn.backward" : "minus.circle",
-                action: onToggleExcluded ?? onTap)
+            if stop.canToggleExcluded {
+                Divider()
+                Button(
+                    stop.excluded ? "Wieder einplanen" : "Für diese Tour auslassen",
+                    systemImage: stop.excluded ? "arrow.uturn.backward" : "minus.circle",
+                    action: onToggleExcluded ?? onTap)
+            }
         }
     }
 }

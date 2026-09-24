@@ -447,7 +447,7 @@ enum RouteStore {
     static func setExcluded(
         _ stop: Stop, _ excluded: Bool, in context: ModelContext
     ) async throws {
-        guard stop.kind.isFixed else { return }
+        guard stop.kind.isFixed, !(stop.kind == .end && excluded) else { return }
         stop.excluded = excluded
         guard let route = stop.route else { return try context.save() }
         route.markRoutingStale()
