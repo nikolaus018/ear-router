@@ -24,8 +24,6 @@ struct MapTab: View {
     @State private var stockwerkStop: Stop?
     /// Set while that card is still closing — see `cardDismissed`.
     @State private var pendingStockwerkStop: Stop?
-    /// The door the "Nicht zugestellt" choice is open for, over the pin's card.
-    @State private var outcomeStop: Stop?
 
     /// Every door ever answered for — the same query the stop list runs, so a
     /// floor typed on one screen is on the other one immediately.
@@ -261,7 +259,6 @@ struct MapTab: View {
                             ? { chosenMemberID = nil } : nil,
                         onNavigate: { navigate(to: stop) },
                         onToggleDelivered: { toggleDelivered(stop) },
-                        onNotDelivered: { outcomeStop = stop },
                         onShowInList: {
                             if let route { focus.reveal(stop: stop, of: route) }
                             selectedStopID = nil
@@ -287,12 +284,6 @@ struct MapTab: View {
                 .presentationDetents([.height(min(previewHeight, Self.maxPreviewHeight))])
                 .presentationBackground(.regularMaterial)
                 .presentationDragIndicator(.visible)
-                // Over the card, not over the map: the card is itself a sheet.
-                .sheet(item: $outcomeStop) { stop in
-                    OutcomeSheet(stop: stop, info: note(for: stop)) { outcome in
-                        settle(stop, as: outcome)
-                    }
-                }
         }
         .stockwerkPrompt(for: $stockwerkStop)
         .errorAlert($error)
@@ -343,26 +334,9 @@ struct MapTab: View {
         askForStockwerk(stop)
     }
 
-    /// "Nicht zugestellt" from the pin's card, the way Jetzt records it.
-    private func settle(_ stop: Stop, as outcome: DeliveryOutcome) {
-        do {
-            try RouteStore.record(outcome, for: stop, in: context)
-        } catch {
-            self.error = AppError.message("Konnte den Lieferstatus nicht speichern.")
-            return
-        }
-        guard outcome.handedOver, StockwerkStore.shouldAsk(stop, in: context) else { return }
-        askForStockwerk(stop)
-    }
-
     /// This door's floor, read off the notes the query already holds rather
     /// than fetched again — and, being the query's own data, it redraws the
     /// card the moment the prompt writes an answer.
-    private func note(for stop: Stop) -> StockwerkNote? {
-        guard let key = StockwerkKey.make(for: stop) else { return nil }
-        return stockwerkNotes.first { $0.key == key }
-    }
-
     private func floor(for stop: Stop) -> String? {
         guard let key = StockwerkKey.make(for: stop) else { return nil }
         let value = stockwerkNotes.first { $0.key == key }?.stockwerk?.trimmed
@@ -1203,9 +1177,6 @@ struct StopPreviewSheet: View {
     var onBack: (() -> Void)? = nil
     let onNavigate: () -> Void
     let onToggleDelivered: () -> Void
-    /// Opens the three other answers — bei Nachbarn, nicht angetroffen,
-    /// abbestellt — for an open customer, as Jetzt and the list rows do.
-    var onNotDelivered: (() -> Void)? = nil
     let onShowInList: () -> Void
     /// The card's own content height, which is what the presenting sheet sizes
     /// its detent to. Reported from inside the scroll view, so it stays the
@@ -1386,26 +1357,15 @@ struct StopPreviewSheet: View {
             ? AnyLayout(VStackLayout(spacing: 10))
             : AnyLayout(HStackLayout(spacing: 10))
 
-        return VStack(spacing: 10) {
-            layout {
-                Button(action: onNavigate) {
-                    WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
-                }
-                .buttonStyle(.borderedProminent)
-                Button(action: onShowInList) {
-                    WideButtonLabel("In der Liste", systemImage: "list.bullet")
-                }
-                .buttonStyle(.bordered)
+        return layout {
+            Button(action: onNavigate) {
+                WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
             }
-            // Only while the door is still open — the answer is then on the
-            // card, and the tick above re-opens it.
-            if isCustomer, !stop.isSettled, let onNotDelivered {
-                Button(action: onNotDelivered) {
-                    WideButtonLabel("Nicht zugestellt", systemImage: "bell.slash")
-                }
-                .buttonStyle(.bordered)
-                .tint(.attention)
+            .buttonStyle(.borderedProminent)
+            Button(action: onShowInList) {
+                WideButtonLabel("In der Liste", systemImage: "list.bullet")
             }
+            .buttonStyle(.bordered)
         }
         .controlSize(.large)
     }
