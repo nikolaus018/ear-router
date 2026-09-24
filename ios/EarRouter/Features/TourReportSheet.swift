@@ -116,7 +116,11 @@ struct TourReportSheet: View {
         _ entries: [TourReport.Entry], title: String, symbol: String, footer: String
     ) -> some View {
         Section {
-            ForEach(entries, id: \.name) { entry in
+            // By position, not by name. Two customers of one name — five
+            // Caritas meals at one address, two households called Gruber —
+            // are exactly the rows this list is read for, and keyed by name
+            // SwiftUI took them for one row and drew the wrong ones.
+            ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.name).fixedSize(horizontal: false, vertical: true)
                     if !entry.address.isEmpty {
