@@ -594,4 +594,28 @@ struct OptimizerWriteBackTests {
         try optimize(route, in: context, plannedFrom: plannedFrom)
         #expect(!route.needsOptimize)
     }
+
+    /// A door answered for while OSRM was working moved the van: the solution
+    /// was planned from where it used to be, so it is written but not trusted.
+    @Test func aDoorAnsweredForWhileSolvingLeavesTheRouteFlagged() throws {
+        let (route, context, customers) = try makeRoute()
+        let plannedFrom = RouteOptimizer.snapshot(route).1
+        customers[1].record(.delivered)
+        try context.save()
+
+        try optimize(route, in: context, plannedFrom: plannedFrom)
+        #expect(route.needsOptimize)
+    }
+
+    /// Abbestellt is ticked in the yard and says nothing about where the van
+    /// is, so it does not make a solution stale.
+    @Test func anAbbestelltTickWhileSolvingDoesNot() throws {
+        let (route, context, customers) = try makeRoute()
+        let plannedFrom = RouteOptimizer.snapshot(route).1
+        customers[1].record(.cancelled)
+        try context.save()
+
+        try optimize(route, in: context, plannedFrom: plannedFrom)
+        #expect(!route.needsOptimize)
+    }
 }

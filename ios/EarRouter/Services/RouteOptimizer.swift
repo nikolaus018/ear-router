@@ -59,6 +59,12 @@ enum RouteOptimizer {
     /// between the read and the write does not make the computed order or
     /// geometry wrong, and treating it as if it did would leave routes
     /// perpetually flagged for re-optimization over an edited Notiz.
+    ///
+    /// But whether a door counts as driven, yes. A tour is planned mid-shift
+    /// from the last door answered for — see `Nodes.driven` — so a door ticked
+    /// while OSRM was answering moved the van, and the solution that comes
+    /// back starts where it no longer is. Written anyway, like any other stale
+    /// answer, and left flagged so the next run starts from the right door.
     struct Fingerprint: Equatable, Sendable {
         let entries: [Entry]
         struct Entry: Equatable, Sendable {
@@ -66,6 +72,7 @@ enum RouteOptimizer {
             let lat: Double
             let lon: Double
             let excluded: Bool
+            var driven: Bool = false
         }
     }
 
@@ -442,7 +449,7 @@ enum RouteOptimizer {
     /// has been anywhere, so it says nothing about where the van is; those
     /// stay with the open ones, where they have always been planned.
     static func driven(_ route: Route) -> [StopCoord] {
-        var done = route.customerStops.filter { $0.isSettled && $0.outcome != .cancelled }
+        var done = route.customerStops.filter(countsAsDriven)
         if let last = done.indices.max(by: {
             (done[$0].settledAt ?? .distantPast) < (done[$1].settledAt ?? .distantPast)
         }) {
@@ -451,13 +458,20 @@ enum RouteOptimizer {
         return done.map(\.planningSnapshot)
     }
 
+    /// A customer the van has already been to — the one rule `driven` and the
+    /// fingerprint share.
+    static func countsAsDriven(_ stop: Stop) -> Bool {
+        stop.kind == .customer && stop.isSettled && stop.outcome != .cancelled
+    }
+
     private static func fingerprint(_ route: Route) -> Fingerprint {
         Fingerprint(
             entries: route.stops
                 .sorted(by: Stop.createdBefore)
                 .map {
                     Fingerprint.Entry(
-                        id: $0.id, lat: $0.lat, lon: $0.lon, excluded: $0.excluded)
+                        id: $0.id, lat: $0.lat, lon: $0.lon, excluded: $0.excluded,
+                        driven: Self.countsAsDriven($0))
                 })
     }
 
