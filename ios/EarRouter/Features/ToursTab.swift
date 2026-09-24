@@ -211,7 +211,10 @@ struct TourRow: View {
                 .font(.body)
 
             if isCurrent {
-                Label("Auf Jetzt", systemImage: "door.left.hand.open")
+                // One run of text, not a `Label`: in a list a `Label` gets the
+                // icon column, which spread the door away from its words and
+                // pulled the row's separator in under the icon.
+                Text("\(Image(systemName: "door.left.hand.open")) Auf Jetzt")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Color.accentColor)
             }
