@@ -345,13 +345,19 @@ struct TourView: View {
     /// Highlighted takes priority — it only ever lands on the row `reveal`
     /// just scrolled to, and losing that flash under a permanent tint would
     /// defeat the point of it. Otherwise a stop whose address the geocoder
-    /// only narrowed to a street or a district, never a door, gets a soft red
-    /// wash: the list is where a driver decides what to trust before setting
-    /// off, and a precise-looking row for an address nobody actually pinned
-    /// is the wrong moment to find that out.
+    /// only narrowed to a street or a district, never a door, gets a soft
+    /// amber wash: the list is where a driver decides what to trust before
+    /// setting off, and a precise-looking row for an address nobody actually
+    /// pinned is the wrong moment to find that out.
+    ///
+    /// Amber, not the red this was. Red is the colour of deleting in this app
+    /// and nothing else (see `Theme`), and the same approximate pin is amber
+    /// on the map, on the row's own ≈ mark and in the editor.
     private func rowBackground(for stop: Stop) -> Color? {
         if highlighted == stop.id { return Color.accentColor.opacity(0.12) }
-        if let precision = stop.precision, precision != .exact { return Color.red.opacity(0.12) }
+        if let precision = stop.precision, precision != .exact {
+            return Color.attention.opacity(0.12)
+        }
         return nil
     }
 
