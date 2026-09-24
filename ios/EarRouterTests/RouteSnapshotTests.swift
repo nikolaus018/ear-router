@@ -362,6 +362,32 @@ struct RouteSnapshotTests {
 
         #expect(RouteSnapshot(r).doorCount(a) == 1)
     }
+
+    // MARK: - The delivery line
+
+    /// Abbestellt is not a door that failed: counted against the meals owed,
+    /// and named apart from the one nobody opened.
+    @Test func theDeliveryLineCountsAgainstTheMealsOwed() throws {
+        let a = customer("A", at: 1), b = customer("B", at: 2)
+        let c = customer("C", at: 3), d = customer("D", at: 4)
+        a.record(.delivered)
+        b.record(.neighbour)
+        c.record(.cancelled)
+        d.record(.notHome)
+        let snapshot = RouteSnapshot(try route([a, b, c, d]))
+
+        #expect(snapshot.owedCount == 3)
+        #expect(snapshot.deliveryLine
+            == "2 von 3 geliefert · 1 nicht angetroffen · 1 abbestellt")
+    }
+
+    @Test func anAbbestelltCustomerIsNotAMissedMeal() throws {
+        let a = customer("A", at: 1), b = customer("B", at: 2)
+        a.record(.delivered)
+        b.record(.cancelled)
+        #expect(RouteSnapshot(try route([a, b])).deliveryLine
+            == "1 von 1 geliefert · 1 abbestellt")
+    }
 }
 
 /// `counts` exists so the stop list never builds a route's worth of

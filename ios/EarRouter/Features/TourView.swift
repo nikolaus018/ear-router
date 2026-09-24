@@ -472,9 +472,7 @@ struct TourView: View {
         // "0 von 0 geliefert" over a route that has only its three fixed points
         // is a progress report on nothing.
         if snapshot.customerCount == 0 { return "Fixpunkte" }
-        let missed = snapshot.settledCount - snapshot.deliveredCount
-        let base = "\(snapshot.deliveredCount) von \(snapshot.customerCount) geliefert"
-        return missed > 0 ? "\(base) · \(missed) nicht" : base
+        return snapshot.deliveryLine
     }
 
     private var recheckAlert: Binding<Bool> {

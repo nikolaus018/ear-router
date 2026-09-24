@@ -167,7 +167,7 @@ struct NowTab: View {
                 .listRowInsets(EdgeInsets(top: 20, leading: 20, bottom: 20, trailing: 20))
         } header: {
             ProgressHeader(
-                delivered: snapshot.deliveredCount, settled: snapshot.settledCount,
+                caption: snapshot.deliveryLine, settled: snapshot.settledCount,
                 total: snapshot.customerCount)
         }
     }
@@ -189,15 +189,16 @@ struct NowTab: View {
     private func doneSection(_ route: Route, snapshot: RouteSnapshot) -> some View {
         Section {
             TourDoneView(
-                count: snapshot.customerCount,
+                count: snapshot.owedCount,
                 delivered: snapshot.deliveredCount,
+                cancelled: snapshot.cancelledCount,
                 followUps: snapshot.followUps,
                 homeKm: snapshot.remainingKm,
                 onFinish: { finish(route) })
                 .listRowBackground(Color.clear)
         } header: {
             ProgressHeader(
-                delivered: snapshot.deliveredCount, settled: snapshot.settledCount,
+                caption: snapshot.deliveryLine, settled: snapshot.settledCount,
                 total: snapshot.customerCount)
         }
     }
@@ -652,7 +653,9 @@ private struct NowStopCard: View {
 /// "12 von 30 geliefert", over a bar — the count the tour list's header gives,
 /// with the green of a tick to show how far along that is.
 private struct ProgressHeader: View {
-    let delivered: Int
+    /// `RouteSnapshot.deliveryLine`: delivered against the meals owed, with
+    /// the doors nobody opened and the abbestellt ones named apart.
+    let caption: String
     /// Doors answered for, which is what the bar fills to. A customer who was
     /// not home is behind the driver even though no meal left the van, and a
     /// bar that refused to move for them would sit at 29/30 all afternoon.
@@ -669,23 +672,15 @@ private struct ProgressHeader: View {
         .padding(.bottom, 4)
         .accessibilityElement(children: .combine)
     }
-
-    /// "12 von 30 geliefert", and the gap named when there is one. Two numbers
-    /// that differ need the difference said out loud — a header reading "12 von
-    /// 30" over fourteen doors already behind the driver is the kind of
-    /// arithmetic nobody should be doing at the wheel.
-    private var caption: String {
-        let missed = settled - delivered
-        guard missed > 0 else { return "\(delivered) von \(total) geliefert" }
-        return "\(delivered) von \(total) geliefert · \(missed) nicht"
-    }
 }
 
 /// Every meal handed over: the drive home, and the button that files the tour.
 private struct TourDoneView: View {
+    /// Meals owed — the abbestellt customers are not among them.
     let count: Int
     /// Meals that actually left the van.
     let delivered: Int
+    let cancelled: Int
     /// The customers nobody was home for — the reason this screen is not
     /// always a green seal.
     let followUps: [Stop]
@@ -760,7 +755,9 @@ private struct TourDoneView: View {
         let handed = delivered == count
             ? (count == 1 ? "1 Stopp zugestellt" : "\(count) Stopps zugestellt")
             : "\(delivered) von \(count) zugestellt"
-        guard homeKm >= 0.05, let km = Format.km(homeKm) else { return handed }
-        return "\(handed) · Rückfahrt \(km)"
+        let parts = [handed, cancelled > 0 ? "\(cancelled) abbestellt" : nil]
+            .compactMap { $0 }.joined(separator: " · ")
+        guard homeKm >= 0.05, let km = Format.km(homeKm) else { return parts }
+        return "\(parts) · Rückfahrt \(km)"
     }
 }

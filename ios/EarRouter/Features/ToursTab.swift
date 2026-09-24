@@ -257,9 +257,9 @@ struct TourRow: View {
         // and it was on every tour the moment it was created.
         if completedDate == nil, stats.settled > 0 {
             parts.append(
-                stats.delivered == stats.customers
+                stats.delivered == stats.owed
                     ? "alle geliefert"
-                    : "\(stats.delivered) von \(stats.customers) geliefert")
+                    : "\(stats.delivered) von \(stats.owed) geliefert")
         }
         // Named on the row, not left to be discovered by opening the tour. It
         // is the one fact about a day that somebody still has to do something
@@ -281,16 +281,19 @@ struct TourRow: View {
         /// in an abbestellt customer, who was never owed a meal and must not
         /// be named on the row as somebody nobody found at home.
         let notHome: Int
+        /// Meals owed: every customer but the abbestellt ones.
+        let owed: Int
         let km: Double
 
         init(_ route: Route) {
-            var customers = 0, delivered = 0, settled = 0, notHome = 0, km = 0.0
+            var customers = 0, delivered = 0, settled = 0, notHome = 0, owed = 0, km = 0.0
             for s in route.stops {
                 if s.kind == .customer {
                     customers += 1
                     if s.delivered { delivered += 1 }
                     if s.isSettled { settled += 1 }
                     if s.outcome?.needsFollowUp == true { notHome += 1 }
+                    if s.isOwedAMeal { owed += 1 }
                 }
                 if !s.excluded { km += s.nextLegKm ?? 0 }
             }
@@ -298,6 +301,7 @@ struct TourRow: View {
             self.delivered = delivered
             self.settled = settled
             self.notHome = notHome
+            self.owed = owed
             self.km = km
         }
     }

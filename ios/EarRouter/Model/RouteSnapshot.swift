@@ -18,6 +18,8 @@ struct RouteSnapshot {
     /// the tour's own progress is measured against, because a customer who was
     /// not home is a door the van is not going back past.
     let settledCount: Int
+    /// Customers marked abbestellt — never owed a meal today.
+    let cancelledCount: Int
     /// The next stop to tick off — a customer, or Lager or Ziel.
     let nextOpen: Stop?
     let totalKm: Double
@@ -74,6 +76,20 @@ struct RouteSnapshot {
     /// what the pace per door multiplies.
     var openDoors: Int { customerCount - settledCount }
 
+    /// The meals this tour actually owes: every customer but the abbestellt
+    /// ones. What "geliefert" is counted against, so two cancellations do not
+    /// read as two failures.
+    var owedCount: Int { customerCount - cancelledCount }
+
+    /// "17 von 18 geliefert · 1 nicht angetroffen · 2 abbestellt" — the line
+    /// over the stop list and over Jetzt.
+    var deliveryLine: String {
+        var parts = ["\(deliveredCount) von \(owedCount) geliefert"]
+        if !followUps.isEmpty { parts.append("\(followUps.count) nicht angetroffen") }
+        if cancelledCount > 0 { parts.append("\(cancelledCount) abbestellt") }
+        return parts.joined(separator: " · ")
+    }
+
     func number(_ stop: Stop) -> Int? { numbers[stop.id] }
     func doorCount(_ stop: Stop) -> Int { doorCounts[stop.id] ?? 1 }
 
@@ -115,6 +131,7 @@ struct RouteSnapshot {
         var customers = 0
         var delivered = 0
         var settled = 0
+        var cancelled = 0
         var open = 0
         var next: Stop?
         var openEnd: Stop?
@@ -143,6 +160,7 @@ struct RouteSnapshot {
                 if stop.delivered { delivered += 1 }
                 if let outcome = stop.outcome {
                     settled += 1
+                    if outcome == .cancelled { cancelled += 1 }
                     if outcome.needsFollowUp { followUps.append(stop) }
                 }
             }
@@ -198,6 +216,7 @@ struct RouteSnapshot {
         self.customerCount = customers
         self.deliveredCount = delivered
         self.settledCount = settled
+        self.cancelledCount = cancelled
         // A tour with no customers yet has nothing to drive: its Lager and Ziel
         // are not a round to be started, just three points waiting for one.
         self.openCount = customers > 0 ? open : 0
