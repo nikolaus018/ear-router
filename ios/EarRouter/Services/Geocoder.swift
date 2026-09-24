@@ -91,14 +91,22 @@ actor Geocoder {
         // `districtHint`, which asks the register the same question without
         // the postcode, would answer them with whichever Viennese street
         // happens to share the name.
+        // Whether the register could not be asked at all. Then whatever
+        // Nominatim answers is only standing in for it: used, but not
+        // remembered — cached as exact, it was served for good, and the
+        // register's own Stiege-precise answer was never asked for again once
+        // it was back up. Nor is "nobody has it" a verdict worth keeping.
+        var registerUnreachable = false
         if Postcodes.isVienna(plz) {
             try Task.checkCancellation()
-            if let hit = await wienOGDGeocode(strasse: strasse, plz: plz) {
+            let register = await wienOGDGeocode(strasse: strasse, plz: plz)
+            if let hit = register.hit {
                 await GeocodeCache.shared.store(
                     key, lat: hit.lat, lon: hit.lon,
                     displayName: hit.displayName, precision: hit.precision)
                 return hit
             }
+            registerUnreachable = register.unreachable
 
             // The register did not have this address in the district it was
             // filed under. Before spending throttled Nominatim calls — and
@@ -106,7 +114,8 @@ actor Geocoder {
             // explain — ask the register the same question without the
             // district.
             try Task.checkCancellation()
-            if let actual = await districtHint(normalized: normalized, plz: plz) {
+            if !registerUnreachable,
+               let actual = await districtHint(normalized: normalized, plz: plz) {
                 log.info("address exists in a different district: \(plz) → \(actual)")
                 throw AppError.wrongDistrict(strasse.trimmed, actualPlz: actual)
             }
@@ -146,10 +155,11 @@ actor Geocoder {
             // Every strategy ran and every one answered "no such address" — a
             // definitive negative (an unreachable geocoder would have thrown
             // long before here), so it is safe to remember.
-            await GeocodeCache.shared.recordMiss(key)
+            if !registerUnreachable { await GeocodeCache.shared.recordMiss(key) }
             throw AppError.notFound(originalQuery)
         }
 
+        guard !registerUnreachable else { return result }
         await GeocodeCache.shared.store(
             key, lat: result.lat, lon: result.lon,
             displayName: result.displayName, precision: result.precision)
@@ -361,7 +371,20 @@ actor Geocoder {
     /// with no published rate limit, so trying the most precise form first
     /// costs a few hundred milliseconds on the addresses that have a
     /// sub-address and nothing at all on the ones that do not.
-    private func wienOGDGeocode(strasse: String, plz: String) async -> GeocodeResult? {
+    ///
+    /// `unreachable` when no answer was found and at least one of the calls
+    /// failed outright — the register may well have the address.
+    private func wienOGDGeocode(
+        strasse: String, plz: String
+    ) async -> (hit: GeocodeResult?, unreachable: Bool) {
+        var failed = false
+        let hit = await wienOGDSearch(strasse: strasse, plz: plz, failed: &failed)
+        return (hit, hit == nil && failed)
+    }
+
+    private func wienOGDSearch(
+        strasse: String, plz: String, failed: inout Bool
+    ) async -> GeocodeResult? {
         let normalized = AddressText.normalize(strasse)
         let simplified = AddressText.simplifyHousenumber(normalized)
         let sub = AddressText.housenumberWithSub(normalized)
@@ -373,7 +396,7 @@ actor Geocoder {
         if let sub {
             if let hit = await ogdSearchOne(
                 query: sub.query, plz: plz, subCheck: .require(sub.key),
-                segments: segments, numbers: numbers) {
+                segments: segments, numbers: numbers, failed: &failed) {
                 return hit
             }
         }
@@ -384,7 +407,7 @@ actor Geocoder {
         if let number, let lettered = numbers.first(where: { $0 != number }),
            let hit = await ogdSearchOne(
                query: "\(AddressText.streetNameOnly(simplified)) \(lettered.uppercased())",
-               plz: plz, subCheck: .absent, numbers: [lettered]),
+               plz: plz, subCheck: .absent, numbers: [lettered], failed: &failed),
            hit.precision == .exact {
             return hit
         }
@@ -392,12 +415,14 @@ actor Geocoder {
         let fallbackCheck: SubCheck = sub.map { .downgrade($0.key) } ?? .absent
 
         if let hit = await ogdSearchOne(
-            query: simplified, plz: plz, subCheck: fallbackCheck, numbers: numbers) {
+            query: simplified, plz: plz, subCheck: fallbackCheck, numbers: numbers,
+            failed: &failed) {
             return hit
         }
         if simplified != normalized,
            let hit = await ogdSearchOne(
-            query: normalized, plz: plz, subCheck: fallbackCheck, numbers: numbers) {
+            query: normalized, plz: plz, subCheck: fallbackCheck, numbers: numbers,
+            failed: &failed) {
             return hit
         }
         return nil
@@ -449,9 +474,12 @@ actor Geocoder {
 
     private func ogdSearchOne(
         query: String, plz: String, subCheck: SubCheck, segments: [String] = [],
-        numbers: Set<String>
+        numbers: Set<String>, failed: inout Bool
     ) async -> GeocodeResult? {
-        guard let features = await ogdFetch(query) else { return nil }
+        guard let features = await ogdFetch(query) else {
+            failed = true
+            return nil
+        }
         // `matchKey`, not a lowercased raw string — see `pickFeature`.
         let ourStreet = AddressText.matchKey(AddressText.streetNameOnly(query))
         guard let best = Self.pickFeature(
@@ -732,10 +760,10 @@ actor Geocoder {
             }
     }
 
-    /// One raw OGD lookup: the request and the parse. Returns `nil` — never
-    /// throws — for every flavour of "no usable answer", which is what lets
-    /// the caller treat the register as a first attempt rather than a hard
-    /// dependency. An outage the night before a route is due degrades to the
+    /// One raw OGD lookup: the request and the parse. `nil` when the register
+    /// could not be asked or its reply not read, and an empty list when it
+    /// answered that it has nothing. Never throwing is what lets the caller
+    /// treat the register as a first attempt rather than a hard dependency. An outage the night before a route is due degrades to the
     /// Nominatim pipeline, not to a failure.
     private func ogdFetch(_ query: String) async -> [OGDFeature]? {
         var comps = URLComponents(url: Upstreams.current.wienOGD, resolvingAgainstBaseURL: false)
@@ -755,8 +783,9 @@ actor Geocoder {
             }
             // A query with zero matches comes back as an HTTP 200 with a
             // completely empty body (not `{"features":[]}`) — has to be
-            // checked before handing an empty string to the JSON parser.
-            guard !data.isEmpty else { return nil }
+            // checked before handing an empty string to the JSON parser. It
+            // is an answer, "none", and not a failure.
+            guard !data.isEmpty else { return [] }
             return try JSONDecoder().decode(OGDFeatureCollection.self, from: data).features
         } catch let e as URLError where e.code == .cancelled {
             // Answered `nil` like any other failure — but logged as what it is,
