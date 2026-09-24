@@ -863,7 +863,7 @@ struct LadelisteStateTests {
 
     @Test func eachTourHasItsOwnTicks() throws {
         let monday = UUID(), tuesday = UUID()
-        try clean([monday, tuesday]) {
+        clean([monday, tuesday]) {
             LadelisteState.store(["menü", "suppe"], for: monday)
 
             #expect(LadelisteState.checked(for: monday) == ["menü", "suppe"])
@@ -884,7 +884,7 @@ struct LadelisteStateTests {
     /// things that writes here, and it writes an empty set.
     @Test func storingReplacesWhatWasThere() throws {
         let id = UUID()
-        try clean([id]) {
+        clean([id]) {
             LadelisteState.store(["menü", "suppe"], for: id)
             LadelisteState.store(["menü"], for: id)
             #expect(LadelisteState.checked(for: id) == ["menü"])
@@ -898,7 +898,7 @@ struct LadelisteStateTests {
     /// ticks behind in the app's preferences for good.
     @Test func forgettingOneTourLeavesTheOthersAlone() throws {
         let monday = UUID(), tuesday = UUID()
-        try clean([monday, tuesday]) {
+        clean([monday, tuesday]) {
             LadelisteState.store(["menü"], for: monday)
             LadelisteState.store(["suppe"], for: tuesday)
 

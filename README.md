@@ -35,7 +35,7 @@ third-party dependencies.
 | `Services/Preflight` | The checklist that runs while the van is still in the yard, where every failure this app can have is still cheap |
 | `Services/NextStopIntent` | "Hey Siri, nächster Stopp" — read-only, and deliberately so |
 | `Services/GourmetPortal` | The Zusteller-Portal: login, the day's tours and their deliveries; the login lives in the Keychain |
-| `Support/NavigationHandoff` | Hands a stop to Apple Maps, Waze or Google Maps — always as its address, never as a point |
+| `Support/NavigationHandoff` | Hands a stop to Apple Maps, Waze or Google Maps: a hand-placed pin if there is one, else the house number's entrance from the city's register, else the address. The map pin stays on the building |
 | `Support/Theme` | The palette, and why each colour is the colour it is |
 
 ### External services

@@ -34,9 +34,9 @@ struct NextStopIntentTests {
     @Test func theStairsAndTheBoxComeAfterTheAddress() {
         let said = NextStopIntent.sentence(
             customer(paket: "2x Menü"), number: 3, floor: "3", eta: nil)
-        let address = try? #require(said.range(of: "Gentzgasse"))
-        let floor = try? #require(said.range(of: "3. Stock"))
-        let paket = try? #require(said.range(of: "2x Menü"))
+        let address = said.firstRange(of: "Gentzgasse")
+        let floor = said.firstRange(of: "3. Stock")
+        let paket = said.firstRange(of: "2x Menü")
         #expect(address != nil && floor != nil && paket != nil)
         if let address, let floor { #expect(address.lowerBound < floor.lowerBound) }
         if let floor, let paket { #expect(floor.lowerBound < paket.lowerBound) }

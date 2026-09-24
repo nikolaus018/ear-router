@@ -189,10 +189,6 @@ enum AddressText {
         }
     }
 
-    /// Compares sub-addresses the way a human would, ignoring the many ways
-    /// the same one gets written: the driver types "9/Parz.68", the register
-    /// answers "Großfeldstraße 9 Parz. 68", and a Stiege comes back as "/1".
-    /// Everything that isn't a letter or a digit is noise here, and so is case.
     /// Whether two street keys differ by exactly one letter — one missing,
     /// one extra, or one swapped for another. Only for names of eight letters
     /// or more: on a short name one letter is as likely another street as a
@@ -214,6 +210,10 @@ enum AddressText {
         return edits + (x.count - i) + (y.count - j) == 1
     }
 
+    /// Compares sub-addresses the way a human would, ignoring the many ways
+    /// the same one gets written: the driver types "9/Parz.68", the register
+    /// answers "Großfeldstraße 9 Parz. 68", and a Stiege comes back as "/1".
+    /// Everything that isn't a letter or a digit is noise here, and so is case.
     static func subAddressKey(_ sub: String) -> String {
         germanFold(sub.lowercased()).filter { $0.isLetter || $0.isNumber }
     }
