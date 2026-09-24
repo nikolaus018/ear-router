@@ -48,6 +48,8 @@ struct NowTab: View {
     /// Whether the last press finished the tour, which is worth feeling
     /// differently from the thirty presses before it.
     @State private var finishedTour = false
+    /// The tour just filed from here, whose Tagesabschluss is up.
+    @State private var reportRoute: Route?
 
     /// One delivery that can still be taken back.
     struct DeliveredTick: Equatable {
@@ -88,6 +90,11 @@ struct NowTab: View {
         }
         .sheet(item: $editingStop) { stop in
             editor(for: stop)
+        }
+        // Outside `screen`, which goes with the tour the moment it is filed:
+        // the report has to outlive the tour leaving this tab.
+        .sheet(item: $reportRoute) { route in
+            TourReportSheet(route: route)
         }
         .errorAlert($error)
         .sensoryFeedback(trigger: ticks) { _, _ in
@@ -349,9 +356,14 @@ struct NowTab: View {
         }
     }
 
+    /// Files the tour and puts the day's report up — exactly what the tour's
+    /// own "Tour abschließen" does. This one only filed it, and Jetzt is where
+    /// most tours end: the report the outcomes and times are kept for was
+    /// skipped on the screen the driver was actually standing on.
     private func finish(_ route: Route) {
         do {
             try RouteStore.toggleStatus(route, in: context)
+            reportRoute = route
         } catch {
             self.error = AppError.message("Die Tour konnte nicht abgeschlossen werden.")
         }
