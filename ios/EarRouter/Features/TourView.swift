@@ -355,22 +355,24 @@ struct TourView: View {
     @ViewBuilder
     private func finishButton(_ snapshot: RouteSnapshot) -> some View {
         if search.isEmpty, route.status == .active, snapshot.isComplete {
-            Button {
-                // Filed *and* reported, in one press. The report is the whole
-                // reason anybody asked for outcomes and timestamps, and a
-                // screen the driver has to remember to go and find is one that
-                // gets found on the third day and never again.
-                save("Die Tour konnte nicht abgeschlossen werden.") {
-                    try RouteStore.toggleStatus(route, in: context)
-                }
-                if error == nil { showingReport = true }
-            } label: {
+            Button(action: finish) {
                 WideButtonLabel("Tour abschließen", systemImage: "checkmark.seal.fill")
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .padding(.horizontal, 20)
         }
+    }
+
+    /// Filed *and* reported, in one press. The report is the whole reason
+    /// anybody asked for outcomes and timestamps, and a screen the driver has
+    /// to remember to go and find is one that gets found on the third day and
+    /// never again.
+    private func finish() {
+        save("Die Tour konnte nicht abgeschlossen werden.") {
+            try RouteStore.toggleStatus(route, in: context)
+        }
+        if error == nil { showingReport = true }
     }
 
     // MARK: - Toolbar
@@ -442,12 +444,16 @@ struct TourView: View {
                     confirmingReset = true
                 }
                 .disabled(route.settledCount == 0)
-                Button(
-                    route.status == .active ? "Als erledigt markieren" : "Wieder aktivieren",
-                    systemImage: route.status == .active ? "checkmark.seal" : "arrow.uturn.backward"
-                ) {
-                    save("Der Status der Tour konnte nicht geändert werden.") {
-                        try RouteStore.toggleStatus(route, in: context)
+                // The same words and the same result as the button at the
+                // bottom of a finished list: filed, and the report up. As
+                // "Als erledigt markieren" it filed the tour without one.
+                if route.status == .active {
+                    Button("Tour abschließen", systemImage: "checkmark.seal") { finish() }
+                } else {
+                    Button("Wieder aktivieren", systemImage: "arrow.uturn.backward") {
+                        save("Der Status der Tour konnte nicht geändert werden.") {
+                            try RouteStore.toggleStatus(route, in: context)
+                        }
                     }
                 }
             } label: {
