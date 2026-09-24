@@ -17,7 +17,7 @@ struct StockwerkSheet: View {
     var body: some View {
         StockwerkForm(
             title: stop.kunde ?? "Stopp",
-            subtitle: stop.listAddress,
+            subtitle: Format.address(stop.listAddress),
             initial: (try? StockwerkStore.note(for: stop, in: context)) ?? nil,
             askingAfterDelivery: true
         ) { info in

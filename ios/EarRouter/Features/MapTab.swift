@@ -1259,7 +1259,7 @@ struct StopPreviewSheet: View {
                     // to "Hyphen Te…" on the one card whose whole job is saying
                     // whose door this pin is.
                     .fixedSize(horizontal: false, vertical: true)
-                Text(stop.listAddress)
+                Text(Format.address(stop.listAddress))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -1396,7 +1396,7 @@ private struct SharedPinSheet: View {
                 Text("\(stops.count) Stopps an dieser Adresse")
                     .font(.title3.bold())
                 if let address = stops.first?.listAddress, !address.isEmpty {
-                    Text(address)
+                    Text(Format.address(address))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

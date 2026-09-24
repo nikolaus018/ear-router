@@ -52,7 +52,7 @@ struct OutcomeSheet: View {
                 .font(.title3.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
             if !stop.listAddress.isEmpty {
-                Text(stop.listAddress)
+                Text(Format.address(stop.listAddress))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

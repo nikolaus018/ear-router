@@ -465,7 +465,7 @@ private struct NowStopCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 if !stop.listAddress.isEmpty {
                     HStack(alignment: .center, spacing: 8) {
-                        Text(stop.listAddress)
+                        Text(Format.address(stop.listAddress))
                             .font(.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -717,7 +717,7 @@ private struct TourDoneView: View {
                                 Text(stop.kunde ?? "Stopp")
                                     .fixedSize(horizontal: false, vertical: true)
                                 if !stop.listAddress.isEmpty {
-                                    Text(stop.listAddress)
+                                    Text(Format.address(stop.listAddress))
                                         .font(.footnote)
                                         .foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)

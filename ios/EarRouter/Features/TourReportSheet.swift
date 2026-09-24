@@ -124,7 +124,7 @@ struct TourReportSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.name).fixedSize(horizontal: false, vertical: true)
                     if !entry.address.isEmpty {
-                        Text(entry.address)
+                        Text(Format.address(entry.address))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

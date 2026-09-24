@@ -185,7 +185,7 @@ struct StopRow: View {
             }
 
             if !stop.listAddress.isEmpty {
-                Text(stop.listAddress)
+                Text(Format.address(stop.listAddress))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

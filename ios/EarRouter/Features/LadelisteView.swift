@@ -45,7 +45,7 @@ enum LadungPlan {
                 id: stop.id,
                 position: position + 1,
                 name: kunde.isEmpty ? "Stopp" : kunde,
-                address: stop.listAddress,
+                address: Format.address(stop.listAddress),
                 paketCount: stop.paketCount)
         }
     }

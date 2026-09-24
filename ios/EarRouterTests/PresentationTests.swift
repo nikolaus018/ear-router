@@ -77,6 +77,19 @@ struct ListAddressTests {
         #expect(stop(nil, "1180").listAddress == "1180")
         #expect(stop(nil, nil).listAddress.isEmpty)
     }
+
+    /// On screen the house number never starts a line of its own: it is held
+    /// to its street, and the postcode to it.
+    @Test func theScreenFormKeepsTheNumberWithItsStreet() {
+        let nb = "\u{00A0}"
+        #expect(
+            Format.address("Floridsdorfer Hauptstraße 1, 1210")
+                == "Floridsdorfer Hauptstraße\(nb)1,\(nb)1210")
+        #expect(Format.address("Am Spitz 1") == "Am Spitz\(nb)1")
+        #expect(Format.address("Gentzgasse 129/1, 1180") == "Gentzgasse\(nb)129/1,\(nb)1180")
+        #expect(Format.address("1180") == "1180")
+        #expect(Format.address("") == "")
+    }
 }
 
 /// The map rebuilds its change keys on every frame of a pan, and those keys are

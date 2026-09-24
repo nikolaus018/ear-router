@@ -106,6 +106,32 @@ enum Format {
         count == 1 ? "1 Globale Info" : "\(count) Globale Infos"
     }
 
+    /// "Floridsdorfer Hauptstraße 1, 1210" with the house number held to its
+    /// street, and the postcode to the number, by no-break spaces.
+    ///
+    /// For the screen only. In a row narrowed by its two trailing controls,
+    /// the ordinary spaces let the line end right before the number, and the
+    /// driver read "Floridsdorfer Hauptstraße" over a stray "1, 1210". Held
+    /// together, the line breaks inside the street name instead —
+    /// "Floridsdorfer / Hauptstraße 1, 1210" — which is the break a person
+    /// would make. The shared report and Siri keep the plain text.
+    static func address(_ text: String) -> String {
+        var words = text.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+        // The postcode to whatever comes before it — "1," then "1210".
+        if words.count >= 2, words[words.count - 2].hasSuffix(","),
+           words[words.count - 1].allSatisfy(\.isNumber)
+        {
+            let plz = words.removeLast()
+            words[words.count - 1] += "\u{00A0}" + plz
+        }
+        // The first house number to the word before it.
+        if let i = words.indices.first(where: { $0 > 0 && words[$0].first?.isNumber == true }) {
+            words[i - 1] += "\u{00A0}" + words[i]
+            words.remove(at: i)
+        }
+        return words.joined(separator: " ")
+    }
+
     static func date(_ date: Date) -> String {
         date.formatted(.dateTime.day().month().year().locale(atLocale))
     }
