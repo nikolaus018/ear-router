@@ -142,7 +142,7 @@ struct NowTab: View {
         .toolbar {
             toolbar(
                 route, current: current,
-                hasFloor: current.flatMap { info[$0.id]?.stockwerk } != nil)
+                hasInfo: current.flatMap { info[$0.id] } != nil)
         }
         .animation(.snappy, value: current?.id)
         .safeAreaInset(edge: .bottom, spacing: 0) { undoBanner(route) }
@@ -203,7 +203,7 @@ struct NowTab: View {
     }
 
     @ToolbarContentBuilder
-    private func toolbar(_ route: Route, current: Stop?, hasFloor: Bool) -> some ToolbarContent {
+    private func toolbar(_ route: Route, current: Stop?, hasInfo: Bool) -> some ToolbarContent {
         if let current {
             // A button of its own rather than a menu item: "which side of the
             // building is this door on" is asked at half the stops on a tour.
@@ -216,9 +216,12 @@ struct NowTab: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Bearbeiten", systemImage: "pencil") { editingStop = current }
+                        // The stop list's words for the same sheet, and the
+                        // same test: a note with no floor yet is still
+                        // something to change, not something to enter.
                         if current.kind == .customer {
                             Button(
-                                hasFloor ? "Stockwerk ändern" : "Stockwerk eintragen",
+                                hasInfo ? "Globale Infos ändern" : "Globale Infos eintragen",
                                 systemImage: "stairs"
                             ) {
                                 stockwerkStop = current
