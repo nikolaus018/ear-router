@@ -381,7 +381,23 @@ enum RouteStore {
         in context: ModelContext
     ) throws {
         stop.record(outcome, at: date)
+        if let outcome { tickLagerIfPassed(by: stop, outcome) }
         try context.save()
+    }
+
+    /// A door answered for means the van has loaded, so an open Lager is ticked
+    /// along with it. Left open, it stayed "next" on Jetzt, the lock screen,
+    /// Siri and the car for the whole day, and the remaining kilometres were
+    /// counted from the depot.
+    ///
+    /// Not for abbestellt: that tick is usually made in the yard, when the
+    /// office rings, before anything is loaded.
+    private static func tickLagerIfPassed(by stop: Stop, _ outcome: DeliveryOutcome) {
+        guard stop.kind == .customer, outcome != .cancelled,
+              let lager = stop.route?.stops.first(where: { $0.kind == .via }),
+              lager.isCheckpoint, !lager.isSettled
+        else { return }
+        lager.record(.delivered, at: stop.settledAt ?? Date())
     }
 
     /// The plain tick, which is still what happens at twenty-nine doors out of

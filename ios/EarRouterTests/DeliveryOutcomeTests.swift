@@ -143,7 +143,8 @@ struct DeliveryOutcomeTests {
         }
         try RouteStore.record(.delivered, for: delivered, in: context)
         try RouteStore.record(.notHome, for: missed, in: context)
-        #expect(route.settledCount == 2)
+        // Two doors, and the Lager ticked along with the first of them.
+        #expect(route.settledCount == 3)
 
         try RouteStore.resetDelivered(route, in: context)
 
@@ -202,5 +203,51 @@ struct DeliveryOutcomeTests {
         #expect(route.nextOpenStop?.kunde == "B")
         try RouteStore.record(.delivered, for: b, in: context)
         #expect(route.nextOpenStop?.kunde == "Ziel")
+    }
+
+    /// A door answered for means the van has loaded. A Lager nobody ticked used
+    /// to stay "next" on Jetzt, the lock screen and in the car all day.
+    @Test func answeringTheFirstDoorTicksAForgottenLager() throws {
+        let context = try store()
+        let route = try RouteStore.createRoute(name: "Test", in: context)
+        let a = customer("A"), b = customer("B")
+        a.orderIndex = 10
+        b.orderIndex = 11
+        for s in [a, b] {
+            s.route = route
+            context.insert(s)
+        }
+
+        try RouteStore.record(.notHome, for: a, in: context)
+        let lager = try #require(route.stops.first { $0.kind == .via })
+        #expect(lager.isSettled)
+        #expect(route.nextOpenStop?.kunde == "B")
+    }
+
+    /// Abbestellt is ticked in the yard, before anything is loaded.
+    @Test func anAbbestelltTickLeavesTheLagerOpen() throws {
+        let context = try store()
+        let route = try RouteStore.createRoute(name: "Test", in: context)
+        let a = customer("A")
+        a.orderIndex = 10
+        a.route = route
+        context.insert(a)
+
+        try RouteStore.record(.cancelled, for: a, in: context)
+        #expect(route.nextOpenStop?.kunde == "Lager")
+    }
+
+    /// A tour that skips the Lager has nothing to tick.
+    @Test func anExcludedLagerStaysAsItWas() throws {
+        let context = try store()
+        let route = try RouteStore.createRoute(name: "Test", in: context)
+        let lager = try #require(route.stops.first { $0.kind == .via })
+        lager.excluded = true
+        let a = customer("A")
+        a.route = route
+        context.insert(a)
+
+        try RouteStore.record(.delivered, for: a, in: context)
+        #expect(!lager.isSettled)
     }
 }
