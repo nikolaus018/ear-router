@@ -66,6 +66,25 @@ enum StockwerkStore {
         return try note(forKey: key, in: context)
     }
 
+    /// Moves a customer's Globale Infos to the key their stop answers to now.
+    ///
+    /// The key is built from the name, so correcting "Gruber Maria" to "Maria
+    /// Gruber" used to leave the floor and the note behind under the old
+    /// spelling: gone from the row, asked for again at the door, and a stale
+    /// entry left in the list. Only for a name change at the same address —
+    /// a customer who moved house has a new floor, and asking is right there.
+    /// Nothing moves if the new key already has an entry of its own.
+    static func carry(from oldKey: String?, to stop: Stop, in context: ModelContext) throws {
+        guard let oldKey, let newKey = StockwerkKey.make(for: stop), newKey != oldKey,
+              let existing = try note(forKey: oldKey, in: context),
+              try note(forKey: newKey, in: context) == nil
+        else { return }
+        existing.key = newKey
+        existing.kunde = stop.kunde?.trimmed ?? existing.kunde
+        existing.strasse = stop.strasse?.trimmed ?? existing.strasse
+        existing.plz = stop.plz?.trimmed ?? existing.plz
+    }
+
     /// Whether to put the question to the driver at all.
     ///
     /// Three ways to answer no, and each is a different kind of no: this is not

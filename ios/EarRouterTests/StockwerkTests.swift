@@ -220,4 +220,64 @@ struct StockwerkTests {
         let floors = try StockwerkStore.all(in: context).floors(for: [stop])
         #expect(floors[stop.id] == nil)
     }
+
+    // MARK: - A corrected name
+
+    /// The key carries the name, so a typo fixed in the editor used to leave
+    /// the floor behind under the old spelling and ask for it again.
+    @Test func aCorrectedNameKeepsItsGlobaleInfos() async throws {
+        let context = try makeContext()
+        let stop = customer("Gruber Maria")
+        context.insert(stop)
+        try StockwerkStore.save(
+            CustomerInfo(stockwerk: "3", notiz: "Hört schlecht"), for: stop, in: context)
+
+        try await RouteStore.updateStop(
+            stop, kunde: "Maria Gruber", strasse: "Gentzgasse 129/1", plz: "1180",
+            paket: nil, notiz: nil, reroute: false, in: context)
+
+        let note = try StockwerkStore.note(for: stop, in: context)
+        #expect(note?.stockwerk == "3")
+        #expect(note?.notiz == "Hört schlecht")
+        #expect(note?.kunde == "Maria Gruber")
+        #expect(try StockwerkStore.all(in: context).count == 1)
+        #expect(!StockwerkStore.shouldAsk(stop, in: context))
+    }
+
+    /// Never over the top of what the new name already has.
+    @Test func aCorrectedNameDoesNotOverwriteAnEntryItAlreadyHas() async throws {
+        let context = try makeContext()
+        let stop = customer("Gruber Maria")
+        let other = customer("Maria Gruber")
+        context.insert(stop)
+        context.insert(other)
+        try StockwerkStore.save(stockwerk: "3", dontAsk: false, for: stop, in: context)
+        try StockwerkStore.save(stockwerk: "EG", dontAsk: false, for: other, in: context)
+
+        try await RouteStore.updateStop(
+            stop, kunde: "Maria Gruber", strasse: "Gentzgasse 129/1", plz: "1180",
+            paket: nil, notiz: nil, reroute: false, in: context)
+
+        #expect(try StockwerkStore.note(for: stop, in: context)?.stockwerk == "EG")
+    }
+
+    /// The same name correction arriving in a re-pasted list.
+    @Test func aListThatRenamesACustomerCarriesTheirGlobaleInfos() async throws {
+        let context = try makeContext()
+        let route = Route(name: "Tour")
+        context.insert(route)
+        let stop = customer("Gruber Maria")
+        stop.route = route
+        context.insert(stop)
+        try StockwerkStore.save(stockwerk: "3", dontAsk: false, for: stop, in: context)
+
+        _ = try await RouteStore.importJSON(
+            [CustomerJSON(
+                kunde: "Maria Gruber", strasse: "Gentzgasse 129/1", plz: "1180",
+                paket: nil, notiz: nil)],
+            into: route, in: context, reroute: false)
+
+        #expect(stop.kunde == "Maria Gruber")
+        #expect(try StockwerkStore.note(for: stop, in: context)?.stockwerk == "3")
+    }
 }

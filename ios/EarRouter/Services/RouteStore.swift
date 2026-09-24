@@ -339,12 +339,14 @@ enum RouteStore {
             moved = true
         }
 
+        let infoKey = StockwerkKey.make(for: stop)
         stop.kunde = kunde.trimmed
         stop.strasse = strasse.trimmed
         stop.plz = plz
         stop.paket = paket?.trimmed.nilIfEmpty
         stop.notiz = notiz?.trimmed.nilIfEmpty
         stop.telefon = telefon?.trimmed.nilIfEmpty
+        if !addressChanged { try StockwerkStore.carry(from: infoKey, to: stop, in: context) }
 
         if moved, let route = stop.route {
             route.markRoutingStale()
@@ -709,7 +711,13 @@ enum RouteStore {
         // then report "Aktualisiert: 30" for an import that changed nothing.
         for (entry, stop) in toUpdate {
             var changed = false
-            if stop.kunde != entry.kunde { stop.kunde = entry.kunde; changed = true }
+            if stop.kunde != entry.kunde {
+                // Same door, new spelling of the name: the Globale Infos go with it.
+                let infoKey = StockwerkKey.make(for: stop)
+                stop.kunde = entry.kunde
+                try StockwerkStore.carry(from: infoKey, to: stop, in: context)
+                changed = true
+            }
             if stop.strasse != entry.strasse { stop.strasse = entry.strasse; changed = true }
             if stop.plz != entry.plz { stop.plz = entry.plz; changed = true }
             if stop.paket != entry.paket { stop.paket = entry.paket; changed = true }
