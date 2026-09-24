@@ -68,6 +68,29 @@ struct RoutePlanningTests {
         #expect(plan.fixLast)
     }
 
+    /// Start switched off and a GPS fix known: the tour starts where the
+    /// driver is, then the warehouse — under its own id, so no row's leg is it.
+    @Test func aSwitchedOffStartIsReplacedByWhereTheDriverIs() {
+        var (n, _) = nodes(startExcluded: true)
+        let here = coord(50)
+        n.currentLocation = here
+        let plan = RouteOptimizer.plan(n)
+
+        #expect(plan.head.map(\.id) == [here.id, n.via!.coord.id])
+        #expect(plan.anchor?.id == n.via?.coord.id)
+
+        var noWarehouse = n
+        noWarehouse.via = nil
+        #expect(RouteOptimizer.plan(noWarehouse).anchor?.id == here.id)
+    }
+
+    /// The fix only stands in for a Start that is there and switched off.
+    @Test func aKnownLocationDoesNotDisplaceAnActiveStart() {
+        var (n, _) = nodes()
+        n.currentLocation = coord(50)
+        #expect(RouteOptimizer.plan(n).head.first?.id == n.start?.coord.id)
+    }
+
     /// A tour that finishes at its last customer rather than back at the depot:
     /// the end is left open, which is the whole point of `roundtrip=false`.
     @Test func aTourWithNoDestinationLeavesTheEndOpen() {

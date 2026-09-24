@@ -33,10 +33,11 @@ enum RouteOptimizer {
         /// exactly as it always was.
         var driven: [StopCoord] = []
 
-        /// Where the driver's phone last got a GPS fix. Only ever consulted
-        /// for `start`, and only when `start` is switched off — a driver who
-        /// disables the depot address is not skipping a start, they are
-        /// saying "start from wherever I already am".
+        /// Where the driver is, from a recent GPS fix — set only before the
+        /// first door. Only ever consulted for `start`, and only when `start`
+        /// is switched off: a driver who disables the depot address is not
+        /// skipping a start, they are saying "start from where I am". Its id
+        /// is its own, so the switched-off Start row carries no leg for it.
         var currentLocation: StopCoord?
 
         /// The fixed points the tour actually drives, in order, before any
@@ -50,10 +51,7 @@ enum RouteOptimizer {
                 if let active = start.active {
                     head.append(active)
                 } else if let currentLocation {
-                    head.append(
-                        StopCoord(
-                            id: start.coord.id, lat: currentLocation.lat,
-                            lon: currentLocation.lon))
+                    head.append(currentLocation)
                 }
             }
             if let v = via?.active { head.append(v) }
@@ -171,6 +169,8 @@ enum RouteOptimizer {
     private static func run(
         _ route: Route, in context: ModelContext, keepOrder: Bool
     ) async throws {
+        await fetchStartFixIfNeeded(route)
+        try Task.checkCancellation()
         if keepOrder { return try await runAsListed(route, in: context) }
 
         // --- read ---
@@ -454,11 +454,29 @@ enum RouteOptimizer {
             }
         }
         nodes.driven = driven(route)
-        if let coordinate = LocationAuthorization.shared.lastCoordinate {
+        // Before the first door only: after it the trip starts at the door,
+        // and a fix taken then — or after a relaunch mid-tour — would draw
+        // the line from wherever the van is now back to the first delivery.
+        if nodes.driven.isEmpty,
+           let coordinate = LocationAuthorization.shared.recentFix(within: startFixMaxAge) {
             nodes.currentLocation = StopCoord(
                 id: UUID(), lat: coordinate.latitude, lon: coordinate.longitude)
         }
         return (nodes, fingerprint(route))
+    }
+
+    private static let startFixMaxAge: TimeInterval = 10 * 60
+
+    /// Gets a fresh GPS fix before planning a tour that starts where the
+    /// driver is — Start switched off, no door yet — unless one is already
+    /// recent. Without it the first run after switching Start off planned
+    /// with no fix at all, and an app left open overnight with yesterday's.
+    private static func fetchStartFixIfNeeded(_ route: Route) async {
+        guard route.stops.contains(where: { $0.kind == .start && $0.excluded }),
+              driven(route).isEmpty,
+              LocationAuthorization.shared.recentFix(within: startFixMaxAge) == nil
+        else { return }
+        await LocationAuthorization.shared.currentFix(timeout: .seconds(6))
     }
 
     /// The doors already answered for, as `Nodes.driven` wants them: in list

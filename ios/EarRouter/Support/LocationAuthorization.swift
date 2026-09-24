@@ -33,13 +33,47 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
     /// point the map; the first fix is.
     private(set) var hasFix = false
 
-    /// Where that one fix put the driver. Nothing refines this after the
-    /// first fix arrives — see `hasFix` — so a route planned against it late
-    /// in the day is planned against where the driver started, not where they
-    /// are now.
+    /// The newest fix this launch has seen: the first one, or the one
+    /// `currentFix` last waited for.
     private(set) var lastCoordinate: CLLocationCoordinate2D?
+    @ObservationIgnored private var lastFixAt: Date?
+
+    /// `lastCoordinate`, but only if it is no older than `age`.
+    func recentFix(within age: TimeInterval) -> CLLocationCoordinate2D? {
+        guard let lastFixAt, Date().timeIntervalSince(lastFixAt) <= age else { return nil }
+        return lastCoordinate
+    }
 
     @ObservationIgnored private let manager = CLLocationManager()
+    @ObservationIgnored private var waiting: [UUID: CheckedContinuation<CLLocationCoordinate2D?, Never>] = [:]
+
+    /// Where the driver is *now* — a fix taken for this call, not the one from
+    /// launch, which on an app left open overnight is yesterday's. Asks for
+    /// permission first if it was never asked. Gives up after `timeout` with
+    /// `nil`, so a phone indoors cannot hold up its caller for long.
+    @discardableResult
+    func currentFix(timeout: Duration = .seconds(8)) async -> CLLocationCoordinate2D? {
+        status = manager.authorizationStatus
+        switch status {
+        case .notDetermined: manager.requestWhenInUseAuthorization()
+        case .authorizedWhenInUse, .authorizedAlways: manager.startUpdatingLocation()
+        default: return nil
+        }
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            waiting[id] = continuation
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: timeout)
+                self?.waiting.removeValue(forKey: id)?.resume(returning: nil)
+            }
+        }
+    }
+
+    private func answerWaiting(with coordinate: CLLocationCoordinate2D?) {
+        let all = waiting
+        waiting.removeAll()
+        for continuation in all.values { continuation.resume(returning: coordinate) }
+    }
 
     private override init() {
         super.init()
@@ -70,8 +104,11 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
     /// instead of a fix and does not try again, so `hasFix` stayed false for
     /// the whole session that needed it most.
     private func askForAFix() {
-        guard !hasFix else { return }
-        guard status == .authorizedWhenInUse || status == .authorizedAlways else { return }
+        guard status == .authorizedWhenInUse || status == .authorizedAlways else {
+            if isDenied { answerWaiting(with: nil) }
+            return
+        }
+        guard !hasFix || !waiting.isEmpty else { return }
         manager.startUpdatingLocation()
     }
 
@@ -107,10 +144,23 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(
         _ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]
     ) {
-        guard let coordinate = locations.last?.coordinate else { return }
+        guard let location = locations.last else { return }
+        // Core Location may first hand back a cached fix from hours ago; one
+        // who asked for "now" keeps waiting past it.
+        let isFresh = abs(location.timestamp.timeIntervalSinceNow) < 60
+        let coordinate = location.coordinate
+        let takenAt = location.timestamp
         Task { @MainActor [weak self] in
-            self?.lastCoordinate = coordinate
-            self?.stopWaiting()
+            guard let self else { return }
+            if isFresh || self.lastCoordinate == nil {
+                self.lastCoordinate = coordinate
+                self.lastFixAt = takenAt
+            }
+            if !self.waiting.isEmpty {
+                guard isFresh else { return }
+                self.answerWaiting(with: coordinate)
+            }
+            self.stopWaiting()
         }
     }
 
