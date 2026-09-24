@@ -76,6 +76,8 @@ struct BackupArchive: Codable, Sendable {
         var strasse: String?
         var plz: String?
         var paket: String?
+        /// Absent in files written before it existed. See `Stop.paketCount`.
+        var paketCount: Int? = nil
         var notiz: String?
         var telefon: String?
         var lat: Double
@@ -284,7 +286,8 @@ extension BackupArchive.StopBackup {
     init(_ stop: Stop) {
         self.init(
             id: stop.id, kind: stop.kindRaw, kunde: stop.kunde, strasse: stop.strasse,
-            plz: stop.plz, paket: stop.paket, notiz: stop.notiz, telefon: stop.telefon,
+            plz: stop.plz, paket: stop.paket, paketCount: stop.paketCount,
+            notiz: stop.notiz, telefon: stop.telefon,
             lat: stop.lat, lon: stop.lon, orderIndex: stop.orderIndex,
             delivered: stop.delivered, outcome: stop.outcomeRaw,
             settledAt: stop.settledAt, prioritaet: stop.prioritaet,
@@ -483,7 +486,7 @@ enum BackupRestore {
             let stop = Stop(
                 kind: StopKind(rawValue: s.kind) ?? .customer,
                 kunde: s.kunde, strasse: s.strasse, plz: s.plz,
-                paket: s.paket, notiz: s.notiz, telefon: s.telefon,
+                paket: s.paket, paketCount: s.paketCount, notiz: s.notiz, telefon: s.telefon,
                 lat: s.lat, lon: s.lon, orderIndex: s.orderIndex,
                 precision: s.precision.flatMap(Precision.init(rawValue:)),
                 pinned: s.pinned, excluded: s.excluded)

@@ -99,19 +99,27 @@ extension LadelisteMode {
 }
 
 extension Stop {
-    /// The Paket as the app should *show* it — `nil` on a TK tour.
+    /// The Paket as the app should *show* it.
     ///
-    /// On a TK round the parcels carry the customer's name, so the Paket field
-    /// decides nothing at any door: it is a line of half-cut dish names on
-    /// every row, in Jetzt, on the map, on the lock screen and in what Siri
-    /// reads out. Hiding it is a display rule and only a display rule — the
-    /// field is untouched on the stop, still edited in `StopEditorSheet`, still
-    /// exported, still imported, still summed for the VM loading list.
+    /// On a TK round the parcels carry the customer's name, so the dish names
+    /// summed into `paket` decide nothing at any door: it is a line of
+    /// half-cut text on every row, in Jetzt, on the map, on the lock screen
+    /// and in what Siri reads out. What matters there instead is how many
+    /// separate parcels to carry up — `paketCount`, the portal's own count of
+    /// `delivery_bundles` — because that is what a driver actually loads
+    /// their arms with at a TK door. Falls back to hiding the field, on a
+    /// portal stop from before `paketCount` existed and on anything not from
+    /// the portal at all, same as before this existed.
+    ///
+    /// This is a display rule and only a display rule — `paket` itself is
+    /// untouched, still edited in `StopEditorSheet`, still exported, still
+    /// imported, still summed for the VM loading list.
     ///
     /// A stop with no route cannot be asked which kind of tour it is on, and
     /// answers as VM: showing the field is the harmless half of being wrong.
     var displayPaket: String? {
-        if let route, LadelisteMode.effective(for: route) == .tk { return nil }
-        return paket
+        guard let route, LadelisteMode.effective(for: route) == .tk else { return paket }
+        guard let paketCount else { return nil }
+        return paketCount == 1 ? "1 Paket" : "\(paketCount) Pakete"
     }
 }

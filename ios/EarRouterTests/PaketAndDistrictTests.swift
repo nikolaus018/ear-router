@@ -391,6 +391,26 @@ struct LadelisteModeTests {
         #expect(PaketParser.items(for: r).isEmpty == false)
     }
 
+    /// The dishes stay off the row, but how many separate parcels to grab does
+    /// not — a driver counting boxes off the van needs the number, not the
+    /// menu.
+    @Test func aDoorDoesCarryHowManyParcelsItIs() throws {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self, StockwerkNote.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let r = try RouteStore.createRoute(name: "TK1", in: context)
+        let stop = Stop(
+            kind: .customer, kunde: "Fischer", strasse: "Gasse 1", plz: "1180",
+            paket: "Wurzelfleisch, Kartoffeln GF", paketCount: 3,
+            lat: 48.23, lon: 16.32, orderIndex: 10)
+        stop.route = r
+        context.insert(stop)
+        try context.save()
+
+        #expect(LadungPlan.loadingOrder(for: r).first?.paketCount == 3)
+    }
+
     /// A stop nobody has named still has to be loadable — it is a parcel in the
     /// van either way.
     @Test func aDoorWithoutANameStillGetsARow() throws {
@@ -420,5 +440,53 @@ struct LadelisteModeTests {
         let order = LadungPlan.loadingOrder(for: r)
         #expect(order.map(\.name) == ["Letzte", "Erste"])
         #expect(order.map(\.position) == [1, 2])
+    }
+}
+
+/// What `Stop.displayPaket` shows at a door — the field the stop row, Jetzt,
+/// the map, the lock screen and Siri all read instead of `paket` directly.
+@MainActor
+struct DisplayPaketTests {
+
+    private func route(_ name: String, paket: String?, paketCount: Int?) throws -> Stop {
+        let container = try ModelContainer(
+            for: Route.self, Stop.self, StockwerkNote.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let route = try RouteStore.createRoute(name: name, in: context)
+        let stop = Stop(
+            kind: .customer, kunde: "Fam. Gruber", strasse: "Gasse 1", plz: "1180",
+            paket: paket, paketCount: paketCount, lat: 48.23, lon: 16.32, orderIndex: 10)
+        stop.route = route
+        context.insert(stop)
+        try context.save()
+        return stop
+    }
+
+    /// On a VM tour, unchanged: the summed dish text, whatever the parcel
+    /// count says.
+    @Test func aVMDoorStillShowsTheDishes() throws {
+        let stop = try route("VM4", paket: "1x Menü", paketCount: 3)
+        #expect(stop.displayPaket == "1x Menü")
+    }
+
+    /// On a TK tour, the parcel count takes over — not the dish text, which
+    /// is near enough unique per door and half-cut on every screen.
+    @Test func aTKDoorShowsHowManyParcelsInstead() throws {
+        let stop = try route("TK1", paket: "Wurzelfleisch, Kartoffeln GF", paketCount: 3)
+        #expect(stop.displayPaket == "3 Pakete")
+    }
+
+    @Test func oneParcelIsSingular() throws {
+        let stop = try route("TK1", paket: "Menü", paketCount: 1)
+        #expect(stop.displayPaket == "1 Paket")
+    }
+
+    /// A TK stop the portal never sent a bundle count for — imported before
+    /// `paketCount` existed, or not from the portal at all — falls back to
+    /// hiding the field, exactly as it always has.
+    @Test func aTKDoorWithNoKnownCountHidesThePaket() throws {
+        let stop = try route("TK1", paket: "Wurzelfleisch, Kartoffeln GF", paketCount: nil)
+        #expect(stop.displayPaket == nil)
     }
 }

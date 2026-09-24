@@ -9,6 +9,10 @@ struct CustomerJSON: Codable, Sendable, Hashable {
     var strasse: String
     var plz: String
     var paket: String?
+    /// The Zusteller-Portal's own count of `delivery_bundles` — how many
+    /// separate parcels this delivery is, not what is in them. `nil` from
+    /// every source that is not the portal. See `Stop.paketCount`.
+    var paketCount: Int?
     var notiz: String?
     /// The customer's own number — from the Zusteller-Portal's
     /// `customer.phone` when the entry came from there, typed by hand
@@ -18,12 +22,13 @@ struct CustomerJSON: Codable, Sendable, Hashable {
 
     init(
         kunde: String, strasse: String, plz: String, paket: String?, notiz: String?,
-        telefon: String? = nil
+        telefon: String? = nil, paketCount: Int? = nil
     ) {
         self.kunde = kunde
         self.strasse = strasse
         self.plz = plz
         self.paket = paket
+        self.paketCount = paketCount
         self.notiz = notiz
         self.telefon = telefon
     }
@@ -46,6 +51,7 @@ struct CustomerJSON: Codable, Sendable, Hashable {
         strasse = try c.decodeIfPresent(String.self, forKey: .strasse) ?? ""
         plz = try c.decodeIfPresent(String.self, forKey: .plz) ?? ""
         paket = try c.decodeIfPresent(String.self, forKey: .paket)
+        paketCount = try c.decodeIfPresent(Int.self, forKey: .paketCount)
         notiz = try c.decodeIfPresent(String.self, forKey: .notiz)
         telefon = try c.decodeIfPresent(String.self, forKey: .telefon)
     }
@@ -624,7 +630,8 @@ enum RouteStore {
         let payload = route.customerStops.map {
             CustomerJSON(
                 kunde: $0.kunde ?? "", strasse: $0.strasse ?? "", plz: $0.plz ?? "",
-                paket: $0.paket ?? "", notiz: $0.notiz ?? "", telefon: $0.telefon ?? "")
+                paket: $0.paket ?? "", notiz: $0.notiz ?? "", telefon: $0.telefon ?? "",
+                paketCount: $0.paketCount)
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -705,7 +712,7 @@ enum RouteStore {
                 CustomerJSON(
                     kunde: kunde, strasse: strasse, plz: plz,
                     paket: e.paket?.trimmed.nilIfEmpty, notiz: e.notiz?.trimmed.nilIfEmpty,
-                    telefon: e.telefon?.trimmed.nilIfEmpty))
+                    telefon: e.telefon?.trimmed.nilIfEmpty, paketCount: e.paketCount))
         }
 
         let existing = route.customerStops
@@ -753,6 +760,9 @@ enum RouteStore {
             if stop.strasse != entry.strasse { stop.strasse = entry.strasse; changed = true }
             if stop.plz != entry.plz { stop.plz = entry.plz; changed = true }
             if stop.paket != entry.paket { stop.paket = entry.paket; changed = true }
+            if stop.paketCount != entry.paketCount {
+                stop.paketCount = entry.paketCount; changed = true
+            }
             if stop.notiz != entry.notiz { stop.notiz = entry.notiz; changed = true }
             if stop.telefon != entry.telefon { stop.telefon = entry.telefon; changed = true }
             if changed { result.updated += 1 }
@@ -825,6 +835,7 @@ enum RouteStore {
                 stop.strasse = entry.strasse
                 stop.plz = entry.plz
                 stop.paket = entry.paket
+                stop.paketCount = entry.paketCount
                 stop.notiz = entry.notiz
                 stop.telefon = entry.telefon
                 stop.lat = hit.lat
@@ -836,8 +847,8 @@ enum RouteStore {
             } else {
                 let stop = Stop(
                     kind: .customer, kunde: entry.kunde, strasse: entry.strasse,
-                    plz: entry.plz, paket: entry.paket, notiz: entry.notiz,
-                    telefon: entry.telefon,
+                    plz: entry.plz, paket: entry.paket, paketCount: entry.paketCount,
+                    notiz: entry.notiz, telefon: entry.telefon,
                     lat: hit.lat, lon: hit.lon,
                     orderIndex: nextIndex,
                     precision: precision)

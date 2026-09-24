@@ -117,6 +117,17 @@ final class Stop {
     var strasse: String?
     var plz: String?
     var paket: String?
+    /// How many physical parcels this delivery is — the Zusteller-Portal's
+    /// own bundle count, one per `delivery_bundles` entry. `nil` on every
+    /// stop not sourced from the portal, and on a portal stop imported
+    /// before this existed.
+    ///
+    /// `paket` sums what is *inside* every parcel combined, which is exactly
+    /// what a VM round wants and exactly wrong for a TK one, where a
+    /// household's parcels are near enough unique and carry its name on the
+    /// label — see `LadelisteMode` and `Stop.displayPaket`. This is the count
+    /// the TK display shows instead.
+    var paketCount: Int?
     var notiz: String?
     /// The customer's own number, from the Zusteller-Portal's `customer.phone`
     /// or typed in by hand — distinct from a number merely *mentioned* in
@@ -205,6 +216,7 @@ final class Stop {
         strasse: String? = nil,
         plz: String? = nil,
         paket: String? = nil,
+        paketCount: Int? = nil,
         notiz: String? = nil,
         telefon: String? = nil,
         lat: Double,
@@ -220,6 +232,7 @@ final class Stop {
         self.strasse = strasse
         self.plz = plz
         self.paket = paket
+        self.paketCount = paketCount
         self.notiz = notiz
         self.telefon = telefon
         self.lat = lat

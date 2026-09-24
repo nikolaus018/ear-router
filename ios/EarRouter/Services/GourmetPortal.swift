@@ -425,7 +425,8 @@ enum GourmetPortal {
         return CustomerJSON(
             kunde: customerName(delivery.customer), strasse: streetLine(address),
             plz: address.zip?.trimmed ?? "", paket: paketText(from: delivery), notiz: notiz,
-            telefon: delivery.customer.phone?.trimmed.nilIfEmpty)
+            telefon: delivery.customer.phone?.trimmed.nilIfEmpty,
+            paketCount: delivery.deliveryBundles?.count)
     }
 
     private static func paketText(from delivery: Delivery) -> String? {

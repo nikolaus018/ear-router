@@ -132,8 +132,9 @@ struct SchemaMigrationTests {
         #expect(EarRouterSchemaV6.versionIdentifier == Schema.Version(6, 0, 0))
         #expect(EarRouterSchemaV7.versionIdentifier == Schema.Version(7, 0, 0))
         #expect(EarRouterSchemaV8.versionIdentifier == Schema.Version(8, 0, 0))
-        #expect(EarRouterMigrationPlan.schemas.count == 8)
-        #expect(EarRouterMigrationPlan.stages.count == 7)
+        #expect(EarRouterSchemaV9.versionIdentifier == Schema.Version(9, 0, 0))
+        #expect(EarRouterMigrationPlan.schemas.count == 9)
+        #expect(EarRouterMigrationPlan.stages.count == 8)
     }
 
     /// SwiftData identifies entities by these stable names, not by the nested

@@ -32,7 +32,7 @@ struct CustomerFieldChainTests {
         CustomerJSON(
             kunde: "Fam. Gruber", strasse: "Gentzgasse 129/1", plz: "1180",
             paket: "2x Menü", notiz: "Bitte laut klingeln",
-            telefon: "+4369910842229")
+            telefon: "+4369910842229", paketCount: 3)
     }
 
     private func check(_ entry: CustomerJSON, _ note: Comment? = nil) {
@@ -42,6 +42,7 @@ struct CustomerFieldChainTests {
         #expect(entry.paket == "2x Menü", note)
         #expect(entry.notiz == "Bitte laut klingeln", note)
         #expect(entry.telefon == "+4369910842229", note)
+        #expect(entry.paketCount == 3, note)
     }
 
     // MARK: - Hop by hop
@@ -62,7 +63,8 @@ struct CustomerFieldChainTests {
         let route = try RouteStore.createRoute(name: "Tour", in: context)
         let stop = Stop(
             kind: .customer, kunde: full.kunde, strasse: full.strasse, plz: full.plz,
-            paket: full.paket, notiz: full.notiz, telefon: full.telefon,
+            paket: full.paket, paketCount: full.paketCount, notiz: full.notiz,
+            telefon: full.telefon,
             lat: 48.2301, lon: 16.3201)
         stop.route = route
         context.insert(stop)
@@ -97,6 +99,7 @@ struct CustomerFieldChainTests {
         #expect(stop.strasse == "Gentzgasse 129/1")
         #expect(stop.plz == "1180")
         #expect(stop.paket == "2x Menü")
+        #expect(stop.paketCount == 3)
         #expect(stop.notiz == "Bitte laut klingeln")
         #expect(stop.telefon == "+4369910842229")
         // Nothing moved, so the route is not flagged for reoptimising over a
@@ -112,7 +115,8 @@ struct CustomerFieldChainTests {
         let route = try RouteStore.createRoute(name: "Tour", in: context)
         let stop = Stop(
             kind: .customer, kunde: full.kunde, strasse: full.strasse, plz: full.plz,
-            paket: full.paket, notiz: full.notiz, telefon: full.telefon,
+            paket: full.paket, paketCount: full.paketCount, notiz: full.notiz,
+            telefon: full.telefon,
             lat: 48.2301, lon: 16.3201)
         stop.route = route
         context.insert(stop)
@@ -134,12 +138,12 @@ struct CustomerFieldChainTests {
     /// lost `telefon`.
     @Test func theFieldsOfACustomerEntryAreAccountedFor() {
         let json = Set(Mirror(reflecting: full).children.compactMap(\.label))
-        #expect(json == ["kunde", "strasse", "plz", "paket", "notiz", "telefon"])
+        #expect(json == ["kunde", "strasse", "plz", "paket", "paketCount", "notiz", "telefon"])
 
         let entry = Set(
             Mirror(reflecting: ImportReviewView.Entry(full)).children.compactMap(\.label))
         #expect(entry == [
-            "kunde", "strasse", "plz", "paket", "notiz", "telefon",
+            "kunde", "strasse", "plz", "paket", "notiz", "telefon", "paketCount",
             // The row's own identity, so five identical meals for one
             // institution stay five editable rows — see `Entry`.
             "id",

@@ -1,21 +1,23 @@
 import SwiftData
 import SwiftUI
 
-/// One customer as the loading list shows them: a position in the van, a name
-/// and an address.
+/// One customer as the loading list shows them: a position in the van, a name,
+/// an address, and how many parcels to grab.
 ///
-/// Deliberately nothing about what is in the box — not the dishes, not even a
-/// count of them. On a TK tour every parcel has the customer's name printed on
-/// it, so the name *is* the label, and a piece count beside it is a number the
-/// driver would have to reconcile against a stack they are already holding.
-/// The Paket field itself is untouched on the stop; it is simply not this
-/// screen's business.
+/// Deliberately nothing about what is *in* the box — not the dishes. On a TK
+/// tour every parcel has the customer's name printed on it, so the name is the
+/// label, and a summed list of dish names is a line of half-cut text nobody
+/// reads. But how many separate parcels a door is — the portal's own
+/// `delivery_bundles` count, see `Stop.paketCount` — is exactly what the
+/// driver needs to know they picked up all of them rather than three of four.
 struct LadungStop: Identifiable, Hashable {
     let id: UUID
     /// Where this door's parcels go into the van: 1 is loaded first.
     let position: Int
     let name: String
     let address: String
+    /// `nil` on a stop the portal never sent a bundle count for.
+    let paketCount: Int?
 
     /// Namespaced so a tick here can never collide with a `PaketItem` key.
     /// Both modes share one tick store per tour, and a dish that happened to be
@@ -43,7 +45,8 @@ enum LadungPlan {
                 id: stop.id,
                 position: position + 1,
                 name: kunde.isEmpty ? "Stopp" : kunde,
-                address: stop.listAddress)
+                address: stop.listAddress,
+                paketCount: stop.paketCount)
         }
     }
 }
@@ -228,13 +231,27 @@ struct LadelisteView: View {
                     .strikethrough(on)
                     .foregroundStyle(on ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                     .fixedSize(horizontal: false, vertical: true)
-                if !stop.address.isEmpty {
-                    Text(stop.address)
+                if let line = addressAndParcels(stop) {
+                    Text(line)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        }
+    }
+
+    /// The address and, when the portal sent one, the parcel count — on one
+    /// line, the same way a stop row states its floor beside its address. A
+    /// driver counting three boxes off the van against a door that says
+    /// "3 Pakete" is the whole reason this is here.
+    private func addressAndParcels(_ stop: LadungStop) -> String? {
+        let parcels = stop.paketCount.map { $0 == 1 ? "1 Paket" : "\($0) Pakete" }
+        switch (stop.address.isEmpty ? nil : stop.address, parcels) {
+        case (nil, nil): return nil
+        case (let address?, nil): return address
+        case (nil, let parcels?): return parcels
+        case (let address?, let parcels?): return "\(address) · \(parcels)"
         }
     }
 

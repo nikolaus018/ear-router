@@ -70,6 +70,9 @@ struct ImportReviewView: View {
         var paket: String
         var notiz: String
         var telefon: String
+        /// Carried through untouched — there is no row on this screen to edit
+        /// it on, only the Paket text. See `Stop.paketCount`.
+        var paketCount: Int?
 
         init(_ json: CustomerJSON) {
             kunde = json.kunde.trimmed
@@ -78,12 +81,14 @@ struct ImportReviewView: View {
             paket = json.paket?.trimmed ?? ""
             notiz = json.notiz?.trimmed ?? ""
             telefon = json.telefon?.trimmed ?? ""
+            paketCount = json.paketCount
         }
 
         var json: CustomerJSON {
             CustomerJSON(
                 kunde: kunde, strasse: strasse, plz: plz,
-                paket: paket.nilIfEmpty, notiz: notiz.nilIfEmpty, telefon: telefon.nilIfEmpty)
+                paket: paket.nilIfEmpty, notiz: notiz.nilIfEmpty, telefon: telefon.nilIfEmpty,
+                paketCount: paketCount)
         }
 
         /// What the import would refuse this entry for, said now rather than
