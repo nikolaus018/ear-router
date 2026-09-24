@@ -151,12 +151,15 @@ struct StopRow: View {
     /// this badge too and used to answer the question differently.
     private var badgeKind: StopNumberBadge.Kind { .of(stop, isNext: isNext) }
 
+    /// Grey, except on Lager or Ziel while it is the stop the driver is on.
+    /// Then it is the list's one solid badge, as it is on Jetzt — otherwise at
+    /// the start of every tour, parked at the Lager, no row said "you are here".
     private func fixedIcon(_ name: String) -> some View {
         Image(systemName: name)
             .font(.footnote)
-            .foregroundStyle(Color.fixture)
+            .foregroundStyle(isNext ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.fixture))
             .frame(width: badgeSize, height: badgeSize)
-            .background(Circle().fill(.quaternary))
+            .background(Circle().fill(isNext ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary)))
             .accessibilityHidden(true)
     }
 
