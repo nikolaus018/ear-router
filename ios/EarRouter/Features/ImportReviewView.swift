@@ -179,7 +179,10 @@ struct ImportReviewView: View {
                 Text(pending.message)
             }
             .sheet(item: $result) { report in
-                ImportSummary(result: report.result)
+                ImportSummary(
+                    result: report.result,
+                    onCorrectDistricts: report.result.geocodeFailures.contains { $0.actualPlz != nil }
+                        ? { correctDistricts(from: report.result.geocodeFailures) } : nil)
                     .presentationDetents([.medium, .large])
             }
             .errorAlert($error)
@@ -369,6 +372,34 @@ struct ImportReviewView: View {
             error = e
         } catch {
             self.error = AppError.message("Import fehlgeschlagen.")
+        }
+    }
+
+    /// Puts every entry the register knows under a different postcode into
+    /// that postcode, from the report of an import that could not place them.
+    /// Nothing is looked up until "Übernehmen" is pressed again.
+    private func correctDistricts(from failures: [ImportResult.GeocodeFailure]) {
+        let corrected = Self.correctingDistricts(entries, from: failures)
+        guard corrected != entries else { return }
+        entries = corrected
+        edited = true
+    }
+
+    /// The stop editor's one-tap "Auf 1180 ändern", for a whole list at once:
+    /// each entry the register placed in a different district, moved there.
+    /// Matched on name, street and postcode — what the import reports a
+    /// failure by — so two identical entries are corrected alike.
+    static func correctingDistricts(
+        _ entries: [Entry], from failures: [ImportResult.GeocodeFailure]
+    ) -> [Entry] {
+        entries.map { entry in
+            guard let actual = failures.first(where: {
+                $0.kunde == entry.kunde && $0.strasse == entry.strasse && $0.plz == entry.plz
+            })?.actualPlz
+            else { return entry }
+            var corrected = entry
+            corrected.plz = actual
+            return corrected
         }
     }
 

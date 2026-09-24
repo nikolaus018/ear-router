@@ -222,6 +222,10 @@ struct ImportReport: Identifiable {
 
 struct ImportSummary: View {
     let result: ImportResult
+    /// Puts the addresses the register knows under another postcode into that
+    /// postcode, back on the list being checked. `nil` when there are none, or
+    /// nothing to put them into.
+    var onCorrectDistricts: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -284,13 +288,42 @@ struct ImportSummary: View {
             }
 
             if !result.geocodeFailures.isEmpty {
-                Section("Adresse nicht gefunden") {
+                Section {
                     ForEach(Array(result.geocodeFailures.enumerated()), id: \.offset) { _, f in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(f.kunde).font(.subheadline.weight(.medium))
                             Text("\(f.strasse), \(f.plz)")
                                 .font(.caption).foregroundStyle(.secondary)
+                            // The likeliest reason by far, and the one worth
+                            // saying: the city knows this address, just not
+                            // under the postcode the list gave it.
+                            if let actual = f.actualPlz {
+                                Label(
+                                    "Laut Adressregister in \(Postcodes.label(for: actual))",
+                                    systemImage: "arrow.turn.down.right")
+                                    .font(.caption)
+                                    .labelStyle(TintedIconLabelStyle(tint: .attention))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                    }
+                    if let onCorrectDistricts {
+                        Button {
+                            onCorrectDistricts()
+                            dismiss()
+                        } label: {
+                            Label(
+                                districtFixes == 1
+                                    ? "PLZ in der Liste ändern"
+                                    : "\(districtFixes) PLZ in der Liste ändern",
+                                systemImage: "pencil")
+                        }
+                    }
+                } header: {
+                    Text("Adresse nicht gefunden")
+                } footer: {
+                    if onCorrectDistricts != nil {
+                        Text("Danach „Übernehmen“ noch einmal drücken.")
                     }
                 }
             }
@@ -314,5 +347,9 @@ struct ImportSummary: View {
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    private var districtFixes: Int {
+        result.geocodeFailures.count { $0.actualPlz != nil }
     }
 }

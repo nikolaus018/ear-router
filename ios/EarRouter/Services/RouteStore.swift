@@ -63,7 +63,19 @@ struct ImportResult: Sendable {
     /// Addresses no geocoder could place. Deliberately not fatal: everything
     /// else in the batch still saves rather than one bad address blocking all
     /// thirty.
-    var geocodeFailures: [(kunde: String, strasse: String, plz: String)] = []
+    var geocodeFailures: [GeocodeFailure] = []
+
+    /// One address that could not be placed.
+    struct GeocodeFailure: Sendable, Equatable {
+        let kunde: String
+        let strasse: String
+        let plz: String
+        /// Where the city's register files this address, when it knows it
+        /// under a different postcode — by far the likeliest reason a lookup
+        /// fails, and the one the stop editor has always offered to fix in a
+        /// tap. A bulk import used to swallow it into "nicht gefunden".
+        var actualPlz: String? = nil
+    }
     /// Entries that resolved only approximately — the driver should double
     /// check these before setting off.
     var approximate: [(kunde: String, precision: Precision)] = []
@@ -727,7 +739,7 @@ enum RouteStore {
         for u in unresolved {
             guard Postcodes.isValid(u.entry.plz) else {
                 result.geocodeFailures.append(
-                    (u.entry.kunde, u.entry.strasse, u.entry.plz))
+                    .init(kunde: u.entry.kunde, strasse: u.entry.strasse, plz: u.entry.plz))
                 continue
             }
             needsGeocode.append((u.entry, u.existing))
@@ -766,7 +778,12 @@ enum RouteStore {
                 result.cancelled = true
                 break
             } catch {
-                result.geocodeFailures.append((entry.kunde, entry.strasse, entry.plz))
+                var failure = ImportResult.GeocodeFailure(
+                    kunde: entry.kunde, strasse: entry.strasse, plz: entry.plz)
+                if case .wrongDistrict(let actual) = (error as? AppError)?.recovery {
+                    failure.actualPlz = actual
+                }
+                result.geocodeFailures.append(failure)
                 continue
             }
 

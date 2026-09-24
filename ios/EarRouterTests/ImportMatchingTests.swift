@@ -229,6 +229,25 @@ struct ImportMatchingTests {
         #expect(!route.handOrdered)
     }
 
+    /// An address the register knows under another postcode: the review list
+    /// takes that postcode in one tap, for every entry it applies to and no
+    /// other.
+    @Test func theRegistersPostcodeIsTakenOnlyWhereItWasOffered() {
+        let wrong = ImportReviewView.Entry(entry("Fam. Gruber", "Gentzgasse 129", "1120"))
+        let fine = ImportReviewView.Entry(entry("Fam. Novak", "Alser Straße 21", "1080"))
+        let unknown = ImportReviewView.Entry(entry("Fr. Berger", "Nirgendwo 1", "1100"))
+        let failures = [
+            ImportResult.GeocodeFailure(
+                kunde: "Fam. Gruber", strasse: "Gentzgasse 129", plz: "1120", actualPlz: "1180"),
+            ImportResult.GeocodeFailure(kunde: "Fr. Berger", strasse: "Nirgendwo 1", plz: "1100"),
+        ]
+
+        let corrected = ImportReviewView.correctingDistricts([wrong, fine, unknown], from: failures)
+
+        #expect(corrected.map(\.plz) == ["1180", "1080", "1100"])
+        #expect(corrected.map(\.id) == [wrong.id, fine.id, unknown.id])
+    }
+
     /// An address matched through the normalised key can still be spelled
     /// differently in the paste. The stop is the same door — nothing to
     /// geocode — but the list should read back what the driver last pasted.
