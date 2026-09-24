@@ -219,7 +219,7 @@ struct TourRow: View {
                     .foregroundStyle(Color.accentColor)
             }
 
-            Text(subtitle)
+            Text(Format.strip(subtitle))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 

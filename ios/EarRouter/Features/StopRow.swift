@@ -269,7 +269,7 @@ struct StopRow: View {
         // *out* of this stop, so on one already ticked off it is a distance the
         // van has covered — true, and no longer anybody's question.
         if !dimmed, let leg = Format.leg(km: stop.nextLegKm, minutes: stop.nextLegMin) {
-            runs.append(Text("→ \(leg)").monospacedDigit())
+            runs.append(Text(Format.unbroken("→ \(leg)")).monospacedDigit())
         }
 
         guard !runs.isEmpty else { return nil }

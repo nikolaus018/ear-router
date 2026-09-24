@@ -144,6 +144,6 @@ enum StopFacts {
     /// it ended, leaving a warning triangle alone at the end of one line and
     /// the words it belongs to at the start of the next.
     static func run(_ symbol: String, _ text: String) -> Text {
-        Text("\(Image(systemName: symbol))\u{202F}\(text)")
+        Text("\(Image(systemName: symbol))\u{202F}\(Format.unbroken(text))")
     }
 }

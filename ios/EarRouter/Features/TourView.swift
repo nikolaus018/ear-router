@@ -286,7 +286,7 @@ struct TourView: View {
                     row(for: stop, in: snapshot, info: info)
                 }
             } header: {
-                Text(listHeader(snapshot, visible: visible))
+                Text(Format.strip(listHeader(snapshot, visible: visible)))
             } footer: {
                 RouteFooter(snapshot: snapshot, searching: !search.isEmpty)
             }

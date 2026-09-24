@@ -132,6 +132,20 @@ enum Format {
         return words.joined(separator: " ")
     }
 
+    /// A "·"-separated line whose pieces each stay in one piece: "1 von 8
+    /// geliefert · 1 nicht angetroffen" may wrap at a separator, never inside
+    /// "nicht angetroffen". The Touren row broke exactly there, leaving
+    /// "angetroffen" to start the next line on its own.
+    static func strip(_ line: String) -> String {
+        line.components(separatedBy: " · ").map(unbroken).joined(separator: " · ")
+    }
+
+    /// The same text with its spaces made no-break, for one short phrase that
+    /// must not be split across two lines.
+    static func unbroken(_ text: String) -> String {
+        text.replacingOccurrences(of: " ", with: "\u{00A0}")
+    }
+
     static func date(_ date: Date) -> String {
         date.formatted(.dateTime.day().month().year().locale(atLocale))
     }

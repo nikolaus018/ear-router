@@ -674,7 +674,7 @@ private struct ProgressHeader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(caption)
+            Text(Format.strip(caption))
             ProgressView(value: Double(settled), total: Double(max(total, 1)))
                 .tint(.delivered)
         }
