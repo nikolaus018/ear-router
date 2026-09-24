@@ -448,6 +448,12 @@ enum RouteStore {
         _ stop: Stop, _ excluded: Bool, in context: ModelContext
     ) async throws {
         guard stop.kind.isFixed else { return }
+        // Switching the depot address off means "start from wherever I am" —
+        // ask Core Location now, so `RouteOptimizer` has the best chance of a
+        // fix by the time it plans this route.
+        if stop.kind == .start && excluded {
+            LocationAuthorization.shared.requestIfNeeded()
+        }
         stop.excluded = excluded
         guard let route = stop.route else { return try context.save() }
         route.markRoutingStale()

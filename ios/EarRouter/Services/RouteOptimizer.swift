@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import OSLog
+import CoreLocation
 
 private let log = Logger(subsystem: "win.ringtwo.EarRouter", category: "optimize")
 
@@ -32,10 +33,31 @@ enum RouteOptimizer {
         /// exactly as it always was.
         var driven: [StopCoord] = []
 
+        /// Where the driver's phone last got a GPS fix. Only ever consulted
+        /// for `start`, and only when `start` is switched off — a driver who
+        /// disables the depot address is not skipping a start, they are
+        /// saying "start from wherever I already am".
+        var currentLocation: StopCoord?
+
         /// The fixed points the tour actually drives, in order, before any
-        /// customer. Excluded ones are simply not there.
+        /// customer. Excluded ones are simply not there — except a switched-off
+        /// `start`, which is replaced by `currentLocation` when one is known,
+        /// rather than dropped, so the tour still begins from a real point
+        /// instead of anchoring on the first customer by creation order.
         var fixedHead: [StopCoord] {
-            [start, via].compactMap { $0?.active }
+            var head: [StopCoord] = []
+            if let start {
+                if let active = start.active {
+                    head.append(active)
+                } else if let currentLocation {
+                    head.append(
+                        StopCoord(
+                            id: start.coord.id, lat: currentLocation.lat,
+                            lon: currentLocation.lon))
+                }
+            }
+            if let v = via?.active { head.append(v) }
+            return head
         }
 
         /// Everything driven before OSRM is allowed to choose anything.
@@ -432,6 +454,10 @@ enum RouteOptimizer {
             }
         }
         nodes.driven = driven(route)
+        if let coordinate = LocationAuthorization.shared.lastCoordinate {
+            nodes.currentLocation = StopCoord(
+                id: UUID(), lat: coordinate.latitude, lon: coordinate.longitude)
+        }
         return (nodes, fingerprint(route))
     }
 

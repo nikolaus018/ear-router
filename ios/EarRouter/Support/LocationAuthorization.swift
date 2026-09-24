@@ -33,6 +33,12 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
     /// point the map; the first fix is.
     private(set) var hasFix = false
 
+    /// Where that one fix put the driver. Nothing refines this after the
+    /// first fix arrives — see `hasFix` — so a route planned against it late
+    /// in the day is planned against where the driver started, not where they
+    /// are now.
+    private(set) var lastCoordinate: CLLocationCoordinate2D?
+
     @ObservationIgnored private let manager = CLLocationManager()
 
     private override init() {
@@ -101,8 +107,9 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(
         _ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]
     ) {
-        guard !locations.isEmpty else { return }
+        guard let coordinate = locations.last?.coordinate else { return }
         Task { @MainActor [weak self] in
+            self?.lastCoordinate = coordinate
             self?.stopWaiting()
         }
     }
