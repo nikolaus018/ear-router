@@ -458,21 +458,7 @@ struct StopListRow: View {
     private var isCustomer: Bool { stop.kind == .customer }
 
     var body: some View {
-        StopRow(
-            stop: stop,
-            sameDoorCount: sameDoorCount,
-            number: number,
-            stockwerk: stockwerk,
-            info: info,
-            eta: eta,
-            isNext: isNext,
-            onToggleDelivered: stop.countsAsStop ? onToggleDelivered : nil,
-            onToggleExcluded: stop.canToggleExcluded ? onToggleExcluded : nil,
-            onNavigate: onNavigate)
-            // Opens the editor. The trailing controls are `.borderless`, so
-            // they handle their own taps rather than falling through to this.
-            .contentShape(.rect)
-            .onTapGesture(perform: onTap)
+        tappable
             .accessibilityHint(
                 isCustomer
                     ? "Doppeltippen zum Bearbeiten"
@@ -488,52 +474,96 @@ struct StopListRow: View {
             // advertises. Navigation is a button again, so the swipes go back
             // to what this app has always had: deliver one way, delete the
             // other.
-            .swipeActions(edge: .leading) {
-                if stop.isCheckpoint {
-                    Button(action: onToggleDelivered) {
-                        Label(
-                            stop.isSettled ? "Offen" : "Erledigt",
-                            systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark")
-                    }
-                    .tint(stop.isSettled ? .attention : .delivered)
-                }
-                if isCustomer {
-                    Button(action: onToggleDelivered) {
-                        Label(
-                            stop.isSettled ? "Offen" : "Geliefert",
-                            systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark")
-                    }
-                    .tint(stop.isSettled ? .attention : .delivered)
-                    // The second-most-made decision at a door, on the gesture
-                    // next to the most-made one. It is in the menu as well; a
-                    // driver with one free hand in the rain finds this first.
-                    if let onRecordOutcome, !stop.isSettled {
-                        Button(action: onRecordOutcome) {
-                            Label("Nicht zugestellt", systemImage: "bell.slash")
-                        }
-                        .tint(.attention)
-                    }
-                }
-            }
-            .swipeActions(edge: .trailing) {
-                if isCustomer {
-                    // Not `role: .destructive`. That role tells the list to
-                    // play its own delete animation — the row collapsing away
-                    // — the instant the button is tapped, on the assumption
-                    // that the action removes the row synchronously. This one
-                    // does not: `onDelete` only stages a confirmation dialog,
-                    // so the row was still on the route a moment later and
-                    // popped straight back, mid-collapse, with the dialog now
-                    // up over a list that had visibly flinched for nothing.
-                    // Manual red styling gets the destructive *look* without
-                    // the premature animation.
-                    Button(action: onDelete) {
-                        Label("Löschen", systemImage: "trash")
-                    }
-                    .tint(.red)
-                }
-            }
+            .swipeActions(edge: .leading) { leadingSwipes }
+            .swipeActions(edge: .trailing) { trailingSwipes }
             .contextMenu { menu }
+    }
+
+    /// A button, so the row greys under the finger the way every tappable
+    /// row on the phone does. As a bare tap gesture it gave no sign of having
+    /// been touched at all until the editor slid up — which on a slow frame
+    /// read as a missed tap, and got a second one.
+    ///
+    /// Not on the Lager, which a tap deliberately does nothing to: a row that
+    /// lights up and then does nothing is worse than one that does not light
+    /// up. The trailing controls are `.borderless`, so they keep their own
+    /// taps inside the button.
+    @ViewBuilder
+    private var tappable: some View {
+        if stop.kind == .via {
+            row
+        } else {
+            Button(action: onTap) { row }
+                // Plain, so the label keeps its own colours rather than taking
+                // the button's tint; the list still draws the pressed row.
+                .buttonStyle(.plain)
+                // The row's two controls stay separate elements for
+                // VoiceOver, as they were before this was a button.
+                .accessibilityElement(children: .contain)
+        }
+    }
+
+    private var row: some View {
+        StopRow(
+            stop: stop,
+            sameDoorCount: sameDoorCount,
+            number: number,
+            stockwerk: stockwerk,
+            info: info,
+            eta: eta,
+            isNext: isNext,
+            onToggleDelivered: stop.countsAsStop ? onToggleDelivered : nil,
+            onToggleExcluded: stop.canToggleExcluded ? onToggleExcluded : nil,
+            onNavigate: onNavigate)
+    }
+
+    @ViewBuilder
+    private var leadingSwipes: some View {
+        if stop.isCheckpoint {
+            Button(action: onToggleDelivered) {
+                Label(
+                    stop.isSettled ? "Offen" : "Erledigt",
+                    systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark")
+            }
+            .tint(stop.isSettled ? .attention : .delivered)
+        }
+        if isCustomer {
+            Button(action: onToggleDelivered) {
+                Label(
+                    stop.isSettled ? "Offen" : "Geliefert",
+                    systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark")
+            }
+            .tint(stop.isSettled ? .attention : .delivered)
+            // The second-most-made decision at a door, on the gesture
+            // next to the most-made one. It is in the menu as well; a
+            // driver with one free hand in the rain finds this first.
+            if let onRecordOutcome, !stop.isSettled {
+                Button(action: onRecordOutcome) {
+                    Label("Nicht zugestellt", systemImage: "bell.slash")
+                }
+                .tint(.attention)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var trailingSwipes: some View {
+        if isCustomer {
+            // Not `role: .destructive`. That role tells the list to
+            // play its own delete animation — the row collapsing away
+            // — the instant the button is tapped, on the assumption
+            // that the action removes the row synchronously. This one
+            // does not: `onDelete` only stages a confirmation dialog,
+            // so the row was still on the route a moment later and
+            // popped straight back, mid-collapse, with the dialog now
+            // up over a list that had visibly flinched for nothing.
+            // Manual red styling gets the destructive *look* without
+            // the premature animation.
+            Button(action: onDelete) {
+                Label("Löschen", systemImage: "trash")
+            }
+            .tint(.red)
+        }
     }
 
     /// Everything you can do with this stop, spelled out.
