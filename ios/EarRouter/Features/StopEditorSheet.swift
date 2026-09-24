@@ -88,12 +88,16 @@ struct StopEditorSheet: View {
         loaded && (draft != original || droppedPin != nil || discardStoredPin)
     }
 
+    /// A noun, and the same kind of noun for every stop. "Start bearbeiten"
+    /// truncated to "Start bearbe…" between the two toolbar buttons, while a
+    /// customer's editor said just "Stopp" — two patterns, one of them cut
+    /// off. The buttons already say that this is an edit.
     private var titleText: String {
         guard let stop else { return "Neuer Stopp" }
         switch stop.kind {
-        case .start: return "Start bearbeiten"
-        case .end: return "Ziel bearbeiten"
-        case .via: return "Lager bearbeiten"
+        case .start: return "Start"
+        case .end: return "Ziel"
+        case .via: return "Lager"
         case .customer: return "Stopp"
         }
     }
@@ -402,7 +406,7 @@ struct StopEditorSheet: View {
             // pin away and geocoded after all.
             if addressMoved {
                 Label(
-                    "Adresse geändert — der Pin wird beim Sichern verworfen und die "
+                    "Adresse geändert — der Pin wird beim Speichern verworfen und die "
                         + "neue Adresse gesucht.",
                     systemImage: "magnifyingglass")
             } else {
@@ -412,7 +416,7 @@ struct StopEditorSheet: View {
             }
         } else if discardStoredPin {
             Label(
-                "Der Pin wird beim Sichern verworfen und die Adresse neu gesucht.",
+                "Der Pin wird beim Speichern verworfen und die Adresse neu gesucht.",
                 systemImage: "magnifyingglass")
         } else if let p = stop?.precision {
             Label(p.label, systemImage: p.symbol)
