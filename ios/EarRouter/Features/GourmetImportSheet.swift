@@ -65,6 +65,9 @@ struct GourmetImportSheet: View {
         let id = UUID()
         let route: Route
         let entries: [CustomerJSON]
+        /// The driver picked the stops in an order of their own, which the
+        /// tour is to keep. See `GourmetStopSelectionView`.
+        var keepOrder = false
     }
 
     /// The tour's deliveries, list data only — handed to
@@ -126,13 +129,19 @@ struct GourmetImportSheet: View {
             .onChange(of: date) { _, _ in reconcileSelection() }
         }
         .sheet(item: $pendingSelection) { pending in
-            GourmetStopSelectionView(deliveries: pending.deliveries) { chosen in
+            GourmetStopSelectionView(deliveries: pending.deliveries) { chosen, keepOrder in
                 pendingSelection = nil
-                loadTask = Task { await loadDetails(tour: pending.tour, token: pending.token, deliveries: chosen) }
+                loadTask = Task {
+                    await loadDetails(
+                        tour: pending.tour, token: pending.token, deliveries: chosen,
+                        keepOrder: keepOrder)
+                }
             }
         }
         .sheet(item: $review, onDismiss: reviewDismissed) { ctx in
-            ImportReviewView(route: ctx.route, entries: ctx.entries) { imported = true }
+            ImportReviewView(route: ctx.route, entries: ctx.entries, keepOrder: ctx.keepOrder) {
+                imported = true
+            }
         }
     }
 
@@ -351,7 +360,8 @@ struct GourmetImportSheet: View {
     /// each one's Paket and go to the same review screen every other import
     /// ends up on.
     private func loadDetails(
-        tour: GourmetPortal.Tour, token: String, deliveries: [GourmetPortal.Delivery]
+        tour: GourmetPortal.Tour, token: String, deliveries: [GourmetPortal.Delivery],
+        keepOrder: Bool
     ) async {
         busy = "Details werden geladen …"
         defer { busy = nil }
@@ -363,7 +373,7 @@ struct GourmetImportSheet: View {
 
             switch mode {
             case .existing(let route):
-                review = ReviewContext(route: route, entries: entries)
+                review = ReviewContext(route: route, entries: entries, keepOrder: keepOrder)
             case .newRoute:
                 // Created only now that there is something real to put on
                 // it — a cancelled fetch above never leaves a stray route
@@ -374,7 +384,7 @@ struct GourmetImportSheet: View {
                 let name = GourmetPortal.suggestedRouteName(tour: tour, date: date, taken: taken)
                 let route = try RouteStore.createRoute(name: name, in: context)
                 createdRoute = route
-                review = ReviewContext(route: route, entries: entries)
+                review = ReviewContext(route: route, entries: entries, keepOrder: keepOrder)
             }
         } catch is CancellationError {
             // The driver stopped it on purpose — nothing to report.
@@ -394,12 +404,23 @@ struct GourmetImportSheet: View {
 /// selected, since keeping everything is the common case.
 ///
 /// The order the stops are picked in is kept and handed on: the Prüfen list
-/// arrives in that order rather than in the portal's. Tapping everything off
-/// and then back on in driving order is the cheapest way there is to say what
-/// the round actually looks like, and it costs nothing to remember.
+/// arrives in that order rather than in the portal's, and so does the tour.
+/// Tapping everything off and then back on in driving order is the cheapest
+/// way there is to say what the round actually looks like, and it costs
+/// nothing to remember.
+///
+/// All the way onto the tour, which it did not use to be. The numbers promised
+/// each stop the place it would have on the tour, and the optimizer then
+/// re-solved the whole round a second after it was saved. A picked order now
+/// arrives as a tour sorted by hand, the same as "Reihenfolge ändern" — and
+/// "Neu optimieren" is still one menu away. Only an order the driver actually
+/// changed counts: picking in the portal's own order, or dropping a few, still
+/// hands the tour to the optimizer.
 struct GourmetStopSelectionView: View {
     let deliveries: [GourmetPortal.Delivery]
-    var onContinue: ([GourmetPortal.Delivery]) -> Void
+    /// The picked deliveries in the picked order, and whether that order is the
+    /// driver's own rather than the portal's.
+    var onContinue: ([GourmetPortal.Delivery], Bool) -> Void
 
     @Environment(\.dismiss) private var dismiss
     /// The chosen deliveries in the order they were chosen, not a `Set`:
@@ -410,13 +431,29 @@ struct GourmetStopSelectionView: View {
     @State private var selected: [Int]
     @State private var search = ""
 
-    init(deliveries: [GourmetPortal.Delivery], onContinue: @escaping ([GourmetPortal.Delivery]) -> Void) {
+    init(
+        deliveries: [GourmetPortal.Delivery],
+        onContinue: @escaping ([GourmetPortal.Delivery], Bool) -> Void
+    ) {
         self.deliveries = deliveries
         self.onContinue = onContinue
         _selected = State(initialValue: deliveries.map(\.id))
     }
 
     private var allSelected: Bool { selected.count == deliveries.count }
+
+    /// Whether the stops have been put in an order of the driver's own.
+    private var inOwnOrder: Bool {
+        Self.isOwnOrder(picked: selected, portal: deliveries.map(\.id))
+    }
+
+    /// An order is the driver's own when the picked sequence is not simply the
+    /// portal's sequence with some stops left out. Dropping stops is choosing
+    /// which to drive, not in what order.
+    static func isOwnOrder(picked: [Int], portal: [Int]) -> Bool {
+        let chosen = Set(picked)
+        return picked != portal.filter { chosen.contains($0) }
+    }
 
     /// Each picked stop's place in the order, counted from 1 — what the row
     /// badges draw, and what says a row is picked at all.
@@ -477,11 +514,22 @@ struct GourmetStopSelectionView: View {
             // which threw the whole selection away.
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 12) {
-                    Text("\(selected.count) von \(deliveries.count) ausgewählt")
-                        .font(.footnote.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .contentTransition(.numericText())
-                        .animation(.snappy, value: selected.count)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("\(selected.count) von \(deliveries.count) ausgewählt")
+                            .font(.footnote.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .contentTransition(.numericText())
+                            .animation(.snappy, value: selected.count)
+                        // Said here, where the order is made: it decides that
+                        // the tour is driven as picked rather than optimized.
+                        // "Keine auswählen" and then "Alle auswählen" puts the
+                        // portal's own order back.
+                        if inOwnOrder {
+                            Text("Wird in dieser Reihenfolge gefahren")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Spacer(minLength: 8)
                     Button(allSelected ? "Keine auswählen" : "Alle auswählen") {
                         if allSelected {
@@ -505,7 +553,7 @@ struct GourmetStopSelectionView: View {
                     Button("Abbrechen") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Weiter") { onContinue(chosen) }
+                    Button("Weiter") { onContinue(chosen, inOwnOrder) }
                     .disabled(selected.isEmpty)
                 }
             }

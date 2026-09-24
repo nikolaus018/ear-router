@@ -112,6 +112,53 @@ struct ImportMatchingTests {
         #expect(!novak.delivered)
     }
 
+    /// Stops picked in the driver's own order arrive as a tour in that order,
+    /// sorted by hand so the routing draws the line through it.
+    @Test func aListInTheDriversOwnOrderKeepsIt() async throws {
+        let a = stop("A", "Gasse 1", lat: 48.231)
+        let b = stop("B", "Gasse 2", lat: 48.232)
+        let c = stop("C", "Gasse 3", lat: 48.233)
+        let (route, context) = try makeRoute([a, b, c])
+
+        _ = try await RouteStore.importJSON(
+            [entry("C", "Gasse 3"), entry("A", "Gasse 1"), entry("B", "Gasse 2")],
+            into: route, in: context, keepOrder: true, reroute: false)
+
+        #expect(route.customerStops.map(\.kunde) == ["C", "A", "B"])
+        #expect(route.handOrdered)
+        #expect(route.needsOptimize)
+    }
+
+    /// Kept even where it already matches what is stored — a fresh tour's stops
+    /// are written in the list's order to begin with — because the point is
+    /// that the optimizer must not re-solve it afterwards.
+    @Test func aListInTheDriversOwnOrderIsHandSortedEvenWhenNothingMoved() async throws {
+        let a = stop("A", "Gasse 1", lat: 48.231)
+        let b = stop("B", "Gasse 2", lat: 48.232)
+        let (route, context) = try makeRoute([a, b])
+
+        _ = try await RouteStore.importJSON(
+            [entry("A", "Gasse 1"), entry("B", "Gasse 2")],
+            into: route, in: context, keepOrder: true, reroute: false)
+
+        #expect(route.customerStops.map(\.kunde) == ["A", "B"])
+        #expect(route.handOrdered)
+    }
+
+    /// Without it, the list's order is nobody's business but the optimizer's.
+    @Test func anOrdinaryListLeavesTheOrderToTheOptimizer() async throws {
+        let a = stop("A", "Gasse 1", lat: 48.231)
+        let b = stop("B", "Gasse 2", lat: 48.232)
+        let (route, context) = try makeRoute([a, b])
+
+        _ = try await RouteStore.importJSON(
+            [entry("B", "Gasse 2"), entry("A", "Gasse 1")],
+            into: route, in: context, reroute: false)
+
+        #expect(route.customerStops.map(\.kunde) == ["A", "B"])
+        #expect(!route.handOrdered)
+    }
+
     /// An address matched through the normalised key can still be spelled
     /// differently in the paste. The stop is the same door — nothing to
     /// geocode — but the list should read back what the driver last pasted.
