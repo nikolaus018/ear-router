@@ -26,10 +26,6 @@ struct ImportReviewView: View {
     /// What the import was understood to say. Owned from here on:
     /// the driver's edits are theirs, and nothing writes back to the source.
     @State var entries: [Entry]
-    /// The list arrived in the driver's own driving order — see
-    /// `GourmetStopSelectionView` — and the tour is to keep it rather than be
-    /// optimized. See `RouteStore.importJSON`.
-    var keepOrder = false
     /// Fired once the entries have actually been written to `route` — after
     /// that, `route` is no longer the empty shell a caller may have created
     /// just to hand to this screen. Nil for every caller that had a real
@@ -111,13 +107,9 @@ struct ImportReviewView: View {
         }
     }
 
-    init(
-        route: Route, entries: [CustomerJSON], keepOrder: Bool = false,
-        onImported: (() -> Void)? = nil
-    ) {
+    init(route: Route, entries: [CustomerJSON], onImported: (() -> Void)? = nil) {
         self.route = route
         _entries = State(initialValue: entries.map(Entry.init))
-        self.keepOrder = keepOrder
         self.onImported = onImported
     }
 
@@ -353,7 +345,7 @@ struct ImportReviewView: View {
 
         do {
             let r = try await RouteStore.importJSON(
-                payload, into: route, in: context, keepOrder: keepOrder
+                payload, into: route, in: context
             ) { done, total in
                 progress = "Adresse \(done + 1) von \(total) wird gesucht …"
             }

@@ -182,41 +182,10 @@ struct ImportMatchingTests {
         #expect(done.outcome == .delivered)
     }
 
-    /// Stops picked in the driver's own order arrive as a tour in that order,
-    /// sorted by hand so the routing draws the line through it.
-    @Test func aListInTheDriversOwnOrderKeepsIt() async throws {
-        let a = stop("A", "Gasse 1", lat: 48.231)
-        let b = stop("B", "Gasse 2", lat: 48.232)
-        let c = stop("C", "Gasse 3", lat: 48.233)
-        let (route, context) = try makeRoute([a, b, c])
-
-        _ = try await RouteStore.importJSON(
-            [entry("C", "Gasse 3"), entry("A", "Gasse 1"), entry("B", "Gasse 2")],
-            into: route, in: context, keepOrder: true, reroute: false)
-
-        #expect(route.customerStops.map(\.kunde) == ["C", "A", "B"])
-        #expect(route.handOrdered)
-        #expect(route.needsOptimize)
-    }
-
-    /// Kept even where it already matches what is stored — a fresh tour's stops
-    /// are written in the list's order to begin with — because the point is
-    /// that the optimizer must not re-solve it afterwards.
-    @Test func aListInTheDriversOwnOrderIsHandSortedEvenWhenNothingMoved() async throws {
-        let a = stop("A", "Gasse 1", lat: 48.231)
-        let b = stop("B", "Gasse 2", lat: 48.232)
-        let (route, context) = try makeRoute([a, b])
-
-        _ = try await RouteStore.importJSON(
-            [entry("A", "Gasse 1"), entry("B", "Gasse 2")],
-            into: route, in: context, keepOrder: true, reroute: false)
-
-        #expect(route.customerStops.map(\.kunde) == ["A", "B"])
-        #expect(route.handOrdered)
-    }
-
-    /// Without it, the list's order is nobody's business but the optimizer's.
-    @Test func anOrdinaryListLeavesTheOrderToTheOptimizer() async throws {
+    /// The list's order is the printed list's — what "Stopps wählen" and Prüfen
+    /// are checked in — and never the tour's. The tour is not sorted by hand
+    /// from it; OSRM sorts it once it is saved.
+    @Test func aListsOrderIsLeftToTheOptimizer() async throws {
         let a = stop("A", "Gasse 1", lat: 48.231)
         let b = stop("B", "Gasse 2", lat: 48.232)
         let (route, context) = try makeRoute([a, b])

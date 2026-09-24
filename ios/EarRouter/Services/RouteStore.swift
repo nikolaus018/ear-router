@@ -457,30 +457,13 @@ enum RouteStore {
     static func reorder(
         _ route: Route, customerIDs: [UUID], in context: ModelContext
     ) throws -> Bool {
-        let order = customers(of: route, orderedBy: customerIDs)
-        guard order.map(\.id) != route.customerStops.map(\.id) else { return false }
-        writeOrder(order, of: route)
-        try context.save()
-        return true
-    }
-
-    /// The route's customers in the order `customerIDs` names them, followed
-    /// by any it does not name, in the place they already had.
-    private static func customers(of route: Route, orderedBy customerIDs: [UUID]) -> [Stop] {
-        // Not a stop deleted in the same unsaved round — an import deletes
-        // before it orders.
-        let customers = route.customerStops.filter { !$0.isDeleted }
+        let customers = route.customerStops
         let byID = Dictionary(customers.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let named = customerIDs.compactMap { byID[$0] }
         let namedIDs = Set(named.map(\.id))
-        return named + customers.filter { !namedIDs.contains($0.id) }
-    }
+        let order = named + customers.filter { !namedIDs.contains($0.id) }
+        guard order.map(\.id) != customers.map(\.id) else { return false }
 
-    /// Writes `order` onto the customers and marks the tour sorted by hand:
-    /// the fixed points stay at the top and the bottom whatever order the
-    /// customers are in, and the stale leg distances go until the route is
-    /// drawn through the new order. Does not save.
-    private static func writeOrder(_ order: [Stop], of route: Route) {
         let fixed = route.orderedStops.filter { $0.kind != .customer }
         let head = fixed.filter { $0.kind != .end }
         let tail = fixed.filter { $0.kind == .end }
@@ -491,6 +474,8 @@ enum RouteStore {
         }
         route.handOrdered = true
         route.markRoutingStale()
+        try context.save()
+        return true
     }
 
     // MARK: - Re-check addresses
@@ -651,13 +636,14 @@ enum RouteStore {
     /// actually has to be looked up — which on a re-paste is none of them, and
     /// on a fresh day's list is all thirty, at a throttled round trip each.
     ///
-    /// `keepOrder` is a list the driver has put in the order they drive it:
-    /// the tour takes that order and is marked sorted by hand, so the routing
-    /// afterwards draws the line through it instead of solving a new one.
-    /// `reroute: false` leaves that routing to the caller; only tests use it.
+    /// The list's own order is not the tour's: whatever order the entries come
+    /// in — a portal list is picked in the order of the printed one, for
+    /// checking — the tour is sorted by OSRM afterwards. `reroute: false`
+    /// leaves that routing to the caller; only tests use it, to stay off the
+    /// network.
     static func importJSON(
         _ entries: [CustomerJSON], into route: Route, in context: ModelContext,
-        keepOrder: Bool = false, reroute: Bool = true,
+        reroute: Bool = true,
         onProgress: ((Int, Int) -> Void)? = nil
     ) async throws -> ImportResult {
         guard entries.count <= maxBulkStops else {
@@ -854,17 +840,6 @@ enum RouteStore {
                 result.deleted += 1
                 moved = true
             }
-        }
-
-        // The driver's own order, when the list came in one. Matched again
-        // rather than threaded through the passes above: every entry that made
-        // it onto the tour now sits at its own address under its own name, so
-        // the matcher hands the stops back in the list's order.
-        if keepOrder {
-            let listed = Self.match(normalized, against: route.customerStops.filter { !$0.isDeleted })
-                .toUpdate.map(\.1.id)
-            writeOrder(customers(of: route, orderedBy: listed), of: route)
-            moved = true
         }
 
         if moved {

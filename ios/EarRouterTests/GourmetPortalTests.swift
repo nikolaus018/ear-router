@@ -137,17 +137,6 @@ struct GourmetPortalTests {
         #expect(paket?.hasSuffix("x Suppe") == true)
     }
 
-    /// "Stopps wählen": an order is the driver's own only if they changed it.
-    /// Dropping stops is choosing which to drive, not in what order.
-    @MainActor @Test func onlyAChangedOrderIsTheDriversOwn() {
-        let portal = [1, 2, 3, 4]
-        #expect(!GourmetStopSelectionView.isOwnOrder(picked: [1, 2, 3, 4], portal: portal))
-        #expect(!GourmetStopSelectionView.isOwnOrder(picked: [1, 3, 4], portal: portal))
-        #expect(GourmetStopSelectionView.isOwnOrder(picked: [3, 1, 2, 4], portal: portal))
-        // Ticked off and on again: it went to the back, and that is an order.
-        #expect(GourmetStopSelectionView.isOwnOrder(picked: [1, 3, 4, 2], portal: portal))
-    }
-
     @Test func linesFromSeveralBundlesAreAllListed() {
         let d = delivery(bundles: [
             GourmetPortal.DeliveryBundle(deliveryLines: [line("Vitalmenü EP TGM7")]),
