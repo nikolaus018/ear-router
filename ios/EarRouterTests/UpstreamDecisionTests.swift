@@ -73,6 +73,31 @@ struct UpstreamDecisionTests {
         }
     }
 
+    /// OSRM answers a request it will not route with HTTP 400 and its code in
+    /// the body — measured against the live server for `TooBig` and
+    /// `InvalidOptions`. That is an answer, and has to be read as one: taken
+    /// for an outage, it benched the home server for a minute and told the
+    /// driver the routing service was unreachable.
+    @Test func aRefusalIsReadOffTheBodyOfA400() {
+        let body = Data(#"{"message":"Too many trip coordinates","code":"TooBig"}"#.utf8)
+        #expect(OSRMClient.refusalCode(status: 400, body: body) == "TooBig")
+    }
+
+    /// Anything that is not OSRM's own reply — a tunnel's error page, a
+    /// proxy's — is still the server not answering, and falls back as before.
+    @Test func anErrorPageIsNotARefusal() {
+        let html = Data("<html><body>502 Bad Gateway</body></html>".utf8)
+        #expect(OSRMClient.refusalCode(status: 502, body: html) == nil)
+        #expect(OSRMClient.refusalCode(status: 400, body: Data()) == nil)
+    }
+
+    /// And a successful reply is never a refusal, whatever it says.
+    @Test func aSuccessIsNotARefusal() {
+        let ok = Data(#"{"code":"Ok","routes":[]}"#.utf8)
+        #expect(OSRMClient.refusalCode(status: 200, body: ok) == nil)
+        #expect(OSRMClient.refusalCode(status: 400, body: ok) == nil)
+    }
+
     @Test func aTourTooBigToSolveSaysSo() {
         let message = OSRMClient.failure(code: "TooBig").message
         #expect(message.contains("aufteilen"))

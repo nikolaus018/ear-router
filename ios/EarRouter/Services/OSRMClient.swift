@@ -315,6 +315,13 @@ actor OSRMClient {
                 // did not wait for. And there is nothing to fall back *to*: the
                 // answer is no longer wanted.
                 throw CancellationError()
+            } catch let refusal as Refusal {
+                // The server is up and has answered: this request cannot be
+                // routed. Asking the demo server the same question gets the
+                // same answer, and the pin that caused it is what the driver
+                // needs to hear about — not a routing service that is fine.
+                primaryDownSince = nil
+                throw Self.failure(code: refusal.code)
             } catch {
                 if primaryIsFallback {
                     log.error("OSRM unreachable: \(error.localizedDescription)")
@@ -330,10 +337,37 @@ actor OSRMClient {
             return try await Self.fetch(session, base: fallback, path: pathAndQuery)
         } catch is CancellationError {
             throw CancellationError()
+        } catch let refusal as Refusal {
+            throw Self.failure(code: refusal.code)
         } catch {
             log.error("public OSRM unreachable: \(error.localizedDescription)")
             throw AppError.routerUnavailable
         }
+    }
+
+    /// OSRM said no to this request. A routing answer, not an outage — see
+    /// `refusalCode(status:body:)`.
+    struct Refusal: Error {
+        let code: String
+    }
+
+    /// The code in an OSRM refusal, or `nil` when the reply is not one.
+    ///
+    /// OSRM answers every request it will not route — `NoRoute`, `NoSegment`,
+    /// `TooBig`, `InvalidOptions` — with HTTP 400 and its code in the body.
+    /// The status was checked before the body was ever read, so each of those
+    /// came through as "OSRM HTTP 400": the healthy home server was marked
+    /// down for a minute, the request went to the demo server, and the driver
+    /// was told the routing service was unreachable. `failure(code:)`, with
+    /// its sentence about the pins, never ran at all. A reply that does not
+    /// decode as OSRM's own — a tunnel's error page, a proxy's — is still an
+    /// outage, and falls back as before.
+    static func refusalCode(status: Int, body: Data) -> String? {
+        guard !(200..<300).contains(status),
+              let reply = try? JSONDecoder().decode(ProbeResponse.self, from: body),
+              reply.code != "Ok"
+        else { return nil }
+        return reply.code
     }
 
     /// One GET + JSON decode against a single OSRM base — no fallback logic,
@@ -355,8 +389,9 @@ actor OSRMClient {
             throw CancellationError()
         }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw AppError.message("OSRM HTTP \(code)")
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if let code = refusalCode(status: status, body: data) { throw Refusal(code: code) }
+            throw AppError.message("OSRM HTTP \(status)")
         }
         return try JSONDecoder().decode(T.self, from: data)
     }
@@ -417,7 +452,7 @@ actor OSRMClient {
     private struct Geometry: Decodable {
         let coordinates: [[Double]]
     }
-    /// Just OSRM's status word — see `probe`.
+    /// Just OSRM's status word — see `probe` and `refusalCode`.
     private struct ProbeResponse: Decodable {
         let code: String
     }
