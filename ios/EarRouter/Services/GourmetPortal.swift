@@ -152,6 +152,18 @@ enum GourmetPortal {
         }
     }
 
+    /// Ephemeral, like every other client in this app. What comes back from
+    /// here is a whole tour's customers — names, addresses, phone numbers —
+    /// and `URLSession.shared` keeps responses in an on-disk cache and cookies
+    /// in a shared jar. None of it is worth keeping: every call is made fresh,
+    /// with a token fetched fresh.
+    private static let session: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.urlCache = nil
+        c.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: c)
+    }()
+
     /// One request, its status check, and the one thing `URLSession` gets wrong
     /// about cancellation.
     ///
@@ -163,7 +175,7 @@ enum GourmetPortal {
     private static func send(_ request: URLRequest) async throws -> Data {
         let data: Data, response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await session.data(for: request)
         } catch let e as URLError where e.code == .cancelled {
             throw CancellationError()
         }
@@ -485,9 +497,18 @@ enum GourmetCredentialsStore {
     private static var debugFallback: GourmetPortal.Credentials? { nil }
     #endif
 
-    static func save(_ credentials: GourmetPortal.Credentials) {
+    /// Throws when the Keychain would not take it. Ignored, a failed write
+    /// looked exactly like a successful one — the form closed, "angemeldet" —
+    /// and the next import asked for the password again with no reason given.
+    ///
+    /// `ThisDeviceOnly`: a portal password has no business travelling into an
+    /// iCloud or iTunes backup and onto another phone. After first unlock, so
+    /// an import started with the phone locked in its holder still reads it.
+    static func save(_ credentials: GourmetPortal.Credentials) throws {
         let stored = Stored(username: credentials.username, password: credentials.password)
-        guard let data = try? JSONEncoder().encode(stored) else { return }
+        guard let data = try? JSONEncoder().encode(stored) else {
+            throw AppError.message("Die Anmeldung konnte nicht gespeichert werden.")
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -496,8 +517,12 @@ enum GourmetCredentialsStore {
         SecItemDelete(query as CFDictionary)
         var attributes = query
         attributes[kSecValueData as String] = data
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(attributes as CFDictionary, nil)
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw AppError.message(
+                "Die Anmeldung konnte nicht auf dem Gerät gespeichert werden (\(status)).")
+        }
     }
 
     static func clear() {

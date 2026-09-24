@@ -213,7 +213,7 @@ struct GourmetImportSheet: View {
             // leave a driver staring at "Zusteller-Portal" with no idea
             // which of the two fields was wrong.
             _ = try await GourmetPortal.login(credentials)
-            GourmetCredentialsStore.save(credentials)
+            try GourmetCredentialsStore.save(credentials)
             password = ""
             hasCredentials = true
             editingCredentials = false
@@ -634,7 +634,7 @@ struct GourmetLoginForm: View {
         let credentials = GourmetPortal.Credentials(username: username.trimmed, password: password)
         do {
             _ = try await GourmetPortal.login(credentials)
-            GourmetCredentialsStore.save(credentials)
+            try GourmetCredentialsStore.save(credentials)
             password = ""
             onSignedIn()
         } catch is CancellationError {
