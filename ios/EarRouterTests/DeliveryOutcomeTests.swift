@@ -146,12 +146,25 @@ struct DeliveryOutcomeTests {
         // Two doors, and the Lager ticked along with the first of them.
         #expect(route.settledCount == 3)
 
-        try RouteStore.resetDelivered(route, in: context)
+        route.needsOptimize = false
+        try RouteStore.resetDelivered(route, reroute: false, in: context)
 
         #expect(route.settledCount == 0)
         #expect(route.deliveredCount == 0)
         #expect(delivered.settledAt == nil)
         #expect(missed.outcome == nil)
+        // Yesterday's order was planned around yesterday's doors.
+        #expect(route.needsOptimize)
+    }
+
+    /// Nothing was driven, so the plan it has is still the plan.
+    @Test func resettingAnUndrivenTourLeavesItsPlan() throws {
+        let context = try store()
+        let route = try RouteStore.createRoute(name: "Test", in: context)
+        route.geometryFlat = [48.2, 16.3, 48.3, 16.4]
+        try RouteStore.resetDelivered(route, reroute: false, in: context)
+        #expect(!route.needsOptimize)
+        #expect(!route.geometryFlat.isEmpty)
     }
 
     /// A tour where one customer was out is a tour that has been driven. The

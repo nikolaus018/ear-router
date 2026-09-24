@@ -190,17 +190,40 @@ enum RouteStore {
         try context.save()
     }
 
-    static func resetDelivered(_ route: Route, in context: ModelContext) throws {
+    /// Opens every stop again, and plans the tour afresh behind itself.
+    ///
+    /// Planned again because the order it had was made for the day it was
+    /// driven: the doors answered for up to the last edit sat in front as they
+    /// were driven, with the rest planned from wherever the van was — and a
+    /// tour that starts where the driver is started from yesterday's spot. Left
+    /// alone, "Tour vorbereiten" called that "Route ist optimiert". A
+    /// hand-sorted tour keeps its order, as it does after every edit.
+    /// `reroute: false` leaves the route flagged for the caller; only tests
+    /// use it, to stay off the network.
+    static func resetDelivered(
+        _ route: Route, reroute: Bool = true, in context: ModelContext
+    ) throws {
+        let wasDriven = route.stops.contains(where: \.isSettled)
         for s in route.stops { s.record(nil) }
         if route.status == .completed {
             route.status = .active
             route.completedAt = nil
         }
+        if wasDriven { route.markRoutingStale() }
         try context.save()
         // The Ladeliste starts the day again with the doors. Its ticks outlived
         // the reset, so a tour driven again opened with yesterday's boxes
         // already marked as loaded.
         LadelisteState.clearChecked(for: route.id)
+        if wasDriven && reroute { rerouteBehind(route, in: context) }
+    }
+
+    /// Routes a change that has already been saved, without the caller waiting
+    /// for OSRM — for the synchronous writes a tap makes. The route is flagged
+    /// until the answer lands, so a failure leaves the amber banner and its
+    /// retry, exactly as after an edit.
+    static func rerouteBehind(_ route: Route, in context: ModelContext) {
+        Task { await RouteOptimizer.optimizeBestEffort(route, in: context) }
     }
 
     /// What "Lieferstatus zurücksetzen" is about to do, counted at the moment

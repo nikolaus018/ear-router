@@ -978,7 +978,7 @@ struct LadelisteStateTests {
             LadelisteState.store(["menü"], for: route.id)
             LadelisteState.store(.tk, for: route.id)
 
-            try RouteStore.resetDelivered(route, in: context)
+            try RouteStore.resetDelivered(route, reroute: false, in: context)
 
             #expect(LadelisteState.checked(for: route.id).isEmpty)
             #expect(LadelisteState.mode(for: route.id) == .tk)
