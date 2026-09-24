@@ -237,6 +237,61 @@ struct DeliveryOutcomeTests {
         #expect(route.nextOpenStop?.kunde == "Lager")
     }
 
+    /// Undoing the door that ticked the Lager takes the Lager back too — a
+    /// thumb that caught "Geliefert" in the yard must not skip the warehouse.
+    @Test func undoingTheOnlyDoorReopensTheLagerItTicked() throws {
+        let context = try store()
+        let route = try RouteStore.createRoute(name: "Test", in: context)
+        let a = customer("A")
+        a.orderIndex = 10
+        a.route = route
+        context.insert(a)
+
+        try RouteStore.setDelivered(a, true, in: context)
+        try #require(try #require(route.stops.first { $0.kind == .via }).isSettled)
+        #expect(try RouteStore.undoDelivery(a.id, on: route, in: context))
+        #expect(route.nextOpenStop?.kunde == "Lager")
+
+        // Changed to abbestellt instead: not loaded either.
+        try RouteStore.setDelivered(a, true, in: context)
+        try RouteStore.record(.cancelled, for: a, in: context)
+        #expect(route.nextOpenStop?.kunde == "Lager")
+    }
+
+    /// While another door still says the van has loaded, the Lager stays.
+    @Test func undoingOneOfTwoDoorsKeepsTheLager() throws {
+        let context = try store()
+        let route = try RouteStore.createRoute(name: "Test", in: context)
+        let a = customer("A"), b = customer("B")
+        a.orderIndex = 10
+        b.orderIndex = 11
+        for s in [a, b] {
+            s.route = route
+            context.insert(s)
+        }
+
+        try RouteStore.setDelivered(a, true, in: context)
+        try RouteStore.setDelivered(b, true, in: context)
+        try RouteStore.setDelivered(a, false, in: context)
+        #expect(try #require(route.stops.first { $0.kind == .via }).isSettled)
+    }
+
+    /// A Lager the driver ticked by hand is theirs.
+    @Test func undoingADoorLeavesAHandTickedLager() throws {
+        let context = try store()
+        let route = try RouteStore.createRoute(name: "Test", in: context)
+        let lager = try #require(route.stops.first { $0.kind == .via })
+        let a = customer("A")
+        a.orderIndex = 10
+        a.route = route
+        context.insert(a)
+
+        try RouteStore.record(.delivered, for: lager, at: Date(timeIntervalSinceNow: -600), in: context)
+        try RouteStore.setDelivered(a, true, in: context)
+        try RouteStore.setDelivered(a, false, in: context)
+        #expect(lager.isSettled)
+    }
+
     /// A tour that skips the Lager has nothing to tick.
     @Test func anExcludedLagerStaysAsItWas() throws {
         let context = try store()

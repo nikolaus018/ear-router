@@ -390,8 +390,11 @@ enum RouteStore {
         _ outcome: DeliveryOutcome?, for stop: Stop, at date: Date = Date(),
         in context: ModelContext
     ) throws {
+        let wasPassing = stop.passesLager
+        let previousAt = stop.settledAt
         stop.record(outcome, at: date)
         if let outcome { tickLagerIfPassed(by: stop, outcome) }
+        if wasPassing, !stop.passesLager { untickLagerIfOnlyPassedBy(stop, at: previousAt) }
         try context.save()
     }
 
@@ -408,6 +411,23 @@ enum RouteStore {
               lager.isCheckpoint, !lager.isSettled
         else { return }
         lager.record(.delivered, at: stop.settledAt ?? Date())
+    }
+
+    /// The other half of `tickLagerIfPassed`: taking back the door that ticked
+    /// the Lager takes the Lager back with it. Left ticked, a door ticked by
+    /// mistake in the yard and undone straight away sent Jetzt, the lock
+    /// screen, Siri and the car past the warehouse to the first customer.
+    ///
+    /// Only a Lager ticked *by* that door — the same moment, to the second
+    /// it was stamped — and only while no other door says the van has
+    /// loaded. A Lager the driver ticked by hand stays as they left it.
+    private static func untickLagerIfOnlyPassedBy(_ stop: Stop, at previousAt: Date?) {
+        guard let previousAt, let route = stop.route,
+              let lager = route.stops.first(where: { $0.kind == .via }),
+              lager.isSettled, lager.settledAt == previousAt,
+              !route.stops.contains(where: \.passesLager)
+        else { return }
+        lager.record(nil)
     }
 
     /// The plain tick, which is still what happens at twenty-nine doors out of

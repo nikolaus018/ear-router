@@ -309,6 +309,11 @@ extension Stop {
     /// counting the meal, and "Tour vorbereiten" on asking for it to be loaded.
     var isOwedAMeal: Bool { kind == .customer && outcome != .cancelled }
 
+    /// A door answered for in a way that says the van has loaded: any outcome
+    /// but abbestellt, which is ticked in the yard as often as not. What ticks
+    /// an open Lager — see `RouteStore.record`.
+    var passesLager: Bool { kind == .customer && isSettled && outcome != .cancelled }
+
     /// Records what happened here, or re-opens the stop with `nil`.
     ///
     /// The three facts are written together and only here, so they cannot drift:
