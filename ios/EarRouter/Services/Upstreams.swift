@@ -105,6 +105,12 @@ enum FieldLimits {
     static let notiz = 1000
     static let telefon = 40
     static let routeName = 200
+    /// The floor in Globale Infos: "3", "EG", "2/Tür 14".
+    static let stockwerk = 60
+    /// The standing note in Globale Infos. The same ceiling as a stop's own
+    /// Notiz — it had none at all, and it is one of the fields the lock
+    /// screen's card has to fit in.
+    static let kundeninfo = 1000
 }
 
 extension String {

@@ -135,6 +135,7 @@ struct StockwerkForm: View {
 
                 Section {
                     TextField("z. B. 3 oder 2/Tür 14", text: $text)
+                        .limited(to: FieldLimits.stockwerk, text: $text)
                         .font(.system(size: floorSize, weight: .semibold))
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
@@ -160,6 +161,7 @@ struct StockwerkForm: View {
                         // they cannot get into, holding a warm meal.
                         .autocorrectionDisabled()
                         .lineLimit(2...8)
+                        .limited(to: FieldLimits.kundeninfo, text: $notiz)
                 } header: {
                     Text("Notiz")
                 } footer: {

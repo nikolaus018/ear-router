@@ -55,15 +55,20 @@ enum StopActivity {
         // same lookup the Jetzt tab and Siri do; a stop with nothing stored
         // simply carries neither.
         let info = (try? StockwerkStore.note(for: stop, in: context)) ?? nil
+        // Every text field capped, not only the Paket. ActivityKit refuses a
+        // state over 4 KB outright, and an `update` it refuses fails without a
+        // word — the card stayed on the door before, already delivered, while
+        // the driver went on to the next one. The stop's Notiz alone may be a
+        // thousand characters and the customer's standing note had no limit
+        // at all. The widget shows a line or three of each; these budgets add
+        // up to well under the ceiling in bytes, whatever the text is written in.
         let state = StopActivityAttributes.ContentState(
-            kunde: stop.kunde?.trimmed.nilIfEmpty ?? "Stopp",
-            adresse: stop.strasse?.trimmed.nilIfEmpty ?? "",
-            // Capped: ActivityKit refuses a state over 4 KB outright, and the
-            // widget shows one line of it anyway.
-            paket: stop.displayPaket?.trimmed.nilIfEmpty.map { String($0.prefix(300)) },
-            notiz: stop.notiz?.trimmed.nilIfEmpty,
-            stockwerk: info?.stockwerk?.trimmed.nilIfEmpty.map(Format.floor),
-            kundeninfo: info?.notiz?.trimmed.nilIfEmpty,
+            kunde: (stop.kunde?.trimmed.nilIfEmpty ?? "Stopp").cappedUTF8(300),
+            adresse: (stop.strasse?.trimmed.nilIfEmpty ?? "").cappedUTF8(300),
+            paket: stop.displayPaket?.trimmed.nilIfEmpty?.cappedUTF8(600),
+            notiz: stop.notiz?.trimmed.nilIfEmpty?.cappedUTF8(800),
+            stockwerk: info?.stockwerk?.trimmed.nilIfEmpty.map(Format.floor)?.cappedUTF8(120),
+            kundeninfo: info?.notiz?.trimmed.nilIfEmpty?.cappedUTF8(800),
             number: snapshot.number(stop))
         enqueue(tour: route.name, state: state)
     }
@@ -143,5 +148,25 @@ enum StopActivity {
             // one-argument form has been deprecated since iOS 16.2.
             await activity.end(nil, dismissalPolicy: .immediate)
         }
+    }
+}
+
+extension String {
+    /// At most `bytes` bytes of UTF-8, cut at a character boundary, with an
+    /// ellipsis when anything was cut. Measured in bytes because that is what
+    /// ActivityKit's ceiling counts: three hundred characters of Cyrillic or
+    /// emoji are not three hundred bytes.
+    func cappedUTF8(_ bytes: Int) -> String {
+        guard utf8.count > bytes else { return self }
+        let budget = max(0, bytes - "…".utf8.count)
+        var out = ""
+        var used = 0
+        for character in self {
+            let size = String(character).utf8.count
+            guard used + size <= budget else { break }
+            out.append(character)
+            used += size
+        }
+        return out + "…"
     }
 }

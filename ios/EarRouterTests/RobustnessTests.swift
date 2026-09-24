@@ -400,6 +400,20 @@ struct NominatimHitCheckTests {
         #expect(matches(postcode: "1180", road: "Gentzgasse", asking: "Gentzgasse", "1180"))
     }
 
+    /// A hit with a house number is exact only if it is the number asked for.
+    @Test func aNeighboursHouseNumberIsNotAnExactHit() {
+        let asked = AddressText.housenumberOnly(AddressText.normalize("Gentzgasse 129/1/2"))
+        #expect(asked == "129")
+        #expect(Geocoder.houseNumberMatches(asked: asked, got: "129"))
+        #expect(!Geocoder.houseNumberMatches(asked: asked, got: "127"))
+        #expect(!Geocoder.houseNumberMatches(asked: asked, got: "1290"))
+        #expect(!Geocoder.houseNumberMatches(asked: "12", got: "12a"))
+        // A range is its first number, the way the register files it.
+        #expect(Geocoder.houseNumberMatches(asked: "82-92", got: "82"))
+        // Nothing asked, nothing to check.
+        #expect(Geocoder.houseNumberMatches(asked: nil, got: "5"))
+    }
+
     /// The one that actually happened.
     @Test func aStreetMatchedByStringSimilarityIsRefused() {
         #expect(!matches(postcode: "1180", road: "Gentzstraße", asking: "Gentzgasse", "1180"))
@@ -628,5 +642,40 @@ struct StatedRuleTests {
         let summary = RouteSnapshot(route).summary(of: route)
         #expect(summary == "Alle erledigt")
         #expect(!summary.contains("0,0"))
+    }
+}
+
+/// The lock screen's card is refused outright past 4 KB, and a refused update
+/// leaves it on a door already done. Every field is cut to a byte budget first.
+struct ActivityPayloadTests {
+
+    @Test func shortTextIsLeftAlone() {
+        #expect("Fam. Gruber".cappedUTF8(300) == "Fam. Gruber")
+    }
+
+    @Test func longTextIsCutToItsBudgetInBytes() {
+        let note = String(repeating: "Türcode 0123 · klopfen · ", count: 200)
+        let capped = note.cappedUTF8(800)
+        #expect(capped.utf8.count <= 800)
+        #expect(capped.hasSuffix("…"))
+        #expect(note.hasPrefix(String(capped.dropLast())))
+    }
+
+    /// Never through the middle of a character: an emoji is four bytes, and a
+    /// cut inside one is not a shorter string but a broken one.
+    @Test func aCutNeverSplitsACharacter() {
+        let capped = String(repeating: "🏠", count: 100).cappedUTF8(11)
+        #expect(capped == "🏠🏠…")
+        #expect(capped.utf8.count <= 11)
+    }
+
+    @Test func theWholeCardFitsUnderTheCeiling() throws {
+        let huge = String(repeating: "ä", count: 5_000)
+        let state = StopActivityAttributes.ContentState(
+            kunde: huge.cappedUTF8(300), adresse: huge.cappedUTF8(300),
+            paket: huge.cappedUTF8(600), notiz: huge.cappedUTF8(800),
+            stockwerk: huge.cappedUTF8(120), kundeninfo: huge.cappedUTF8(800),
+            number: 97)
+        #expect(try JSONEncoder().encode(state).count < 4_096)
     }
 }
