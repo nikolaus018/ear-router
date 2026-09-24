@@ -60,7 +60,9 @@ struct TourReport {
         var times: [Date] = []
 
         for stop in snapshot.ordered where stop.kind == .customer {
-            if let at = stop.settledAt { times.append(at) }
+            // Not abbestellt: that tick is usually made in the yard before the
+            // tour, and it started the day's time span there.
+            if let at = stop.settledAt, stop.outcome != .cancelled { times.append(at) }
             switch stop.outcome {
             case .delivered: delivered += 1
             case .neighbour: neighbour += 1

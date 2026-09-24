@@ -118,6 +118,21 @@ struct TourReportTests {
         #expect(report.timeSpan?.contains("2 h 0 min") == true)
     }
 
+    /// Abbestellt is ticked in the yard, when the office rings — before the
+    /// first door. It used to start the shift there.
+    @Test func anAbbestelltTickDoesNotStartTheShift() throws {
+        let context = try store()
+        let route = emptyRoute(in: context)
+        add("Abbestellt", to: route, in: context, outcome: .cancelled, at: -90)
+        add("Erste Tür", to: route, in: context, outcome: .delivered, at: 0)
+        add("Letzte Tür", to: route, in: context, outcome: .delivered, at: 60)
+        try context.save()
+
+        let report = TourReport(route)
+        #expect(report.firstStop == noon)
+        #expect(report.cancelledCount == 1)
+    }
+
     /// Every tour already on the phone was driven before stops carried a time.
     /// The report still works; it simply says nothing about the clock.
     @Test func aTourWithNoRecordedTimesReportsNoSpan() throws {
