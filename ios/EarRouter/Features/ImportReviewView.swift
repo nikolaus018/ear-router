@@ -132,7 +132,7 @@ struct ImportReviewView: View {
                     } description: {
                         Text(
                             "Alle Einträge wurden entfernt. „Übernehmen“ würde damit jeden "
-                                + "Kundenstopp dieser Tour löschen.")
+                                + "offenen Kundenstopp dieser Tour löschen.")
                     }
                 } else {
                     list
@@ -390,11 +390,14 @@ struct ImportReviewView: View {
             let rest = names.count - min(names.count, 5)
             let list = rest > 0 ? "\(shown) und \(rest) weitere" : shown
 
+            // Only open stops are ever named: one already answered for stays
+            // on the tour whatever the list says, so there is no Lieferstatus
+            // left to lose here.
             var text = entries.isEmpty
-                ? "Die Liste ist leer — damit werden alle Kundenstopps dieser Tour "
-                    + "gelöscht: \(list). Lieferstatus, Paket und Notizen gehen mit."
+                ? "Die Liste ist leer — damit werden alle offenen Kundenstopps dieser "
+                    + "Tour gelöscht: \(list). Paket und Notizen gehen mit."
                 : "Diese Kunden stehen nicht mehr in der Liste und werden aus der Tour "
-                    + "gelöscht: \(list). Lieferstatus, Paket und Notizen gehen mit."
+                    + "gelöscht: \(list). Paket und Notizen gehen mit."
             if skipped > 0 {
                 // Said out loud, because a row skipped for a warning is a row
                 // the driver may well have meant to keep — and its customer is

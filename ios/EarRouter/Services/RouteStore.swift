@@ -809,11 +809,18 @@ enum RouteStore {
         // geocode failures, nothing skips deletion, and every customer stop on
         // the route is deleted as "no longer present" — a whole tour wiped by
         // one malformed paste, which is the worst thing this screen could do.
+        //
+        // And never a stop the driver has already answered for. A list is what
+        // is still to do: the portal only hands over deliveries that are still
+        // open, and a list re-sent at midday leaves out the doors already
+        // done. Read as "no longer on the round", every one of them was
+        // deleted — outcome, time and all — the day's record of who got a
+        // meal, taken out of the tour a report is about to be written from.
         result.deletionsSkipped =
             !result.geocodeFailures.isEmpty || !result.validationFailures.isEmpty
             || result.cancelled
         if !result.deletionsSkipped {
-            for stop in existing where !matched.contains(stop.id) {
+            for stop in existing where !matched.contains(stop.id) && !stop.isSettled {
                 context.delete(stop)
                 result.deleted += 1
                 moved = true
@@ -1152,7 +1159,8 @@ enum RouteStore {
     ///
     /// Entries that would fail validation are excluded first, exactly as the
     /// import excludes them, because an import carrying a failure deletes
-    /// nothing at all.
+    /// nothing at all. And a stop already answered for is never named: the
+    /// import keeps those whatever the list says — see `importJSON`.
     static func deletionPreview(
         _ entries: [CustomerJSON], in route: Route
     ) -> (names: [String], blockedByFailures: Bool) {
@@ -1184,7 +1192,7 @@ enum RouteStore {
         let existing = route.customerStops
         let matched = match(valid, against: existing).matched
         let names = existing
-            .filter { !matched.contains($0.id) }
+            .filter { !matched.contains($0.id) && !$0.isSettled }
             .map { $0.kunde?.trimmed.nilIfEmpty ?? $0.listAddress.nilIfEmpty ?? "Stopp" }
         return (names, false)
     }

@@ -164,6 +164,24 @@ struct ImportMatchingTests {
         #expect(match.unresolved.first?.existing?.id == gruber.id)
     }
 
+    /// The list is what is still to do. A customer already answered for today
+    /// who is not on it any more — the portal only hands over open deliveries —
+    /// stays on the tour with their outcome; only an open one is removed.
+    @Test func aDeliveredCustomerTheListNoLongerCarriesIsKept() async throws {
+        let done = stop("Fam. Gruber", "Gentzgasse 129", delivered: true, lat: 48.231)
+        done.record(.delivered)
+        let open = stop("Fam. Novak", "Währinger Straße 4", lat: 48.232)
+        let staying = stop("Fr. Berger", "Hauptstraße 3", lat: 48.233)
+        let (route, context) = try makeRoute([done, open, staying])
+
+        let result = try await RouteStore.importJSON(
+            [entry("Fr. Berger", "Hauptstraße 3")], into: route, in: context, reroute: false)
+
+        #expect(result.deleted == 1)
+        #expect(Set(route.customerStops.compactMap(\.kunde)) == ["Fam. Gruber", "Fr. Berger"])
+        #expect(done.outcome == .delivered)
+    }
+
     /// Stops picked in the driver's own order arrive as a tour in that order,
     /// sorted by hand so the routing draws the line through it.
     @Test func aListInTheDriversOwnOrderKeepsIt() async throws {
@@ -573,6 +591,17 @@ struct DeletionPreviewTests {
             RouteStore.deletionPreview(
                 [entry("Fam. Gruber", "Gentzgasse 129")], in: route
             ).names == ["Fr. Berger"])
+    }
+
+    /// A stop already answered for is never named: the import keeps it
+    /// whatever the list says, so warning about it would name a customer who
+    /// is still there afterwards.
+    @Test func aStopAlreadyAnsweredForIsNeverNamed() throws {
+        let done = stop("Fam. Gruber", "Gentzgasse 129", lat: 48.231)
+        done.record(.notHome)
+        let route = try makeRoute([done, stop("Hr. Novak", "Alser Straße 21", lat: 48.232)])
+
+        #expect(RouteStore.deletionPreview([], in: route).names == ["Hr. Novak"])
     }
 
     /// A stop with no name at all still has to be nameable in the warning —
