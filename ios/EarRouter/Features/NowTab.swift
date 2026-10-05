@@ -52,6 +52,11 @@ struct NowTab: View {
     @State private var reportRoute: Route?
     /// The WC search is running — see `findRestroom`.
     @State private var searchingRestroom = false
+    @State private var restroomSearch: Task<Void, Never>?
+    /// The WC stop whose toilet was just banned, for the few seconds the ban
+    /// can still be taken back — see `restroomUndoBanner`.
+    @State private var bannedBreak: RestroomBreak?
+    @State private var bannedTask: Task<Void, Never>?
 
     /// One delivery that can still be taken back.
     struct DeliveredTick: Equatable {
@@ -151,9 +156,18 @@ struct NowTab: View {
         }
         .animation(.snappy, value: current?.id)
         .animation(.snappy, value: RestroomPlan.shared.current)
-        .safeAreaInset(edge: .bottom, spacing: 0) { undoBanner(route) }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                restroomUndoBanner
+                undoBanner(route)
+            }
+        }
         .animation(.snappy, value: undo)
-        .onChange(of: route.id) { undo = nil }
+        .animation(.snappy, value: bannedBreak)
+        .onChange(of: route.id) {
+            undo = nil
+            bannedBreak = nil
+        }
     }
 
     private func currentSection(
@@ -194,10 +208,7 @@ struct NowTab: View {
                     }
                 },
                 onDone: { RestroomPlan.shared.current = nil },
-                onClosed: {
-                    RestroomPlan.shared.ban(planned.restroom)
-                    findRestroom(on: route)
-                })
+                onClosed: { ban(planned, on: route) })
                 .listRowInsets(EdgeInsets(top: 16, leading: 20, bottom: 16, trailing: 20))
         }
     }
@@ -327,6 +338,36 @@ struct NowTab: View {
         }
     }
 
+    /// "WC wird nicht mehr vorgeschlagen · Rückgängig", for a few seconds
+    /// after the ban. The button sits a thumb's width under "Erledigt", and
+    /// what it does is for good.
+    @ViewBuilder
+    private var restroomUndoBanner: some View {
+        if let bannedBreak {
+            HStack(spacing: 10) {
+                Image(systemName: "nosign")
+                    .foregroundStyle(Color.attention)
+                    .accessibilityHidden(true)
+                Text("\(bannedBreak.restroom.label) wird nicht mehr vorgeschlagen")
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button("Rückgängig") { takeBackBan(bannedBreak) }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .glassEffect(.regular, in: .capsule)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .accessibilityElement(children: .contain)
+        }
+    }
+
     @ViewBuilder
     private func editor(for stop: Stop) -> some View {
         if let route = stop.route {
@@ -350,15 +391,45 @@ struct NowTab: View {
     private func findRestroom(on route: Route) {
         guard !searchingRestroom else { return }
         searchingRestroom = true
-        Task {
+        restroomSearch = Task {
             let found = await RestroomFinder.find(for: route)
             searchingRestroom = false
+            // Cancelled by `takeBackBan`: the toilet this search was to
+            // replace is back, and its answer is no longer wanted.
+            guard !Task.isCancelled else { return }
             if let found {
                 RestroomPlan.shared.current = found
             } else {
                 self.error = AppError.message("Kein offenes WC in der Nähe gefunden.")
             }
         }
+    }
+
+    /// Bans the planned toilet for good, finds the next best, and offers a
+    /// few seconds to take the ban back.
+    private func ban(_ planned: RestroomBreak, on route: Route) {
+        RestroomPlan.shared.ban(planned.restroom)
+        findRestroom(on: route)
+        bannedTask?.cancel()
+        bannedBreak = planned
+        AccessibilityNotification.Announcement(
+            "\(planned.restroom.label) wird nicht mehr vorgeschlagen"
+        ).post()
+        bannedTask = Task {
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            bannedBreak = nil
+        }
+    }
+
+    /// Lifts the ban and puts the WC stop back as it was, over whatever the
+    /// search has found in the meantime — or is still looking for.
+    private func takeBackBan(_ planned: RestroomBreak) {
+        bannedTask?.cancel()
+        bannedBreak = nil
+        restroomSearch?.cancel()
+        RestroomPlan.shared.unban(planned.restroom)
+        RestroomPlan.shared.current = planned
     }
 
     /// Ticks the stop off, offers to take it back, and — on the way past — asks
