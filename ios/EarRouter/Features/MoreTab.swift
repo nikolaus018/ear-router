@@ -250,6 +250,10 @@ struct AdvancedSettingsView: View {
     @State private var cacheCount = 0
     @State private var status: ConnectionStatus = .idle
     @State private var confirmingCacheClear = false
+    /// The toilets behind the WC button — see `RestroomUpdater`.
+    @State private var restrooms = RestroomCatalog.shared.current
+    @State private var updatingRestrooms = false
+    @State private var error: AppError?
 
     enum ConnectionStatus: Equatable {
         case idle, checking, reachable(ms: Int), unreachable
@@ -348,7 +352,30 @@ struct AdvancedSettingsView: View {
                         + "zweimal gesucht werden muss. Nur leeren, wenn eine Adresse "
                         + "tatsächlich umgezogen ist.")
             }
+
+            Section {
+                LabeledContent("Standorte", value: "\(restrooms.all.count)")
+                LabeledContent(
+                    "Stand",
+                    value: restrooms.updatedAt.map(Format.date) ?? "Mit der App geliefert")
+                Button {
+                    Task { await updateRestrooms() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("WC-Daten aktualisieren")
+                        if updatingRestrooms { ProgressView().controlSize(.small) }
+                    }
+                }
+                .disabled(updatingRestrooms)
+            } header: {
+                Text("WCs")
+            } footer: {
+                Text(
+                    "Lädt die öffentlichen WCs der Stadt Wien und die öKlos neu. "
+                        + "Einmal im Monat reicht – neue kommen selten dazu.")
+            }
         }
+        .errorAlert($error)
         .navigationTitle("Erweitert")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
@@ -365,6 +392,19 @@ struct AdvancedSettingsView: View {
             Text("\(cacheCount) Adressen werden beim nächsten Mal neu gesucht.")
         }
         .task { cacheCount = await GeocodeCache.shared.count }
+    }
+
+    private func updateRestrooms() async {
+        updatingRestrooms = true
+        defer { updatingRestrooms = false }
+        do {
+            try await RestroomUpdater.refresh()
+            restrooms = RestroomCatalog.shared.current
+        } catch let known as AppError {
+            error = known
+        } catch {
+            self.error = AppError.message("Die WC-Daten konnten nicht geladen werden.")
+        }
     }
 
     private var effectiveHost: String {
@@ -435,6 +475,7 @@ struct AboutView: View {
                 LabeledContent("Tourdaten", value: "Zusteller-Portal")
                 LabeledContent("Karten", value: "Apple Maps")
                 LabeledContent("Adressregister", value: "Stadt Wien")
+                LabeledContent("Öffentliche WCs", value: "Stadt Wien, öKlo")
                 LabeledContent("Geocoder", value: "Nominatim")
                 LabeledContent("Routing", value: "OSRM")
             } header: {
