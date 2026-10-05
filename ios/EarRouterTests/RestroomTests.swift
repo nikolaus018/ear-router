@@ -29,7 +29,7 @@ struct RestroomTests {
     private let anchors = (0..<5).map { Point(lat: 48.20 + Double($0) * 0.005, lon: 16.37) }
 
     @Test func bundledFileReadsBothSourcesAndIsAllInAustria() {
-        #expect(Restroom.all.count { $0.oeklo != true } > 150)
+        #expect(Restroom.all.count { $0.oeklo != true } > 120)
         #expect(Restroom.all.count { $0.oeklo == true } > 250)
         #expect(Restroom.all.allSatisfy { Coordinates.isPlausible(lat: $0.lat, lon: $0.lon) })
         #expect(Restroom.all.allSatisfy { !$0.name.isEmpty })
@@ -93,7 +93,7 @@ struct RestroomTests {
         #expect(RestroomUpdater.hours(text) == nil)
     }
 
-    @Test func readsTheCitysListWithoutPissoirsOrUnreadableHours() throws {
+    @Test func readsTheCitysListWithoutPissoirsStaffedOnesOrUnreadableHours() throws {
         func feature(_ street: String, _ kind: String, _ hours: String) -> String {
             """
             {"type":"Feature","geometry":{"type":"Point","coordinates":[16.338422,48.177641]},
@@ -104,7 +104,8 @@ struct RestroomTests {
         let json = """
             {"features":[\(feature("Markt", "WC-Anlage ohne Wartepersonal", "Mo-Sa: 7-18 Uhr")),
             \(feature("Gasse", "Pissoir", "Mo-So: 0-24 Uhr")),
-            \(feature("Lokal", "WC-Anlage mit Wartepersonal", "Lokalöffnungszeiten"))]}
+            \(feature("Station", "WC-Anlage mit Euro-Key-Behindertenkabine und mit Wartepersonal", "Mo-So: 0-24 Uhr")),
+            \(feature("Lokal", "WC-Anlage ohne Wartepersonal", "Lokalöffnungszeiten"))]}
             """
         let rows = try RestroomUpdater.parseCity(Data(json.utf8))
         #expect(rows.map(\.name) == ["Markt"])

@@ -17,6 +17,8 @@ and the second of them to öKlo's as well:
     and the distance kept as `walk`. That is what tells a toilet on the kerb
     from one in the middle of the Donauinsel.
   * Pissoirs are left out. The driver does not want to be sent to one.
+  * So are the staffed ones ("mit Wartepersonal"). The data carries no
+    price; staffed is the nearest it comes to saying "this one charges".
   * Everything the app does not read is dropped.
 """
 import json
@@ -81,7 +83,7 @@ def main(out):
     for f in fetch(WFS)["features"]:
         p = f["properties"]
         lon, lat = f["geometry"]["coordinates"]
-        if p["KATEGORIE"] == "Pissoir":
+        if p["KATEGORIE"] == "Pissoir" or "mit Wartepersonal" in p["KATEGORIE"]:
             continue
         parsed = hours(p["OEFFNUNGSZEIT"] or "")
         if parsed is None:

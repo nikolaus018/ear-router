@@ -63,8 +63,9 @@ final class RestroomCatalog: @unchecked Sendable {
 
 /// Fetches the toilets again from the two places they come from — what
 /// `Tools/MakeRestrooms.py` does at a desk, done on the phone. The same rules,
-/// and they are that file's to explain: no pissoirs, no toilet whose opening
-/// hours cannot be read as a plain timetable.
+/// and they are that file's to explain: no pissoirs, no staffed toilets —
+/// those are the ones that charge — and none whose opening hours cannot be
+/// read as a plain timetable.
 enum RestroomUpdater {
     static let city = URL(string:
         "https://data.wien.gv.at/daten/geo?service=WFS&request=GetFeature&version=1.1.0"
@@ -115,7 +116,9 @@ enum RestroomUpdater {
         try JSONDecoder().decode(Collection<CityProperties>.self, from: data).features
             .compactMap { feature in
                 let p = feature.properties
-                guard p.KATEGORIE != "Pissoir", let point = feature.point,
+                let kind = p.KATEGORIE ?? ""
+                guard kind != "Pissoir", !kind.contains("mit Wartepersonal"),
+                      let point = feature.point,
                       let parsed = hours(p.OEFFNUNGSZEIT ?? "")
                 else { return nil }
                 let name = tidy([p.STRASSE, p.ONR?.text].compactMap { $0 }.joined(separator: " "))
