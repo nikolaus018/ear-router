@@ -779,8 +779,9 @@ private struct RestroomCard: View {
                     // day it did not simply work. One press, the next best
                     // toilet takes this one's place, and this one is not
                     // suggested again — there are enough of them to be picky.
+                    // The words of the same button on the map's card.
                     Button(action: onClosed) {
-                        WideButtonLabel("Nicht nutzbar – nächstes suchen", systemImage: "nosign")
+                        WideButtonLabel("Nie mehr vorschlagen", systemImage: "nosign")
                     }
                     .buttonStyle(.bordered)
                     .tint(.attention)
