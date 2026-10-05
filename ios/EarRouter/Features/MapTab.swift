@@ -891,13 +891,19 @@ private struct RouteMapCanvas: View {
 
             // Tagged with the pin's own id, which is no stop's: a tap opens
             // the toilet's card rather than a stop's.
-            ForEach(restrooms) { pin in
+            //
+            // Identified by the mark as well as the pin, for the reason
+            // `MapPin.annotationID` gives: MapKit keeps a marker it already
+            // has, tint and all, so a toilet just marked stayed its old
+            // colour until the map was built again.
+            let bad = RestroomMarks.shared.bad
+            ForEach(restrooms.map { RestroomDot(pin: $0, bad: bad.contains($0.key)) }) { dot in
                 Marker(
-                    pin.restroom.label, systemImage: "toilet.fill",
+                    dot.pin.restroom.label, systemImage: "toilet.fill",
                     coordinate: CLLocationCoordinate2D(
-                        latitude: pin.restroom.lat, longitude: pin.restroom.lon))
-                    .tint(RestroomMarks.shared.bad.contains(pin.key) ? .red : .green)
-                    .tag(pin.id)
+                        latitude: dot.pin.restroom.lat, longitude: dot.pin.restroom.lon))
+                    .tint(dot.bad ? Color.restroomBad : Color.restroom)
+                    .tag(dot.pin.id)
             }
         }
         .mapStyle(style.mapStyle(closeIn: closeIn))
@@ -1115,6 +1121,18 @@ private struct MapNotice: View {
     }
 }
 
+/// A toilet's pin together with how it is drawn — see where it is used.
+private struct RestroomDot: Identifiable {
+    struct ID: Hashable {
+        let pin: UUID
+        let bad: Bool
+    }
+
+    let pin: RestroomPin
+    let bad: Bool
+    var id: ID { ID(pin: pin.id, bad: bad) }
+}
+
 /// The card a toilet's pin opens: which one, whether it is open, the driver's
 /// own note on it, and the way there — the stop card's layout.
 private struct RestroomPreviewSheet: View {
@@ -1138,7 +1156,7 @@ private struct RestroomPreviewSheet: View {
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.white)
                         .frame(width: 28, height: 28)
-                        .background(Circle().fill(bad ? Color.red : Color.green))
+                        .background(Circle().fill(bad ? Color.restroomBad : Color.restroom))
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(restroom.label)
@@ -1148,7 +1166,8 @@ private struct RestroomPreviewSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                         Text(facts)
                             .font(.footnote)
-                            .foregroundStyle(bad ? Color.red : isOpen ? Color.secondary : Color.attention)
+                            .foregroundStyle(
+                                bad ? Color.restroomBad : isOpen ? Color.secondary : Color.attention)
                             .padding(.top, 2)
                     }
                     Spacer(minLength: 8)
@@ -1168,7 +1187,7 @@ private struct RestroomPreviewSheet: View {
                             systemImage: bad ? "arrow.uturn.backward" : "hand.thumbsdown")
                     }
                     .buttonStyle(.bordered)
-                    .tint(bad ? .green : .red)
+                    .tint(bad ? Color.restroom : Color.restroomBad)
                     Button {
                         draft = note ?? ""
                         editingNote = true

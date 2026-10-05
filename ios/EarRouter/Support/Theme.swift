@@ -51,6 +51,12 @@ extension Color {
     /// is only skimmable if the things that change state are the only things
     /// wearing a colour.
     static var fixture: Color { .secondary }
+
+    /// A public toilet on the map, and one the driver marked as no good.
+    /// Two colours nothing else on the map wears: green there is a delivered
+    /// stop, blue an open one, orange one to check, and grey a fixed point.
+    static var restroom: Color { .purple }
+    static var restroomBad: Color { .red }
 }
 
 enum Format {
