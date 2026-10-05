@@ -31,6 +31,9 @@ struct BackupArchive: Codable, Sendable {
     var routes: [RouteBackup] = []
     var stockwerke: [StockwerkBackup] = []
     var settings: [String: String] = [:]
+    /// What the driver has said about the public toilets — see
+    /// `RestroomMarks`. Absent from every backup written before it existed.
+    var restrooms: [RestroomBackup] = []
 
     init() {}
 
@@ -52,6 +55,7 @@ struct BackupArchive: Codable, Sendable {
         routes = try c.decodeIfPresent([RouteBackup].self, forKey: .routes) ?? []
         stockwerke = try c.decodeIfPresent([StockwerkBackup].self, forKey: .stockwerke) ?? []
         settings = try c.decodeIfPresent([String: String].self, forKey: .settings) ?? [:]
+        restrooms = try c.decodeIfPresent([RestroomBackup].self, forKey: .restrooms) ?? []
     }
 
     struct RouteBackup: Codable, Sendable {
@@ -98,6 +102,13 @@ struct BackupArchive: Codable, Sendable {
         /// Absent in files written before entrances existed.
         var entranceLat: Double? = nil
         var entranceLon: Double? = nil
+    }
+
+    /// One toilet the driver marked or wrote a note on, by `Restroom.key`.
+    struct RestroomBackup: Codable, Sendable, Equatable {
+        var key: String
+        var bad: Bool
+        var note: String?
     }
 
     struct StockwerkBackup: Codable, Sendable {
@@ -204,7 +215,10 @@ extension BackupArchive {
     /// `needsOptimize` instead, which is the app's own way of saying "this line
     /// is not current" and comes with the button that fixes it.
     @MainActor
-    static func make(from context: ModelContext, settings: [String: String] = [:]) throws -> BackupArchive {
+    static func make(
+        from context: ModelContext, settings: [String: String] = [:],
+        restrooms: [RestroomBackup] = []
+    ) throws -> BackupArchive {
         let routes = try context.fetch(
             FetchDescriptor<Route>(sortBy: [SortDescriptor(\.createdAt)]))
         let notes = try context.fetch(FetchDescriptor<StockwerkNote>())
@@ -212,6 +226,7 @@ extension BackupArchive {
         var archive = BackupArchive()
         archive.app = Self.appVersion
         archive.settings = settings
+        archive.restrooms = restrooms
         archive.routes = routes.map { route in
             RouteBackup(
                 id: route.id,

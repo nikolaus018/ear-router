@@ -50,13 +50,6 @@ struct NowTab: View {
     @State private var finishedTour = false
     /// The tour just filed from here, whose Tagesabschluss is up.
     @State private var reportRoute: Route?
-    /// The WC search is running — see `findRestroom`.
-    @State private var searchingRestroom = false
-    @State private var restroomSearch: Task<Void, Never>?
-    /// The WC stop whose toilet was just banned, for the few seconds the ban
-    /// can still be taken back — see `restroomUndoBanner`.
-    @State private var bannedBreak: RestroomBreak?
-    @State private var bannedTask: Task<Void, Never>?
 
     /// One delivery that can still be taken back.
     struct DeliveredTick: Equatable {
@@ -135,9 +128,6 @@ struct NowTab: View {
         // clutter this tab exists to get away from.
         return List {
             if let current {
-                if let planned = RestroomPlan.shared.planned(for: route) {
-                    restroomSection(planned, route: route, current: current)
-                }
                 currentSection(current, route: route, snapshot: snapshot, info: info)
             } else if snapshot.customerCount == 0 {
                 emptySection(route)
@@ -155,19 +145,9 @@ struct NowTab: View {
                 hasInfo: current.flatMap { info[$0.id] } != nil)
         }
         .animation(.snappy, value: current?.id)
-        .animation(.snappy, value: RestroomPlan.shared.current)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                restroomUndoBanner
-                undoBanner(route)
-            }
-        }
+        .safeAreaInset(edge: .bottom, spacing: 0) { undoBanner(route) }
         .animation(.snappy, value: undo)
-        .animation(.snappy, value: bannedBreak)
-        .onChange(of: route.id) {
-            undo = nil
-            bannedBreak = nil
-        }
+        .onChange(of: route.id) { undo = nil }
     }
 
     private func currentSection(
@@ -190,37 +170,6 @@ struct NowTab: View {
                 caption: snapshot.deliveryLine, settled: snapshot.settledCount,
                 total: snapshot.customerCount)
         }
-    }
-
-    /// The WC stop the driver asked for, above the stop it is driven before —
-    /// or, while it is still some stops off, one line saying when.
-    private func restroomSection(
-        _ planned: RestroomBreak, route: Route, current: Stop
-    ) -> some View {
-        Section {
-            RestroomCard(
-                planned: planned,
-                when: restroomWhen(planned, route: route, current: current),
-                onNavigate: {
-                    let r = planned.restroom
-                    if let url = NavigationHandoff.provider.point(lat: r.lat, lon: r.lon) {
-                        openURL(url)
-                    }
-                },
-                onDone: { RestroomPlan.shared.current = nil },
-                onClosed: { ban(planned, on: route) })
-                .listRowInsets(EdgeInsets(top: 16, leading: 20, bottom: 16, trailing: 20))
-        }
-    }
-
-    /// `nil` once it is the next thing to drive to; until then, after which
-    /// stop it comes.
-    private func restroomWhen(_ planned: RestroomBreak, route: Route, current: Stop) -> String? {
-        guard !planned.isDue(on: route) else { return nil }
-        if planned.afterStopID == current.id { return "Nach diesem Stopp" }
-        let stop = route.stops.first { $0.id == planned.afterStopID }
-        let name = stop.map { $0.kind == .customer ? ($0.kunde ?? "Stopp") : $0.fixedTitle }
-        return name.map { "Nach „\($0)“" } ?? "Später"
     }
 
     private func emptySection(_ route: Route) -> some View {
@@ -257,15 +206,6 @@ struct NowTab: View {
     @ToolbarContentBuilder
     private func toolbar(_ route: Route, current: Stop?, hasInfo: Bool) -> some ToolbarContent {
         if let current {
-            // One press and nothing to choose: the toilet and the place on the
-            // tour it fits are both picked for the driver.
-            ToolbarItem(placement: .topBarTrailing) {
-                if searchingRestroom {
-                    ProgressView()
-                } else {
-                    Button("WC suchen", systemImage: "toilet") { findRestroom(on: route) }
-                }
-            }
             // A button of its own rather than a menu item: "which side of the
             // building is this door on" is asked at half the stops on a tour.
             ToolbarItem(placement: .topBarTrailing) {
@@ -338,36 +278,6 @@ struct NowTab: View {
         }
     }
 
-    /// "WC wird nicht mehr vorgeschlagen · Rückgängig", for a few seconds
-    /// after the ban. The button sits a thumb's width under "Erledigt", and
-    /// what it does is for good.
-    @ViewBuilder
-    private var restroomUndoBanner: some View {
-        if let bannedBreak {
-            HStack(spacing: 10) {
-                Image(systemName: "nosign")
-                    .foregroundStyle(Color.attention)
-                    .accessibilityHidden(true)
-                Text("\(bannedBreak.restroom.label) wird nicht mehr vorgeschlagen")
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                Button("Rückgängig") { takeBackBan(bannedBreak) }
-                    .font(.subheadline.weight(.semibold))
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 11)
-            .glassEffect(.regular, in: .capsule)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-            .accessibilityElement(children: .contain)
-        }
-    }
-
     @ViewBuilder
     private func editor(for stop: Stop) -> some View {
         if let route = stop.route {
@@ -384,52 +294,6 @@ struct NowTab: View {
     private func navigate(to stop: Stop) {
         guard let url = NavigationHandoff.url(for: stop) else { return }
         openURL(url)
-    }
-
-    /// Finds a toilet near the next few stops and plans it in — see
-    /// `RestroomFinder`. A second press searches again from where the van is.
-    private func findRestroom(on route: Route) {
-        guard !searchingRestroom else { return }
-        searchingRestroom = true
-        restroomSearch = Task {
-            let found = await RestroomFinder.find(for: route)
-            searchingRestroom = false
-            // Cancelled by `takeBackBan`: the toilet this search was to
-            // replace is back, and its answer is no longer wanted.
-            guard !Task.isCancelled else { return }
-            if let found {
-                RestroomPlan.shared.current = found
-            } else {
-                self.error = AppError.message("Kein offenes WC in der Nähe gefunden.")
-            }
-        }
-    }
-
-    /// Bans the planned toilet for good, finds the next best, and offers a
-    /// few seconds to take the ban back.
-    private func ban(_ planned: RestroomBreak, on route: Route) {
-        RestroomPlan.shared.ban(planned.restroom)
-        findRestroom(on: route)
-        bannedTask?.cancel()
-        bannedBreak = planned
-        AccessibilityNotification.Announcement(
-            "\(planned.restroom.label) wird nicht mehr vorgeschlagen"
-        ).post()
-        bannedTask = Task {
-            try? await Task.sleep(for: .seconds(6))
-            guard !Task.isCancelled else { return }
-            bannedBreak = nil
-        }
-    }
-
-    /// Lifts the ban and puts the WC stop back as it was, over whatever the
-    /// search has found in the meantime — or is still looking for.
-    private func takeBackBan(_ planned: RestroomBreak) {
-        bannedTask?.cancel()
-        bannedBreak = nil
-        restroomSearch?.cancel()
-        RestroomPlan.shared.unban(planned.restroom)
-        RestroomPlan.shared.current = planned
     }
 
     /// Ticks the stop off, offers to take it back, and — on the way past — asks
@@ -793,82 +657,6 @@ private struct NowStopCard: View {
 
     private var notizPhones: [PhoneNumbers.Found] {
         PhoneNumbers.inNote(stop.notiz, besides: stop.telefon)
-    }
-}
-
-/// The planned WC stop: where, what it costs, and the way there.
-///
-/// Two sizes. Due, it is the next thing to drive to and gets the same two wide
-/// buttons a stop does. Still some stops off, it is one line and a way to
-/// drop it — the stop below it is the errand.
-private struct RestroomCard: View {
-    let planned: RestroomBreak
-    /// "Nach diesem Stopp" while it is not due yet.
-    let when: String?
-    let onNavigate: () -> Void
-    let onDone: () -> Void
-    /// Shut, broken, filthy: never suggest this one again, and find the next.
-    let onClosed: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Image(systemName: "toilet.fill")
-                    .foregroundStyle(Color.accentColor)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(when.map { "\(planned.restroom.label) · \($0)" } ?? planned.restroom.label)
-                        .font(.headline)
-                    Text(planned.restroom.name)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(cost)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                if when != nil {
-                    Button("WC streichen", systemImage: "xmark", action: onDone)
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            if when == nil {
-                VStack(spacing: 10) {
-                    Button(action: onNavigate) {
-                        WideButtonLabel("Navigation zum WC", systemImage: "arrow.trianglehead.turn.up.right")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Button(action: onDone) {
-                        WideButtonLabel("Erledigt", systemImage: "checkmark")
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.delivered)
-                    // The same amber as "Nicht geliefert": the answer on the
-                    // day it did not simply work. One press, the next best
-                    // toilet takes this one's place, and this one is not
-                    // suggested again — there are enough of them to be picky.
-                    // The words of the same button on the map's card.
-                    Button(action: onClosed) {
-                        WideButtonLabel("Nie mehr vorschlagen", systemImage: "nosign")
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.attention)
-                }
-                .controlSize(.large)
-            }
-        }
-        .symbolRenderingMode(.monochrome)
-    }
-
-    /// "+3 min Umweg · 40 m zu Fuß".
-    private var cost: String {
-        let minutes = Int(planned.detourMinutes.rounded())
-        let detour = minutes < 1 ? "Kein Umweg" : "+\(minutes) min Umweg"
-        let walk = planned.restroom.walk
-        return walk >= 30 ? "\(detour) · \(walk) m zu Fuß" : detour
     }
 }
 

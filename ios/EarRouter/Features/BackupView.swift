@@ -180,7 +180,9 @@ struct BackupView: View {
         busy = true
         defer { busy = false }
         do {
-            let archive = try BackupArchive.make(from: context, settings: Settings.capture())
+            let archive = try BackupArchive.make(
+                from: context, settings: Settings.capture(),
+                restrooms: RestroomMarks.shared.backup())
             let url = try await Task.detached { try archive.writeForSharing() }.value
             sharing = SharedFile(url: url)
         } catch {
@@ -225,6 +227,9 @@ struct BackupView: View {
             // odometer reading back a month along with them is a number they
             // would then write into the vehicle log.
             if mode == .replace { Settings.restore(archive.settings) }
+            // The toilets' marks and notes come along either way: replaced
+            // with the file's, or added to what is here.
+            RestroomMarks.shared.restore(archive.restrooms, replacing: mode == .replace)
 
             pending = nil
             result = outcome.summary

@@ -13,9 +13,8 @@ struct MapTab: View {
 
     @State private var style: MapStyleChoice = .standard
     @State private var selectedStopID: UUID?
-    /// Every toilet on the map, not just the planned one — the driver's own
-    /// pick over the WC button's. Kept across launches like the map style is not:
-    /// somebody who wants them wants them every day.
+    /// Every public toilet on the map. Kept across launches, which the map
+    /// style is not: somebody who wants them wants them every day.
     @AppStorage("map.showRestrooms") private var showRestrooms = false
     /// Which customer of a shared pin the card is showing. `nil` while the
     /// pin's list of everyone at that address is up instead.
@@ -34,10 +33,8 @@ struct MapTab: View {
     @Query private var stockwerkNotes: [StockwerkNote]
     /// The measured height of the tapped stop's card — see the sheet below.
     @State private var previewHeight: CGFloat = 200
-    /// The same for a toilet's card, which grows by a button on a tour.
+    /// The same for a toilet's card, which grows by its note.
     @State private var restroomHeight: CGFloat = 250
-    /// A toilet picked off the map is being fitted into the tour.
-    @State private var planningRestroom = false
 
     /// As tall as the preview card is ever allowed to get. Past this it keeps
     /// its own scroll rather than growing into a sheet that covers the pin it
@@ -99,37 +96,6 @@ struct MapTab: View {
     /// is `nil` for it and the stop card stays away.
     private var selectedRestroom: RestroomPin? {
         selectedStopID.flatMap { Restroom.pinsByID[$0] }
-    }
-
-    /// The toilets to draw: all of them when asked for, and otherwise only
-    /// the one the WC button planned.
-    private func restroomPins(for route: Route) -> [RestroomPin] {
-        if showRestrooms { return Restroom.pins }
-        return RestroomPlan.shared.planned(for: route).flatMap(\.restroom.pin).map { [$0] } ?? []
-    }
-
-    /// The tour a toilet is planned into: the one Jetzt is on, which is where
-    /// its card comes up — not necessarily the one the map is showing.
-    private var workingRoute: Route? {
-        Route.current(in: context, working: focus.workingRouteID)
-    }
-
-    /// Takes the toilet the driver picked and lets the search find only its
-    /// place on the tour, then goes to Jetzt, where its card now is.
-    private func plan(_ restroom: Restroom) {
-        guard let route = workingRoute, !planningRestroom else { return }
-        planningRestroom = true
-        Task {
-            let found = await RestroomFinder.find(for: route, only: restroom)
-            planningRestroom = false
-            guard let found else {
-                error = AppError.message("Das WC konnte nicht eingeplant werden.")
-                return
-            }
-            RestroomPlan.shared.current = found
-            selectedStopID = nil
-            focus.select(.now)
-        }
     }
 
     private var selectedStop: Stop? {
@@ -338,28 +304,19 @@ struct MapTab: View {
         .sheet(item: Binding(
             get: { selectedRestroom }, set: { if $0 == nil { selectedStopID = nil } })
         ) { pin in
-            let plan = RestroomPlan.shared
+            let marks = RestroomMarks.shared
             RestroomPreviewSheet(
                 restroom: pin.restroom,
-                banned: plan.isBanned(pin.restroom),
-                planning: planningRestroom,
+                bad: marks.isBad(pin.restroom),
+                note: marks.note(for: pin.restroom),
                 onNavigate: {
                     let r = pin.restroom
                     if let url = NavigationHandoff.provider.point(lat: r.lat, lon: r.lon) {
                         openURL(url)
                     }
                 },
-                // Only on a tour with a stop still to drive: there is nothing
-                // to fit it between otherwise.
-                onPlan: workingRoute?.nextOpenStop == nil
-                    ? nil : { self.plan(pin.restroom) },
-                onToggleBan: {
-                    if plan.isBanned(pin.restroom) {
-                        plan.unban(pin.restroom)
-                    } else {
-                        plan.ban(pin.restroom)
-                    }
-                },
+                onToggleBad: { marks.setBad(!marks.isBad(pin.restroom), pin.restroom) },
+                onNote: { marks.setNote($0, for: pin.restroom) },
                 onMeasure: { if $0 > 0 { restroomHeight = $0 } })
             .presentationDetents([.height(min(restroomHeight, Self.maxPreviewHeight))])
             .presentationBackground(.regularMaterial)
@@ -486,7 +443,7 @@ struct MapTab: View {
         RouteMapCanvas(
             line: line,
             pins: pins,
-            restrooms: restroomPins(for: route),
+            restrooms: showRestrooms ? Restroom.pins : [],
             style: style,
             // A tap on a pin starts at that pin's list again, not at whichever
             // customer was last looked at under it.
@@ -876,7 +833,7 @@ struct MapTab: View {
 private struct RouteMapCanvas: View {
     let line: [CLLocationCoordinate2D]
     let pins: [MapPin]
-    /// The planned WC stop, or every toilet there is — see `restroomPins`.
+    /// Every public toilet, when the driver has asked to see them.
     let restrooms: [RestroomPin]
     let style: MapStyleChoice
     @Binding var selection: UUID?
@@ -939,7 +896,7 @@ private struct RouteMapCanvas: View {
                     pin.restroom.label, systemImage: "toilet.fill",
                     coordinate: CLLocationCoordinate2D(
                         latitude: pin.restroom.lat, longitude: pin.restroom.lon))
-                    .tint(RestroomPlan.shared.banned.contains(pin.key) ? .gray : .teal)
+                    .tint(RestroomMarks.shared.bad.contains(pin.key) ? .red : .green)
                     .tag(pin.id)
             }
         }
@@ -1158,19 +1115,20 @@ private struct MapNotice: View {
     }
 }
 
-/// The card a toilet's pin opens: which one, whether it is open, and the way
-/// there — the stop card's layout, with the one button a toilet needs.
+/// The card a toilet's pin opens: which one, whether it is open, the driver's
+/// own note on it, and the way there — the stop card's layout.
 private struct RestroomPreviewSheet: View {
     let restroom: Restroom
-    /// The driver said never to suggest it again — see `RestroomPlan.ban`.
-    let banned: Bool
-    /// Its place on the tour is being worked out.
-    let planning: Bool
+    /// The driver marked it as no good — see `RestroomMarks`.
+    let bad: Bool
+    let note: String?
     let onNavigate: () -> Void
-    /// Puts it on the tour as the WC stop. `nil` with no tour to put it on.
-    let onPlan: (() -> Void)?
-    let onToggleBan: () -> Void
+    let onToggleBad: () -> Void
+    let onNote: (String) -> Void
     let onMeasure: (CGFloat) -> Void
+
+    @State private var editingNote = false
+    @State private var draft = ""
 
     var body: some View {
         ScrollView {
@@ -1180,7 +1138,7 @@ private struct RestroomPreviewSheet: View {
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.white)
                         .frame(width: 28, height: 28)
-                        .background(Circle().fill(banned ? Color.gray : Color.teal))
+                        .background(Circle().fill(bad ? Color.red : Color.green))
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(restroom.label)
@@ -1190,30 +1148,36 @@ private struct RestroomPreviewSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                         Text(facts)
                             .font(.footnote)
-                            .foregroundStyle(isOpen ? Color.secondary : Color.attention)
+                            .foregroundStyle(bad ? Color.red : isOpen ? Color.secondary : Color.attention)
                             .padding(.top, 2)
                     }
                     Spacer(minLength: 8)
+                }
+                if let note {
+                    StopFacts.note(note, lineLimit: 12)
+                        .font(.callout)
                 }
                 VStack(spacing: 10) {
                     Button(action: onNavigate) {
                         WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
                     }
                     .buttonStyle(.borderedProminent)
-                    if let onPlan {
-                        Button(action: onPlan) {
-                            WideButtonLabel("Als WC-Stopp einplanen", systemImage: "plus")
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(planning)
-                    }
-                    Button(action: onToggleBan) {
+                    Button(action: onToggleBad) {
                         WideButtonLabel(
-                            banned ? "Wieder vorschlagen" : "Nie mehr vorschlagen",
-                            systemImage: banned ? "arrow.uturn.backward" : "nosign")
+                            bad ? "Doch brauchbar" : "Als unbrauchbar markieren",
+                            systemImage: bad ? "arrow.uturn.backward" : "hand.thumbsdown")
                     }
                     .buttonStyle(.bordered)
-                    .tint(banned ? .accentColor : .attention)
+                    .tint(bad ? .green : .red)
+                    Button {
+                        draft = note ?? ""
+                        editingNote = true
+                    } label: {
+                        WideButtonLabel(
+                            note == nil ? "Notiz hinzufügen" : "Notiz ändern",
+                            systemImage: "square.and.pencil")
+                    }
+                    .buttonStyle(.bordered)
                 }
                 .controlSize(.large)
             }
@@ -1225,13 +1189,21 @@ private struct RestroomPreviewSheet: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .symbolRenderingMode(.monochrome)
+        // Saved empty, the note is removed — there is no separate delete.
+        .alert("Notiz", isPresented: $editingNote) {
+            TextField("z. B. Code, Zustand, Zugang", text: $draft)
+            Button("Sichern") { onNote(draft) }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Nur für dich, zu diesem WC. Leer sichern entfernt sie.")
+        }
     }
 
     private var isOpen: Bool { restroom.isOpen(at: Date()) }
 
     /// "Geöffnet · 40 m zu Fuß".
     private var facts: String {
-        let open = banned ? "Wird nicht mehr vorgeschlagen"
+        let open = bad ? "Als unbrauchbar markiert"
             : isOpen ? "Geöffnet" : "Jetzt geschlossen"
         return restroom.walk >= 30 ? "\(open) · \(restroom.walk) m zu Fuß" : open
     }

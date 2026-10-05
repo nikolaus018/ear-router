@@ -5,7 +5,7 @@ private let log = Logger(subsystem: "win.ringtwo.EarRouter", category: "osrm")
 
 /// OSRM — the routing engine. Two calls do everything a tour needs:
 /// `routeLeg` for a fixed leg that is never reordered, and `trip` for the
-/// multi-stop ordering problem. `table` is beside them for the WC search.
+/// multi-stop ordering problem. `snapDistance` is beside them for the toilets.
 ///
 /// An actor because of the primary-down cooldown: several stops being
 /// re-optimized at once must not each pay their own full connect attempt to a
@@ -103,27 +103,6 @@ actor OSRMClient {
         let legs = route.legs ?? []
         try Self.checkLegCount(legs.count, waypoints: coords.count)
         return (legs.map { ($0.distance, $0.duration) }, Self.toPolyline(route.geometry))
-    }
-
-    /// Driving minutes between every pair of `coords`, from OSRM's `/table`:
-    /// `result[i][j]` is the drive from `coords[i]` to `coords[j]`, `nil` where
-    /// there is no road between them. One request for the whole matrix — what
-    /// the WC search compares its candidates with: see `RestroomFinder`.
-    func table(_ coords: [(lat: Double, lon: Double)]) async throws -> [[Double?]] {
-        guard coords.count >= 2 else {
-            throw AppError.message("OSRM: Routenabschnitt mit weniger als zwei Punkten")
-        }
-        let path = "/table/v1/driving/\(Self.coordString(coords))?annotations=duration"
-        let resp: TableResponse = try await get(path, waypoints: coords.count)
-        guard resp.code == "Ok" else {
-            throw Self.failure(code: resp.code)
-        }
-        guard resp.durations.count == coords.count,
-              resp.durations.allSatisfy({ $0.count == coords.count })
-        else {
-            throw AppError.message("OSRM: unvollständige Antwort")
-        }
-        return resp.durations.map { row in row.map { $0.map { $0 / 60 } } }
     }
 
     /// Metres from a point to the nearest road a car may use, from OSRM's
@@ -527,10 +506,6 @@ actor OSRMClient {
         let code: String
         let waypoints: [Snapped]
         struct Snapped: Decodable { let distance: Double }
-    }
-    private struct TableResponse: Decodable {
-        let code: String
-        let durations: [[Double?]]
     }
     private struct Leg: Decodable {
         let distance: Double

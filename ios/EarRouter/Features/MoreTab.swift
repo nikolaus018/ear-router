@@ -250,7 +250,7 @@ struct AdvancedSettingsView: View {
     @State private var cacheCount = 0
     @State private var status: ConnectionStatus = .idle
     @State private var confirmingCacheClear = false
-    /// The toilets behind the WC button — see `RestroomUpdater`.
+    /// The toilets the map can show — see `RestroomUpdater`.
     @State private var restrooms = RestroomCatalog.shared.current
     @State private var updatingRestrooms = false
     @State private var error: AppError?
