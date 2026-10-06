@@ -154,8 +154,7 @@ struct NowTab: View {
                 sameDoorCount: snapshot.doorCount(stop),
                 finishesAt: snapshot.etaFinish(),
                 onNavigate: { navigate(to: stop) },
-                onDelivered: { deliver(stop, of: route) },
-                onToLager: { settle(stop, as: .toLager) })
+                onDelivered: { deliver(stop, of: route) })
                 .id(stop.id)
                 .listRowInsets(EdgeInsets(top: 20, leading: 20, bottom: 20, trailing: 20))
         } header: {
@@ -210,6 +209,17 @@ struct NowTab: View {
             if current.kind == .customer || current.kind == .start || current.kind == .end {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        // The two answers that are not a delivery, where the
+                        // stop list keeps them too: in the menu, out of the
+                        // way of the button pressed at every door.
+                        if current.kind == .customer {
+                            ForEach(DeliveryOutcome.exceptions, id: \.self) { outcome in
+                                Button(outcome.label, systemImage: outcome.menuSymbol) {
+                                    settle(current, as: outcome)
+                                }
+                            }
+                            Divider()
+                        }
                         Button("Bearbeiten", systemImage: "pencil") { editingStop = current }
                         // The stop list's words for the same sheet, and the
                         // same test: a note with no floor yet is still
@@ -403,8 +413,6 @@ private struct NowStopCard: View {
     let finishesAt: Date?
     let onNavigate: () -> Void
     let onDelivered: () -> Void
-    /// "Ins Lager mitnehmen".
-    let onToLager: () -> Void
 
     @ScaledMetric(relativeTo: .body) private var badge: CGFloat = 28
     @Environment(\.openURL) private var openURL
@@ -571,20 +579,6 @@ private struct NowStopCard: View {
             }
             .buttonStyle(.bordered)
             .tint(.delivered)
-
-            // The other answer: the meal goes to the Lager with the van and
-            // the door is not driven to. Same size as "Geliefert" — it is
-            // pressed with one hand and a box in the other — but grey and
-            // second, like the pin it leaves on the map.
-            //
-            // Not at Lager or Ziel, which have no meal to take anywhere.
-            if !isCheckpoint {
-                Button(action: onToLager) {
-                    WideButtonLabel(DeliveryOutcome.toLager.label, systemImage: "shippingbox")
-                }
-                .buttonStyle(.bordered)
-                .tint(.fixture)
-            }
 
             // The customer's own number from the Zusteller-Portal — same
             // height as Navigation and Geliefert above it. It used to be

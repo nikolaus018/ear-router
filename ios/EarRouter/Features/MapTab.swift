@@ -354,7 +354,6 @@ struct MapTab: View {
                             ? { chosenMemberID = nil } : nil,
                         onNavigate: { navigate(to: stop) },
                         onToggleDelivered: { toggleDelivered(stop) },
-                        onToLager: stop.isOpenDelivery ? { takeToLager(stop) } : nil,
                         onShowInList: {
                             if let route { focus.reveal(stop: stop, of: route) }
                             selectedStopID = nil
@@ -727,15 +726,6 @@ struct MapTab: View {
         }
         guard nowDelivered, StockwerkStore.shouldAsk(stop, in: context) else { return }
         askForStockwerk(stop)
-    }
-
-    /// Holding the card's tick: the meal goes to the Lager with the van.
-    private func takeToLager(_ stop: Stop) {
-        do {
-            try RouteStore.record(.toLager, for: stop, in: context)
-        } catch {
-            self.error = AppError.message("Konnte den Lieferstatus nicht speichern.")
-        }
     }
 
     /// This door's floor, read off the notes the query already holds rather
@@ -1878,8 +1868,6 @@ struct StopPreviewSheet: View {
     var onBack: (() -> Void)? = nil
     let onNavigate: () -> Void
     let onToggleDelivered: () -> Void
-    /// Holding the tick instead of tapping it — see `StopRow.onHoldTick`.
-    var onToLager: (() -> Void)? = nil
     let onShowInList: () -> Void
     /// "An anderen übergeben" — offered on a customer's card while the other
     /// driver's stops are on the map, and `nil` everywhere else.
@@ -1980,44 +1968,21 @@ struct StopPreviewSheet: View {
             // the map is the same gesture at the same size in the same colours.
             // Lager and Ziel carry it too, as they do in the list.
             if stop.countsAsStop {
-                // A tap ticks, a hold says "Ins Lager mitnehmen" — as in the
-                // list. See `StopRow.stateButton`.
-                Image(systemName: stop.outcome.map {
-                    $0.handedOver ? "checkmark.circle.fill" : $0.symbol
-                } ?? "circle")
-                    .font(.system(size: min(30 * textScale, 40)))
-                    .foregroundStyle(stop.outcome.map {
-                        $0.handedOver ? Color.delivered : Color.attention
-                    } ?? Color.secondary)
-                    .frame(width: min(44 * textScale, 64), height: min(44 * textScale, 64))
-                    .contentShape(.rect)
-                    .overlay {
-                        TapOrHold(
-                            onTap: {
-                                ticks += 1
-                                onToggleDelivered()
-                            },
-                            onHold: onToLager.map { hold in
-                                {
-                                    ticks += 1
-                                    hold()
-                                }
-                            })
-                    }
-                    .accessibilityElement()
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityAction {
-                        ticks += 1
-                        onToggleDelivered()
-                    }
-                    .accessibilityActions {
-                        if let onToLager {
-                            Button(DeliveryOutcome.toLager.label) {
-                                ticks += 1
-                                onToLager()
-                            }
-                        }
-                    }
+                Button {
+                    ticks += 1
+                    onToggleDelivered()
+                } label: {
+                    Image(systemName: stop.outcome.map {
+                        $0.handedOver ? "checkmark.circle.fill" : $0.symbol
+                    } ?? "circle")
+                        .font(.system(size: min(30 * textScale, 40)))
+                        .foregroundStyle(stop.outcome.map {
+                            $0.handedOver ? Color.delivered : Color.attention
+                        } ?? Color.secondary)
+                        .frame(width: min(44 * textScale, 64), height: min(44 * textScale, 64))
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.borderless)
                 .accessibilityLabel(
                     stop.isSettled
                         ? "Stopp wieder öffnen"

@@ -105,9 +105,20 @@ enum DeliveryOutcome: String, Codable, Sendable, CaseIterable {
         }
     }
 
+    /// The outline glyph a menu wears for this answer.
+    var menuSymbol: String {
+        switch self {
+        case .delivered: "checkmark.circle"
+        case .neighbour: "person"
+        case .notHome: "bell.slash"
+        case .cancelled: "minus.circle"
+        case .toLager: "shippingbox"
+        }
+    }
+
     /// The three the driver picks from after the plain tick has not applied.
     /// `delivered` is not among them — that one is the big button.
-    static var exceptions: [DeliveryOutcome] { [.toLager] }
+    static var exceptions: [DeliveryOutcome] { [.notHome, .toLager] }
 }
 
 @Model

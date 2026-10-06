@@ -66,9 +66,6 @@ struct StopRow: View {
     /// The stop the driver is on: the one row in the list with a solid badge.
     var isNext: Bool = false
     var onToggleDelivered: (() -> Void)?
-    /// Holding the tick instead of tapping it: "Ins Lager mitnehmen". `nil`
-    /// where there is nothing to hold for — a fixed point, a settled door.
-    var onHoldTick: (() -> Void)?
     /// Switches a fixed point in or out of this tour. `nil` on a customer,
     /// which is not something a tour can decide to skip.
     var onToggleExcluded: (() -> Void)?
@@ -327,46 +324,24 @@ struct StopRow: View {
     @ViewBuilder
     private func stateButton(disc: CGFloat, target: CGFloat) -> some View {
         if let onToggleDelivered {
-            // Not a `Button`: a tap ticks the door, and holding it says the
-            // meal goes to the Lager instead — see `TapOrHold` for why that
-            // takes more than two SwiftUI gestures in a list row.
-            Image(systemName: stateGlyph)
-                .font(.system(size: disc, weight: .regular))
-                .foregroundStyle(stateTint)
-                .frame(width: target, height: target)
-                .contentShape(.rect)
-                .overlay {
-                    TapOrHold(
-                        onTap: {
-                            ticks += 1
-                            onToggleDelivered()
-                        },
-                        onHold: onHoldTick.map { hold in
-                            {
-                                ticks += 1
-                                hold()
-                            }
-                        })
-                }
-                .accessibilityElement()
-                .accessibilityAddTraits(.isButton)
-                .accessibilityLabel(
-                    stop.isSettled
-                        ? "Stopp wieder öffnen"
-                        : (stop.kind == .customer ? "Als geliefert markieren" : "Als erledigt markieren"))
-                .accessibilityAction {
-                    ticks += 1
-                    onToggleDelivered()
-                }
-                .accessibilityActions {
-                    if let onHoldTick {
-                        Button(DeliveryOutcome.toLager.label) {
-                            ticks += 1
-                            onHoldTick()
-                        }
-                    }
-                }
-                .sensoryFeedback(.impact(weight: .medium), trigger: ticks)
+            Button {
+                ticks += 1
+                onToggleDelivered()
+            } label: {
+                Image(systemName: stateGlyph)
+                    .font(.system(size: disc, weight: .regular))
+                    .foregroundStyle(stateTint)
+                    .frame(width: target, height: target)
+                    .contentShape(.rect)
+            }
+            // `.borderless` is what makes a button inside a List row tappable on
+            // its own — without it a tap anywhere in the row fires it.
+            .buttonStyle(.borderless)
+            .accessibilityLabel(
+                stop.isSettled
+                    ? "Stopp wieder öffnen"
+                    : (stop.kind == .customer ? "Als geliefert markieren" : "Als erledigt markieren"))
+            .sensoryFeedback(.impact(weight: .medium), trigger: ticks)
         } else if let onToggleExcluded {
             // The affordance this action never had before it was a control:
             // switching Start, Lager or Ziel out of a tour was a plain tap on
@@ -470,8 +445,9 @@ struct StopListRow: View {
     let onNavigate: () -> Void
     let onShowOnMap: () -> Void
     var onEditStockwerk: (() -> Void)?
-    /// "Ins Lager mitnehmen" — from holding the tick, the swipe or the menu.
-    var onToLager: (() -> Void)?
+    /// The two answers that are not a delivery — "Nicht angetroffen" and
+    /// "Ins Lager mitnehmen" — from the row's long-press menu, and only there.
+    var onRecord: ((DeliveryOutcome) -> Void)?
     /// Only ever called for a fixed point — the same action the row's own tap
     /// and its context menu perform.
     var onToggleExcluded: (() -> Void)?
@@ -542,7 +518,6 @@ struct StopListRow: View {
             eta: eta,
             isNext: isNext,
             onToggleDelivered: stop.countsAsStop ? onToggleDelivered : nil,
-            onHoldTick: stop.isOpenDelivery ? onToLager : nil,
             onToggleExcluded: stop.canToggleExcluded ? onToggleExcluded : nil,
             onNavigate: onNavigate)
     }
@@ -564,15 +539,6 @@ struct StopListRow: View {
                     systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark")
             }
             .tint(stop.isSettled ? .attention : .delivered)
-            // The second-most-made decision at a door, on the gesture
-            // next to the most-made one. It is in the menu as well; a
-            // driver with one free hand in the rain finds this first.
-            if let onToLager, !stop.isSettled {
-                Button(action: onToLager) {
-                    Label("Ins Lager", systemImage: "shippingbox")
-                }
-                .tint(.fixture)
-            }
         }
     }
 
@@ -636,9 +602,10 @@ struct StopListRow: View {
                 stop.isSettled ? "Als offen markieren" : "Als geliefert markieren",
                 systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark.circle",
                 action: onToggleDelivered)
-            if let onToLager, !stop.isSettled {
-                Button(
-                    DeliveryOutcome.toLager.label, systemImage: "shippingbox", action: onToLager)
+            if let onRecord, !stop.isSettled {
+                ForEach(DeliveryOutcome.exceptions, id: \.self) { outcome in
+                    Button(outcome.label, systemImage: outcome.menuSymbol) { onRecord(outcome) }
+                }
             }
             if let onEditStockwerk {
                 Button(

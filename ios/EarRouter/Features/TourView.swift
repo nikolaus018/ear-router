@@ -327,7 +327,7 @@ struct TourView: View {
             onNavigate: { open(stop) },
             onShowOnMap: { focus.showOnMap(stop: stop, of: route) },
             onEditStockwerk: { stockwerkStop = stop },
-            onToLager: { record(.toLager, for: stop) },
+            onRecord: { record($0, for: stop) },
             onToggleExcluded: { Task { await toggleExcluded(stop) } })
             // The id is the scroll target `reveal` aims at.
             .id(stop.id)
