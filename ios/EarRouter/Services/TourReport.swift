@@ -22,6 +22,7 @@ struct TourReport {
     let deliveredCount: Int
     let neighbourCount: Int
     let cancelledCount: Int
+    let lagerCount: Int
     /// The doors nobody opened, in driving order. The part of the report that
     /// is actually read.
     let notHome: [Entry]
@@ -53,7 +54,7 @@ struct TourReport {
 
     /// Meals owed: every customer but the abbestellt ones — the figure the
     /// tour's own header counts against.
-    var owedCount: Int { customerCount - cancelledCount }
+    var owedCount: Int { customerCount - cancelledCount - lagerCount }
 
     /// Whether anything on this tour needs somebody's attention today.
     var needsAttention: Bool { !notHome.isEmpty || !stillOpen.isEmpty }
@@ -63,7 +64,7 @@ struct TourReport {
         routeName = route.name
         day = route.completedAt ?? route.createdAt
 
-        var delivered = 0, neighbour = 0, cancelled = 0
+        var delivered = 0, neighbour = 0, cancelled = 0, lager = 0
         var notHome: [Entry] = []
         var stillOpen: [Entry] = []
         var times: [Date] = []
@@ -71,11 +72,12 @@ struct TourReport {
         for stop in snapshot.ordered where stop.kind == .customer {
             // Not abbestellt: that tick is usually made in the yard before the
             // tour, and it started the day's time span there.
-            if let at = stop.settledAt, stop.outcome != .cancelled { times.append(at) }
+            if let at = stop.settledAt, stop.outcome?.skipsDoor != true { times.append(at) }
             switch stop.outcome {
             case .delivered: delivered += 1
             case .neighbour: neighbour += 1
             case .cancelled: cancelled += 1
+            case .toLager: lager += 1
             case .notHome: notHome.append(Entry(stop))
             case nil: stillOpen.append(Entry(stop))
             }
@@ -85,6 +87,7 @@ struct TourReport {
         deliveredCount = delivered
         neighbourCount = neighbour
         cancelledCount = cancelled
+        lagerCount = lager
         self.notHome = notHome
         self.stillOpen = stillOpen
         km = snapshot.totalKm
@@ -134,6 +137,7 @@ extension TourReport {
         lines.append("Geliefert: \(handedOverCount) von \(Format.stops(owedCount))")
         if neighbourCount > 0 { lines.append("davon bei Nachbarn abgegeben: \(neighbourCount)") }
         if cancelledCount > 0 { lines.append("Abbestellt: \(cancelledCount)") }
+        if lagerCount > 0 { lines.append("Ins Lager mitgenommen: \(lagerCount)") }
 
         if !notHome.isEmpty {
             lines.append("")

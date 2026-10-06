@@ -52,6 +52,9 @@ enum DeliveryOutcome: String, Codable, Sendable, CaseIterable {
     /// Nothing to deliver: abbestellt, im Spital, verstorben. Not a failure and
     /// not a delivery — a door that was never owed a meal today.
     case cancelled
+    /// The meal goes to the Lager with the van rather than to this door. Like
+    /// abbestellt, the door is not driven to and not counted as a stop.
+    case toLager
 
     /// Whether the meal left the van. This is what `Stop.delivered` has always
     /// meant and still means, which is why a neighbour counts and a locked door
@@ -59,7 +62,7 @@ enum DeliveryOutcome: String, Codable, Sendable, CaseIterable {
     var handedOver: Bool {
         switch self {
         case .delivered, .neighbour: true
-        case .notHome, .cancelled: false
+        case .notHome, .cancelled, .toLager: false
         }
     }
 
@@ -67,12 +70,17 @@ enum DeliveryOutcome: String, Codable, Sendable, CaseIterable {
     /// outcome does: a meal that came back because nobody opened the door.
     var needsFollowUp: Bool { self == .notHome }
 
+    /// The van does not go to this door at all: it is left out of the route,
+    /// the counts and the Ladeliste.
+    var skipsDoor: Bool { self == .cancelled || self == .toLager }
+
     var label: String {
         switch self {
         case .delivered: "Geliefert"
         case .neighbour: "Bei Nachbarn abgegeben"
         case .notHome: "Nicht angetroffen"
         case .cancelled: "Abbestellt"
+        case .toLager: "Ins Lager mitnehmen"
         }
     }
 
@@ -83,6 +91,7 @@ enum DeliveryOutcome: String, Codable, Sendable, CaseIterable {
         case .neighbour: "bei Nachbarn"
         case .notHome: "nicht angetroffen"
         case .cancelled: "abbestellt"
+        case .toLager: "ins Lager"
         }
     }
 
@@ -92,12 +101,13 @@ enum DeliveryOutcome: String, Codable, Sendable, CaseIterable {
         case .neighbour: "person.fill.checkmark"
         case .notHome: "bell.slash.fill"
         case .cancelled: "minus.circle.fill"
+        case .toLager: "shippingbox.fill"
         }
     }
 
     /// The three the driver picks from after the plain tick has not applied.
     /// `delivered` is not among them — that one is the big button.
-    static var exceptions: [DeliveryOutcome] { [.neighbour, .notHome, .cancelled] }
+    static var exceptions: [DeliveryOutcome] { [.neighbour, .notHome, .cancelled, .toLager] }
 }
 
 @Model
@@ -318,12 +328,12 @@ extension Stop {
     /// marked abbestellt. That tick is usually made in the yard, when the
     /// office rings, before a single box is loaded — and the Ladeliste went on
     /// counting the meal, and "Tour vorbereiten" on asking for it to be loaded.
-    var isOwedAMeal: Bool { kind == .customer && outcome != .cancelled }
+    var isOwedAMeal: Bool { kind == .customer && outcome?.skipsDoor != true }
 
     /// A door answered for in a way that says the van has loaded: any outcome
     /// but abbestellt, which is ticked in the yard as often as not. What ticks
     /// an open Lager — see `RouteStore.record`.
-    var passesLager: Bool { kind == .customer && isSettled && outcome != .cancelled }
+    var passesLager: Bool { kind == .customer && isSettled && outcome?.skipsDoor != true }
 
     /// Records what happened here, or re-opens the stop with `nil`.
     ///

@@ -192,6 +192,7 @@ struct NowTab: View {
                 count: snapshot.owedCount,
                 delivered: snapshot.deliveredCount,
                 cancelled: snapshot.cancelledCount,
+                toLager: snapshot.lagerCount,
                 followUps: snapshot.followUps,
                 homeKm: snapshot.remainingKm,
                 onFinish: { finish(route) })
@@ -691,6 +692,7 @@ private struct TourDoneView: View {
     /// Meals that actually left the van.
     let delivered: Int
     let cancelled: Int
+    let toLager: Int
     /// The customers nobody was home for — the reason this screen is not
     /// always a green seal.
     let followUps: [Stop]
@@ -765,7 +767,10 @@ private struct TourDoneView: View {
         let handed = delivered == count
             ? (count == 1 ? "1 Stopp geliefert" : "\(count) Stopps geliefert")
             : "\(delivered) von \(count) geliefert"
-        let parts = [handed, cancelled > 0 ? "\(cancelled) abbestellt" : nil]
+        let parts = [
+            handed, cancelled > 0 ? "\(cancelled) abbestellt" : nil,
+            toLager > 0 ? "\(toLager) ins Lager" : nil,
+        ]
             .compactMap { $0 }.joined(separator: " · ")
         guard homeKm >= 0.05, let km = Format.km(homeKm) else { return parts }
         return "\(parts) · Rückfahrt \(km)"

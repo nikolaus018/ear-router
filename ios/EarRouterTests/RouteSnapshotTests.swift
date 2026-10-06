@@ -427,6 +427,23 @@ struct RouteSnapshotTests {
             == "2 von 3 geliefert · 1 nicht angetroffen · 1 abbestellt")
     }
 
+    /// "Ins Lager mitnehmen" is not a stop: out of the meals owed, named on
+    /// its own, and not in the way of the tour being complete.
+    @Test func aMealForTheLagerIsNotCountedAsAStop() throws {
+        let a = customer("A", at: 1), b = customer("B", at: 2), c = customer("C", at: 3)
+        a.record(.delivered)
+        b.record(.toLager)
+        let r = try route([a, b, c])
+        let snapshot = RouteSnapshot(r)
+
+        #expect(snapshot.owedCount == 2 && snapshot.lagerCount == 1)
+        #expect(snapshot.deliveryLine == "1 von 2 geliefert · 1 ins Lager")
+        #expect(snapshot.nextOpen?.id == c.id)
+        #expect(r.stops.count(where: \.isOwedAMeal) == 2)
+        #expect(DeliveryOutcome.exceptions.contains(.toLager))
+        #expect(DeliveryOutcome.toLager.label == "Ins Lager mitnehmen")
+    }
+
     @Test func anAbbestelltCustomerIsNotAMissedMeal() throws {
         let a = customer("A", at: 1), b = customer("B", at: 2)
         a.record(.delivered)

@@ -602,6 +602,26 @@ struct OptimizerWriteBackTests {
         #expect(!route.needsOptimize)
     }
 
+    /// A meal that goes to the Lager with the van is not a door to drive to
+    /// either, and marking it plans the tour again like abbestellt does.
+    @Test func aDoorWhoseMealGoesToTheLagerIsNotDriven() throws {
+        let (route, context, customers) = try makeRoute()
+        route.needsOptimize = false
+        try RouteStore.record(.toLager, for: customers[0], reroute: false, in: context)
+        #expect(route.needsOptimize)
+
+        let (nodes, _) = RouteOptimizer.snapshot(route)
+        #expect(!nodes.customers.contains { $0.id == customers[0].id })
+        #expect(nodes.skipped.map(\.id) == [customers[0].id])
+        #expect(nodes.driven.isEmpty)
+        // It does not say the van has loaded, so the Lager stays open.
+        #expect(route.stops.first { $0.kind == .via }?.isSettled == false)
+
+        try optimize(route, in: context)
+        #expect(customers[0].nextLegKm == nil)
+        #expect(route.customerStops.last?.id == customers[0].id)
+    }
+
     /// Marked abbestellt while OSRM was answering: that answer still drives
     /// to the door, so the route stays flagged.
     @Test func anAbbestelltTickDuringASolveLeavesTheRouteFlagged() throws {

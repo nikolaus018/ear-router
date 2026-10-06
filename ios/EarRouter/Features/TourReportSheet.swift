@@ -54,6 +54,11 @@ struct TourReportSheet: View {
                             Text("\(report.cancelledCount)").monospacedDigit()
                         }
                     }
+                    if report.lagerCount > 0 {
+                        LabeledContent("Ins Lager") {
+                            Text("\(report.lagerCount)").monospacedDigit()
+                        }
+                    }
                     if let span = report.timeSpan {
                         LabeledContent("Unterwegs", value: span)
                     }

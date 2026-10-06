@@ -468,7 +468,7 @@ enum RouteOptimizer {
         for s in stops {
             let coord = s.planningSnapshot
             let fixed = FixedStop(coord: coord, excluded: s.excluded)
-            if s.kind == .customer, s.outcome == .cancelled { continue }
+            if s.kind == .customer, s.outcome?.skipsDoor == true { continue }
             // `excluded` is only ever written to a fixed stop, and a customer
             // row carrying it anyway must not silently disappear from the tour
             // — hence matching on the kind rather than on the flag.
@@ -481,7 +481,7 @@ enum RouteOptimizer {
             }
         }
         nodes.skipped = route.customerStops
-            .filter { $0.outcome == .cancelled }
+            .filter { $0.outcome?.skipsDoor == true }
             .map(\.planningSnapshot)
         nodes.driven = driven(route)
         // Before the first door only: after it the trip starts at the door,
@@ -517,7 +517,7 @@ enum RouteOptimizer {
     /// has been anywhere, so it says nothing about where the van is; those
     /// stay with the open ones, where they have always been planned.
     static func driven(_ route: Route) -> [StopCoord] {
-        var done = route.customerStops.filter { $0.isSettled && $0.outcome != .cancelled }
+        var done = route.customerStops.filter { $0.isSettled && $0.outcome?.skipsDoor != true }
         if let last = done.indices.max(by: {
             (done[$0].settledAt ?? .distantPast) < (done[$1].settledAt ?? .distantPast)
         }) {
@@ -533,7 +533,7 @@ enum RouteOptimizer {
                 .map {
                     Fingerprint.Entry(
                         id: $0.id, lat: $0.lat, lon: $0.lon, excluded: $0.excluded,
-                        skipped: $0.kind == .customer && $0.outcome == .cancelled)
+                        skipped: $0.kind == .customer && $0.outcome?.skipsDoor == true)
                 })
     }
 

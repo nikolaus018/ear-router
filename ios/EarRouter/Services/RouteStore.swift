@@ -432,12 +432,12 @@ enum RouteStore {
         reroute: Bool = true, in context: ModelContext
     ) throws {
         let wasPassing = stop.passesLager
-        let wasSkipped = stop.outcome == .cancelled
+        let wasSkipped = stop.outcome?.skipsDoor == true
         let previousAt = stop.settledAt
         stop.record(outcome, at: date)
         if let outcome { tickLagerIfPassed(by: stop, outcome) }
         if wasPassing, !stop.passesLager { untickLagerIfOnlyPassedBy(stop, at: previousAt) }
-        let route = stop.kind == .customer && wasSkipped != (outcome == .cancelled)
+        let route = stop.kind == .customer && wasSkipped != (outcome?.skipsDoor == true)
             ? stop.route : nil
         // Flagged, not cleared: the old line still drives past that door — a
         // detour, not a wrong turn — and with no signal it has to last until
@@ -455,7 +455,7 @@ enum RouteStore {
     /// Not for abbestellt: that tick is usually made in the yard, when the
     /// office rings, before anything is loaded.
     private static func tickLagerIfPassed(by stop: Stop, _ outcome: DeliveryOutcome) {
-        guard stop.kind == .customer, outcome != .cancelled,
+        guard stop.kind == .customer, !outcome.skipsDoor,
               let lager = stop.route?.stops.first(where: { $0.kind == .via }),
               lager.isCheckpoint, !lager.isSettled
         else { return }

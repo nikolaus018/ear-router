@@ -20,6 +20,8 @@ struct RouteSnapshot {
     let settledCount: Int
     /// Customers marked abbestellt — never owed a meal today.
     let cancelledCount: Int
+    /// The doors whose meal goes to the Lager instead — see `DeliveryOutcome.toLager`.
+    let lagerCount: Int
     /// The next stop to tick off — a customer, or Lager or Ziel.
     let nextOpen: Stop?
     let totalKm: Double
@@ -79,7 +81,7 @@ struct RouteSnapshot {
     /// The meals this tour actually owes: every customer but the abbestellt
     /// ones. What "geliefert" is counted against, so two cancellations do not
     /// read as two failures.
-    var owedCount: Int { customerCount - cancelledCount }
+    var owedCount: Int { customerCount - cancelledCount - lagerCount }
 
     /// "17 von 18 geliefert · 1 nicht angetroffen · 2 abbestellt" — the line
     /// over the stop list and over Jetzt.
@@ -87,6 +89,7 @@ struct RouteSnapshot {
         var parts = ["\(deliveredCount) von \(owedCount) geliefert"]
         if !followUps.isEmpty { parts.append("\(followUps.count) nicht angetroffen") }
         if cancelledCount > 0 { parts.append("\(cancelledCount) abbestellt") }
+        if lagerCount > 0 { parts.append("\(lagerCount) ins Lager") }
         return parts.joined(separator: " · ")
     }
 
@@ -132,6 +135,7 @@ struct RouteSnapshot {
         var delivered = 0
         var settled = 0
         var cancelled = 0
+        var lager = 0
         var open = 0
         var next: Stop?
         var openEnd: Stop?
@@ -161,6 +165,7 @@ struct RouteSnapshot {
                 if let outcome = stop.outcome {
                     settled += 1
                     if outcome == .cancelled { cancelled += 1 }
+                    if outcome == .toLager { lager += 1 }
                     if outcome.needsFollowUp { followUps.append(stop) }
                 }
             }
@@ -196,7 +201,7 @@ struct RouteSnapshot {
                     // are — so it says nothing about where the van is. Taken
                     // as a position, one listed after the last delivery moved
                     // the mark past the drive home, and "Rückfahrt" vanished.
-                    if next == nil && stop.outcome != .cancelled {
+                    if next == nil && stop.outcome?.skipsDoor != true {
                         drivenKm = km
                         drivenMinutes = minutes
                     }
@@ -223,6 +228,7 @@ struct RouteSnapshot {
         self.deliveredCount = delivered
         self.settledCount = settled
         self.cancelledCount = cancelled
+        self.lagerCount = lager
         // A tour with no customers yet has nothing to drive: its Lager and Ziel
         // are not a round to be started, just three points waiting for one.
         self.openCount = customers > 0 ? open : 0
@@ -241,7 +247,7 @@ struct RouteSnapshot {
         self.remainingMinutes = max(0, minutes - drivenMinutes)
         // Not an abbestellt household: "2 an dieser Tür" is two meals carried
         // up, and a door owed nothing today is not one of them.
-        self.doorCounts = SameDoor.counts(for: ordered.filter { $0.outcome != .cancelled })
+        self.doorCounts = SameDoor.counts(for: ordered.filter { $0.outcome?.skipsDoor != true })
         self.pace = Self.measurePace(ordered, arrivals: arrivals)
     }
 }
@@ -269,7 +275,7 @@ extension RouteSnapshot {
     /// apart at the door measured as twelve, and "fertig gegen" slid by hours.
     static func measurePace(_ ordered: [Stop], arrivals: [UUID: Double]) -> Pace {
         let stamped = ordered
-            .filter { $0.kind == .customer && $0.isSettled && $0.outcome != .cancelled }
+            .filter { $0.kind == .customer && $0.isSettled && $0.outcome?.skipsDoor != true }
             .compactMap { stop -> (Date, Double)? in
                 guard let at = stop.settledAt, let driving = arrivals[stop.id] else { return nil }
                 return (at, driving)

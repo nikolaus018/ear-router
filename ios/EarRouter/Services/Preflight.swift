@@ -133,7 +133,7 @@ struct Preflight {
         // hospital.
         let startOfToday = calendar.startOfDay(for: now)
         let stale = customers.count { stop in
-            guard stop.isSettled, stop.outcome != .cancelled else { return false }
+            guard stop.isSettled, stop.outcome?.skipsDoor != true else { return false }
             guard let at = stop.settledAt else { return true }
             return at < startOfToday
         }
