@@ -93,4 +93,16 @@ struct OtherStopsTests {
         ManualOtherStops.remove(id: b.id, from: route)
         #expect(ManualOtherStops.load(for: route).isEmpty)
     }
+
+    @Test func aPortalStopTakenOffTheOthersStaysOffUntilBroughtBack() {
+        let route = UUID()
+        defer { ManualOtherStops.forget(route) }
+        #expect(ManualOtherStops.hidden(for: route).isEmpty)
+        ManualOtherStops.hide(id: 11, for: route)
+        ManualOtherStops.hide(id: 12, for: route)
+        ManualOtherStops.hide(id: 11, for: route)
+        #expect(ManualOtherStops.hidden(for: route) == [11, 12])
+        ManualOtherStops.unhideAll(for: route)
+        #expect(ManualOtherStops.hidden(for: route).isEmpty)
+    }
 }

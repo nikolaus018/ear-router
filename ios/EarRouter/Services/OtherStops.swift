@@ -223,7 +223,29 @@ enum ManualOtherStops {
         save(load(for: routeID).filter { $0.id != id }, for: routeID)
     }
 
+    // MARK: - Taking a portal stop off the other driver's side
+
+    private static func hiddenKey(_ routeID: UUID) -> String { "portal.hidden.\(routeID.uuidString)" }
+
+    /// The portal deliveries the driver took off the other driver's side: one
+    /// that goes to the Lager, say, and is neither van's to deliver. Their ids,
+    /// so the portal's list can be fetched again and still leave them out.
+    static func hidden(for routeID: UUID) -> Set<Int> {
+        Set(UserDefaults.standard.array(forKey: hiddenKey(routeID)) as? [Int] ?? [])
+    }
+
+    static func hide(id: Int, for routeID: UUID) {
+        var ids = hidden(for: routeID)
+        ids.insert(id)
+        UserDefaults.standard.set(Array(ids), forKey: hiddenKey(routeID))
+    }
+
+    static func unhideAll(for routeID: UUID) {
+        UserDefaults.standard.removeObject(forKey: hiddenKey(routeID))
+    }
+
     static func forget(_ routeID: UUID) {
         UserDefaults.standard.removeObject(forKey: key(routeID))
+        unhideAll(for: routeID)
     }
 }

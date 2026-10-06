@@ -47,6 +47,9 @@ struct MapTab: View {
     /// How many stops the other driver has, placed or not — `others` holds only
     /// the ones that could be put on the map.
     @State private var othersTotal = 0
+    /// How many of the portal's stops the driver has taken off that side — see
+    /// `ManualOtherStops.hide`.
+    @State private var hiddenOthers = 0
     /// The "Stopp der anderen hinzufügen" form, and what has been typed in it.
     @State private var addingOther = false
     @State private var draftName = ""
@@ -268,6 +271,17 @@ struct MapTab: View {
                                 : "Stopps der anderen",
                             systemImage: "person.2", isOn: $showOthers)
                         if othersShown {
+                            if hiddenOthers > 0 {
+                                Button(
+                                    "Entfernte Stopps zurückholen (\(hiddenOthers))",
+                                    systemImage: "arrow.uturn.backward"
+                                ) {
+                                    if let routeID = route?.id {
+                                        ManualOtherStops.unhideAll(for: routeID)
+                                        startLoadingOthers()
+                                    }
+                                }
+                            }
                             Button("Stopp der anderen hinzufügen …", systemImage: "plus") {
                                 draftName = ""
                                 draftAddress = ""
@@ -385,15 +399,19 @@ struct MapTab: View {
                         openURL(url)
                     }
                 },
-                onRemove: pin.stop.isManual
-                    ? {
-                        if let routeID = route?.id {
+                onRemove: {
+                    if let routeID = route?.id {
+                        if pin.stop.isManual {
                             ManualOtherStops.remove(id: pin.stop.id, from: routeID)
+                        } else {
+                            ManualOtherStops.hide(id: pin.stop.id, for: routeID)
+                            hiddenOthers += 1
                         }
-                        others.removeAll { $0.id == pin.id }
-                        othersTotal = max(0, othersTotal - 1)
-                        selectedStopID = nil
-                    } : nil,
+                    }
+                    others.removeAll { $0.id == pin.id }
+                    othersTotal = max(0, othersTotal - 1)
+                    selectedStopID = nil
+                },
                 onMeasure: { if $0 > 0 { otherHeight = $0 } })
             .presentationDetents([.height(min(otherHeight, Self.maxPreviewHeight))])
             .presentationBackground(.regularMaterial)
@@ -429,6 +447,7 @@ struct MapTab: View {
             showOthers = false
             others = []
             othersTotal = 0
+            hiddenOthers = 0
             othersRouteID = nil
         }
     }
@@ -492,7 +511,10 @@ struct MapTab: View {
                 }
                 let fetched = try await OtherStops.load(link: link, mine: mine, credentials: credentials)
                 guard !Task.isCancelled else { return }
-                let loaded = fetched + ManualOtherStops.load(for: routeID)
+                let hidden = ManualOtherStops.hidden(for: routeID)
+                let kept = fetched.filter { !hidden.contains($0.id) }
+                hiddenOthers = fetched.count - kept.count
+                let loaded = kept + ManualOtherStops.load(for: routeID)
                 others = loaded.compactMap(OtherPin.init)
                 othersTotal = loaded.count
                 othersRouteID = routeID
@@ -1386,8 +1408,7 @@ private struct OtherPin: Identifiable, Equatable {
 private struct OtherStopPreviewSheet: View {
     let stop: OtherStop
     let onNavigate: () -> Void
-    /// Only for a stop the driver added by hand.
-    let onRemove: (() -> Void)?
+    let onRemove: () -> Void
     let onMeasure: (CGFloat) -> Void
 
     var body: some View {
@@ -1429,12 +1450,12 @@ private struct OtherStopPreviewSheet: View {
                     WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
                 }
                 .buttonStyle(.borderedProminent)
-                if let onRemove {
-                    Button(role: .destructive, action: onRemove) {
-                        WideButtonLabel("Entfernen", systemImage: "trash")
-                    }
-                    .buttonStyle(.bordered)
+                Button(role: .destructive, action: onRemove) {
+                    WideButtonLabel(
+                        stop.isManual ? "Entfernen" : "Aus den anderen entfernen",
+                        systemImage: stop.isManual ? "trash" : "minus.circle")
                 }
+                .buttonStyle(.bordered)
             }
             .controlSize(.large)
             .padding(.horizontal)
