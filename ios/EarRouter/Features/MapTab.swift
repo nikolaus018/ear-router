@@ -44,6 +44,9 @@ struct MapTab: View {
     /// is switched on, and is something to look at in one conversation.
     @State private var showOthers = false
     @State private var others: [OtherPin] = []
+    /// How many stops the other driver has, placed or not — `others` holds only
+    /// the ones that could be put on the map.
+    @State private var othersTotal = 0
     /// The route `others` were fetched for. A switch to another tour drops them.
     @State private var othersRouteID: UUID?
     @State private var loadingOthers = false
@@ -123,6 +126,9 @@ struct MapTab: View {
     private var visibleOthers: [OtherPin] {
         showOthers && othersRouteID == route?.id ? others : []
     }
+
+    /// Whether the other driver's stops are up for the route shown.
+    private var othersShown: Bool { showOthers && othersRouteID == route?.id }
 
     private var selectedOther: OtherPin? {
         selectedStopID.flatMap { id in visibleOthers.first { $0.id == id } }
@@ -252,9 +258,9 @@ struct MapTab: View {
                     Toggle("WCs anzeigen", systemImage: "toilet", isOn: $showRestrooms)
                     if hasPortalLogin {
                         Toggle(
-                            visibleOthers.isEmpty
-                                ? "Stopps der anderen"
-                                : "Stopps der anderen (\(visibleOthers.count))",
+                            othersShown
+                                ? "Stopps der anderen (\(othersTotal))"
+                                : "Stopps der anderen",
                             systemImage: "person.2", isOn: $showOthers)
                     }
                     if routes.count > 1 {
@@ -390,6 +396,7 @@ struct MapTab: View {
             loadingOthers = false
             showOthers = false
             others = []
+            othersTotal = 0
             othersRouteID = nil
         }
     }
@@ -427,6 +434,7 @@ struct MapTab: View {
                 let loaded = try await OtherStops.load(link: link, mine: mine, credentials: credentials)
                 guard !Task.isCancelled else { return }
                 others = loaded.compactMap(OtherPin.init)
+                othersTotal = loaded.count
                 othersRouteID = routeID
                 if loaded.isEmpty {
                     showOthers = false
@@ -599,6 +607,35 @@ struct MapTab: View {
             // asks for it, and the map is the one place it means anything.
             .task { LocationAuthorization.shared.requestIfNeeded() }
             .overlay(alignment: .top) { statusBanner }
+            .overlay(alignment: .bottomLeading) { splitCard(for: route) }
+    }
+
+    /// How the tour is split at the moment: the route's own customers against
+    /// the other driver's. Only while their stops are on the map.
+    @ViewBuilder
+    private func splitCard(for route: Route) -> some View {
+        if othersShown {
+            VStack(alignment: .leading, spacing: 6) {
+                splitRow("Meine Stopps", count: route.customerCount, color: .blue)
+                splitRow("Andere Stopps", count: othersTotal, color: .otherDriver)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .glassEffect(.regular, in: .rect(cornerRadius: 16))
+            .padding(.leading, 14)
+            .padding(.bottom, 14)
+            .safeAreaPadding(.bottom)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func splitRow(_ title: String, count: Int, color: Color) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(color).frame(width: 10, height: 10)
+            Text("\(title): \(count)")
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+        }
     }
 
     /// Says the two things the map would otherwise stay quiet about: that the
