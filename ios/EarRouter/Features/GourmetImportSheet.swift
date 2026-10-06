@@ -362,9 +362,12 @@ struct GourmetImportSheet: View {
 
             switch mode {
             case .existing(let route):
-                // Only a route that has no origin yet: one that already says
-                // which tour it came from keeps saying it.
-                if PortalTourLink.load(for: route.id) == nil {
+                // A route that already says which tour it came from keeps
+                // saying it — but not which day: a tour driven again next
+                // week is loaded again for that day, and the map's "Stopps
+                // der anderen" asked the portal about last week's.
+                let link = PortalTourLink.load(for: route.id)
+                if link == nil || link?.tourID == tour.id {
                     PortalTourLink(tourID: tour.id, tourName: tour.name, date: date)
                         .save(for: route.id)
                 }
