@@ -35,8 +35,6 @@ struct NowTab: View {
 
     @State private var editingStop: Stop?
     @State private var stockwerkStop: Stop?
-    /// The stop whose delivery did not simply work — see `OutcomeSheet`.
-    @State private var outcomeStop: Stop?
     /// The delivery that can still be taken back — see `undoBanner`.
     @State private var undo: DeliveredTick?
     @State private var undoTask: Task<Void, Never>?
@@ -78,11 +76,6 @@ struct NowTab: View {
             }
         }
         .stockwerkPrompt(for: $stockwerkStop)
-        .sheet(item: $outcomeStop) { stop in
-            OutcomeSheet(stop: stop, info: info(for: stop)) { outcome in
-                settle(stop, as: outcome)
-            }
-        }
         // The floor question has closed, so the undo banner is visible at
         // last — and only now does its countdown begin. See `offerUndo`.
         .onChange(of: stockwerkStop?.id) { _, shown in
@@ -162,7 +155,7 @@ struct NowTab: View {
                 finishesAt: snapshot.etaFinish(),
                 onNavigate: { navigate(to: stop) },
                 onDelivered: { deliver(stop, of: route) },
-                onNotDelivered: { outcomeStop = stop })
+                onToLager: { settle(stop, as: .toLager) })
                 .id(stop.id)
                 .listRowInsets(EdgeInsets(top: 20, leading: 20, bottom: 20, trailing: 20))
         } header: {
@@ -303,7 +296,7 @@ struct NowTab: View {
         settle(stop, as: .delivered)
     }
 
-    /// Records any outcome, from the big green button or from `OutcomeSheet`,
+    /// Records any outcome, from either button on the card,
     /// and offers the same few seconds to take it back.
     ///
     /// The floor question follows only a meal that actually arrived. After a
@@ -327,13 +320,6 @@ struct NowTab: View {
             DeliveredTick(
                 id: stop.id, name: stop.kunde ?? "Stopp", outcome: outcome,
                 checkpoint: stop.kind != .customer))
-    }
-
-    /// What is known about this one customer. A linear scan rather than the
-    /// table the list builds: this is one stop, once, when a sheet opens.
-    private func info(for stop: Stop) -> StockwerkNote? {
-        guard let key = StockwerkKey.make(for: stop) else { return nil }
-        return stockwerkNotes.first { $0.key == key }
     }
 
     /// Puts the banner up. Its six seconds start only once nothing covers it:
@@ -417,8 +403,8 @@ private struct NowStopCard: View {
     let finishesAt: Date?
     let onNavigate: () -> Void
     let onDelivered: () -> Void
-    /// Opens the "Nicht geliefert" sheet.
-    let onNotDelivered: () -> Void
+    /// "Ins Lager mitnehmen".
+    let onToLager: () -> Void
 
     @ScaledMetric(relativeTo: .body) private var badge: CGFloat = 28
     @Environment(\.openURL) private var openURL
@@ -586,19 +572,18 @@ private struct NowStopCard: View {
             .buttonStyle(.bordered)
             .tint(.delivered)
 
-            // The other answer, and the whole reason this app stopped storing
-            // one bit per door. Same width and same height as "Geliefert",
-            // because on the day it is needed it is needed with one hand and a
-            // warm box in the other — but tinted amber and second, because it
-            // is the answer at one door in thirty.
+            // The other answer: the meal goes to the Lager with the van and
+            // the door is not driven to. Same size as "Geliefert" — it is
+            // pressed with one hand and a box in the other — but grey and
+            // second, like the pin it leaves on the map.
             //
-            // Not at Lager or Ziel, where there is nobody to be not at home.
+            // Not at Lager or Ziel, which have no meal to take anywhere.
             if !isCheckpoint {
-                Button(action: onNotDelivered) {
-                    WideButtonLabel("Nicht geliefert", systemImage: "bell.slash")
+                Button(action: onToLager) {
+                    WideButtonLabel(DeliveryOutcome.toLager.label, systemImage: "shippingbox")
                 }
                 .buttonStyle(.bordered)
-                .tint(.attention)
+                .tint(.fixture)
             }
 
             // The customer's own number from the Zusteller-Portal — same

@@ -107,7 +107,7 @@ enum DeliveryOutcome: String, Codable, Sendable, CaseIterable {
 
     /// The three the driver picks from after the plain tick has not applied.
     /// `delivered` is not among them — that one is the big button.
-    static var exceptions: [DeliveryOutcome] { [.neighbour, .notHome, .cancelled, .toLager] }
+    static var exceptions: [DeliveryOutcome] { [.toLager] }
 }
 
 @Model

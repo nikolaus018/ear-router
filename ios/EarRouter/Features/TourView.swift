@@ -62,8 +62,6 @@ struct TourView: View {
     /// The stop whose floor is being asked about — set by ticking a delivery
     /// off at a door nothing is known about yet, or from the row's own menu.
     @State private var stockwerkStop: Stop?
-    /// The stop whose delivery did not simply work — see `OutcomeSheet`.
-    @State private var outcomeStop: Stop?
     /// The end-of-day report, and the checklist before setting off. Two screens
     /// about the same tour at its two ends.
     @State private var showingReport = false
@@ -165,13 +163,6 @@ struct TourView: View {
             }
         }
         .stockwerkPrompt(for: $stockwerkStop)
-        .sheet(item: $outcomeStop) { stop in
-            OutcomeSheet(stop: stop, info: stockwerkNotes.first { note in
-                StockwerkKey.make(for: stop).map { $0 == note.key } ?? false
-            }) { outcome in
-                record(outcome, for: stop)
-            }
-        }
         .sheet(isPresented: $showingReport) {
             TourReportSheet(route: route)
         }
@@ -336,7 +327,7 @@ struct TourView: View {
             onNavigate: { open(stop) },
             onShowOnMap: { focus.showOnMap(stop: stop, of: route) },
             onEditStockwerk: { stockwerkStop = stop },
-            onRecordOutcome: { outcomeStop = stop },
+            onToLager: { record(.toLager, for: stop) },
             onToggleExcluded: { Task { await toggleExcluded(stop) } })
             // The id is the scroll target `reveal` aims at.
             .id(stop.id)

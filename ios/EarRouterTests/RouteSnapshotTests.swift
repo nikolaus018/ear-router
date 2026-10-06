@@ -440,7 +440,7 @@ struct RouteSnapshotTests {
         #expect(snapshot.deliveryLine == "1 von 2 geliefert · 1 ins Lager")
         #expect(snapshot.nextOpen?.id == c.id)
         #expect(r.stops.count(where: \.isOwedAMeal) == 2)
-        #expect(DeliveryOutcome.exceptions.contains(.toLager))
+        #expect(DeliveryOutcome.exceptions == [.toLager])
         #expect(DeliveryOutcome.toLager.label == "Ins Lager mitnehmen")
     }
 
