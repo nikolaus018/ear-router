@@ -374,19 +374,6 @@ struct AdvancedSettingsView: View {
                     "Lädt die öffentlichen WCs der Stadt Wien und die öKlos neu. "
                         + "Einmal im Monat reicht – neue kommen selten dazu.")
             }
-
-            // Last, and one level down from Mehr: needed once in a long while.
-            Section {
-                NavigationLink {
-                    PortalExportView()
-                } label: {
-                    Label("TK-Touren holen", systemImage: "tray.and.arrow.down")
-                }
-            } header: {
-                Text("Rückblick")
-            } footer: {
-                Text("Ganze TK-Touren vergangener Tage aus dem Portal, als Datei.")
-            }
         }
         .errorAlert($error)
         .navigationTitle("Erweitert")

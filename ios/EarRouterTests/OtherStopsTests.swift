@@ -172,21 +172,4 @@ struct OtherStopsTests {
         let stops = try JSONDecoder().decode([OtherStop].self, from: Data(old.utf8))
         #expect(stops.first?.handedOver == nil && stops.first?.isManual == true)
     }
-
-    @Test func tkToursAreRecognisedWhateverTheSpelling() {
-        #expect(PortalDayExport.isTK("TK 1 DI Vormittag"))
-        #expect(PortalDayExport.isTK("tk1"))
-        #expect(PortalDayExport.isTK(" T K 2 MO"))
-        #expect(!PortalDayExport.isTK("VM 4 DI Vormittag"))
-        #expect(!PortalDayExport.isTK("TP AST 14 - 1401"))
-    }
-
-    @Test func theExportLooksBackTodayFirst() {
-        let today = Date(timeIntervalSince1970: 1_791_000_000)
-        let days = PortalDayExport.days(back: 3, from: today)
-        #expect(days.count == 3)
-        #expect(days[0] == today)
-        #expect(days[0] > days[1] && days[1] > days[2])
-        #expect(PortalDayExport.days(back: 0).isEmpty)
-    }
 }
