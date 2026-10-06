@@ -235,8 +235,11 @@ enum GourmetPortal {
         return tours
     }
 
+    /// `states` empty means no state filter at all: every delivery of the day,
+    /// done and cancelled ones included — see `allDeliveries`.
     private static func deliveries(
-        date: String, page: Int, pageSize: Int, tourID: Int, token: String
+        date: String, page: Int, pageSize: Int, tourID: Int, token: String,
+        states: [String] = openStates
     ) async throws -> DeliveryPage {
         var comps = URLComponents(
             url: base.appendingPathComponent("supplier/deliveries"), resolvingAgainstBaseURL: false)!
@@ -246,7 +249,7 @@ enum GourmetPortal {
             URLQueryItem(name: "page_size", value: String(pageSize)),
             URLQueryItem(name: "tour_id", value: String(tourID)),
         ]
-        items.append(contentsOf: openStates.map { URLQueryItem(name: "state", value: $0) })
+        items.append(contentsOf: states.map { URLQueryItem(name: "state", value: $0) })
         comps.queryItems = items
 
         var request = URLRequest(url: comps.url!)
@@ -303,7 +306,7 @@ enum GourmetPortal {
         return names[index]
     }
 
-    private static func isoDate(_ date: Date) -> String {
+    static func isoDate(_ date: Date) -> String {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Europe/Vienna") ?? .current
         let c = calendar.dateComponents([.year, .month, .day], from: date)
@@ -372,6 +375,26 @@ enum GourmetPortal {
 
         let matching = all.filter { delivery in delivery.tours.contains { $0.id == tour.id } }
         return (token, matching)
+    }
+
+    /// Every delivery on `tour` that day whatever state it is in — the whole
+    /// tour as it stood, including what is already delivered. The list a driver
+    /// works from leaves those out (`openStates`); this is for looking back at a
+    /// day, which is only meaningful with both halves of a split in it.
+    static func allDeliveries(tour: Tour, date: Date, token: String) async throws -> [Delivery] {
+        let dateString = isoDate(date)
+        var all: [Delivery] = []
+        var page = 1
+        while true {
+            try Task.checkCancellation()
+            let result = try await deliveries(
+                date: dateString, page: page, pageSize: 100, tourID: tour.id, token: token,
+                states: [])
+            all.append(contentsOf: result.items)
+            if page >= result.totalPages || result.items.isEmpty { break }
+            page += 1
+        }
+        return all.filter { delivery in delivery.tours.contains { $0.id == tour.id } }
     }
 
     /// The second half of the old `fetchTourEntries` — once the driver has
