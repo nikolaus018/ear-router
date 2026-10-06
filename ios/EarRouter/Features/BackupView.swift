@@ -230,6 +230,7 @@ struct BackupView: View {
             // The toilets' marks and notes come along either way: replaced
             // with the file's, or added to what is here.
             RestroomMarks.shared.restore(archive.restrooms, replacing: mode == .replace)
+            PaceHistory.refresh(in: context)
 
             pending = nil
             result = outcome.summary

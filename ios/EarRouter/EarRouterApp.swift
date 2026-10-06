@@ -44,6 +44,10 @@ struct EarRouterApp: App {
                     RootView()
                         .environment(focus)
                         .modelContainer(container)
+                        // What the finished tours say about the next one's
+                        // door times, before the first screen asks for an
+                        // arrival time.
+                        .task { PaceHistory.refresh(in: container.mainContext) }
                 } else {
                     StoreFailureView(error: store.failure)
                 }

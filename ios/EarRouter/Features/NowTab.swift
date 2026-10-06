@@ -374,6 +374,7 @@ struct NowTab: View {
     private func finish(_ route: Route) {
         do {
             try RouteStore.toggleStatus(route, in: context)
+            PaceHistory.refresh(in: context)
             reportRoute = route
         } catch {
             self.error = AppError.message("Die Tour konnte nicht abgeschlossen werden.")

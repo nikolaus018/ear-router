@@ -54,6 +54,9 @@ struct PreflightSheet: View {
                         Text(
                             snapshot.pace.measured
                                 ? "Gerechnet mit deinem heutigen Tempo an der Tür."
+                                : snapshot.pace.learned
+                                ? "Gerechnet mit deinem Tempo der letzten Touren — wird "
+                                    + "genauer, sobald die ersten Stopps abgehakt sind."
                                 : "Grobe Schätzung — wird genauer, sobald die ersten "
                                     + "Stopps abgehakt sind.")
                     }

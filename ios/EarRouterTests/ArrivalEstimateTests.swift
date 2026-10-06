@@ -8,18 +8,20 @@ import SwiftData
 /// Driving time is the only thing OSRM knows and it is about half of this
 /// round; the rest is parking, a staircase and two minutes with somebody who
 /// has not spoken to anybody since yesterday. So the estimate is driving plus a
-/// per-door figure, and that figure is measured off the day's own timestamps
-/// rather than assumed. These pin down both halves, and the refusals — the
-/// cases where saying nothing beats saying a number.
+/// per-door figure, counted from the last tick, and that figure is measured
+/// off the day's own timestamps and the tours before it rather than assumed.
+/// These pin down each of those, and the refusals — the cases where saying
+/// nothing beats saying a number.
 @MainActor
 struct ArrivalEstimateTests {
 
-    private func route(_ stops: [Stop]) throws -> Route {
+    private func route(_ stops: [Stop], finished: Bool = false) throws -> Route {
         let context = ModelContext(
             try ModelContainer(
                 for: Route.self, Stop.self,
                 configurations: ModelConfiguration(isStoredInMemoryOnly: true)))
         let route = Route(name: "Test")
+        if finished { route.status = .completed }
         context.insert(route)
         for (i, s) in stops.enumerated() {
             s.orderIndex = i
@@ -41,221 +43,332 @@ struct ArrivalEstimateTests {
         return s
     }
 
-    private let noon = Date(timeIntervalSince1970: 1_757_000_000)
-
-    private func minutesFromNow(_ date: Date?) -> Double? {
-        date.map { $0.timeIntervalSince(noon) / 60 }
+    private func fixed(_ kind: StopKind, minutes: Double? = 10) -> Stop {
+        let s = Stop(
+            kind: kind, kunde: "Fix", strasse: Coordinates.startAddress,
+            plz: Coordinates.startPlz, lat: Coordinates.start.lat, lon: Coordinates.start.lon)
+        s.nextLegKm = minutes == nil ? nil : 1
+        s.nextLegMin = minutes
+        return s
     }
+
+    /// With nothing learned from other tours, so every figure here is the
+    /// test's own.
+    private func snap(_ route: Route, history: PaceHistory = .none) -> RouteSnapshot {
+        RouteSnapshot(route, history: history)
+    }
+
+    private let noon = Date(timeIntervalSince1970: 1_757_000_000)
+    private func at(_ minutes: Double) -> Date { noon.addingTimeInterval(minutes * 60) }
+
+    private func minutesAfterNoon(_ date: Date?) -> Double? {
+        date.map { ($0.timeIntervalSince(noon) / 60 * 1000).rounded() / 1000 }
+    }
+
+    private let door = RouteSnapshot.Pace.assumedMinutes
+
+    // MARK: - Arrival times
 
     /// The first open door is however far the van still has to drive, plus
     /// nothing — there are no other doors in between.
     @Test func theNextDoorIsPureDrivingTime() throws {
         let a = customer("A"), b = customer("B")
-        let route = try route([a, b])
-        let snapshot = RouteSnapshot(route)
-
-        #expect(minutesFromNow(snapshot.eta(for: a, from: noon)) == 0.0)
+        let snapshot = snap(try route([a, b]))
+        #expect(minutesAfterNoon(snapshot.eta(for: a, from: noon)) == 0)
     }
 
-    /// A point the van has already passed gets none. The depot and the
-    /// warehouse carry no outcome and so are never "settled" — left to the
-    /// clamp alone they sat at the top of the list all day promising an
-    /// arrival of exactly now.
+    /// A point the van has already passed gets none. The depot carries no
+    /// outcome and so is never "settled" — left to the clamp alone it sat at
+    /// the top of the list all day promising an arrival of exactly now.
     @Test func aPointTheVanHasAlreadyPassedIsGivenNoArrivalTime() throws {
-        let depot = Stop(
-            kind: .start, kunde: "Start", strasse: Coordinates.startAddress,
-            plz: Coordinates.startPlz,
-            lat: Coordinates.start.lat, lon: Coordinates.start.lon)
-        depot.nextLegKm = 1
-        depot.nextLegMin = 10
+        let depot = fixed(.start)
         let a = customer("A"), b = customer("B")
         let route = try route([depot, a, b])
 
-        // Before setting off: the depot is where the driver is standing.
-        #expect(RouteSnapshot(route).eta(for: depot, from: noon) == nil)
-
-        // And after a delivery it is behind them, rather than promising `now`
-        // for the rest of the shift.
+        #expect(snap(route).eta(for: depot, from: noon) == nil)
         a.record(.delivered, at: noon)
-        #expect(RouteSnapshot(route).eta(for: depot, from: noon) == nil)
-        #expect(RouteSnapshot(route).eta(for: b, from: noon) != nil)
+        #expect(snap(route).eta(for: depot, from: noon) == nil)
+        #expect(snap(route).eta(for: b, from: noon) != nil)
     }
 
-    /// And every door after it pays for the ones in front: the drive, plus the
-    /// assumed four minutes at each door still to be answered.
+    /// And every door after it pays for the ones in front: the drive, plus
+    /// the assumed minutes at each door still to be answered.
     @Test func eachFurtherDoorPaysForTheStopsInFrontOfIt() throws {
         let a = customer("A"), b = customer("B"), c = customer("C")
-        let route = try route([a, b, c])
-        let snapshot = RouteSnapshot(route)
+        let snapshot = snap(try route([a, b, c]))
 
         #expect(snapshot.pace == .assumed)
-        // B: ten minutes of driving out of A, plus A's own door.
-        #expect(minutesFromNow(snapshot.eta(for: b, from: noon)) == 14.0)
-        // C: twenty minutes of driving, plus two doors.
-        #expect(minutesFromNow(snapshot.eta(for: c, from: noon)) == 28.0)
+        #expect(minutesAfterNoon(snapshot.eta(for: b, from: noon)) == 10 + door)
+        #expect(minutesAfterNoon(snapshot.eta(for: c, from: noon)) == 20 + 2 * door)
     }
 
-    /// A fixed point still ahead of the van keeps its arrival time — "when am
-    /// I at the warehouse" and "when am I back at the depot" are both real
-    /// questions, and the rule above only silences the ones already behind.
-    @Test func aFixedPointStillAheadKeepsItsArrivalTime() throws {
-        let depot = Stop(
-            kind: .start, kunde: "Start", strasse: Coordinates.startAddress,
-            plz: Coordinates.startPlz,
-            lat: Coordinates.start.lat, lon: Coordinates.start.lon)
-        depot.nextLegKm = 1
-        depot.nextLegMin = 10
-        let warehouse = Stop(
-            kind: .via, kunde: "Lager", strasse: Coordinates.viaAddress,
-            plz: Coordinates.viaPlz, lat: Coordinates.via.lat, lon: Coordinates.via.lon)
-        warehouse.nextLegKm = 1
-        warehouse.nextLegMin = 10
-        let a = customer("A")
-        let route = try route([depot, warehouse, a])
-
-        #expect(minutesFromNow(RouteSnapshot(route).eta(for: warehouse, from: noon)) == 10.0)
-    }
-
-    /// Counted from where the driver is now, not from the depot. A morning that
-    /// ran late moves every remaining estimate with it rather than staying
-    /// quietly wrong all day.
-    @Test func theEstimateIsCountedFromWhereTheDriverIsStanding() throws {
-        let a = customer("A"), b = customer("B"), c = customer("C")
-        let route = try route([a, b, c])
-        a.record(.delivered, at: noon)
-
-        let snapshot = RouteSnapshot(route)
-        // B is the next door: the drive out of A, and no doors in between.
-        #expect(minutesFromNow(snapshot.eta(for: b, from: noon)) == 10.0)
-        #expect(minutesFromNow(snapshot.eta(for: c, from: noon)) == 24.0)
-    }
-
-    /// A door already answered for has no arrival time. An estimate for a
-    /// delivery made an hour ago is noise on the row.
+    /// A door already answered for has no arrival time.
     @Test func aSettledStopIsGivenNoArrivalTime() throws {
         let a = customer("A"), b = customer("B")
         let route = try route([a, b])
         a.record(.notHome, at: noon)
-
-        #expect(RouteSnapshot(route).eta(for: a, from: noon) == nil)
+        #expect(snap(route).eta(for: a, from: noon) == nil)
     }
 
     /// A route nobody has optimized has a zero for every leg. Estimating from
-    /// that promises all thirty customers their meal at the same minute, which
-    /// is worse than promising nothing.
+    /// that promises all thirty customers their meal at the same minute.
     @Test func aRouteWithNoLegsIsGivenNoArrivalTimesAtAll() throws {
         let a = customer("A", minutes: nil), b = customer("B", minutes: nil)
         a.nextLegKm = nil
         b.nextLegKm = nil
-        let route = try route([a, b])
-        let snapshot = RouteSnapshot(route)
+        let snapshot = snap(try route([a, b]))
 
         #expect(snapshot.eta(for: a, from: noon) == nil)
         #expect(snapshot.eta(for: b, from: noon) == nil)
         #expect(snapshot.etaFinish(from: noon) == nil)
     }
 
+    // MARK: - Counted from the last tick
+
+    /// Half way along a ten-minute drive the next door is five minutes away,
+    /// not ten: the estimates stand still between two ticks instead of
+    /// sliding back a minute a minute.
+    @Test func timeSinceTheLastTickIsTimeAlreadyOnTheWay() throws {
+        let a = customer("A"), b = customer("B"), c = customer("C")
+        let route = try route([a, b, c])
+        a.record(.delivered, at: noon)
+        let snapshot = snap(route)
+
+        for now in [0.0, 4, 9] {
+            #expect(minutesAfterNoon(snapshot.eta(for: b, from: at(now))) == 10)
+            #expect(minutesAfterNoon(snapshot.eta(for: c, from: at(now))) == 20 + door)
+        }
+    }
+
+    /// Later than the plan, the driver is taken to be arriving now — never in
+    /// the past — and the doors behind move with it.
+    @Test func aLateDriverIsArrivingNow() throws {
+        let a = customer("A"), b = customer("B"), c = customer("C")
+        let route = try route([a, b, c])
+        a.record(.delivered, at: noon)
+        let snapshot = snap(route)
+
+        // At B's door, inside the time a door takes: C has not moved.
+        #expect(minutesAfterNoon(snapshot.eta(for: b, from: at(12))) == 12)
+        #expect(minutesAfterNoon(snapshot.eta(for: c, from: at(12))) == 20 + door)
+        // Half an hour behind: B now, a minute to tick it, then the drive.
+        #expect(minutesAfterNoon(snapshot.eta(for: b, from: at(40))) == 40)
+        #expect(minutesAfterNoon(snapshot.eta(for: c, from: at(40))) == 51)
+    }
+
+    /// Ticked against the driving order, the last tick is not where the van
+    /// is — so nothing is taken off the drive for it.
+    @Test func anOutOfOrderTickIsNoPosition() throws {
+        let a = customer("A"), b = customer("B"), c = customer("C")
+        let route = try route([a, b, c])
+        a.record(.delivered, at: noon)
+        c.record(.delivered, at: at(3))
+
+        #expect(minutesAfterNoon(snap(route).eta(for: b, from: at(8))) == 18)
+    }
+
+    /// Nor a tick from hours ago: a tour picked up again after a long pause
+    /// starts counting from now.
+    @Test func aTickFromHoursAgoIsNoPosition() throws {
+        let a = customer("A"), b = customer("B"), c = customer("C")
+        let route = try route([a, b, c])
+        a.record(.delivered, at: noon)
+
+        #expect(minutesAfterNoon(snap(route).eta(for: b, from: at(200))) == 210)
+        #expect(minutesAfterNoon(snap(route).eta(for: c, from: at(200))) == 220 + door)
+    }
+
+    // MARK: - Doors that are not a whole door
+
+    /// A second household at the door the van is already standing at costs
+    /// part of a door: no parking, no second walk to the Haustür.
+    @Test func aSharedDoorCostsLessThanADoorOfItsOwn() throws {
+        let a = customer("A", minutes: 0), b = customer("B"), c = customer("C")
+        let snapshot = snap(try route([a, b, c]))
+
+        #expect(minutesAfterNoon(snapshot.eta(for: b, from: noon)) == door)
+        #expect(minutesAfterNoon(snapshot.eta(for: c, from: noon))
+            == ((door + RouteSnapshot.Pace.sharedDoor * door + 10) * 1000).rounded() / 1000)
+    }
+
+    // MARK: - The Lager
+
+    /// Loading takes time too, and until the first door is answered for it is
+    /// still ahead — whether the Lager is ticked yet or not.
+    @Test func loadingAtTheLagerIsCountedUntilTheFirstDoor() throws {
+        let depot = fixed(.start), lager = fixed(.via)
+        let a = customer("A"), b = customer("B")
+        let route = try route([depot, lager, a, b])
+        let loading = RouteSnapshot.Pace.lagerMinutes
+
+        #expect(minutesAfterNoon(snap(route).eta(for: lager, from: noon)) == 10)
+        #expect(minutesAfterNoon(snap(route).eta(for: a, from: noon)) == 20 + loading)
+
+        // Ticked on arriving there: the loading and the drive follow the tick.
+        lager.record(.delivered, at: noon)
+        #expect(minutesAfterNoon(snap(route).eta(for: a, from: at(5))) == loading + 10)
+
+        // What this phone measured for it outranks the assumption.
+        let learned = PaceHistory(doorMinutes: nil, lagerMinutes: 25)
+        #expect(minutesAfterNoon(snap(route, history: learned).eta(for: a, from: at(5))) == 35)
+
+        // Once a door is answered for, the van has loaded.
+        a.record(.delivered, at: at(30))
+        #expect(minutesAfterNoon(snap(route).eta(for: b, from: at(30))) == 40)
+    }
+
     // MARK: - Pace
 
-    /// Three settled doors is the floor. Two give one interval, and one
-    /// interval is a coincidence rather than a pace.
-    @Test func twoSettledStopsAreNotYetAPace() throws {
-        let a = customer("A"), b = customer("B"), c = customer("C")
-        let route = try route([a, b, c])
-        a.record(.delivered, at: noon)
-        b.record(.delivered, at: noon.addingTimeInterval(20 * 60))
+    /// Before the first tick the figure is the assumption — or what the tours
+    /// before this one took, where the phone has driven any.
+    @Test func withoutTicksThePaceIsTheStartingFigure() throws {
+        let route = try route([customer("A"), customer("B")])
 
-        #expect(RouteSnapshot(route).pace == .assumed)
+        #expect(snap(route).pace == .assumed)
+        let learned = snap(route, history: PaceHistory(doorMinutes: 5.5, lagerMinutes: nil)).pace
+        #expect(learned.minutesPerStop == 5.5 && learned.learned && !learned.measured)
     }
 
-    /// Measured: the wall-clock time between the first and last settled door,
-    /// less the driving OSRM says lies between them, spread over the doors in
-    /// between.
-    ///
-    /// Three doors ten driving-minutes apart, settled at noon, 12:15 and 12:30:
-    /// thirty minutes elapsed, twenty of them driving, ten left over two doors.
+    /// Each pair of doors ticked one after the other is one measurement: the
+    /// time between the ticks, less the drive. Today's are blended into the
+    /// starting figure rather than replacing it.
     @Test func thePaceIsMeasuredOffTheDaysOwnTimestamps() throws {
-        let a = customer("A"), b = customer("B"), c = customer("C"), d = customer("D")
-        let route = try route([a, b, c, d])
-        a.record(.delivered, at: noon)
-        b.record(.delivered, at: noon.addingTimeInterval(15 * 60))
-        c.record(.delivered, at: noon.addingTimeInterval(30 * 60))
-
-        let pace = RouteSnapshot(route).pace
-        #expect(pace.measured)
-        #expect(pace.minutesPerStop == 5)
-    }
-
-    /// An abbestellt ticked in the yard, when the office rang, before the van
-    /// had moved. Counted as a door it moved the start of the clock back to
-    /// the yard: four deliveries two minutes apart at the door measured as
-    /// twelve, and every arrival after them slid by hours.
-    @Test func anAbbestelltTickedInTheYardDoesNotSkewThePace() throws {
-        var stops: [Stop] = []
-        for i in 1...20 { stops.append(customer("K\(i)", minutes: 4)) }
+        let stops = (0..<5).map { customer("K\($0)") }
         let route = try route(stops)
-        stops[19].record(.cancelled, at: noon)
-        stops[0].record(.delivered, at: noon.addingTimeInterval(30 * 60))
-        stops[1].record(.delivered, at: noon.addingTimeInterval(36 * 60))
-        stops[2].record(.delivered, at: noon.addingTimeInterval(42 * 60))
-        stops[3].record(.delivered, at: noon.addingTimeInterval(48 * 60))
-
-        // 18 minutes between the first and last delivery, 12 of them driving,
-        // over three doors.
-        let pace = RouteSnapshot(route).pace
-        #expect(pace.measured)
-        #expect(pace.minutesPerStop == 2)
-    }
-
-    /// A driver catching up on three ticks at a red light would otherwise have
-    /// the app promise the whole round by half past ten.
-    @Test func animplausiblyFastMeasurementIsRefused() throws {
-        let a = customer("A"), b = customer("B"), c = customer("C")
-        let route = try route([a, b, c])
-        a.record(.delivered, at: noon)
-        b.record(.delivered, at: noon.addingTimeInterval(2))
-        c.record(.delivered, at: noon.addingTimeInterval(4))
-
-        #expect(RouteSnapshot(route).pace == .assumed)
-    }
-
-    /// A tour driven before stops carried a time has none to measure from, and
-    /// falls back rather than refusing to estimate at all.
-    @Test func stopsWithNoRecordedTimeFallBackToTheAssumption() throws {
-        let a = customer("A"), b = customer("B"), c = customer("C")
-        let route = try route([a, b, c])
-        for s in [a, b, c] {
-            s.delivered = true
-            s.settledAt = nil
+        for (i, stop) in stops.prefix(4).enumerated() {
+            stop.record(.delivered, at: at(Double(i) * 15))
         }
+        let snapshot = snap(route)
 
-        #expect(RouteSnapshot(route).pace == .assumed)
+        #expect(snapshot.doorSamples == [5, 5, 5])
+        #expect(snapshot.pace.measured)
+        let weight = RouteSnapshot.Pace.priorWeight
+        #expect(abs(snapshot.pace.minutesPerStop - (15 + weight * door) / (3 + weight)) < 1e-9)
     }
 
-    /// The measured pace is what the remaining estimates are then built on —
-    /// the point of measuring it at all.
-    @Test func aMeasuredPaceFeedsTheRemainingArrivals() throws {
-        let a = customer("A"), b = customer("B"), c = customer("C"), d = customer("D")
-        let route = try route([a, b, c, d])
+    /// A break, a tick made the next morning and three ticks caught up at a
+    /// red light are none of them a door time. Measured first tick to last,
+    /// one of them was spread over every door of the day.
+    @Test func breaksAndLateTicksAreNotDoorTimes() throws {
+        let stops = (0..<6).map { customer("K\($0)") }
+        let route = try route(stops)
+        let times: [Double] = [0, 16, 76, 76.2, 92, 1500]
+        for (stop, time) in zip(stops, times) { stop.record(.delivered, at: at(time)) }
+
+        // 0→16 and 76.2→92; the hour's break, the double tick and the next
+        // day are left out.
+        let samples = snap(route).doorSamples
+        #expect(samples.count == 2)
+        #expect(abs(samples[0] - 6) < 1e-9 && abs(samples[1] - 5.8) < 1e-9)
+    }
+
+    /// One slow door counts, but only for so much.
+    @Test func oneSlowDoorIsCapped() throws {
+        let a = customer("A"), b = customer("B"), c = customer("C")
+        let route = try route([a, b, c])
         a.record(.delivered, at: noon)
-        b.record(.delivered, at: noon.addingTimeInterval(15 * 60))
-        c.record(.delivered, at: noon.addingTimeInterval(30 * 60))
+        b.record(.delivered, at: at(44))
+        let pace = snap(route).pace
+        let weight = RouteSnapshot.Pace.priorWeight
 
-        let snapshot = RouteSnapshot(route)
-        // Standing at C, one leg to D and no doors in between.
-        #expect(minutesFromNow(snapshot.eta(for: d, from: noon)) == 10.0)
-        // And the shift ends after the drive still ahead — the leg into D and
-        // the leg out of it — plus D's own five-minute door.
-        #expect(minutesFromNow(snapshot.etaFinish(from: noon)) == 25.0)
+        #expect(snap(route).doorSamples == [34])
+        #expect(abs(pace.minutesPerStop
+            - (RouteSnapshot.Pace.cap + weight * door) / (1 + weight)) < 1e-9)
     }
 
-    /// Nothing left to deliver means no finishing time to promise — the tour is
-    /// over, and the drive home is reported as kilometres elsewhere.
+    /// An abbestellt door, or a meal for the Lager, is ticked whenever the
+    /// office rings — in the yard at half past seven, as often as not.
+    @Test func aDoorNobodyWentToIsNotInThePace() throws {
+        let stops = (0..<4).map { customer("K\($0)") }
+        let route = try route(stops)
+        stops[3].record(.toLager, at: at(-20))
+        stops[0].record(.delivered, at: noon)
+        stops[1].record(.delivered, at: at(15))
+
+        #expect(snap(route).doorSamples == [5])
+    }
+
+    /// Stops ticked before a time was kept with the tick measure nothing.
+    @Test func stopsWithNoRecordedTimeMeasureNothing() throws {
+        let stops = (0..<4).map { customer("K\($0)") }
+        let route = try route(stops)
+        for stop in stops.prefix(3) {
+            stop.record(.delivered)
+            stop.settledAt = nil
+        }
+        #expect(snap(route).doorSamples.isEmpty)
+        #expect(snap(route).pace == .assumed)
+    }
+
+    // MARK: - The end of the shift
+
+    /// The last point the tour drives to: every leg and every door.
+    @Test func theFinishIsEveryLegAndEveryDoor() throws {
+        let a = customer("A"), b = customer("B")
+        let home = fixed(.end, minutes: nil)
+        let route = try route([a, b, home])
+
+        #expect(minutesAfterNoon(snap(route).etaFinish(from: noon)) == 20 + 2 * door)
+
+        // After A, counted from its tick: the drive, B's door, the drive home.
+        a.record(.delivered, at: noon)
+        #expect(minutesAfterNoon(snap(route).etaFinish(from: at(6))) == 20 + door)
+    }
+
     @Test func aFinishedTourIsGivenNoFinishingTime() throws {
-        let a = customer("A")
-        let route = try route([a])
+        let a = customer("A"), b = customer("B")
+        let route = try route([a, b])
         a.record(.delivered, at: noon)
+        b.record(.delivered, at: at(15))
+        #expect(snap(route).etaFinish(from: at(15)) == nil)
+    }
 
-        #expect(RouteSnapshot(route).etaFinish(from: noon) == nil)
+    // MARK: - What the tours before say
+
+    /// A finished tour's ticks become the next one's starting figure.
+    @Test func finishedToursTeachTheDoorTime() throws {
+        let stops = (0..<12).map { customer("K\($0)") }
+        let route = try route(stops, finished: true)
+        for (i, stop) in stops.enumerated() { stop.record(.delivered, at: at(Double(i) * 14)) }
+
+        let learned = PaceHistory.learn(from: [route])
+        #expect(learned.doorMinutes == 4)
+    }
+
+    /// Too few ticks is no history, and a tour still being driven is its own
+    /// measurement, not history.
+    @Test func aThinOrUnfinishedTourTeachesNothing() throws {
+        let few = (0..<5).map { customer("K\($0)") }
+        let thin = try route(few, finished: true)
+        for (i, stop) in few.enumerated() { stop.record(.delivered, at: at(Double(i) * 14)) }
+        #expect(PaceHistory.learn(from: [thin]) == .none)
+
+        let stops = (0..<12).map { customer("K\($0)") }
+        let driving = try route(stops)
+        for (i, stop) in stops.enumerated() { stop.record(.delivered, at: at(Double(i) * 14)) }
+        #expect(PaceHistory.learn(from: [driving]) == .none)
+    }
+
+    /// The loading is what is left between the Lager's tick and the first
+    /// door's, once the drive and that door are taken off — and a Lager
+    /// ticked by the first door itself measures nothing.
+    @Test func finishedToursTeachTheLoadingTime() throws {
+        func tour(lagerAt: Double?) throws -> Route {
+            let lager = fixed(.via)
+            let stops = (0..<12).map { customer("K\($0)") }
+            let route = try route([lager] + stops, finished: true)
+            // First door 34 minutes in: 10 of driving, 4 at the door, 20 loading.
+            for (i, stop) in stops.enumerated() {
+                stop.record(.delivered, at: at(34 + Double(i) * 14))
+            }
+            lager.record(.delivered, at: at(lagerAt ?? 34))
+            return route
+        }
+        let learned = PaceHistory.learn(from: [try tour(lagerAt: 0), try tour(lagerAt: 0)])
+        #expect(learned.doorMinutes == 4)
+        #expect(learned.lagerMinutes == 20)
+
+        let auto = PaceHistory.learn(from: [try tour(lagerAt: nil), try tour(lagerAt: nil)])
+        #expect(auto.lagerMinutes == nil)
     }
 }

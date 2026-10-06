@@ -382,6 +382,7 @@ struct TourView: View {
     private func finish() {
         save("Die Tour konnte nicht abgeschlossen werden.") {
             try RouteStore.toggleStatus(route, in: context)
+            PaceHistory.refresh(in: context)
         }
         if error == nil { showingReport = true }
     }
@@ -470,6 +471,7 @@ struct TourView: View {
                     Button("Wieder aktivieren", systemImage: "arrow.uturn.backward") {
                         save("Der Status der Tour konnte nicht geändert werden.") {
                             try RouteStore.toggleStatus(route, in: context)
+                            PaceHistory.refresh(in: context)
                         }
                     }
                 }
