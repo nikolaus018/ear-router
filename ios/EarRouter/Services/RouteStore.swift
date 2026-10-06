@@ -400,12 +400,16 @@ enum RouteStore {
         return moved
     }
 
-    static func deleteStop(_ stop: Stop, in context: ModelContext) async throws {
+    /// `reroute: false` returns as soon as the stop is gone, leaving the route
+    /// flagged for its caller to route — as `addStop` does.
+    static func deleteStop(
+        _ stop: Stop, reroute: Bool = true, in context: ModelContext
+    ) async throws {
         let route = stop.route
         context.delete(stop)
         route?.markRoutingStale()
         try context.save()
-        if let route {
+        if let route, reroute {
             await RouteOptimizer.optimizeBestEffort(route, in: context)
         }
     }

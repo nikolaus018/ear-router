@@ -155,4 +155,21 @@ struct OtherStopsTests {
         let entry = OtherStops.plainEntry(for: given)
         #expect(entry.paket == "Rindsgulasch, Spätzle" && entry.paketCount == 2)
     }
+
+    @Test func aHandedOverStopSaysSoAndATypedOneDoesNot() throws {
+        let route = UUID()
+        defer { ManualOtherStops.forget(route) }
+        let typed = ManualOtherStops.add(
+            name: "", address: "Hörlgasse 4", plz: "1090", latitude: nil, longitude: nil, to: route)
+        let given = ManualOtherStops.add(
+            name: "Fam. Gruber", address: "Gentzgasse 129/1/23", plz: "1180", latitude: nil,
+            longitude: nil, handedOver: true, to: route)
+        #expect(typed.handedOver == nil && given.handedOver == true)
+        #expect(ManualOtherStops.load(for: route) == [typed, given])
+
+        // One kept before the mark existed still reads, as a typed one.
+        let old = #"[{"id":1000000000,"name":"Huber","address":"Raxstraße 30","plz":"1100"}]"#
+        let stops = try JSONDecoder().decode([OtherStop].self, from: Data(old.utf8))
+        #expect(stops.first?.handedOver == nil && stops.first?.isManual == true)
+    }
 }

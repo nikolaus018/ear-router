@@ -20,6 +20,8 @@ struct OtherStop: Identifiable, Equatable, Codable, Sendable {
     /// so taking it back does not lose its meals. The portal's list has none.
     var paket: String? = nil
     var paketCount: Int? = nil
+    /// One of mine that was handed over, rather than typed in on that side.
+    var handedOver: Bool? = nil
 
     var coordinate: CLLocationCoordinate2D? {
         guard let latitude, let longitude else { return nil }
@@ -249,7 +251,7 @@ enum ManualOtherStops {
     static func add(
         name: String, address: String, plz: String, latitude: Double?, longitude: Double?,
         notiz: String? = nil, telefon: String? = nil, paket: String? = nil,
-        paketCount: Int? = nil, to routeID: UUID
+        paketCount: Int? = nil, handedOver: Bool = false, to routeID: UUID
     ) -> OtherStop {
         var stops = load(for: routeID)
         let id = (stops.map(\.id).max() ?? OtherStops.manualBase - 1) + 1
@@ -258,7 +260,7 @@ enum ManualOtherStops {
             address: address.trimmed, plz: plz.trimmed,
             notiz: notiz?.trimmed.nilIfEmpty, telefon: telefon?.trimmed.nilIfEmpty,
             latitude: latitude, longitude: longitude, paket: paket?.trimmed.nilIfEmpty,
-            paketCount: paketCount)
+            paketCount: paketCount, handedOver: handedOver ? true : nil)
         stops.append(stop)
         save(stops, for: routeID)
         return stop

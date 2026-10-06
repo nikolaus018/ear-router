@@ -55,9 +55,8 @@ struct MapTab: View {
     @State private var draftName = ""
     @State private var draftAddress = ""
     @State private var draftPLZ = ""
-    /// The stop of mine being handed to the other driver, while the question is
-    /// up.
-    @State private var handingOver: Stop?
+    /// True while a typed-in stop of the other driver's is being looked up.
+    @State private var placingOther = false
     /// True while a stop of the other driver's is being taken over — the
     /// portal's detail call and the address lookup are both a round trip.
     @State private var takingOver = false
@@ -288,12 +287,13 @@ struct MapTab: View {
                                     }
                                 }
                             }
+                            // The form opens with whatever a failed attempt
+                            // left in it — an address that was not found is
+                            // one to correct, not to type again.
                             Button("Stopp der anderen hinzufügen …", systemImage: "plus") {
-                                draftName = ""
-                                draftAddress = ""
-                                draftPLZ = ""
                                 addingOther = true
                             }
+                            .disabled(placingOther)
                         }
                     }
                     if routes.count > 1 {
@@ -352,9 +352,11 @@ struct MapTab: View {
                         },
                         // Only while the other driver's stops are up: handing a
                         // stop over is moving it from one picture to the other,
-                        // and there is nothing to move it to otherwise.
-                        onHandOver: othersShown && stop.kind == .customer
-                            ? { handingOver = stop } : nil,
+                        // and there is nothing to move it to otherwise. And
+                        // only a door still open — one already answered for is
+                        // this tour's record, not something left to hand on.
+                        onHandOver: othersShown && stop.isOpenDelivery
+                            ? { handOver(stop) } : nil,
                         // Zero is not a measurement. `onGeometryChange` reports
                         // the card's height as it is torn down too, and writing
                         // that back left the *next* pin's card opening as a
@@ -431,28 +433,13 @@ struct MapTab: View {
         }
         .stockwerkPrompt(for: $stockwerkStop)
         .errorAlert($error)
-        .confirmationDialog(
-            "An anderen übergeben?",
-            isPresented: Binding(
-                get: { handingOver != nil }, set: { if !$0 { handingOver = nil } }),
-            titleVisibility: .visible,
-            presenting: handingOver
-        ) { stop in
-            Button("An anderen übergeben", role: .destructive) {
-                handingOver = nil
-                handOver(stop)
-            }
-            Button("Abbrechen", role: .cancel) { handingOver = nil }
-        } message: { stop in
-            Text("„\(stop.kunde ?? "Dieser Stopp")“ wird aus deiner Tour genommen und zählt bei den anderen.")
-        }
         .alert("Stopp der anderen", isPresented: $addingOther) {
             TextField("Name (optional)", text: $draftName)
             TextField("Adresse, z. B. Hörlgasse 4", text: $draftAddress)
             TextField("PLZ", text: $draftPLZ)
                 .keyboardType(.numberPad)
             Button("Hinzufügen") { addOtherStop() }
-            Button("Abbrechen", role: .cancel) {}
+            Button("Abbrechen", role: .cancel) { clearOtherDraft() }
         } message: {
             Text("Für eine Lieferung, die nicht im Portal steht, etwa eine Nachlieferung. Sie zählt bei den anderen mit.")
         }
@@ -488,8 +475,10 @@ struct MapTab: View {
     /// and the driver is told what is missing — the hand-over is the point, and
     /// a bad signal in a stairwell is not a reason to refuse it. The stop is
     /// added the ordinary way, so its address goes through the geocoder and the
-    /// register's entrance lookup like any other, and the route is optimised
-    /// again. It leaves the other side only once it is safely on this one.
+    /// register's entrance lookup like any other. It leaves the other side as
+    /// soon as it is safely on this one, and the route is planned again behind
+    /// that — waiting for OSRM first left the stop on the map twice, in both
+    /// colours, for as long as the answer took.
     private func takeOver(_ pin: OtherPin) {
         guard let route, !takingOver else { return }
         let routeID = route.id
@@ -503,8 +492,12 @@ struct MapTab: View {
             if !stop.isManual {
                 if let credentials = GourmetCredentialsStore.load() {
                     do {
-                        entry = OtherStops.clamped(
+                        var detail = OtherStops.clamped(
                             try await GourmetPortal.entry(forDelivery: stop.id, credentials: credentials))
+                        // The card's own name ("Ohne Namen") rather than a
+                        // stop with none at all.
+                        if detail.kunde.isEmpty { detail.kunde = entry.kunde }
+                        entry = detail
                     } catch is CancellationError {
                         return
                     } catch {
@@ -517,11 +510,13 @@ struct MapTab: View {
             do {
                 let added = try await RouteStore.addStop(
                     to: route, kunde: entry.kunde, strasse: entry.strasse, plz: entry.plz,
-                    paket: entry.paket, notiz: entry.notiz, telefon: entry.telefon, in: context)
+                    paket: entry.paket, notiz: entry.notiz, telefon: entry.telefon,
+                    reroute: false, in: context)
                 if let count = entry.paketCount {
                     added.paketCount = count
                     try? context.save()
                 }
+                RouteStore.rerouteBehind(route, in: context)
             } catch let e as AppError {
                 error = e
                 return
@@ -530,8 +525,10 @@ struct MapTab: View {
                 return
             }
             if stop.isManual { ManualOtherStops.remove(id: stop.id, from: routeID) }
-            others.removeAll { $0.id == pin.id }
-            othersTotal = max(0, othersTotal - 1)
+            if othersRouteID == routeID {
+                others.removeAll { $0.id == pin.id }
+                othersTotal = max(0, othersTotal - 1)
+            }
             if missingPaket {
                 error = AppError.message(
                     "„\(stop.name)“ ist jetzt bei dir, aber das Paket konnte nicht geladen werden. "
@@ -556,17 +553,24 @@ struct MapTab: View {
         let lat = placed ? stop.lat : nil, lon = placed ? stop.lon : nil
         selectedStopID = nil
         Task {
+            // Off this tour and onto theirs in one go, with the route planned
+            // again behind it: waiting for OSRM in between left the stop on
+            // neither side for as long as the answer took.
             do {
-                try await RouteStore.deleteStop(stop, in: context)
+                try await RouteStore.deleteStop(stop, reroute: false, in: context)
             } catch {
                 self.error = AppError.message("Der Stopp konnte nicht übergeben werden.")
                 return
             }
             let given = ManualOtherStops.add(
                 name: name, address: address, plz: plz, latitude: lat, longitude: lon,
-                notiz: notiz, telefon: telefon, paket: paket, paketCount: paketCount, to: routeID)
-            othersTotal += 1
-            if routeID == self.route?.id, let pin = OtherPin(given) { others.append(pin) }
+                notiz: notiz, telefon: telefon, paket: paket, paketCount: paketCount,
+                handedOver: true, to: routeID)
+            if othersRouteID == routeID, routeID == self.route?.id {
+                othersTotal += 1
+                if let pin = OtherPin(given) { others.append(pin) }
+            }
+            RouteStore.rerouteBehind(route, in: context)
         }
     }
 
@@ -580,13 +584,17 @@ struct MapTab: View {
             error = AppError.message("Adresse und PLZ werden gebraucht.")
             return
         }
+        placingOther = true
         Task {
+            defer { placingOther = false }
             do {
                 let hit = try await Geocoder.shared.geocode(strasse: address, plz: plz.trimmed)
                 let stop = ManualOtherStops.add(
                     name: name, address: address, plz: plz, latitude: hit.lat, longitude: hit.lon,
                     to: routeID)
-                guard routeID == route?.id, let pin = OtherPin(stop) else { return }
+                clearOtherDraft()
+                guard othersRouteID == routeID, routeID == route?.id, let pin = OtherPin(stop)
+                else { return }
                 others.append(pin)
                 othersTotal += 1
             } catch let e as AppError {
@@ -595,6 +603,12 @@ struct MapTab: View {
                 self.error = AppError.message("Die Adresse wurde nicht gefunden.")
             }
         }
+    }
+
+    private func clearOtherDraft() {
+        draftName = ""
+        draftAddress = ""
+        draftPLZ = ""
     }
 
     /// Fetches the rest of the route's portal tour and puts it on the map.
@@ -849,6 +863,8 @@ struct MapTab: View {
                 MapNotice(text: "Stopp wird übernommen …", busy: true)
             } else if loadingOthers {
                 MapNotice(text: "Stopps der anderen werden geladen …", busy: true)
+            } else if placingOther {
+                MapNotice(text: "Adresse wird gesucht …", busy: true)
             } else if buildingLine && line.isEmpty {
                 MapNotice(text: "Route wird gezeichnet …", busy: true)
             } else if LocationAuthorization.shared.isDenied {
@@ -1550,7 +1566,9 @@ private struct OtherStopPreviewSheet: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         Text(
-                            stop.isManual
+                            stop.handedOver == true
+                                ? "Von dir an die anderen übergeben"
+                                : stop.isManual
                                 ? "Von dir eingetragen, nicht aus dem Portal"
                                 : "Gehört zur Tour, aber nicht zu deiner Route")
                             .font(.footnote)
@@ -1843,6 +1861,10 @@ struct StopPreviewSheet: View {
     /// because re-opening a door nobody answered leaves that flag false either
     /// way — gave no feedback at all for the one press hardest to be sure of.
     @State private var ticks = 0
+    /// The hand-over question. Asked from this card rather than from the map
+    /// under it: the card is a sheet, and a dialog belonging to the screen
+    /// beneath a sheet is not shown over it.
+    @State private var confirmingHandOver = false
 
     private var isCustomer: Bool { stop.kind == .customer }
 
@@ -2011,11 +2033,20 @@ struct StopPreviewSheet: View {
                 .buttonStyle(.bordered)
             }
             if let onHandOver, isCustomer {
-                Button(action: onHandOver) {
+                Button { confirmingHandOver = true } label: {
                     WideButtonLabel("An anderen übergeben", systemImage: "arrowshape.turn.up.right")
                 }
                 .buttonStyle(.bordered)
                 .tint(Color.otherDriver)
+                .confirmationDialog(
+                    "An anderen übergeben?", isPresented: $confirmingHandOver,
+                    titleVisibility: .visible
+                ) {
+                    Button("An anderen übergeben", role: .destructive, action: onHandOver)
+                    Button("Abbrechen", role: .cancel) {}
+                } message: {
+                    Text("„\(stop.kunde ?? "Dieser Stopp")“ wird aus deiner Tour genommen und zählt bei den anderen.")
+                }
             }
         }
         .controlSize(.large)
