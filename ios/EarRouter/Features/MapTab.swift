@@ -47,6 +47,11 @@ struct MapTab: View {
     /// How many stops the other driver has, placed or not — `others` holds only
     /// the ones that could be put on the map.
     @State private var othersTotal = 0
+    /// The "Stopp der anderen hinzufügen" form, and what has been typed in it.
+    @State private var addingOther = false
+    @State private var draftName = ""
+    @State private var draftAddress = ""
+    @State private var draftPLZ = ""
     /// The route `others` were fetched for. A switch to another tour drops them.
     @State private var othersRouteID: UUID?
     @State private var loadingOthers = false
@@ -262,6 +267,14 @@ struct MapTab: View {
                                 ? "Stopps der anderen (\(othersTotal))"
                                 : "Stopps der anderen",
                             systemImage: "person.2", isOn: $showOthers)
+                        if othersShown {
+                            Button("Stopp der anderen hinzufügen …", systemImage: "plus") {
+                                draftName = ""
+                                draftAddress = ""
+                                draftPLZ = ""
+                                addingOther = true
+                            }
+                        }
                     }
                     if routes.count > 1 {
                         Divider()
@@ -372,6 +385,15 @@ struct MapTab: View {
                         openURL(url)
                     }
                 },
+                onRemove: pin.stop.isManual
+                    ? {
+                        if let routeID = route?.id {
+                            ManualOtherStops.remove(id: pin.stop.id, from: routeID)
+                        }
+                        others.removeAll { $0.id == pin.id }
+                        othersTotal = max(0, othersTotal - 1)
+                        selectedStopID = nil
+                    } : nil,
                 onMeasure: { if $0 > 0 { otherHeight = $0 } })
             .presentationDetents([.height(min(otherHeight, Self.maxPreviewHeight))])
             .presentationBackground(.regularMaterial)
@@ -379,6 +401,16 @@ struct MapTab: View {
         }
         .stockwerkPrompt(for: $stockwerkStop)
         .errorAlert($error)
+        .alert("Stopp der anderen", isPresented: $addingOther) {
+            TextField("Name (optional)", text: $draftName)
+            TextField("Adresse, z. B. Hörlgasse 4", text: $draftAddress)
+            TextField("PLZ", text: $draftPLZ)
+                .keyboardType(.numberPad)
+            Button("Hinzufügen") { addOtherStop() }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Für eine Lieferung, die nicht im Portal steht, etwa eine Nachlieferung. Sie zählt bei den anderen mit.")
+        }
         .onAppear { hasPortalLogin = GourmetCredentialsStore.load() != nil }
         .onChange(of: showOthers) { _, on in
             if on {
@@ -398,6 +430,33 @@ struct MapTab: View {
             others = []
             othersTotal = 0
             othersRouteID = nil
+        }
+    }
+
+    /// Puts a stop the driver typed in on the other driver's side. Placed through
+    /// the same geocoder as every address; one it cannot place is not added, as a
+    /// stop with no pin and no way to check it would only be a number.
+    private func addOtherStop() {
+        guard let routeID = route?.id else { return }
+        let name = draftName, address = draftAddress, plz = draftPLZ
+        guard !address.trimmed.isEmpty, !plz.trimmed.isEmpty else {
+            error = AppError.message("Adresse und PLZ werden gebraucht.")
+            return
+        }
+        Task {
+            do {
+                let hit = try await Geocoder.shared.geocode(strasse: address, plz: plz.trimmed)
+                let stop = ManualOtherStops.add(
+                    name: name, address: address, plz: plz, latitude: hit.lat, longitude: hit.lon,
+                    to: routeID)
+                guard routeID == route?.id, let pin = OtherPin(stop) else { return }
+                others.append(pin)
+                othersTotal += 1
+            } catch let e as AppError {
+                error = e
+            } catch {
+                self.error = AppError.message("Die Adresse wurde nicht gefunden.")
+            }
         }
     }
 
@@ -431,8 +490,9 @@ struct MapTab: View {
                             + "die Stopps der anderen sind von dort.")
                     return
                 }
-                let loaded = try await OtherStops.load(link: link, mine: mine, credentials: credentials)
+                let fetched = try await OtherStops.load(link: link, mine: mine, credentials: credentials)
                 guard !Task.isCancelled else { return }
+                let loaded = fetched + ManualOtherStops.load(for: routeID)
                 others = loaded.compactMap(OtherPin.init)
                 othersTotal = loaded.count
                 othersRouteID = routeID
@@ -1326,6 +1386,8 @@ private struct OtherPin: Identifiable, Equatable {
 private struct OtherStopPreviewSheet: View {
     let stop: OtherStop
     let onNavigate: () -> Void
+    /// Only for a stop the driver added by hand.
+    let onRemove: (() -> Void)?
     let onMeasure: (CGFloat) -> Void
 
     var body: some View {
@@ -1344,7 +1406,10 @@ private struct OtherStopPreviewSheet: View {
                         Text("\(stop.address), \(stop.plz)")
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text("Gehört zur Tour, aber nicht zu deiner Route")
+                        Text(
+                            stop.isManual
+                                ? "Von dir eingetragen, nicht aus dem Portal"
+                                : "Gehört zur Tour, aber nicht zu deiner Route")
                             .font(.footnote)
                             .foregroundStyle(Color.otherDriver)
                             .padding(.top, 2)
@@ -1364,8 +1429,14 @@ private struct OtherStopPreviewSheet: View {
                     WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                if let onRemove {
+                    Button(role: .destructive, action: onRemove) {
+                        WideButtonLabel("Entfernen", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
+            .controlSize(.large)
             .padding(.horizontal)
             .padding(.top, 22)
             .frame(maxWidth: .infinity, alignment: .leading)

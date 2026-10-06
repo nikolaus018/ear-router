@@ -4,7 +4,7 @@ import CoreLocation
 /// A stop on the same portal tour that is not on this route — the other
 /// driver's share of a tour that is split between two vans, for the map to show
 /// so the split can be talked through with the map in front of both.
-struct OtherStop: Identifiable, Equatable, Sendable {
+struct OtherStop: Identifiable, Equatable, Codable, Sendable {
     /// The portal's delivery id.
     let id: Int
     let name: String
@@ -21,9 +21,17 @@ struct OtherStop: Identifiable, Equatable, Sendable {
         guard let latitude, let longitude else { return nil }
         return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
+
+    /// Typed in by the driver — a Nachlieferung or anything else the portal's
+    /// list does not have — rather than fetched from it.
+    var isManual: Bool { id >= OtherStops.manualBase }
 }
 
 enum OtherStops {
+
+    /// Where the ids of hand-added stops start, far above any portal delivery
+    /// id, so the two can share one list without meeting.
+    static let manualBase = 1_000_000_000
 
     /// What a route already has, in the form two lists are compared in — the
     /// same folding (`AddressText.matchKey`) re-import matching uses, so "Fam.
@@ -171,5 +179,51 @@ enum PortalPlacement {
                 id: input.id, name: input.name.isEmpty ? "Ohne Namen" : input.name,
                 address: input.address, plz: input.plz, coordinate: placed[input.id])
         }
+    }
+}
+
+/// Stops the driver added to the other driver's side by hand: deliveries the
+/// portal's list does not carry, like a Nachlieferung that one of the two has
+/// to make anyway. Kept per route, beside `PortalTourLink`, and let go of with
+/// the route.
+enum ManualOtherStops {
+    private static func key(_ routeID: UUID) -> String { "portal.extra.\(routeID.uuidString)" }
+
+    static func load(for routeID: UUID) -> [OtherStop] {
+        guard let data = UserDefaults.standard.data(forKey: key(routeID)) else { return [] }
+        return (try? JSONDecoder().decode([OtherStop].self, from: data)) ?? []
+    }
+
+    private static func save(_ stops: [OtherStop], for routeID: UUID) {
+        if stops.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key(routeID))
+        } else if let data = try? JSONEncoder().encode(stops) {
+            UserDefaults.standard.set(data, forKey: key(routeID))
+        }
+    }
+
+    /// Appends one, with an id of its own.
+    @discardableResult
+    static func add(
+        name: String, address: String, plz: String, latitude: Double?, longitude: Double?,
+        to routeID: UUID
+    ) -> OtherStop {
+        var stops = load(for: routeID)
+        let id = (stops.map(\.id).max() ?? OtherStops.manualBase - 1) + 1
+        let stop = OtherStop(
+            id: id, name: name.trimmed.isEmpty ? "Nachlieferung" : name.trimmed,
+            address: address.trimmed, plz: plz.trimmed, notiz: nil, telefon: nil,
+            latitude: latitude, longitude: longitude)
+        stops.append(stop)
+        save(stops, for: routeID)
+        return stop
+    }
+
+    static func remove(id: Int, from routeID: UUID) {
+        save(load(for: routeID).filter { $0.id != id }, for: routeID)
+    }
+
+    static func forget(_ routeID: UUID) {
+        UserDefaults.standard.removeObject(forKey: key(routeID))
     }
 }

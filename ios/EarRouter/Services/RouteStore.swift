@@ -156,6 +156,7 @@ enum RouteStore {
         // leaves its ticks behind in the app's preferences for good.
         LadelisteState.forget(id)
         PortalTourLink.forget(id)
+        ManualOtherStops.forget(id)
     }
 
     /// Deletes by id rather than by object, because the caller is a list's
@@ -173,6 +174,7 @@ enum RouteStore {
         for id in wanted {
             LadelisteState.forget(id)
             PortalTourLink.forget(id)
+            ManualOtherStops.forget(id)
         }
     }
 

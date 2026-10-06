@@ -75,4 +75,22 @@ struct OtherStopsTests {
         PortalTourLink.forget(id)
         #expect(PortalTourLink.load(for: id) == nil)
     }
+
+    @Test func handAddedStopsKeepTheirOwnIdsAndCanBeRemoved() {
+        let route = UUID()
+        defer { ManualOtherStops.forget(route) }
+        #expect(ManualOtherStops.load(for: route).isEmpty)
+        let a = ManualOtherStops.add(
+            name: "", address: " Hörlgasse 4 ", plz: "1090", latitude: 48.2, longitude: 16.36, to: route)
+        let b = ManualOtherStops.add(
+            name: "Fam. Gruber", address: "Gentzgasse 129", plz: "1180", latitude: nil, longitude: nil,
+            to: route)
+        #expect(a.isManual && b.isManual && a.id != b.id)
+        #expect(a.name == "Nachlieferung" && a.address == "Hörlgasse 4")
+        #expect(ManualOtherStops.load(for: route) == [a, b])
+        ManualOtherStops.remove(id: a.id, from: route)
+        #expect(ManualOtherStops.load(for: route) == [b])
+        ManualOtherStops.remove(id: b.id, from: route)
+        #expect(ManualOtherStops.load(for: route).isEmpty)
+    }
 }
