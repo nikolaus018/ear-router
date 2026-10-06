@@ -269,6 +269,16 @@ enum GourmetPortal {
         return delivery
     }
 
+    /// One delivery as an import entry, with its Paket — a login and a detail
+    /// call. For taking a single stop over from the other driver on the map,
+    /// where the list data alone would leave it without its meals.
+    static func entry(
+        forDelivery id: Int, credentials: Credentials
+    ) async throws -> CustomerJSON {
+        let token = try await login(credentials)
+        return customerJSON(from: try await deliveryDetail(id: id, token: token))
+    }
+
     // MARK: - Tour selection
 
     /// Which of a tour's weekday fields decide whether it runs on `date` — a

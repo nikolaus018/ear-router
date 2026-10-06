@@ -58,6 +58,9 @@ struct MapTab: View {
     /// The stop of mine being handed to the other driver, while the question is
     /// up.
     @State private var handingOver: Stop?
+    /// True while a stop of the other driver's is being taken over — the
+    /// portal's detail call and the address lookup are both a round trip.
+    @State private var takingOver = false
     /// The route `others` were fetched for. A switch to another tour drops them.
     @State private var othersRouteID: UUID?
     @State private var loadingOthers = false
@@ -407,6 +410,7 @@ struct MapTab: View {
                         openURL(url)
                     }
                 },
+                onTakeOver: { takeOver(pin) },
                 onRemove: {
                     if let routeID = route?.id {
                         if pin.stop.isManual {
@@ -475,6 +479,67 @@ struct MapTab: View {
         }
     }
 
+    /// Moves one of the other driver's stops onto this route: the way back from
+    /// `handOver`.
+    ///
+    /// A portal stop is fetched with its Paket first, since the list the map
+    /// shows carries no meals and a stop without them is a door with no idea
+    /// what to bring to it. If that call fails the stop is still taken, plainly,
+    /// and the driver is told what is missing — the hand-over is the point, and
+    /// a bad signal in a stairwell is not a reason to refuse it. The stop is
+    /// added the ordinary way, so its address goes through the geocoder and the
+    /// register's entrance lookup like any other, and the route is optimised
+    /// again. It leaves the other side only once it is safely on this one.
+    private func takeOver(_ pin: OtherPin) {
+        guard let route, !takingOver else { return }
+        let routeID = route.id
+        let stop = pin.stop
+        selectedStopID = nil
+        takingOver = true
+        Task {
+            defer { takingOver = false }
+            var entry = OtherStops.plainEntry(for: stop)
+            var missingPaket = false
+            if !stop.isManual {
+                if let credentials = GourmetCredentialsStore.load() {
+                    do {
+                        entry = OtherStops.clamped(
+                            try await GourmetPortal.entry(forDelivery: stop.id, credentials: credentials))
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        missingPaket = true
+                    }
+                } else {
+                    missingPaket = true
+                }
+            }
+            do {
+                let added = try await RouteStore.addStop(
+                    to: route, kunde: entry.kunde, strasse: entry.strasse, plz: entry.plz,
+                    paket: entry.paket, notiz: entry.notiz, telefon: entry.telefon, in: context)
+                if let count = entry.paketCount {
+                    added.paketCount = count
+                    try? context.save()
+                }
+            } catch let e as AppError {
+                error = e
+                return
+            } catch {
+                self.error = AppError.message("Der Stopp konnte nicht übernommen werden.")
+                return
+            }
+            if stop.isManual { ManualOtherStops.remove(id: stop.id, from: routeID) }
+            others.removeAll { $0.id == pin.id }
+            othersTotal = max(0, othersTotal - 1)
+            if missingPaket {
+                error = AppError.message(
+                    "„\(stop.name)“ ist jetzt bei dir, aber das Paket konnte nicht geladen werden. "
+                        + "Es steht im Portal.")
+            }
+        }
+    }
+
     /// Moves one of the route's own customers to the other driver's side: off
     /// this tour, onto theirs, where it is counted and drawn like any other.
     ///
@@ -486,6 +551,7 @@ struct MapTab: View {
         let routeID = route.id
         let name = stop.kunde ?? "", address = stop.strasse ?? "", plz = stop.plz ?? ""
         let notiz = stop.notiz, telefon = stop.telefon
+        let paket = stop.paket, paketCount = stop.paketCount
         let placed = stop.lat != 0 || stop.lon != 0
         let lat = placed ? stop.lat : nil, lon = placed ? stop.lon : nil
         selectedStopID = nil
@@ -498,7 +564,7 @@ struct MapTab: View {
             }
             let given = ManualOtherStops.add(
                 name: name, address: address, plz: plz, latitude: lat, longitude: lon,
-                notiz: notiz, telefon: telefon, to: routeID)
+                notiz: notiz, telefon: telefon, paket: paket, paketCount: paketCount, to: routeID)
             othersTotal += 1
             if routeID == self.route?.id, let pin = OtherPin(given) { others.append(pin) }
         }
@@ -566,7 +632,8 @@ struct MapTab: View {
                 let hidden = ManualOtherStops.hidden(for: routeID)
                 let kept = fetched.filter { !hidden.contains($0.id) }
                 hiddenOthers = fetched.count - kept.count
-                let loaded = kept + ManualOtherStops.load(for: routeID)
+                let manual = ManualOtherStops.load(for: routeID)
+                let loaded = OtherStops.dropping(kept, alreadyHeld: manual) + manual
                 others = loaded.compactMap(OtherPin.init)
                 othersTotal = loaded.count
                 othersRouteID = routeID
@@ -778,7 +845,9 @@ struct MapTab: View {
     @ViewBuilder
     private var statusBanner: some View {
         Group {
-            if loadingOthers {
+            if takingOver {
+                MapNotice(text: "Stopp wird übernommen …", busy: true)
+            } else if loadingOthers {
                 MapNotice(text: "Stopps der anderen werden geladen …", busy: true)
             } else if buildingLine && line.isEmpty {
                 MapNotice(text: "Route wird gezeichnet …", busy: true)
@@ -1460,6 +1529,7 @@ private struct OtherPin: Identifiable, Equatable {
 private struct OtherStopPreviewSheet: View {
     let stop: OtherStop
     let onNavigate: () -> Void
+    let onTakeOver: () -> Void
     let onRemove: () -> Void
     let onMeasure: (CGFloat) -> Void
 
@@ -1502,6 +1572,11 @@ private struct OtherStopPreviewSheet: View {
                     WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
                 }
                 .buttonStyle(.borderedProminent)
+                Button(action: onTakeOver) {
+                    WideButtonLabel("An mich übergeben", systemImage: "arrowshape.turn.up.left")
+                }
+                .buttonStyle(.bordered)
+                .tint(.blue)
                 Button(role: .destructive, action: onRemove) {
                     WideButtonLabel(
                         stop.isManual ? "Entfernen" : "Aus den anderen entfernen",

@@ -16,6 +16,10 @@ struct OtherStop: Identifiable, Equatable, Codable, Sendable {
     /// list and left off the map, as `TourSplitSheet` does.
     let latitude: Double?
     let longitude: Double?
+    /// Only on a stop that was one of mine and was handed over: what it carried,
+    /// so taking it back does not lose its meals. The portal's list has none.
+    var paket: String? = nil
+    var paketCount: Int? = nil
 
     var coordinate: CLLocationCoordinate2D? {
         guard let latitude, let longitude else { return nil }
@@ -103,6 +107,44 @@ enum OtherStops {
                 id: stop.id, name: stop.name, address: stop.address, plz: stop.plz,
                 notiz: entry?.notiz?.trimmed.nilIfEmpty, telefon: entry?.telefon,
                 latitude: stop.coordinate?.latitude, longitude: stop.coordinate?.longitude)
+        }
+    }
+
+    /// An other-driver stop as a customer entry for this route, with only what
+    /// it carries — a Paket only if it was handed over with one, since the
+    /// portal's list has none and only its detail call does.
+    static func plainEntry(for stop: OtherStop) -> CustomerJSON {
+        clamped(CustomerJSON(
+            kunde: stop.name, strasse: stop.address, plz: stop.plz, paket: stop.paket,
+            notiz: stop.notiz, telefon: stop.telefon, paketCount: stop.paketCount))
+    }
+
+    /// An entry cut to the field limits the stop editor enforces, so a long
+    /// phone line from the portal ("+436763095249 Schwester Frau Koch …") cannot
+    /// refuse a hand-over over text nobody typed. The Paket limit is far past
+    /// anything real, and a Notiz is cut rather than refused.
+    static func clamped(_ entry: CustomerJSON) -> CustomerJSON {
+        var e = entry
+        e.kunde = String(e.kunde.trimmed.prefix(FieldLimits.kunde))
+        e.strasse = String(e.strasse.trimmed.prefix(FieldLimits.strasse))
+        e.notiz = e.notiz.map { String($0.prefix(FieldLimits.notiz)) }
+        e.telefon = e.telefon.map { String($0.trimmed.prefix(FieldLimits.telefon)) }
+        return e
+    }
+
+    /// The portal's stops without those a hand-over already put on the list by
+    /// hand. A stop handed over is still on the portal's list as open, so
+    /// fetching it again would show it twice — once from the portal, once from
+    /// the hand-over.
+    static func dropping(_ fetched: [OtherStop], alreadyHeld manual: [OtherStop]) -> [OtherStop] {
+        let held = Mine(
+            names: Set(manual.map { AddressText.matchKey($0.name) }.filter { !$0.isEmpty }),
+            addresses: Set(manual.map { Mine.addressKey($0.address, $0.plz) }.filter { !$0.isEmpty }))
+        return fetched.filter { stop in
+            let name = AddressText.matchKey(stop.name)
+            if !name.isEmpty, held.names.contains(name) { return false }
+            let address = Mine.addressKey(stop.address, stop.plz)
+            return address.isEmpty || !held.addresses.contains(address)
         }
     }
 
@@ -206,7 +248,8 @@ enum ManualOtherStops {
     @discardableResult
     static func add(
         name: String, address: String, plz: String, latitude: Double?, longitude: Double?,
-        notiz: String? = nil, telefon: String? = nil, to routeID: UUID
+        notiz: String? = nil, telefon: String? = nil, paket: String? = nil,
+        paketCount: Int? = nil, to routeID: UUID
     ) -> OtherStop {
         var stops = load(for: routeID)
         let id = (stops.map(\.id).max() ?? OtherStops.manualBase - 1) + 1
@@ -214,7 +257,8 @@ enum ManualOtherStops {
             id: id, name: name.trimmed.isEmpty ? "Nachlieferung" : name.trimmed,
             address: address.trimmed, plz: plz.trimmed,
             notiz: notiz?.trimmed.nilIfEmpty, telefon: telefon?.trimmed.nilIfEmpty,
-            latitude: latitude, longitude: longitude)
+            latitude: latitude, longitude: longitude, paket: paket?.trimmed.nilIfEmpty,
+            paketCount: paketCount)
         stops.append(stop)
         save(stops, for: routeID)
         return stop

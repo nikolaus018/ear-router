@@ -115,4 +115,44 @@ struct OtherStopsTests {
         #expect(given.notiz == "Tür 20 läuten" && given.telefon == "+4369912345678")
         #expect(ManualOtherStops.load(for: route) == [given])
     }
+
+    @Test func aTakenOverStopBecomesAnEntryWithinTheFieldLimits() {
+        let stop = OtherStop(
+            id: 5, name: "  Fam. Gruber ", address: "Gentzgasse 129/1/23", plz: "1180",
+            notiz: "Tür 20 läuten", telefon: "+436763095249 Schwester Frau Koch und noch viel mehr Text",
+            latitude: nil, longitude: nil)
+        let entry = OtherStops.plainEntry(for: stop)
+        #expect(entry.kunde == "Fam. Gruber")
+        #expect(entry.strasse == "Gentzgasse 129/1/23" && entry.plz == "1180")
+        #expect(entry.notiz == "Tür 20 läuten")
+        #expect((entry.telefon ?? "").count == FieldLimits.telefon)
+        #expect(entry.paket == nil)
+        #expect((try? RouteStore.validateCustomerFields(
+            kunde: entry.kunde, strasse: entry.strasse, paket: entry.paket,
+            notiz: entry.notiz, telefon: entry.telefon)) != nil)
+    }
+
+    @Test func aStopHandedOverAndFetchedAgainIsNotShownTwice() {
+        let held = [OtherStop(
+            id: OtherStops.manualBase, name: "Fam. Gruber", address: "Gentzgasse 129/1/23", plz: "1180",
+            notiz: nil, telefon: nil, latitude: nil, longitude: nil)]
+        let fetched = [
+            OtherStop(id: 1, name: "Fam Grueber", address: "Gentzgasse 129/1/23", plz: "1180",
+                      notiz: nil, telefon: nil, latitude: nil, longitude: nil),
+            OtherStop(id: 2, name: "Huber", address: "Raxstraße 30/4", plz: "1100",
+                      notiz: nil, telefon: nil, latitude: nil, longitude: nil),
+        ]
+        #expect(OtherStops.dropping(fetched, alreadyHeld: held).map(\.id) == [2])
+        #expect(OtherStops.dropping(fetched, alreadyHeld: []).count == 2)
+    }
+
+    @Test func aHandedOverStopTakesItsPaketBackWithIt() {
+        let route = UUID()
+        defer { ManualOtherStops.forget(route) }
+        let given = ManualOtherStops.add(
+            name: "Fam. Gruber", address: "Gentzgasse 129/1/23", plz: "1180", latitude: nil,
+            longitude: nil, paket: "Rindsgulasch, Spätzle", paketCount: 2, to: route)
+        let entry = OtherStops.plainEntry(for: given)
+        #expect(entry.paket == "Rindsgulasch, Spätzle" && entry.paketCount == 2)
+    }
 }
