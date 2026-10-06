@@ -166,69 +166,21 @@ struct TourSplitSheet: View {
                     "Für „\(tour.name)“ wurden an diesem Tag keine offenen Lieferungen gefunden.")
                 return
             }
-            let stops = try await Self.place(deliveries) { done, total in
+            let stops = try await PortalPlacement.place(deliveries) { done, total in
                 Task { @MainActor in busy = "Adresse \(done) von \(total) wird gesucht …" }
             }
             // The token and the deliveries are kept: a share that becomes a
             // tour needs its Paket and phone numbers, and those are one
             // detail call per stop away.
             split = SplitState(
-                tourName: tour.name, date: date, people: people, stops: stops, token: token,
+                tourName: tour.name, tourID: tour.id, date: date, people: people, stops: stops,
+                token: token,
                 deliveries: Dictionary(deliveries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a }))
         } catch is CancellationError {
         } catch let e as AppError {
             error = e
         } catch {
             self.error = AppError.message("Lieferungen konnten nicht geladen werden.")
-        }
-    }
-
-    /// A few lookups at a time: the city register is unthrottled and most of
-    /// a regular tour is cached, while the geocoder itself still spaces out
-    /// any Nominatim fallback. An address nobody can place is kept, without a
-    /// pin, rather than dropped from the split.
-    private static func place(
-        _ deliveries: [GourmetPortal.Delivery],
-        onProgress: @escaping @Sendable (Int, Int) -> Void
-    ) async throws -> [SplitStop] {
-        let inputs = deliveries.map { delivery in
-            let (name, address) = GourmetPortal.summary(delivery)
-            return (
-                id: delivery.id, name: name, address: address,
-                plz: delivery.deliveryAddress.zip?.trimmed ?? "")
-        }
-        var placed: [Int: CLLocationCoordinate2D] = [:]
-        try await withThrowingTaskGroup(of: (Int, CLLocationCoordinate2D?).self) { group in
-            var next = 0
-            var done = 0
-            func enqueue() {
-                guard next < inputs.count else { return }
-                let input = inputs[next]
-                next += 1
-                group.addTask {
-                    do {
-                        let hit = try await Geocoder.shared.geocode(
-                            strasse: input.address, plz: input.plz)
-                        return (input.id, CLLocationCoordinate2D(latitude: hit.lat, longitude: hit.lon))
-                    } catch is CancellationError {
-                        throw CancellationError()
-                    } catch {
-                        return (input.id, nil)
-                    }
-                }
-            }
-            for _ in 0..<4 { enqueue() }
-            while let (id, coordinate) = try await group.next() {
-                done += 1
-                onProgress(done, inputs.count)
-                if let coordinate { placed[id] = coordinate }
-                enqueue()
-            }
-        }
-        return inputs.map { input in
-            SplitStop(
-                id: input.id, name: input.name.isEmpty ? "Ohne Namen" : input.name,
-                address: input.address, plz: input.plz, coordinate: placed[input.id])
         }
     }
 }
@@ -258,6 +210,9 @@ struct SplitState: Identifiable {
 
     let id = UUID()
     let tourName: String
+    /// The portal's id for the tour, so a share that becomes a route can say
+    /// which tour it came from — see `PortalTourLink`.
+    let tourID: Int?
     let date: Date
     let people: Int
     let stops: [SplitStop]
@@ -271,10 +226,12 @@ struct SplitState: Identifiable {
     private var history: [[Int: Int]] = []
 
     init(
-        tourName: String, date: Date = Date(), people: Int, stops: [SplitStop],
-        token: String? = nil, deliveries: [Int: GourmetPortal.Delivery] = [:]
+        tourName: String, tourID: Int? = nil, date: Date = Date(), people: Int,
+        stops: [SplitStop], token: String? = nil,
+        deliveries: [Int: GourmetPortal.Delivery] = [:]
     ) {
         self.tourName = tourName
+        self.tourID = tourID
         self.date = date
         self.people = people
         self.stops = stops
@@ -1306,6 +1263,10 @@ private struct SplitOverview: View {
             let taken = Set(((try? context.fetch(open)) ?? []).map(\.name))
             let route = try RouteStore.createRoute(
                 name: state.routeName(for: person, taken: taken), in: context)
+            if let tourID = state.tourID {
+                PortalTourLink(tourID: tourID, tourName: state.tourName, date: state.date)
+                    .save(for: route.id)
+            }
             let ctx = ReviewContext(route: route, entries: entries, person: person)
             pending = ctx
             review = ctx

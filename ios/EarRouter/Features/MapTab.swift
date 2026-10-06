@@ -35,6 +35,22 @@ struct MapTab: View {
     @State private var previewHeight: CGFloat = 200
     /// The same for a toilet's card, which grows by its note.
     @State private var restroomHeight: CGFloat = 250
+    /// The same for the card of a stop that belongs to the other driver.
+    @State private var otherHeight: CGFloat = 250
+
+    /// The rest of this route's portal tour, in a colour of its own — for
+    /// talking a split through with the other driver. Not kept across
+    /// launches, unlike the toilets: it is fetched from the portal each time it
+    /// is switched on, and is something to look at in one conversation.
+    @State private var showOthers = false
+    @State private var others: [OtherPin] = []
+    /// The route `others` were fetched for. A switch to another tour drops them.
+    @State private var othersRouteID: UUID?
+    @State private var loadingOthers = false
+    @State private var othersTask: Task<Void, Never>?
+    /// Whether there is a portal login to fetch with — read when the tab comes
+    /// forward rather than in `body`, which is a Keychain query per redraw.
+    @State private var hasPortalLogin = false
 
     /// As tall as the preview card is ever allowed to get. Past this it keeps
     /// its own scroll rather than growing into a sheet that covers the pin it
@@ -101,6 +117,15 @@ struct MapTab: View {
     private var selectedStop: Stop? {
         guard let selectedStopID, let route else { return nil }
         return route.stops.first { $0.id == selectedStopID }
+    }
+
+    /// The other driver's stops, once switched on and for the route shown.
+    private var visibleOthers: [OtherPin] {
+        showOthers && othersRouteID == route?.id ? others : []
+    }
+
+    private var selectedOther: OtherPin? {
+        selectedStopID.flatMap { id in visibleOthers.first { $0.id == id } }
     }
 
     /// What changes the *shape* of the map — which route, which stops, what
@@ -225,6 +250,13 @@ struct MapTab: View {
                     }
                     Divider()
                     Toggle("WCs anzeigen", systemImage: "toilet", isOn: $showRestrooms)
+                    if hasPortalLogin {
+                        Toggle(
+                            visibleOthers.isEmpty
+                                ? "Stopps der anderen"
+                                : "Stopps der anderen (\(visibleOthers.count))",
+                            systemImage: "person.2", isOn: $showOthers)
+                    }
                     if routes.count > 1 {
                         Divider()
                         // Active tours, then the few most recently finished.
@@ -322,8 +354,94 @@ struct MapTab: View {
             .presentationBackground(.regularMaterial)
             .presentationDragIndicator(.visible)
         }
+        .sheet(item: Binding(
+            get: { selectedOther }, set: { if $0 == nil { selectedStopID = nil } })
+        ) { pin in
+            OtherStopPreviewSheet(
+                stop: pin.stop,
+                onNavigate: {
+                    if let url = NavigationHandoff.provider.point(
+                        lat: pin.latitude, lon: pin.longitude)
+                    {
+                        openURL(url)
+                    }
+                },
+                onMeasure: { if $0 > 0 { otherHeight = $0 } })
+            .presentationDetents([.height(min(otherHeight, Self.maxPreviewHeight))])
+            .presentationBackground(.regularMaterial)
+            .presentationDragIndicator(.visible)
+        }
         .stockwerkPrompt(for: $stockwerkStop)
         .errorAlert($error)
+        .onAppear { hasPortalLogin = GourmetCredentialsStore.load() != nil }
+        .onChange(of: showOthers) { _, on in
+            if on {
+                startLoadingOthers()
+            } else {
+                othersTask?.cancel()
+                loadingOthers = false
+                if selectedOther != nil { selectedStopID = nil }
+            }
+        }
+        // Another tour is another portal tour: what was fetched for the last
+        // one is somebody else's split.
+        .onChange(of: route?.id) {
+            othersTask?.cancel()
+            loadingOthers = false
+            showOthers = false
+            others = []
+            othersRouteID = nil
+        }
+    }
+
+    /// Fetches the rest of the route's portal tour and puts it on the map.
+    ///
+    /// The tour comes from the link made when the route was (see
+    /// `PortalTourLink`), or, for a route that has none, from its name and day.
+    /// A failure switches the layer back off and says why, rather than leaving
+    /// a toggle on that shows nothing.
+    private func startLoadingOthers() {
+        guard let route, let credentials = GourmetCredentialsStore.load() else {
+            showOthers = false
+            return
+        }
+        let routeID = route.id
+        let mine = OtherStops.Mine(stops: route.stops)
+        othersTask?.cancel()
+        loadingOthers = true
+        othersTask = Task {
+            defer { loadingOthers = false }
+            do {
+                var link = PortalTourLink.load(for: routeID)
+                if link == nil {
+                    link = try await OtherStops.infer(for: route, credentials: credentials)
+                    link?.save(for: routeID)
+                }
+                guard let link else {
+                    showOthers = false
+                    error = AppError.message(
+                        "Diese Tour stammt nicht aus dem Zusteller-Portal — "
+                            + "die Stopps der anderen sind von dort.")
+                    return
+                }
+                let loaded = try await OtherStops.load(link: link, mine: mine, credentials: credentials)
+                guard !Task.isCancelled else { return }
+                others = loaded.compactMap(OtherPin.init)
+                othersRouteID = routeID
+                if loaded.isEmpty {
+                    showOthers = false
+                    error = AppError.message(
+                        "Auf dieser Tour gibt es keine weiteren offenen Stopps.")
+                }
+            } catch is CancellationError {
+            } catch let e as AppError {
+                showOthers = false
+                error = e
+            } catch {
+                showOthers = false
+                self.error = AppError.message("Die Stopps der anderen konnten nicht geladen werden.")
+            }
+        }
     }
 
     /// The stop's position among the customers — the number its pin carries, so
@@ -444,6 +562,7 @@ struct MapTab: View {
             line: line,
             pins: pins,
             restrooms: showRestrooms ? Restroom.pins : [],
+            others: visibleOthers,
             style: style,
             // A tap on a pin starts at that pin's list again, not at whichever
             // customer was last looked at under it.
@@ -488,7 +607,9 @@ struct MapTab: View {
     @ViewBuilder
     private var statusBanner: some View {
         Group {
-            if buildingLine && line.isEmpty {
+            if loadingOthers {
+                MapNotice(text: "Stopps der anderen werden geladen …", busy: true)
+            } else if buildingLine && line.isEmpty {
                 MapNotice(text: "Route wird gezeichnet …", busy: true)
             } else if LocationAuthorization.shared.isDenied {
                 Button {
@@ -835,6 +956,8 @@ private struct RouteMapCanvas: View {
     let pins: [MapPin]
     /// Every public toilet, when the driver has asked to see them.
     let restrooms: [RestroomPin]
+    /// The other driver's stops, when the driver has asked to see them.
+    let others: [OtherPin]
     let style: MapStyleChoice
     @Binding var selection: UUID?
     /// Changes whenever the route's shape has been rebuilt and the view should
@@ -904,6 +1027,14 @@ private struct RouteMapCanvas: View {
                         latitude: dot.pin.restroom.lat, longitude: dot.pin.restroom.lon))
                     .tint(dot.bad ? Color.restroomBad : Color.restroom)
                     .tag(dot.pin.id)
+            }
+
+            // Tagged with the stop's own id, which is no route stop's: a tap
+            // opens its card, not a stop card.
+            ForEach(others) { pin in
+                Marker(pin.stop.name, systemImage: "person.fill", coordinate: pin.coordinate)
+                    .tint(Color.otherDriver)
+                    .tag(pin.id)
             }
         }
         .mapStyle(style.mapStyle(closeIn: closeIn))
@@ -988,6 +1119,14 @@ private struct RouteMapCanvas: View {
         .onChange(of: selection) { _, picked in
             if picked != nil { wantsDriver = false }
         }
+        // Switching the other driver's stops on is asking to see both halves
+        // at once, so the camera frames them together.
+        .onChange(of: others.isEmpty) { _, empty in
+            guard !empty else { return }
+            pointAt = nil
+            wantsDriver = false
+            fit()
+        }
         .onChange(of: pointAt, initial: true) { _, request in
             guard let request else { return }
             wantsDriver = false
@@ -1057,7 +1196,7 @@ private struct RouteMapCanvas: View {
     /// Frames the whole tour. Prefers the driven line over the pins, so the
     /// view covers the road actually taken rather than just the doors on it.
     private func fit() {
-        let points = line.isEmpty ? pins.map(\.coordinate) : line
+        let points = (line.isEmpty ? pins.map(\.coordinate) : line) + others.map(\.coordinate)
         guard let region = MKCoordinateRegion(fitting: points) else { return }
         withAnimation(.easeInOut) { camera = .region(region) }
     }
@@ -1118,6 +1257,86 @@ private struct MapNotice: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .glassEffect(.regular, in: .capsule)
+    }
+}
+
+/// One of the other driver's stops, placed on the map. Its id is made from the
+/// portal's delivery id, so it is the same pin every time the layer is switched
+/// on and a tap can be matched back to it.
+private struct OtherPin: Identifiable, Equatable {
+    let id: UUID
+    let stop: OtherStop
+    let latitude: Double
+    let longitude: Double
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    /// `nil` for a stop no address lookup could place.
+    init?(_ stop: OtherStop) {
+        guard let latitude = stop.latitude, let longitude = stop.longitude else { return nil }
+        self.stop = stop
+        self.latitude = latitude
+        self.longitude = longitude
+        self.id = UUID(uuidString: String(format: "00000000-0000-4000-8000-%012ld", stop.id))
+            ?? UUID()
+    }
+}
+
+/// The card an other-driver pin opens: who and where, the Notiz and the phone
+/// number as the portal has them, and the way there.
+private struct OtherStopPreviewSheet: View {
+    let stop: OtherStop
+    let onNavigate: () -> Void
+    let onMeasure: (CGFloat) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "person.fill")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Color.otherDriver))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(stop.name)
+                            .font(.title3.bold())
+                        Text("\(stop.address), \(stop.plz)")
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("Gehört zur Tour, aber nicht zu deiner Route")
+                            .font(.footnote)
+                            .foregroundStyle(Color.otherDriver)
+                            .padding(.top, 2)
+                    }
+                    Spacer(minLength: 8)
+                }
+                if let notiz = stop.notiz {
+                    StopFacts.note(notiz, lineLimit: 12)
+                        .font(.callout)
+                }
+                if let telefon = stop.telefon {
+                    Label(telefon, systemImage: "phone")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Button(action: onNavigate) {
+                    WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+            .padding(.horizontal)
+            .padding(.top, 22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .safeAreaPadding(.bottom)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onMeasure($0) }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .symbolRenderingMode(.monochrome)
     }
 }
 

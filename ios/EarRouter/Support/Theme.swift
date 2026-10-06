@@ -57,6 +57,12 @@ extension Color {
     /// stop, blue an open one, orange one to check, and grey a fixed point.
     static var restroom: Color { .purple }
     static var restroomBad: Color { .red }
+
+    /// A stop that is on the same portal tour but not on this route — the other
+    /// driver's. Pink, which no pin on the map wears: it has to be told apart
+    /// from the route's own stops at a glance, and red is already the toilet
+    /// nobody should use.
+    static var otherDriver: Color { .pink }
 }
 
 enum Format {

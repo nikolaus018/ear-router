@@ -362,6 +362,12 @@ struct GourmetImportSheet: View {
 
             switch mode {
             case .existing(let route):
+                // Only a route that has no origin yet: one that already says
+                // which tour it came from keeps saying it.
+                if PortalTourLink.load(for: route.id) == nil {
+                    PortalTourLink(tourID: tour.id, tourName: tour.name, date: date)
+                        .save(for: route.id)
+                }
                 review = ReviewContext(route: route, entries: entries)
             case .newRoute:
                 // Created only now that there is something real to put on
@@ -372,6 +378,8 @@ struct GourmetImportSheet: View {
                 let taken = Set(((try? context.fetch(open)) ?? []).map(\.name))
                 let name = GourmetPortal.suggestedRouteName(tour: tour, date: date, taken: taken)
                 let route = try RouteStore.createRoute(name: name, in: context)
+                PortalTourLink(tourID: tour.id, tourName: tour.name, date: date)
+                    .save(for: route.id)
                 createdRoute = route
                 review = ReviewContext(route: route, entries: entries)
             }

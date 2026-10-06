@@ -155,6 +155,7 @@ enum RouteStore {
         // the cascade delete does not reach it. Without this every deleted tour
         // leaves its ticks behind in the app's preferences for good.
         LadelisteState.forget(id)
+        PortalTourLink.forget(id)
     }
 
     /// Deletes by id rather than by object, because the caller is a list's
@@ -169,7 +170,10 @@ enum RouteStore {
         guard !doomed.isEmpty else { return }
         for route in doomed { context.delete(route) }
         try context.save()
-        for id in wanted { LadelisteState.forget(id) }
+        for id in wanted {
+            LadelisteState.forget(id)
+            PortalTourLink.forget(id)
+        }
     }
 
     static func rename(_ route: Route, to name: String, in context: ModelContext) throws {
