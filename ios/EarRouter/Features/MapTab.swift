@@ -55,6 +55,14 @@ struct MapTab: View {
     @State private var draftName = ""
     @State private var draftAddress = ""
     @State private var draftPLZ = ""
+    /// Set when a stop changes sides on the map, until the route planned
+    /// behind it has been drawn: the driver is looking at the two stops the
+    /// hand-over is about, and re-framing the whole tour — once for the stop
+    /// going, once more for the new line — took the map off them twice.
+    @State private var holdCamera = false
+    /// Bumped when the other driver's stops have been fetched, for the canvas
+    /// to frame both halves together.
+    @State private var othersToken = 0
     /// True while a typed-in stop of the other driver's is being looked up.
     @State private var placingOther = false
     /// True while a stop of the other driver's is being taken over — the
@@ -463,6 +471,7 @@ struct MapTab: View {
             othersTotal = 0
             hiddenOthers = 0
             othersRouteID = nil
+            holdCamera = false
         }
     }
 
@@ -485,6 +494,7 @@ struct MapTab: View {
         let stop = pin.stop
         selectedStopID = nil
         takingOver = true
+        holdCamera = true
         Task {
             defer { takingOver = false }
             var entry = OtherStops.plainEntry(for: stop)
@@ -499,6 +509,7 @@ struct MapTab: View {
                         if detail.kunde.isEmpty { detail.kunde = entry.kunde }
                         entry = detail
                     } catch is CancellationError {
+                        holdCamera = false
                         return
                     } catch {
                         missingPaket = true
@@ -518,9 +529,11 @@ struct MapTab: View {
                 }
                 RouteStore.rerouteBehind(route, in: context)
             } catch let e as AppError {
+                holdCamera = false
                 error = e
                 return
             } catch {
+                holdCamera = false
                 self.error = AppError.message("Der Stopp konnte nicht übernommen werden.")
                 return
             }
@@ -552,6 +565,7 @@ struct MapTab: View {
         let placed = stop.lat != 0 || stop.lon != 0
         let lat = placed ? stop.lat : nil, lon = placed ? stop.lon : nil
         selectedStopID = nil
+        holdCamera = true
         Task {
             // Off this tour and onto theirs in one go, with the route planned
             // again behind it: waiting for OSRM in between left the stop on
@@ -559,6 +573,7 @@ struct MapTab: View {
             do {
                 try await RouteStore.deleteStop(stop, reroute: false, in: context)
             } catch {
+                holdCamera = false
                 self.error = AppError.message("Der Stopp konnte nicht übergeben werden.")
                 return
             }
@@ -651,6 +666,7 @@ struct MapTab: View {
                 others = loaded.compactMap(OtherPin.init)
                 othersTotal = loaded.count
                 othersRouteID = routeID
+                if !others.isEmpty { othersToken += 1 }
                 if loaded.isEmpty {
                     showOthers = false
                     error = AppError.message(
@@ -793,6 +809,7 @@ struct MapTab: View {
                 get: { selectedStopID },
                 set: { selectedStopID = $0; chosenMemberID = nil }),
             fitToken: fitToken,
+            othersToken: othersToken,
             followToken: focus.mapFollowToken,
             pointAt: $pointAt)
             .onChange(of: shapeKey, initial: true) { reconcile(route) }
@@ -831,7 +848,10 @@ struct MapTab: View {
     private func splitCard(for route: Route) -> some View {
         if othersShown {
             VStack(alignment: .leading, spacing: 6) {
-                splitRow("Meine Stopps", count: route.customerCount, color: .blue)
+                // Only the doors the van goes to: one that is abbestellt, or
+                // whose meal goes to the Lager, is nobody's share of the work.
+                splitRow(
+                    "Meine Stopps", count: route.stops.count(where: \.isOwedAMeal), color: .blue)
                 splitRow("Andere Stopps", count: othersTotal, color: .otherDriver)
             }
             .padding(.horizontal, 14)
@@ -961,7 +981,7 @@ struct MapTab: View {
             buildingLine = false
             builtShape = shape
             pendingShape = nil
-            fitToken += 1
+            routeDrawn()
             return
         }
 
@@ -979,9 +999,20 @@ struct MapTab: View {
                 buildingLine = false
                 builtShape = shape
                 pendingShape = nil
-                fitToken += 1
+                routeDrawn()
             }
         }
+    }
+
+    /// Re-frames the tour for the shape just drawn — unless a hand-over is
+    /// holding the camera where it is, which lasts until the route planned
+    /// behind it is the one on screen.
+    private func routeDrawn() {
+        guard holdCamera else {
+            fitToken += 1
+            return
+        }
+        if route?.needsOptimize != true { holdCamera = false }
     }
 
     /// Decodes the flat `[lat, lon, …]` buffer and simplifies it. `nonisolated`,
@@ -1219,6 +1250,8 @@ private struct RouteMapCanvas: View {
     /// Changes whenever the route's shape has been rebuilt and the view should
     /// frame the whole thing again.
     let fitToken: Int
+    /// Changes when the other driver's stops have been fetched.
+    let othersToken: Int
     /// Changes every time the driver chooses Karte from the tab bar — the cue
     /// to put the camera back on them. See `RouteFocus.select`.
     let followToken: Int
@@ -1376,9 +1409,10 @@ private struct RouteMapCanvas: View {
             if picked != nil { wantsDriver = false }
         }
         // Switching the other driver's stops on is asking to see both halves
-        // at once, so the camera frames them together.
-        .onChange(of: others.isEmpty) { _, empty in
-            guard !empty else { return }
+        // at once, so the camera frames them together. On the fetch, not on
+        // the first of them appearing: that is also what a stop handed over
+        // to an empty side looks like, and the camera stays put for that.
+        .onChange(of: othersToken) {
             pointAt = nil
             wantsDriver = false
             fit()
