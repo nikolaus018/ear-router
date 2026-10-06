@@ -206,13 +206,14 @@ enum ManualOtherStops {
     @discardableResult
     static func add(
         name: String, address: String, plz: String, latitude: Double?, longitude: Double?,
-        to routeID: UUID
+        notiz: String? = nil, telefon: String? = nil, to routeID: UUID
     ) -> OtherStop {
         var stops = load(for: routeID)
         let id = (stops.map(\.id).max() ?? OtherStops.manualBase - 1) + 1
         let stop = OtherStop(
             id: id, name: name.trimmed.isEmpty ? "Nachlieferung" : name.trimmed,
-            address: address.trimmed, plz: plz.trimmed, notiz: nil, telefon: nil,
+            address: address.trimmed, plz: plz.trimmed,
+            notiz: notiz?.trimmed.nilIfEmpty, telefon: telefon?.trimmed.nilIfEmpty,
             latitude: latitude, longitude: longitude)
         stops.append(stop)
         save(stops, for: routeID)

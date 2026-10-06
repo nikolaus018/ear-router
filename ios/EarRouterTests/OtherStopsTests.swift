@@ -105,4 +105,14 @@ struct OtherStopsTests {
         ManualOtherStops.unhideAll(for: route)
         #expect(ManualOtherStops.hidden(for: route).isEmpty)
     }
+
+    @Test func aStopHandedOverKeepsItsNotizAndPhone() {
+        let route = UUID()
+        defer { ManualOtherStops.forget(route) }
+        let given = ManualOtherStops.add(
+            name: "Fam. Gruber", address: "Gentzgasse 129/1/23", plz: "1180", latitude: 48.22,
+            longitude: 16.33, notiz: " Tür 20 läuten ", telefon: "+4369912345678", to: route)
+        #expect(given.notiz == "Tür 20 läuten" && given.telefon == "+4369912345678")
+        #expect(ManualOtherStops.load(for: route) == [given])
+    }
 }

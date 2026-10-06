@@ -55,6 +55,9 @@ struct MapTab: View {
     @State private var draftName = ""
     @State private var draftAddress = ""
     @State private var draftPLZ = ""
+    /// The stop of mine being handed to the other driver, while the question is
+    /// up.
+    @State private var handingOver: Stop?
     /// The route `others` were fetched for. A switch to another tour drops them.
     @State private var othersRouteID: UUID?
     @State private var loadingOthers = false
@@ -344,6 +347,11 @@ struct MapTab: View {
                             if let route { focus.reveal(stop: stop, of: route) }
                             selectedStopID = nil
                         },
+                        // Only while the other driver's stops are up: handing a
+                        // stop over is moving it from one picture to the other,
+                        // and there is nothing to move it to otherwise.
+                        onHandOver: othersShown && stop.kind == .customer
+                            ? { handingOver = stop } : nil,
                         // Zero is not a measurement. `onGeometryChange` reports
                         // the card's height as it is torn down too, and writing
                         // that back left the *next* pin's card opening as a
@@ -419,6 +427,21 @@ struct MapTab: View {
         }
         .stockwerkPrompt(for: $stockwerkStop)
         .errorAlert($error)
+        .confirmationDialog(
+            "An anderen übergeben?",
+            isPresented: Binding(
+                get: { handingOver != nil }, set: { if !$0 { handingOver = nil } }),
+            titleVisibility: .visible,
+            presenting: handingOver
+        ) { stop in
+            Button("An anderen übergeben", role: .destructive) {
+                handingOver = nil
+                handOver(stop)
+            }
+            Button("Abbrechen", role: .cancel) { handingOver = nil }
+        } message: { stop in
+            Text("„\(stop.kunde ?? "Dieser Stopp")“ wird aus deiner Tour genommen und zählt bei den anderen.")
+        }
         .alert("Stopp der anderen", isPresented: $addingOther) {
             TextField("Name (optional)", text: $draftName)
             TextField("Adresse, z. B. Hörlgasse 4", text: $draftAddress)
@@ -449,6 +472,35 @@ struct MapTab: View {
             othersTotal = 0
             hiddenOthers = 0
             othersRouteID = nil
+        }
+    }
+
+    /// Moves one of the route's own customers to the other driver's side: off
+    /// this tour, onto theirs, where it is counted and drawn like any other.
+    ///
+    /// Everything it needs is read off the stop first, because the card showing
+    /// it is closed and the stop deleted — a deleted model object read
+    /// afterwards is a crash, not a nil.
+    private func handOver(_ stop: Stop) {
+        guard let route else { return }
+        let routeID = route.id
+        let name = stop.kunde ?? "", address = stop.strasse ?? "", plz = stop.plz ?? ""
+        let notiz = stop.notiz, telefon = stop.telefon
+        let placed = stop.lat != 0 || stop.lon != 0
+        let lat = placed ? stop.lat : nil, lon = placed ? stop.lon : nil
+        selectedStopID = nil
+        Task {
+            do {
+                try await RouteStore.deleteStop(stop, in: context)
+            } catch {
+                self.error = AppError.message("Der Stopp konnte nicht übergeben werden.")
+                return
+            }
+            let given = ManualOtherStops.add(
+                name: name, address: address, plz: plz, latitude: lat, longitude: lon,
+                notiz: notiz, telefon: telefon, to: routeID)
+            othersTotal += 1
+            if routeID == self.route?.id, let pin = OtherPin(given) { others.append(pin) }
         }
     }
 
@@ -1690,6 +1742,9 @@ struct StopPreviewSheet: View {
     let onNavigate: () -> Void
     let onToggleDelivered: () -> Void
     let onShowInList: () -> Void
+    /// "An anderen übergeben" — offered on a customer's card while the other
+    /// driver's stops are on the map, and `nil` everywhere else.
+    var onHandOver: (() -> Void)? = nil
     /// The card's own content height, which is what the presenting sheet sizes
     /// its detent to. Reported from inside the scroll view, so it stays the
     /// height of the *card* rather than of the sheet the card ended up in.
@@ -1869,15 +1924,24 @@ struct StopPreviewSheet: View {
             ? AnyLayout(VStackLayout(spacing: 10))
             : AnyLayout(HStackLayout(spacing: 10))
 
-        return layout {
-            Button(action: onNavigate) {
-                WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
+        return VStack(spacing: 10) {
+            layout {
+                Button(action: onNavigate) {
+                    WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
+                }
+                .buttonStyle(.borderedProminent)
+                Button(action: onShowInList) {
+                    WideButtonLabel("In der Liste", systemImage: "list.bullet")
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderedProminent)
-            Button(action: onShowInList) {
-                WideButtonLabel("In der Liste", systemImage: "list.bullet")
+            if let onHandOver, isCustomer {
+                Button(action: onHandOver) {
+                    WideButtonLabel("An anderen übergeben", systemImage: "arrowshape.turn.up.right")
+                }
+                .buttonStyle(.bordered)
+                .tint(Color.otherDriver)
             }
-            .buttonStyle(.bordered)
         }
         .controlSize(.large)
     }
