@@ -589,13 +589,15 @@ struct StopListRow: View {
 
         if isCustomer {
             if let telefon = stop.telefon?.trimmed.nilIfEmpty,
-               let url = PhoneNumbers.dialURL(for: telefon)
+               let dial = PhoneNumbers.normalizedDial(telefon)
             {
-                Button("Anrufen", systemImage: "phone") { openURL(url) }
+                Button("Anrufen", systemImage: "phone") {
+                    CustomerContacts.call(dial, for: stop, openURL: openURL)
+                }
             }
             ForEach(PhoneNumbers.inNote(stop.notiz, besides: stop.telefon)) { phone in
                 Button("\(phone.display) anrufen", systemImage: "phone") {
-                    if let url = phone.url { openURL(url) }
+                    CustomerContacts.call(phone.dial, for: stop, openURL: openURL)
                 }
             }
             Button(

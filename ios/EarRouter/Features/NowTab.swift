@@ -587,9 +587,9 @@ private struct NowStopCard: View {
             // rather than the errand, but that read as a broken layout rather
             // than a deliberate one: three buttons a thumb reaches for in a
             // row, one of them a different size for no reason it could see.
-            if let telefonURL {
+            if let telefonDial {
                 Button {
-                    openURL(telefonURL)
+                    CustomerContacts.call(telefonDial, for: stop, openURL: openURL)
                 } label: {
                     WideButtonLabel("Anrufen", systemImage: "phone.fill")
                 }
@@ -603,7 +603,7 @@ private struct NowStopCard: View {
             // buttons. iOS asks once more before it dials.
             ForEach(notizPhones) { phone in
                 Button {
-                    if let url = phone.url { openURL(url) }
+                    CustomerContacts.call(phone.dial, for: stop, openURL: openURL)
                 } label: {
                     WideButtonLabel("\(phone.display) anrufen", systemImage: "phone.fill")
                 }
@@ -632,8 +632,8 @@ private struct NowStopCard: View {
 
     private var isCheckpoint: Bool { stop.kind != .customer }
 
-    private var telefonURL: URL? {
-        stop.telefon?.trimmed.nilIfEmpty.flatMap(PhoneNumbers.dialURL(for:))
+    private var telefonDial: String? {
+        stop.telefon?.trimmed.nilIfEmpty.flatMap(PhoneNumbers.normalizedDial)
     }
 
     private var notizPhones: [PhoneNumbers.Found] {

@@ -197,8 +197,10 @@ struct StopEditorSheet: View {
                         // Off the field being typed here, not off the stored
                         // value — so a number just corrected can be called
                         // straight away, before the field is even saved.
-                        if stop.kind == .customer, let url = PhoneNumbers.dialURL(for: telefon) {
-                            Button("Anrufen", systemImage: "phone") { openURL(url) }
+                        if stop.kind == .customer, let dial = PhoneNumbers.normalizedDial(telefon) {
+                            Button("Anrufen", systemImage: "phone") {
+                                CustomerContacts.call(dial, for: stop, openURL: openURL)
+                            }
                         }
                     }
                 }
