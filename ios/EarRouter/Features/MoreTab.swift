@@ -13,6 +13,8 @@ struct MoreTab: View {
 
     @AppStorage(CarPlayNavigation.enabledKey) private var carPlayEnabled = false
 
+    @Environment(\.openURL) private var openURL
+
     @State private var showingTuercode = false
     @State private var showingKilometer = false
     @State private var showingGourmet = false
@@ -22,6 +24,12 @@ struct MoreTab: View {
     /// The driver's own dispatch portal — the customer list this app's stops
     /// are copied out of in the first place.
     private let gourmetURL = URL(string: "https://zusteller.gourmet-daheim.at/#/customers")!
+
+    /// The office line, and the 1 its menu wants before anyone picks up. Each
+    /// comma is a two-second pause after the call connects, which is what
+    /// stands in for the driver waiting out the greeting and pressing the key
+    /// themselves.
+    private let bueroURL = URL(string: "tel:+43189145173,,1")!
 
     var body: some View {
         List {
@@ -59,6 +67,13 @@ struct MoreTab: View {
                     SettingsRow(
                         icon: "gauge.with.dots.needle.bottom.50percent", tint: .teal,
                         title: "Kilometerstand", detail: "Gefahrene Kilometer")
+                }
+                Button {
+                    openURL(bueroURL)
+                } label: {
+                    SettingsRow(
+                        icon: "phone.fill", tint: .green, title: "Büro anrufen",
+                        detail: "+43 1 89145173, wählt die 1")
                 }
             }
 
