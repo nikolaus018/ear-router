@@ -188,25 +188,8 @@ final class RouteFocus {
 
     var toursPath = NavigationPath()
 
-    /// Bumped every time the driver *chooses* Karte from the tab bar.
-    ///
-    /// The tab value alone cannot say this. Arriving on the map from a stop
-    /// row's "Auf der Karte zeigen" sets the same `tab`, and those two
-    /// arrivals want opposite cameras: one is "put me on that door", the other
-    /// is "where am I". So the choice is recorded separately, and only the
-    /// choice moves the map to the driver.
-    private(set) var mapFollowToken = 0
-
     /// What the tab bar writes to, instead of `tab` directly.
-    ///
-    /// Karte is opened to work out which side of a Gemeindebau the entrance is
-    /// on, standing in front of it — so choosing it means "show me where I
-    /// am", the way opening Apple Maps does, and not "frame the whole tour I
-    /// already know the shape of". `showOnMap` sets `tab` itself and leaves
-    /// this alone, because a stop the driver has just asked to see is a
-    /// destination they named and outranks the default one.
     func select(_ newTab: Tab) {
-        if newTab == .map { mapFollowToken += 1 }
         tab = newTab
     }
 

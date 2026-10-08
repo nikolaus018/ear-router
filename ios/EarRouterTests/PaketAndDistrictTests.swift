@@ -264,6 +264,17 @@ struct LadelisteTests {
         #expect(items.first?.label == "Menü")
     }
 
+    /// TGM and TGMS go into the van first, so they head the list however few
+    /// of them there are; everything else keeps its busiest-first order below.
+    @Test func tgmAndTgmsComeBeforeEverythingElse() throws {
+        let items = PaketParser.items(for: try route([
+            "5x Vitalmenü EP DBMS5", "1x Vitalmenü EP TGMS5", "2x Vitalmenü EP TGM7", "3x Suppe",
+        ]))
+        #expect(items.map(\.label) == [
+            "Vitalmenü EP TGM7", "Vitalmenü EP TGMS5", "Vitalmenü EP DBMS5", "Suppe",
+        ])
+    }
+
     /// Summed across the tour, not listed per customer.
     @Test func thesameThingAtThreeDoorsIsOneLine() throws {
         let items = PaketParser.items(for: try route(["2x Menü", "1x Menü", "3x Menü"]))

@@ -808,9 +808,9 @@ struct MapTab: View {
             selection: Binding(
                 get: { selectedStopID },
                 set: { selectedStopID = $0; chosenMemberID = nil }),
+            routeID: route.id,
             fitToken: fitToken,
             othersToken: othersToken,
-            followToken: focus.mapFollowToken,
             pointAt: $pointAt)
             .onChange(of: shapeKey, initial: true) { reconcile(route) }
             .onChange(of: styleKey) { rebuildPins(for: route) }
@@ -951,6 +951,10 @@ struct MapTab: View {
     }
 
     private func rebuildRoute(_ route: Route, shape: ShapeKey) {
+        // The first line this tab draws, for the tour the driver last left the
+        // map on: the camera is already back where they left it, and the line
+        // arriving a moment later is not a reason to take it away again.
+        let reopened = builtShape == nil && SavedMapRegion.load(for: route.id) != nil
         pendingShape = shape
         // A focus request belongs to the tour it was made from: showing a
         // different one is a different question, and gets the whole-route
@@ -981,7 +985,7 @@ struct MapTab: View {
             buildingLine = false
             builtShape = shape
             pendingShape = nil
-            routeDrawn()
+            routeDrawn(reframe: !reopened)
             return
         }
 
@@ -999,7 +1003,7 @@ struct MapTab: View {
                 buildingLine = false
                 builtShape = shape
                 pendingShape = nil
-                routeDrawn()
+                routeDrawn(reframe: !reopened)
             }
         }
     }
@@ -1007,9 +1011,9 @@ struct MapTab: View {
     /// Re-frames the tour for the shape just drawn — unless a hand-over is
     /// holding the camera where it is, which lasts until the route planned
     /// behind it is the one on screen.
-    private func routeDrawn() {
+    private func routeDrawn(reframe: Bool = true) {
         guard holdCamera else {
-            fitToken += 1
+            if reframe { fitToken += 1 }
             return
         }
         if route?.needsOptimize != true { holdCamera = false }
@@ -1247,20 +1251,19 @@ private struct RouteMapCanvas: View {
     let others: [OtherPin]
     let style: MapStyleChoice
     @Binding var selection: UUID?
+    /// The tour on screen — what a remembered camera belongs to.
+    let routeID: UUID
     /// Changes whenever the route's shape has been rebuilt and the view should
     /// frame the whole thing again.
     let fitToken: Int
     /// Changes when the other driver's stops have been fetched.
     let othersToken: Int
-    /// Changes every time the driver chooses Karte from the tab bar — the cue
-    /// to put the camera back on them. See `RouteFocus.select`.
-    let followToken: Int
     /// One stop to zoom to, or `nil` for the ordinary "show the whole tour"
     /// behaviour. Cleared from in here when the driver asks for the whole route
     /// again — that button is how they take the camera back.
     @Binding var pointAt: MapFocusRequest?
 
-    @State private var camera: MapCameraPosition = .automatic
+    @State private var camera: MapCameraPosition
     /// The driver has not yet sent the camera anywhere of their own — so as
     /// soon as Core Location has something to say, it belongs on them.
     ///
@@ -1269,9 +1272,34 @@ private struct RouteMapCanvas: View {
     /// at nothing, and without this the map would settle on the whole tour and
     /// stay there for the one session where the driver was told the app wanted
     /// their location.
-    @State private var wantsDriver = true
+    @State private var wantsDriver: Bool
+    /// Where the driver left the map on this tour last time, put back on screen
+    /// instead of either the whole tour or the driver. The re-frame every map
+    /// opens with stands down for it, once.
+    @State private var restored: Bool
     /// Zoomed in far enough to draw the map in 3D — see `mapStyle(closeIn:)`.
     @State private var closeIn = false
+
+    init(
+        line: [CLLocationCoordinate2D], pins: [MapPin], restrooms: [RestroomPin],
+        others: [OtherPin], style: MapStyleChoice, selection: Binding<UUID?>,
+        routeID: UUID, fitToken: Int, othersToken: Int, pointAt: Binding<MapFocusRequest?>
+    ) {
+        self.line = line
+        self.pins = pins
+        self.restrooms = restrooms
+        self.others = others
+        self.style = style
+        self._selection = selection
+        self.routeID = routeID
+        self.fitToken = fitToken
+        self.othersToken = othersToken
+        self._pointAt = pointAt
+        let saved = SavedMapRegion.load(for: routeID)
+        _camera = State(initialValue: saved.map { .region($0) } ?? .automatic)
+        _wantsDriver = State(initialValue: saved == nil)
+        _restored = State(initialValue: saved != nil)
+    }
 
     var body: some View {
         Map(position: $camera, selection: $selection) {
@@ -1336,6 +1364,11 @@ private struct RouteMapCanvas: View {
             if !closeIn, distance < 3_500 { closeIn = true }
             if closeIn, distance > 4_500 { closeIn = false }
         }
+        // Remembered, so choosing Karte again comes back to where the driver
+        // left the map rather than jumping to their position.
+        .onMapCameraChange(frequency: .onEnd) { context in
+            SavedMapRegion.store(context.region, for: routeID)
+        }
         // Explicitly blue rather than inherited, even though the app's accent
         // is now blue too. This is the colour a user-location dot is on every
         // map anyone has ever used — the same pairing Apple Maps ships, where
@@ -1361,6 +1394,8 @@ private struct RouteMapCanvas: View {
             // was the "Ganze Route zeigen" button, which is not something a
             // driver knows they need to press. Suppressing the one re-frame the
             // request was made to survive is the whole job.
+            let reopened = restored
+            restored = false
             guard pointAt == nil else {
                 pointAt = nil
                 return
@@ -1373,6 +1408,9 @@ private struct RouteMapCanvas: View {
             // down after one: it lasts precisely as long as the camera is
             // actually following, and the first pan ends it.
             guard !camera.followsUserLocation else { return }
+            // Reopened where the driver left it: that is the one view they
+            // asked for, and the line finishing is not a reason to move it.
+            guard !reopened else { return }
             // And the same again for the half-second before the camera gets
             // there. The first fix and the finished polyline arrive within a
             // moment of each other in either order, so on the open where the
@@ -1381,15 +1419,6 @@ private struct RouteMapCanvas: View {
             // intermittently, for no reason they could see.
             guard !(wantsDriver && LocationAuthorization.shared.hasFix) else { return }
             fit()
-        }
-        // Choosing Karte from the tab bar. The map is opened standing in front
-        // of a Gemeindebau, to work out which of its four sides the entrance is
-        // on; the shape of the tour is not the question, and having to find and
-        // press the location button first is the difference between an answer
-        // and a fumble in the rain.
-        .onChange(of: followToken) {
-            wantsDriver = true
-            aimAtDriver()
         }
         // A fresh install answers the permission prompt *after* the map is
         // already up, so the first fix arrives with nobody left asking for it.
@@ -1489,6 +1518,32 @@ private struct RouteMapCanvas: View {
         let points = (line.isEmpty ? pins.map(\.coordinate) : line) + others.map(\.coordinate)
         guard let region = MKCoordinateRegion(fitting: points) else { return }
         withAnimation(.easeInOut) { camera = .region(region) }
+    }
+}
+
+/// The map region the driver last left Karte on, and the tour it was a view
+/// of — another tour is another map, and gets framed from scratch.
+private enum SavedMapRegion {
+    private static let key = "map.lastRegion"
+    private static let routeKey = "map.lastRegionRoute"
+
+    static func store(_ r: MKCoordinateRegion, for routeID: UUID) {
+        UserDefaults.standard.set(
+            [r.center.latitude, r.center.longitude, r.span.latitudeDelta, r.span.longitudeDelta],
+            forKey: key)
+        UserDefaults.standard.set(routeID.uuidString, forKey: routeKey)
+    }
+
+    static func load(for routeID: UUID) -> MKCoordinateRegion? {
+        guard UserDefaults.standard.string(forKey: routeKey) == routeID.uuidString else {
+            return nil
+        }
+        guard let v = UserDefaults.standard.array(forKey: key) as? [Double], v.count == 4,
+              v.allSatisfy(\.isFinite), v[2] > 0, v[3] > 0, abs(v[0]) <= 90, abs(v[1]) <= 180
+        else { return nil }
+        return MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: v[0], longitude: v[1]),
+            span: MKCoordinateSpan(latitudeDelta: v[2], longitudeDelta: v[3]))
     }
 }
 

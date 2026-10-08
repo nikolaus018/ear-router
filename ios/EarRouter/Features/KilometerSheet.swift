@@ -34,6 +34,13 @@ struct KilometerSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 18) {
+                    // The moment the reading is taken, for the log book.
+                    TimelineView(.everyMinute) { context in
+                        Text("\(Format.date(context.date)) · \(Format.time(context.date)) Uhr")
+                            .font(.subheadline.weight(.medium).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+
                     VStack(spacing: 10) {
                         field("Alt", text: $oldText, field: .old)
                         field("Neu", text: $newText, field: .new)

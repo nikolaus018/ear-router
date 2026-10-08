@@ -78,9 +78,9 @@ enum Ladung {
 /// off, rather than a per-customer list nobody can load from.
 ///
 /// On a VM tour that is every distinct package across the route's customer
-/// stops, summed, busiest first. On a TK tour it is the customers, last door
-/// first — the parcels carry their names, so what the driver needs from this
-/// screen is the order to stack them in.
+/// stops, summed — TGM and TGMS first, then busiest first. On a TK tour it is
+/// the customers, last door first — the parcels carry their names, so what the
+/// driver needs from this screen is the order to stack them in.
 struct LadelisteView: View {
     let route: Route
     @Environment(\.dismiss) private var dismiss
@@ -413,8 +413,13 @@ enum PaketParser {
             }
         }
 
+        // TGM/TGMS first, then the rest: the order the van is loaded in.
+        // Within each group, busiest first as before.
+        func rank(_ item: PaketItem) -> Int { item.key.contains("tgm") ? 0 : 1 }
         return order.compactMap { byKey[$0] }.sorted {
-            $0.qty != $1.qty
+            rank($0) != rank($1)
+                ? rank($0) < rank($1)
+                : $0.qty != $1.qty
                 ? $0.qty > $1.qty
                 : $0.label.compare($1.label, options: [], range: nil, locale: Locale(identifier: "de_AT")) == .orderedAscending
         }
