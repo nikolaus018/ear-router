@@ -2,24 +2,26 @@ import Contacts
 import SwiftUI
 
 /// Puts a customer's number into the phone's contacts the moment it is dialled
-/// from here, as "Maria Huber – EAR-Kunde".
+/// from here, as "EAR-Kunde Maria Huber".
 ///
 /// A customer who does not pick up calls back — an hour later, or in the
 /// evening, from a number the phone shows as eleven digits and nothing else.
 /// With the name beside it the driver can tell a customer from a stranger
 /// before answering, and decide for themselves whether this one matters.
 enum CustomerContacts {
-    static let suffix = "EAR-Kunde"
+    static let label = "EAR-Kunde"
     /// Their own group, so a year of customers can be found — and cleared out —
     /// in one place rather than picked out of the address book one by one.
     static let groupName = "EAR-Kunden"
 
-    /// What the call screen shows. The suffix is in the name itself, not in a
+    /// What the call screen shows. The label is in the name itself, not in a
     /// company field, because the name is the one line an incoming call is
-    /// guaranteed to show.
+    /// guaranteed to show — and it comes first, so the address book files
+    /// every customer together under E instead of scattering them through the
+    /// driver's own contacts.
     static func contactName(for kunde: String?) -> String {
         let name = kunde?.trimmed ?? ""
-        return name.isEmpty ? suffix : "\(name) – \(suffix)"
+        return name.isEmpty ? label : "\(label) \(name)"
     }
 
     /// One number in every notation it might already be saved under. The
@@ -95,7 +97,7 @@ enum CustomerContacts {
 
         // A second number for a customer already saved from here — the daughter
         // in the note, after the customer's own — joins that contact rather
-        // than becoming a second "Maria Huber – EAR-Kunde".
+        // than becoming a second "EAR-Kunde Maria Huber".
         let sameName = CNContact.predicateForContacts(matchingName: name)
         let existing = (try? store.unifiedContacts(matching: sameName, keysToFetch: keys))?
             .first { $0.givenName == name && $0.familyName.isEmpty }

@@ -3,8 +3,9 @@ import Testing
 
 struct CustomerContactsTests {
     /// The name is what an incoming call shows, so it says both who and what.
-    @Test func theNameCarriesTheCustomerAndTheSuffix() {
-        #expect(CustomerContacts.contactName(for: " Maria Huber ") == "Maria Huber – EAR-Kunde")
+    /// Label first, so they all sort together under E.
+    @Test func theNameCarriesTheLabelAndThenTheCustomer() {
+        #expect(CustomerContacts.contactName(for: " Maria Huber ") == "EAR-Kunde Maria Huber")
     }
 
     @Test func aStopWithoutANameIsStillACustomer() {
