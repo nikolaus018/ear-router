@@ -26,10 +26,11 @@ struct MoreTab: View {
     private let gourmetURL = URL(string: "https://zusteller.gourmet-daheim.at/#/customers")!
 
     /// The office line, and the 1 its menu wants before anyone picks up. Each
-    /// comma is a two-second pause after the call connects, which is what
+    /// comma is a two-second pause after the call connects — one, because two
+    /// sent the 1 too late — which is what
     /// stands in for the driver waiting out the greeting and pressing the key
     /// themselves.
-    private let bueroURL = URL(string: "tel:+43189145173,,1")!
+    private let bueroURL = URL(string: "tel:+43189145173,1")!
 
     var body: some View {
         List {
