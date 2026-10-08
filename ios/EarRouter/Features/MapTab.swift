@@ -1277,6 +1277,12 @@ private struct RouteMapCanvas: View {
     /// instead of either the whole tour or the driver. The re-frame every map
     /// opens with stands down for it, once.
     @State private var restored: Bool
+    /// The re-frame and the stop request already answered. `onChange(initial:)`
+    /// runs again every time this tab comes back to the front, with nothing
+    /// changed — and answering the same token twice is what threw the camera
+    /// back out to the whole tour on every return to Karte.
+    @State private var answeredFit: Int?
+    @State private var answeredPoint: MapFocusRequest?
     /// Zoomed in far enough to draw the map in 3D — see `mapStyle(closeIn:)`.
     @State private var closeIn = false
 
@@ -1394,6 +1400,8 @@ private struct RouteMapCanvas: View {
             // was the "Ganze Route zeigen" button, which is not something a
             // driver knows they need to press. Suppressing the one re-frame the
             // request was made to survive is the whole job.
+            guard answeredFit != fitToken else { return }
+            answeredFit = fitToken
             let reopened = restored
             restored = false
             guard pointAt == nil else {
@@ -1447,7 +1455,8 @@ private struct RouteMapCanvas: View {
             fit()
         }
         .onChange(of: pointAt, initial: true) { _, request in
-            guard let request else { return }
+            guard let request, request != answeredPoint else { return }
+            answeredPoint = request
             wantsDriver = false
             // Close enough to read the street the door is on, wide enough to
             // see the stops either side of it.
@@ -1510,6 +1519,9 @@ private struct RouteMapCanvas: View {
         // towards: wrapped in an animation the assignment was accepted —
         // `followsUserLocation` came back true — and the map never moved.
         camera = .userLocation(fallback: .automatic)
+        // Asked and answered. Left standing, the next return to this tab put
+        // the camera back on the driver, over wherever they had moved it to.
+        wantsDriver = false
     }
 
     /// Frames the whole tour. Prefers the driven line over the pins, so the
