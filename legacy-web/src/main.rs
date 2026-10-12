@@ -41,6 +41,8 @@
 //! Environment:
 //!   - `EAR_PORT` — listen port (default 8000; `PORT` is read when it is
 //!     not set, which is what a hosting panel provides).
+//!   - `EAR_ADMIN_PASSWORD` — the password of the `admin` account. Applied
+//!     on start; unset, an existing admin keeps the one it has.
 //!   - `EAR_DATA_DIR` — where `rerouter.db` is kept. Defaults to the
 //!     binary's own directory.
 //!   - `EAR_ASSETS_DIR` — where index.html/sw.js/icon.png are read from.
@@ -1279,15 +1281,34 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
         conn.execute("ALTER TABLE routes ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE", [])?;
     }
 
-    // The administrator. Its name and password are fixed here rather than
-    // kept only in the database, so there is always one account that can
-    // get in and make the others -- including after a database has been
-    // replaced or its admin row edited by hand. The password is written
-    // back on every start; what is stored is its hash.
-    let admin_hash = hash_password(ADMIN_PASSWORD)?;
+    // The administrator. Its password comes from the environment,
+    // `EAR_ADMIN_PASSWORD`, and is written onto the account on every start
+    // it differs from what is stored -- so there is always one account that
+    // can get in and make the others, including after a database has been
+    // replaced, and changing the password is changing one setting. What is
+    // stored is its hash.
+    //
+    // Without the variable an admin that already exists keeps the password
+    // it has. One that does not exist yet is created locked: nobody can sign
+    // in as it until the variable is set, which is said in the log rather
+    // than left to be found out at the login screen.
+    let existing: Option<String> = conn
+        .query_row("SELECT password_hash FROM users WHERE username = ?1", params![ADMIN_USERNAME], |r| r.get(0))
+        .optional()?;
+    let configured = std::env::var("EAR_ADMIN_PASSWORD").ok().filter(|p| !p.is_empty());
+    let admin_hash = match (&configured, &existing) {
+        // Already what is stored: hashing again would only change the salt.
+        (Some(password), Some(hash)) if verify_password(password, hash) => None,
+        (Some(password), _) => Some(hash_password(password)?),
+        (None, Some(_)) => None,
+        (None, None) => {
+            tracing::warn!("EAR_ADMIN_PASSWORD is not set -- the admin account exists but nobody can sign in as it until it is");
+            Some(hash_password(&new_session_token())?)
+        }
+    };
     conn.execute(
-        "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?1, ?2, 1, ?3) \
-         ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash, is_admin = 1",
+        "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?1, COALESCE(?2, ''), 1, ?3) \
+         ON CONFLICT(username) DO UPDATE SET password_hash = COALESCE(?2, password_hash), is_admin = 1",
         params![ADMIN_USERNAME, admin_hash, now_iso()],
     )?;
     let admin_id: i64 = conn.query_row("SELECT id FROM users WHERE username = ?1", params![ADMIN_USERNAME], |r| r.get(0))?;
@@ -3599,7 +3620,6 @@ async fn fill_entrances(state: &Arc<AppState>, route_id: i64) {
 // ---------------------------------------------------------------------
 
 const ADMIN_USERNAME: &str = "admin";
-const ADMIN_PASSWORD: &str = "Meinkonto07!";
 const SESSION_COOKIE: &str = "ear_session";
 /// A month, counted from the last request rather than from signing in.
 const SESSION_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
@@ -3889,7 +3909,7 @@ struct UserUpdate {
 
 /// `PATCH /api/admin/users/:id`: a new name, a new password, or both. A new
 /// password signs that user out everywhere, which is the point of setting
-/// one. The admin's own name and password are fixed in this file.
+/// one. The admin's own password is set with `EAR_ADMIN_PASSWORD`.
 async fn admin_update_user(
     State(state): State<Arc<AppState>>,
     AxPath(user_id): AxPath<i64>,
@@ -3908,7 +3928,7 @@ async fn admin_update_user(
         .ok_or_else(|| AppError::NotFound("Benutzer nicht gefunden".into()))?
         != 0;
     if is_admin {
-        return Err(AppError::Forbidden("Das Administrator-Konto ist fest eingestellt und kann hier nicht geändert werden.".into()));
+        return Err(AppError::Forbidden("Das Administrator-Konto wird am Server eingestellt und kann hier nicht geändert werden.".into()));
     }
     if let Some(username) = &username {
         tx.execute("UPDATE users SET username = ?1 WHERE id = ?2", params![username, user_id]).map_err(username_taken)?;

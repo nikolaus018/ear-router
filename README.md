@@ -101,8 +101,8 @@ and nothing in it is more technical than a postcode.
 
 Everybody signs in. Each account has its own tours and its own portal login,
 kept on its row in `users`; the server does the talking to `odoo.gourmet.at`,
-because a browser cannot. The account `admin` — its name and password are set
-in `src/main.rs` — also has an Admin tab, where the other accounts are made,
+because a browser cannot. The account `admin` — its password is the
+environment variable `EAR_ADMIN_PASSWORD`, applied on start — also has an Admin tab, where the other accounts are made,
 renamed, given a new password and deleted.
 
 Not in the web version, on purpose: the JSON editor, Erays Planer, Globale

@@ -4,6 +4,7 @@ Dateien hochladen + Neustart. Venvy baut das Rust-Projekt auf dem Server selbst.
     python3 scripts/ship.py login     einmalig anmelden (Passwort wird abgefragt, nie gespeichert)
     python3 scripts/ship.py           deployen
     python3 scripts/ship.py publish ear.ringtwo.win    öffentlich erreichbar machen (Cloudflare-Tunnel)
+    python3 scripts/ship.py admin-password             Passwort des admin-Kontos setzen (wird abgefragt)
     python3 scripts/ship.py logout
 
 Gespeichert wird nur die Venvy-Sitzung (30 Tage, verlängert sich bei Nutzung) in ~/.config/venvy/.
@@ -298,14 +299,34 @@ def publish(hostname: str | None) -> None:
     print(f"✓ Veröffentlicht: {res.get('url') or 'https://' + hostname}")
 
 
+def admin_password() -> None:
+    """Setzt EAR_ADMIN_PASSWORD auf Venvy und startet die App neu. Das Passwort wird abgefragt,
+    steht also in keiner Datei und in keiner Shell-History."""
+    v = Venvy()
+    if not v.load() or not v.call("GET", "/api/auth/status").get("authenticated"):
+        sys.exit("✗ Nicht bei Venvy angemeldet. Einmal ausführen:  python3 scripts/ship.py login")
+    app = find_app(v)
+    if not app:
+        sys.exit("✗ Die App gibt es noch nicht – zuerst deployen:  python3 scripts/ship.py")
+    if app.get("env_unreadable"):
+        sys.exit("✗ Umgebungsvariablen der App sind nicht lesbar (Venvy-Schlüssel) – bitte im Panel prüfen.")
+    password = getpass.getpass("Neues Passwort für das admin-Konto der App: ")
+    if len(password) < 6 or password != getpass.getpass("Noch einmal: "):
+        sys.exit("✗ Zu kurz (mindestens 6 Zeichen) oder die beiden Eingaben stimmen nicht überein.")
+    env = json.loads(app.get("env_json") or "{}")
+    v.call("PUT", f"/api/apps/{app['id']}", {"env_vars": {**env, "EAR_ADMIN_PASSWORD": password}})
+    restart(v, find_app(v))
+    print("✓ Gesetzt. Die App übernimmt es beim Start.")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="EAR Router (Web) auf Venvy deployen")
-    ap.add_argument("command", nargs="?", default="deploy", choices=["deploy", "login", "logout", "publish"])
+    ap.add_argument("command", nargs="?", default="deploy", choices=["deploy", "login", "logout", "publish", "admin-password"])
     ap.add_argument("hostname", nargs="?", help="nur für publish")
     ap.add_argument("--port", type=int, help="Port der App (nur nötig, wenn Venvy keinen vorschlägt)")
     args = ap.parse_args()
     try:
-        {"login": login, "logout": logout, "publish": lambda: publish(args.hostname)}.get(args.command, lambda: deploy(args.port))()
+        {"login": login, "logout": logout, "publish": lambda: publish(args.hostname), "admin-password": admin_password}.get(args.command, lambda: deploy(args.port))()
     except ApiError as e:
         if e.status == 401:
             sys.exit("✗ Venvy-Sitzung abgelaufen. Neu anmelden:  python3 scripts/ship.py login")

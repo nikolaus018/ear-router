@@ -6753,7 +6753,7 @@ function openUserSheet(userId, message = '') {
   if (u.is_admin) {
     renderSheetShell(`
       <h2 class="sheet-title">${escapeHtml(u.username)}</h2>
-      <div class="sheet-note"><span>${ICONS.key}</span><span>Das ist das Administrator-Konto. Name und Passwort sind fest eingestellt und können hier nicht geändert werden.</span></div>
+      <div class="sheet-note"><span>${ICONS.key}</span><span>Das ist das Administrator-Konto. Sein Passwort wird am Server eingestellt und kann hier nicht geändert werden.</span></div>
       <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Schließen</button></div>
     `, { label: u.username });
     return;
