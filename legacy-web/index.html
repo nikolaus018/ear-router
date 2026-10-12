@@ -267,6 +267,33 @@
      only what the finger has to hit. `min-width/height: 100%` so an element
      already larger than 44pt keeps its own hit area rather than having it
      shrunk to 44. */
+  /* Jetzt, and the other screens added after the Tailwind block below was
+     compiled. That block holds only the utilities the file used at the time
+     and there is no compiler on hand to add to it, so what these screens
+     need beyond it is written out here by name. */
+  .now-card { background: #fff; border-radius: 1rem; box-shadow: 0 1px 2px rgba(0,0,0,.05); padding: 1.25rem; }
+  .now-badge { flex: none; width: 1.75rem; height: 1.75rem; border-radius: 50%; background: #ED1639; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .now-name { font-size: 22px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+  .now-address { font-size: 16px; color: rgba(0,0,0,.75); margin-top: .375rem; overflow-wrap: anywhere; }
+  .now-fact { display: flex; align-items: flex-start; gap: .5rem; font-size: 15px; line-height: 1.35; margin-top: .625rem; overflow-wrap: anywhere; white-space: pre-line; }
+  .now-fact > span:first-child { flex: none; display: flex; margin-top: .15em; color: rgba(0,0,0,.55); }
+  .now-fact.warn { color: #9A5B00; }
+  .now-fact.warn > span:first-child { color: #9A5B00; }
+  .wide-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: .5rem; padding: .875rem 1rem; border-radius: .875rem; font-size: 16px; font-weight: 600; text-decoration: none; }
+  .wide-btn.primary { background: #34C759; color: #fff; }
+  .wide-btn.accent { background: #ED1639; color: #fff; }
+  .wide-btn.quiet { background: rgba(120,120,128,.14); color: #000; }
+  .wide-btn + .wide-btn { margin-top: .625rem; }
+  .now-caption { font-size: 13px; font-weight: 500; color: rgba(0,0,0,.55); }
+  .now-follow { display: flex; align-items: flex-start; gap: .5rem; text-align: left; font-size: 15px; margin-top: .5rem; }
+  .now-follow > span:first-child { flex: none; display: flex; margin-top: .2em; color: #FF9500; }
+  .tab-grid { display: grid; }
+  #undo-banner { position: fixed; left: 0; right: 0; z-index: 45; display: flex; justify-content: center; padding: 0 1rem; bottom: calc(env(safe-area-inset-bottom, 0px) + 4.25rem); pointer-events: none; }
+  #undo-banner > div { pointer-events: auto; max-width: 26rem; width: 100%; display: flex; align-items: center; gap: .625rem; padding: .6875rem 1rem; border-radius: 999px; background: rgba(255,255,255,.92); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 4px 18px rgba(0,0,0,.18); font-size: 14px; font-weight: 500; }
+  #undo-banner .who { flex: 1; min-width: 0; display: flex; }
+  #undo-banner .who > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #undo-banner .who > span:last-child { flex: none; white-space: nowrap; }
+  #undo-banner button { flex: none; font-weight: 600; color: #ED1639; }
   .tap-target { position: relative; }
   .tap-target::after {
     content: ''; position: absolute; top: 50%; left: 50%;
@@ -2253,6 +2280,10 @@ const ICONS = {
   chevron: icon('<polyline points="9 18 15 12 9 6"/>', 'stroke-width="2.25"'),
   kebab: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="12" cy="5" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="12" cy="19" r="1.9"/></svg>',
   tabRoutes: icon('<circle cx="4" cy="6" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="6" x2="20" y2="6"/><circle cx="4" cy="12" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="12" x2="20" y2="12"/><circle cx="4" cy="18" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="18" x2="20" y2="18"/>'),
+  tabNow: icon('<path d="M13 4h3a2 2 0 0 1 2 2v14"/><path d="M2 20h3"/><path d="M13 20h9"/><path d="M10 12v.01"/><path d="M13 4.562v16.157a1 1 0 0 1-1.242.97L5 20V5.562a2 2 0 0 1 1.515-1.94l4-1A2 2 0 0 1 13 4.561Z"/>'),
+  arrowTurn: icon('<polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/>', 'stroke-width="2"'),
+  check: icon('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 'stroke-width="2.5"'),
+  people: icon('<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6"/><path d="M17.5 14.3A6 6 0 0 1 21 20"/>'),
   tabMap: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
   tabMore: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>',
   mapPin: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
@@ -2976,6 +3007,7 @@ function switchTab(tab) {
     scrollCurrentScreenToTop();
     return;
   }
+  dismissUndo();
   state.tab = tab;
   render();
 }
@@ -3629,6 +3661,11 @@ async function setOutcome(stopId, outcome) {
   syncRouteSummary();
   applyDeliveredDomPatch(stopId) || render(true);
   if (navigator.vibrate) navigator.vibrate(delivered ? [12, 40, 12] : 12);
+  // On Jetzt the stop is off the screen as soon as it is answered for, so
+  // the way back has to follow it. In the list the row is still there, with
+  // its tick to tap again.
+  if (outcome && state.tab === 'now' && !isDetailShowing()) offerUndo(stop, outcome);
+  else dismissUndo();
 
   // The exact moment a second package at the same door is easiest to
   // miss: right after marking the first one delivered, about to walk back
@@ -5023,13 +5060,14 @@ function fmtDate(iso) {
 function renderTabBar() {
   const tabs = [
     { id: 'routes', label: 'Routen', icon: ICONS.tabRoutes },
+    { id: 'now', label: 'Jetzt', icon: ICONS.tabNow },
     { id: 'map', label: 'Karte', icon: ICONS.tabMap },
     { id: 'verlauf', label: 'Verlauf', icon: ICONS.archive },
     { id: 'more', label: 'Mehr', icon: ICONS.tabMore },
   ];
   return `
     <nav class="fixed bottom-0 inset-x-0 z-40 bg-white border-t border-black/10" style="padding-bottom: env(safe-area-inset-bottom, 0px)">
-      <div class="max-w-md mx-auto grid grid-cols-4">
+      <div class="max-w-md mx-auto tab-grid" style="grid-template-columns: repeat(${tabs.length}, minmax(0, 1fr))">
         ${tabs.map(t => `
           <button onclick="switchTab('${t.id}')" ${state.tab === t.id ? 'aria-current="page"' : ''} aria-label="${t.label}" class="press-fade flex flex-col items-center justify-center gap-0.5 pt-2 pb-1.5 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 ${state.tab === t.id ? 'text-brand-600' : 'text-black/55'}">
             <span class="text-[22px] flex">${t.icon}</span>
@@ -5153,6 +5191,7 @@ function renderScreen(skipRowAnim) {
   let screen;
   if (showingDetail) screen = renderRouteDetail();
   else if (state.tab === 'routes') screen = renderRoutesTab();
+  else if (state.tab === 'now') screen = renderNowTab();
   else if (state.tab === 'map') screen = renderMapTab();
   else if (state.tab === 'verlauf') screen = renderVerlaufTab();
   else screen = renderMoreTab();
@@ -5205,6 +5244,7 @@ function renderScreen(skipRowAnim) {
   }
   mapTabWasVisible = showingMapTab;
 
+  syncWakeLock();
   updateHistoryGuard();
   // The Karte tab docks a route card above the tab bar and the other
   // screens don't, so how far up the toasts have to sit changes with the
@@ -5361,6 +5401,219 @@ function renderMapTab() {
     </div>
   `;
 }
+
+// ---------------------------------------------------------------------
+// Jetzt tab — the stop the driver is at, and nothing else.
+//
+// The route's list is the right screen for planning a tour and the wrong one
+// for driving it: thirty rows, one of which matters, read at arm's length
+// between two doors. This is that one row with room to breathe — who, where,
+// what to hand over — and the two things done at every door, each a full
+// width of thumb: start the navigation, and say it is delivered.
+//
+// It shows the route in focus when that is an active one, and otherwise
+// picks the newest active tour the same way the Karte tab does.
+// ---------------------------------------------------------------------
+let nowAutoSelectPending = false;
+
+function renderNowTab() {
+  const pickable = state.routes.filter((r) => r.status === 'active');
+  const r = state.currentRoute?.status === 'active' ? state.currentRoute : null;
+  if (!r && pickable.length && !nowAutoSelectPending) {
+    nowAutoSelectPending = true;
+    setTimeout(() => {
+      selectMapRoute(pickable[0].id).finally(() => { nowAutoSelectPending = false; });
+    }, 0);
+  }
+
+  const frame = (title, body) => `
+    <div data-scroll role="main" class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8rem)">
+      <div class="sticky top-0 z-20 bg-[#F2F2F7]/85 backdrop-blur-xl border-b border-black/10" style="padding-top: calc(env(safe-area-inset-top) + 0.5rem)">
+        <div class="flex items-center justify-between px-4 pb-2.5">
+          <span class="w-8"></span>
+          <p data-compact-title class="compact-title flex-1 min-w-0 text-center truncate font-semibold px-1" style="opacity:0">${escapeHtml(title)}</p>
+          ${r ? `<button onclick="switchTab('map')" aria-label="Auf der Karte zeigen" title="Auf der Karte zeigen" class="tap-target press-fade w-8 h-8 flex items-center justify-center text-brand-600 text-lg">${ICONS.tabMap}</button>` : '<span class="w-8"></span>'}
+        </div>
+      </div>
+      <div class="px-4">
+        <h1 data-large-title class="large-title text-[22px] font-bold tracking-tight pt-3 pb-1 truncate">${escapeHtml(title)}</h1>
+        ${body}
+      </div>
+    </div>`;
+  const empty = (iconSvg, title, text, action) => `
+    <div class="text-center py-20 text-black/55">
+      <span class="text-4xl flex justify-center mb-3 opacity-40">${iconSvg}</span>
+      <p class="font-semibold text-black/70">${title}</p>
+      <p class="text-[15px] mt-1 leading-snug">${text}</p>
+      ${action}
+    </div>`;
+
+  if (!pickable.length) {
+    return frame('Jetzt', empty(ICONS.tabNow, 'Keine aktive Tour',
+      'Sobald eine Tour läuft, steht hier der Stopp, bei dem du gerade bist.',
+      `<button onclick="switchTab('routes')" class="press-98 wide-btn accent" style="margin-top:1.25rem">Zu den Touren</button>`));
+  }
+  if (!r) return frame('Jetzt', '');
+
+  // Which tour this is, when there is more than one it could be.
+  const chips = pickable.length > 1 ? `
+    <div class="momentum overflow-x-auto flex gap-2 pb-3">
+      ${pickable.map((p) => `
+        <button onclick="selectMapRoute(${p.id})" ${r.id === p.id ? 'aria-current="true"' : ''} class="press-98 shrink-0 px-3.5 py-2 rounded-full text-[13px] font-semibold ${r.id === p.id ? 'bg-brand-600 text-white' : 'bg-white text-black/70'}">${escapeHtml(p.name)}</button>`).join('')}
+    </div>` : '';
+
+  const stops = r.stops;
+  const customers = stops.filter((s) => s.kind === 'customer' && !skipsDoor(s));
+  const settled = customers.filter((s) => s.outcome).length;
+  const notHome = customers.filter((s) => s.outcome === 'notHome');
+  const caption = [
+    `${r.delivered_count} von ${r.customer_count} geliefert`,
+    notHome.length ? `${notHome.length} nicht angetroffen` : '',
+  ].filter(Boolean).join(' · ');
+  const progress = `
+    <p class="now-caption" style="padding: .25rem .25rem .5rem">${caption}</p>
+    <div class="h-1.5 bg-black/10 rounded-full overflow-hidden mb-4">
+      <div class="h-full bg-success transition-all duration-500" style="width: ${customers.length ? Math.round((settled / customers.length) * 100) : 0}%"></div>
+    </div>`;
+
+  const idx = firstOpenIndex(stops);
+  if (idx >= 0) return frame(r.name, chips + progress + nowStopCard(r, stops[idx]));
+
+  if (!customers.length) {
+    return frame(r.name, chips + empty(ICONS.box, 'Noch keine Stopps',
+      'Stopps hinzufügen und importieren geht in der Tour selbst.',
+      `<button onclick="openCurrentRouteDetail()" class="press-98 wide-btn accent" style="margin-top:1.25rem">Zur Tour</button>`));
+  }
+
+  // Every door answered for. What is left is to say so — and, if a meal came
+  // back, who did not get theirs.
+  const toLager = stops.filter((s) => s.outcome === 'toLager').length;
+  const allDelivered = notHome.length === 0;
+  const count = r.customer_count;
+  const handed = r.delivered_count === count
+    ? (count === 1 ? '1 Stopp geliefert' : `${count} Stopps geliefert`)
+    : `${r.delivered_count} von ${count} geliefert`;
+  const detail = [handed, toLager ? `${toLager} ins Lager` : ''].filter(Boolean).join(' · ');
+  return frame(r.name, chips + progress + `
+    <div class="text-center" style="padding: 1.5rem .5rem">
+      <span class="flex justify-center mb-3" style="font-size: 3rem; color: ${allDelivered ? '#34C759' : '#FF9500'}">${allDelivered ? ICONS.checkCircle : ICONS.bellOff}</span>
+      <p class="now-name">${allDelivered && r.delivered_count === count ? 'Alle geliefert' : 'Tour gefahren'}</p>
+      <p class="text-[15px] text-black/55 mt-1">${detail}</p>
+      ${allDelivered ? '' : `<div class="now-card" style="margin-top:1.25rem; padding: .75rem 1rem 1rem">
+        ${notHome.map((s) => `<div class="now-follow"><span>${ICONS.bellOff}</span><span><span class="block font-medium">${escapeHtml(s.kunde)}</span><span class="block text-[13px] text-black/55">${escapeHtml(stopAddress(s))}</span></span></div>`).join('')}
+      </div>`}
+      <button onclick="toggleRouteStatus()" class="press-98 wide-btn accent" style="margin-top:1.5rem">${ICONS.checkCircle} Tour abschließen</button>
+    </div>`);
+}
+
+/// The card for the stop the driver is at.
+function nowStopCard(r, stop) {
+  const meta = stopKindMeta(stop);
+  // The number the map's pin wears: its place among the doors the van drives.
+  const number = meta ? null : r.stops.filter((s) => s.kind === 'customer' && !skipsDoor(s)).findIndex((s) => s.id === stop.id) + 1;
+  const sameDoor = meta ? 1 : (sameDoorGroups(r.stops).get(stop.id)?.length || 1);
+  const precision = stop.location_precision === 'street' ? 'Genaue Hausnummer nicht gefunden — Position ist nur ungefähr.'
+    : stop.location_precision === 'district' ? 'Straße nicht gefunden — nur Bezirksmitte. Position bitte prüfen.' : '';
+  return `
+    <div class="now-card" data-now-stop="${stop.id}">
+      <div class="flex items-start gap-3">
+        <span class="now-badge" aria-hidden="true">${meta ? meta.icon : number}</span>
+        <div class="flex-1 min-w-0">
+          <h2 class="now-name">${escapeHtml(meta ? meta.title : stop.kunde)}</h2>
+          <p class="now-address">${escapeHtml(stopAddress(stop))}</p>
+          ${sameDoor > 1 ? `<p class="now-fact warn"><span>${ICONS.people}</span><span>${sameDoor} an dieser Tür</span></p>` : ''}
+        </div>
+        ${meta ? '' : `<button onclick="openStopMenu(getStop(${stop.id}))" aria-label="Mehr" title="Mehr" class="tap-target press-fade w-9 h-9 shrink-0 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>`}
+      </div>
+      ${stop.paket && !meta ? `<p class="now-fact"><span>${ICONS.box}</span><span style="font-weight:600">${escapeHtml(stop.paket)}</span></p>` : ''}
+      ${stop.notiz && !meta ? `<p class="now-fact"><span>${ICONS.note}</span><span>${escapeHtml(stop.notiz)}</span></p>` : ''}
+      ${precision ? `<p class="now-fact warn"><span>${ICONS.warning}</span><span>${precision}</span></p>` : ''}
+      <div style="margin-top: 1.25rem">
+        <a href="${navUrl(stop)}" target="_blank" rel="noopener" class="press-98 wide-btn quiet">${ICONS.arrowTurn} Navigation</a>
+        <button onclick="settleFromNow(${stop.id})" class="press-98 wide-btn primary">${ICONS.check} ${meta ? 'Erledigt' : 'Geliefert'}</button>
+      </div>
+    </div>`;
+}
+
+/// The big button. The same tick as the list's, and then the banner that
+/// takes it back — the card has already moved on to the next door by the
+/// time a slip of the thumb is noticed.
+function settleFromNow(stopId) {
+  setOutcome(stopId, 'delivered');
+}
+
+// ---------------------------------------------------------------------
+// The undo banner. Shown for a few seconds after an answer given on Jetzt,
+// where the stop it was given for is gone from the screen the moment it is
+// given. Held by stop id, not by the stop: the tour behind it may have been
+// planned again in between, and an id still means the same door afterwards.
+// Lives outside #app, like the toasts, so a re-render does not take it down.
+// ---------------------------------------------------------------------
+const UNDO_MS = 6000;
+let undoTimer = null;
+
+function offerUndo(stop, outcome) {
+  const name = stopKindMeta(stop)?.title || stop.kunde || 'Stopp';
+  const label = stop.kind !== 'customer' ? 'erledigt' : OUTCOMES[outcome]?.short || '';
+  let el = document.getElementById('undo-banner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'undo-banner';
+    el.setAttribute('role', 'status');
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `<div>
+    <span class="flex" style="color:${handedOver(outcome) ? '#34C759' : '#FF9500'}">${handedOver(outcome) ? ICONS.checkCircle : outcome === 'notHome' ? ICONS.bellOff : ICONS.box}</span>
+    <span class="who"><span>„${escapeHtml(name)}“</span><span>&nbsp;— ${escapeHtml(label)}</span></span>
+    <button type="button" onclick="takeBackOutcome(${stop.id})">Rückgängig</button>
+  </div>`;
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(dismissUndo, UNDO_MS);
+}
+
+function dismissUndo() {
+  clearTimeout(undoTimer);
+  undoTimer = null;
+  document.getElementById('undo-banner')?.remove();
+}
+
+function takeBackOutcome(stopId) {
+  dismissUndo();
+  // Nothing to take back for a stop this route no longer has — deleted from
+  // another screen inside the banner's few seconds.
+  if (state.currentRoute?.stops.some((s) => s.id === stopId)) setOutcome(stopId, null);
+}
+
+// ---------------------------------------------------------------------
+// Keeps the screen on while a tour has doors left. A phone on a dashboard
+// mount that dims between two stops has to be unlocked with a hand that is
+// holding a meal. Released the moment there is nothing left to drive to, and
+// re-requested on return: the browser drops a wake lock whenever the page is
+// hidden. Not every browser has one; where it is missing this does nothing.
+// ---------------------------------------------------------------------
+let wakeLock = null;
+let wakeLockPending = false;
+
+function syncWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  const r = state.currentRoute;
+  const wanted = document.visibilityState === 'visible'
+    && r?.status === 'active' && r.stops.some(isOpenStop);
+  if (wanted && !wakeLock && !wakeLockPending) {
+    wakeLockPending = true;
+    navigator.wakeLock.request('screen')
+      .then((lock) => {
+        wakeLock = lock;
+        lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+      })
+      .catch(() => { /* refused (battery saver, no gesture yet) — the screen dims as it always did */ })
+      .finally(() => { wakeLockPending = false; });
+  } else if (!wanted && wakeLock) {
+    wakeLock.release().catch(() => {});
+    wakeLock = null;
+  }
+}
+document.addEventListener('visibilitychange', syncWakeLock);
 
 // ---------------------------------------------------------------------
 // Verlauf tab — completed routes, own tab (not buried under Mehr) so a
