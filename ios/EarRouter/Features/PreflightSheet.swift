@@ -25,9 +25,25 @@ struct PreflightSheet: View {
     /// "Lieferstatus zurücksetzen", waiting to be confirmed — the same question
     /// the tour's own menu asks before it clears every tick of the day.
     @State private var confirmingReset = false
+    /// The departure the driver planned for this tour, mirrored from
+    /// `PlannedStart` so the picker has something to bind to and the estimate
+    /// under it follows every turn of the wheel.
+    @State private var plannedStart: Date?
+
+    init(
+        route: Route, onOptimize: @escaping () -> Void, onRecheck: @escaping () -> Void,
+        onResetDelivered: @escaping () -> Void, onLadeliste: @escaping () -> Void
+    ) {
+        self.route = route
+        self.onOptimize = onOptimize
+        self.onRecheck = onRecheck
+        self.onResetDelivered = onResetDelivered
+        self.onLadeliste = onLadeliste
+        _plannedStart = State(initialValue: PlannedStart.load(for: route.id))
+    }
 
     var body: some View {
-        let snapshot = RouteSnapshot(route)
+        let snapshot = RouteSnapshot(route, plannedStart: .some(plannedStart))
         let known = stockwerkNotes.floorQuestionClosed(for: snapshot.ordered)
         let preflight = Preflight(route: route, snapshot: snapshot, floorsKnown: known)
 
@@ -47,8 +63,17 @@ struct PreflightSheet: View {
 
                 if let finish = snapshot.etaFinish() {
                     Section {
+                        departure(snapshot)
                         LabeledContent("Voraussichtlich fertig") {
                             Text(Format.time(finish)).monospacedDigit()
+                        }
+                        // Only beside a departure that is still ahead. Counted
+                        // from now it is "fertig" again in other words.
+                        if snapshot.pendingStart() != nil,
+                           let duration = Format.minutes(snapshot.plannedDuration()) {
+                            LabeledContent("Dauer") {
+                                Text("ca. \(duration)").monospacedDigit()
+                            }
                         }
                     } footer: {
                         Text(
@@ -82,6 +107,39 @@ struct PreflightSheet: View {
             } message: {
                 Text(RouteStore.resetDeliveredMessage(for: route))
             }
+        }
+    }
+
+    /// When the driver means to set off. Without it the estimate below starts
+    /// now — right on the day, and no use the evening before.
+    ///
+    /// Gone once the tour is under way or the time has passed: the estimate
+    /// has stopped listening to it by then, and a picker that changes nothing
+    /// is a question about why.
+    @ViewBuilder
+    private func departure(_ snapshot: RouteSnapshot) -> some View {
+        if snapshot.pendingStart() != nil {
+            DatePicker(
+                "Abfahrt",
+                selection: Binding(
+                    get: { plannedStart ?? Date() },
+                    set: { setPlannedStart($0) }),
+                in: Date()...,
+                displayedComponents: [.date, .hourAndMinute])
+            Button("Abfahrt entfernen") { setPlannedStart(nil) }
+        } else if !snapshot.underWay {
+            Button("Abfahrt planen", systemImage: "clock") {
+                setPlannedStart(PlannedStart.suggestion())
+            }
+        }
+    }
+
+    private func setPlannedStart(_ date: Date?) {
+        plannedStart = date
+        if let date {
+            PlannedStart.save(date, for: route.id)
+        } else {
+            PlannedStart.forget(route.id)
         }
     }
 

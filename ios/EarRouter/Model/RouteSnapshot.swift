@@ -78,6 +78,13 @@ struct RouteSnapshot {
     /// before the first tick, and when doors were ticked out of order — then
     /// the last tick says nothing about where the van is.
     private let anchorTime: Date?
+    /// When the driver means to set off, if they have said — see
+    /// `PlannedStart`.
+    let plannedStart: Date?
+    /// Whether the van has been anywhere yet: a door answered at the door, or
+    /// the Lager or Ziel ticked. Not an abbestellt customer, who is ticked off
+    /// the evening before when the office rings.
+    let underWay: Bool
     /// What was learned from the tours already driven — see `PaceHistory`.
     private let history: PaceHistory
     /// Today's own door times, one per pair of doors ticked one after the
@@ -160,10 +167,19 @@ struct RouteSnapshot {
         static let anchorMaxAge: TimeInterval = 90 * 60
     }
 
-    init(_ route: Route, now: Date = Date(), history: PaceHistory = .current) {
+    /// `plannedStart` is read from `PlannedStart` unless the caller hands one
+    /// in; `.some(nil)` is a tour with none, whatever is stored.
+    init(
+        _ route: Route, now: Date = Date(), history: PaceHistory = .current,
+        plannedStart: Date?? = nil
+    ) {
         let ordered = route.orderedStops
         self.ordered = ordered
         self.history = history
+        self.plannedStart = plannedStart ?? PlannedStart.load(for: route.id)
+        self.underWay = ordered.contains {
+            $0.countsAsStop && $0.isSettled && $0.outcome?.skipsDoor != true
+        }
 
         var numbers: [UUID: Int] = [:]
         var customers = 0
@@ -419,6 +435,26 @@ extension RouteSnapshot {
         return (next, max(planned, now), departure)
     }
 
+    /// The departure the driver planned, while it is still ahead and the tour
+    /// has not begun. Every estimate is then counted from there instead of
+    /// from now — the evening before, "now" would have the van setting off at
+    /// nine at night.
+    ///
+    /// `nil` once the first stop is ticked, when the ticks say where the van
+    /// is, and once the time has passed: a driver who has not left by then is
+    /// leaving now at the earliest.
+    func pendingStart(from now: Date = Date()) -> Date? {
+        guard !underWay, let plannedStart, plannedStart > now else { return nil }
+        return plannedStart
+    }
+
+    /// How long the tour takes from setting off to the last point it drives
+    /// to, in minutes — what `etaFinish` adds to the departure.
+    func plannedDuration(from now: Date = Date()) -> Double? {
+        guard let finish = etaFinish(from: now) else { return nil }
+        return finish.timeIntervalSince(pendingStart(from: now) ?? now) / 60
+    }
+
     /// When the van is expected at this stop.
     ///
     /// `nil` for a door already answered for — an arrival time for a delivery
@@ -426,6 +462,7 @@ extension RouteSnapshot {
     /// optimized, where every leg is zero and this would confidently promise
     /// all thirty customers their meal at the same minute.
     func eta(for stop: Stop, from now: Date = Date()) -> Date? {
+        let now = pendingStart(from: now) ?? now
         guard totalMinutes > 0, !stop.isSettled, let arrival = arrivalMinutes[stop.id],
               let next = nextStopTimes(from: now)
         else { return nil }
@@ -445,6 +482,7 @@ extension RouteSnapshot {
     /// When the shift is expected to end: the last point the tour actually
     /// drives to, doors and all.
     func etaFinish(from now: Date = Date()) -> Date? {
+        let now = pendingStart(from: now) ?? now
         guard totalMinutes > 0, openCount > 0, let next = nextStopTimes(from: now)
         else { return nil }
         // The loading too, while it is still ahead of any door.

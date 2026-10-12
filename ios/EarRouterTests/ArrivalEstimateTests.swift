@@ -91,6 +91,63 @@ struct ArrivalEstimateTests {
         #expect(snap(route).eta(for: b, from: noon) != nil)
     }
 
+    // MARK: - A planned departure
+
+    /// The evening before: with a departure set, every estimate is counted
+    /// from it instead of from the moment the driver happens to be looking,
+    /// and the tour is as long as it always was.
+    @Test func aPlannedDepartureIsWhereTheEstimateStarts() throws {
+        let a = customer("A"), b = customer("B"), c = customer("C")
+        let route = try route([a, b, c])
+        let plain = snap(route)
+        let planned = RouteSnapshot(route, history: .none, plannedStart: .some(at(600)))
+
+        #expect(planned.pendingStart(from: noon) == at(600))
+        #expect(minutesAfterNoon(planned.eta(for: a, from: noon)) == 600)
+        #expect(minutesAfterNoon(planned.eta(for: c, from: noon)) == 600 + 20 + 2 * door)
+        #expect(
+            planned.etaFinish(from: noon)
+                == plain.etaFinish(from: noon)?.addingTimeInterval(600 * 60))
+        #expect(planned.plannedDuration(from: noon) == plain.plannedDuration(from: noon))
+        #expect(planned.plannedDuration(from: noon) == 30 + 3 * door)
+    }
+
+    /// A departure that has passed, or a tour already under way, is counted
+    /// the way it always was: the van is where the clock or the ticks say.
+    /// An abbestellt customer is not a tour under way — the office rings the
+    /// evening before.
+    @Test func aPlannedDepartureStopsCountingOnceItIsBehind() throws {
+        let a = customer("A"), b = customer("B"), c = customer("C")
+        let route = try route([a, b, c])
+
+        let late = RouteSnapshot(route, history: .none, plannedStart: .some(at(-30)))
+        #expect(late.pendingStart(from: noon) == nil)
+        #expect(late.etaFinish(from: noon) == snap(route).etaFinish(from: noon))
+
+        c.record(.cancelled, at: noon)
+        let cancelled = RouteSnapshot(route, history: .none, plannedStart: .some(at(600)))
+        #expect(cancelled.pendingStart(from: noon) == at(600))
+
+        a.record(.delivered, at: noon)
+        let started = RouteSnapshot(route, history: .none, plannedStart: .some(at(600)))
+        #expect(started.pendingStart(from: noon) == nil)
+        #expect(started.etaFinish(from: noon) == snap(route).etaFinish(from: noon))
+    }
+
+    /// The picker opens on the next time the clock shows the hour asked for:
+    /// later today if that is still ahead, tomorrow otherwise.
+    @Test func theSuggestedDepartureIsTheNextSuchTimeOfDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Vienna")!
+        let evening = calendar.date(from: DateComponents(year: 2026, month: 10, day: 12, hour: 21))!
+        let morning = calendar.date(from: DateComponents(year: 2026, month: 10, day: 13, hour: 6))!
+        let wanted = calendar.date(
+            from: DateComponents(year: 2026, month: 10, day: 13, hour: 7, minute: 30))!
+
+        #expect(PlannedStart.suggestion(after: evening, clockMinutes: 450, calendar: calendar) == wanted)
+        #expect(PlannedStart.suggestion(after: morning, clockMinutes: 450, calendar: calendar) == wanted)
+    }
+
     /// And every door after it pays for the ones in front: the drive, plus
     /// the assumed minutes at each door still to be answered.
     @Test func eachFurtherDoorPaysForTheStopsInFrontOfIt() throws {
