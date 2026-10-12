@@ -10,6 +10,7 @@ Zusteller-Portal, to look an address up and to optimise the route.
 ```
 ios/            The app. Open ios/EarRouter.xcodeproj in Xcode.
 ios/Tools/      Draws the app icon. Not part of the build.
+legacy-web/     The previous Rust + PWA version, kept for reference.
 ```
 
 ## The app
@@ -80,3 +81,18 @@ build to hand over for the map's per-frame change keys, the union-find behind
 So: develop with `EarRouter`, and reinstall the van's phone with
 `EarRouter (Fahrbetrieb)`. Tests run under Debug in both, which is where
 `ENABLE_TESTABILITY` lives.
+
+## legacy-web
+
+The Rust (Axum + SQLite) backend and the single-file PWA it served. Superseded
+by `ios/`, which does the same work without a server: the phone calls the
+geocoders and OSRM directly and keeps its own data. It stopped at 03.09.2026
+and has none of what the app learned after that.
+
+```bash
+cd legacy-web
+cargo run --release
+```
+
+Serves on port 8000 (`EAR_PORT`). The database, `rerouter.db`, is created next
+to the binary.

@@ -15,3 +15,9 @@ ios/EarRouter.xcodeproj/project.pbxproj
 # Local-only debug credentials for the Zusteller-Portal (Simulator/Debug
 # fallback in GourmetCredentialsStore) — never committed.
 .gourmet-debug-credentials
+
+# legacy-web (Rust + PWA)
+legacy-web/target/
+rerouter.db
+rerouter.db-wal
+rerouter.db-shm
