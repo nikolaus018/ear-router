@@ -138,3 +138,7 @@ cargo run --release
 
 Serves on port 8000 (`EAR_PORT`). The database, `rerouter.db`, is created next
 to the binary. `cargo test` covers the rules the server decides.
+
+## License
+
+MIT, see [`LICENSE`](LICENSE).
