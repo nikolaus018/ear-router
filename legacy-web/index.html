@@ -288,6 +288,15 @@
   .now-follow { display: flex; align-items: flex-start; gap: .5rem; text-align: left; font-size: 15px; margin-top: .5rem; }
   .now-follow > span:first-child { flex: none; display: flex; margin-top: .2em; color: #FF9500; }
   .tab-grid { display: grid; }
+  .review-row { display: flex; align-items: flex-start; }
+  .review-main { flex: 1; min-width: 0; text-align: left; padding: .75rem 0 .75rem 1rem; }
+  .review-fact { display: flex; gap: .375rem; align-items: flex-start; font-size: 13px; line-height: 1.35; margin-top: .25rem; color: rgba(0,0,0,.7); overflow-wrap: anywhere; }
+  .review-fact > span:first-child { flex: none; display: flex; margin-top: .15em; color: rgba(0,0,0,.45); }
+  .review-fact.warn, .review-fact.warn > span:first-child { color: #B26A00; font-weight: 600; }
+  .review-x { flex: none; width: 2.75rem; height: 2.75rem; margin: .375rem .25rem 0 0; display: flex; align-items: center; justify-content: center; font-size: 18px; color: rgba(0,0,0,.4); }
+  .seg { display: flex; background: rgba(120,120,128,.16); border-radius: .625rem; padding: 2px; margin: .5rem 0 .75rem; }
+  .seg-btn { flex: 1; padding: .4375rem 0; border-radius: .5rem; font-size: 14px; font-weight: 600; color: rgba(0,0,0,.6); }
+  .seg-btn.on { background: #fff; color: #000; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
   .preflight-action { margin-top: .5rem; padding: .4375rem .875rem; border-radius: 999px; background: #ED1639; color: #fff; font-size: 14px; font-weight: 600; }
   .reorder-row { display: flex; align-items: center; gap: .625rem; padding: .5rem .625rem .5rem 1rem; }
   .reorder-num { flex: none; width: 1.625rem; height: 1.625rem; border-radius: 50%; background: rgba(120,120,128,.16); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -2243,7 +2252,7 @@ video {
 // it" — so browsing the map never leaves a stray detail screen behind in
 // Routen/Mehr. (Not the string 'map': see `switchTab`'s comment for why
 // that value in particular would do the opposite of what it looks like.)
-const state = { tab: 'routes', routes: [], currentRoute: null, detailOrigin: null };
+const state = { tab: 'routes', routes: [], currentRoute: null, detailOrigin: null, user: null };
 
 const GROUP = 'bg-white rounded-2xl overflow-hidden divide-y divide-black/10 shadow-sm';
 // A single-row card (no `divide-y`) — GROUP's divider is a sibling
@@ -2521,6 +2530,9 @@ async function apiAttempt(path, options = {}) {
       if (res.status === 429 && msg === 'Ein Fehler ist aufgetreten.') {
         msg = 'Zu viele Anfragen. Bitte kurz warten und erneut versuchen.';
       }
+      // The session ran out, or was ended from somewhere else. Whatever was
+      // being asked for, the answer on screen is the login.
+      if (res.status === 401 && path !== '/login') signedOut();
       const err = apiError(msg, code || `http_${res.status}`);
       // Structured fields the server attached next to the sentence — today
       // only `plz`, the district a wrong-district address is actually filed
@@ -2994,11 +3006,19 @@ const NAV_COORD_DECIMALS = 6;
 // worse than letting their navigation app take its own shot at the address.
 function navUrl(stop) {
   const provider = MAPS_PROVIDERS[getMapsProvider()];
-  const exact = !stop.location_precision && Number.isFinite(stop.lat) && Number.isFinite(stop.lon);
-  if (exact) {
-    return provider.point(stop.lat.toFixed(NAV_COORD_DECIMALS), stop.lon.toFixed(NAV_COORD_DECIMALS));
-  }
-  return provider.address(navAddress(stop));
+  const point = (lat, lon) => provider.point(lat.toFixed(NAV_COORD_DECIMALS), lon.toFixed(NAV_COORD_DECIMALS));
+  const usable = Number.isFinite(stop.lat) && Number.isFinite(stop.lon);
+  // A pin the driver placed by hand outranks everything: they stood in
+  // front of the door and said where it is.
+  if (stop.pinned && usable) return point(stop.lat, stop.lon);
+  // Then the house number's entrance, from the city's register. The stop's
+  // own point is the building or the Stiege — right for the map, and for a
+  // Gemeindebau as likely a courtyard as the street the van pulls up in.
+  if (Number.isFinite(stop.entrance_lat) && Number.isFinite(stop.entrance_lon)) return point(stop.entrance_lat, stop.entrance_lon);
+  // Then the address, which a navigation app resolves to the street door on
+  // its own; the bare point only when there is no address to send.
+  if ((stop.strasse || '').trim()) return provider.address(navAddress(stop));
+  return usable ? point(stop.lat, stop.lon) : provider.address(navAddress(stop));
 }
 
 // The one place the human-readable form of a stop's address is assembled,
@@ -3009,7 +3029,12 @@ function navUrl(stop) {
 /// the search cannot wander off to a 2201 somewhere else.
 function navAddress(s) {
   const vienna = !!DISTRICT_BY_PLZ[s.plz];
-  return `${s.strasse}, ${s.plz}${vienna ? ' Wien' : ''}, Österreich`;
+  // Street and house number only. Stiege, Tür and Parzelle are things the
+  // city's register knows and no navigation app does: "Gentzgasse 129/1/23"
+  // sent whole is a search that either fails or quietly guesses.
+  const street = String(s.strasse || '').trim().replace(/\s+/g, ' ')
+    .replace(/^(.+?\s+\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?)(?:[\/\s(].*)?$/, '$1');
+  return `${street}, ${s.plz}${vienna ? ' Wien' : ''}, Österreich`;
 }
 
 function stopAddress(s) {
@@ -3060,6 +3085,7 @@ function switchTab(tab) {
   dismissUndo();
   state.tab = tab;
   render();
+  if (tab === 'admin') loadAdminUsers();
 }
 
 // The scroll container of whatever screen is showing. Every screen marks it
@@ -4556,7 +4582,7 @@ function autoFillDistrictFromText(strasseInput, plzSelect) {
 // `reloadForUpdateIfPending`): a load takes a minute, and abandoning it
 // halfway leaves nobody knowing what arrived.
 let importController = null;
-const gourmet = { routeId: null, date: null, tours: null, tour: null, deliveries: null, picked: null };
+const gourmet = { routeId: null, date: null, tours: null, tour: null, deliveries: null, picked: null, entries: null, loaded: 0 };
 
 const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const dayLabel = (iso) => {
@@ -4594,7 +4620,7 @@ function openNewTourSheet() {
 /// Opens the Gourmet flow — for a new tour, or with `routeId` to add a
 /// tour's stops to the one that is open.
 async function openGourmetSheet(routeId = null) {
-  Object.assign(gourmet, { routeId, date: isoDay(new Date()), tours: null, tour: null, deliveries: null, picked: null });
+  Object.assign(gourmet, { routeId, date: isoDay(new Date()), tours: null, tour: null, deliveries: null, picked: null, entries: null, loaded: 0 });
   renderSheetShell(`<div data-gourmet><h2 class="sheet-title">Von Gourmet laden</h2>${sheetBusy('Einen Moment …')}</div>`, { label: 'Von Gourmet laden' });
   try {
     const status = await api('/portal/status');
@@ -4635,7 +4661,7 @@ function showGourmetLogin(message = '') {
         <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
       </div>
     </form>
-    <p class="sheet-foot">Die Anmeldung wird auf dem Server dieser App gespeichert, damit sie nicht jeden Tag neu eingegeben werden muss.</p>
+    <p class="sheet-foot">Die Anmeldung wird bei deinem Konto gespeichert, damit du sie nicht jeden Tag neu eingeben musst.</p>
   `, 'Bei Gourmet anmelden');
   const form = document.getElementById('gourmet-login');
   form.addEventListener('submit', async (e) => {
@@ -4759,7 +4785,7 @@ function paintGourmetDeliveries() {
         </button>`).join('')}
     </div>
     <div class="sheet-actions">
-      <button type="button" onclick="runGourmetImport()" ${n ? '' : 'disabled'} class="press-98 wide-btn accent">${n === 1 ? '1 Stopp laden' : `${n} Stopps laden`}</button>
+      <button type="button" onclick="loadGourmetEntries()" ${n ? '' : 'disabled'} class="press-98 wide-btn accent">Weiter mit ${n === 1 ? '1 Stopp' : `${n} Stopps`}</button>
       <button type="button" onclick="showGourmetTours()" class="press-98 wide-btn quiet">Zurück</button>
     </div>
   `, escapeHtml(tour.name));
@@ -4780,37 +4806,184 @@ function gourmetPickAll(on) {
   paintGourmetDeliveries();
 }
 
-/// Loads the picked stops. The server looks every address up and puts the
-/// tour in driving order before it answers, which takes about a minute for
-/// a full round — said on screen, so the wait is not mistaken for a hang.
-async function runGourmetImport() {
-  const { tour, date, picked, deliveries, routeId } = gourmet;
-  if (!tour || !picked?.size || importController) return;
+/// Step three and a half: fetch what the picked deliveries actually are —
+/// the parcels, the notes, the phone numbers — and show them for checking.
+/// Nothing touches a tour yet.
+async function loadGourmetEntries() {
+  const { tour, date, picked, deliveries } = gourmet;
+  if (!tour || !picked?.size) return;
   const n = picked.size;
+  gourmetBody(sheetBusy(`${n === 1 ? '1 Stopp wird' : `${n} Stopps werden`} geholt …`), escapeHtml(tour.name));
+  try {
+    const body = { tour_id: tour.id, date };
+    if (n !== deliveries.length) body.delivery_ids = [...picked];
+    const { entries } = await api('/portal/entries', { method: 'POST', body: JSON.stringify(body), timeoutMs: 3 * 60 * 1000 });
+    if (gourmet.tour?.id !== tour.id) return;
+    gourmet.entries = entries.map((e) => ({
+      kunde: e.kunde || '', strasse: e.strasse || '', plz: e.plz || '', paket: e.paket || '', notiz: e.notiz || '',
+      telefon: e.telefon || '', paket_count: e.paket_count ?? null,
+    }));
+    gourmet.loaded = 0;
+    paintReview();
+  } catch (err) {
+    gourmetBody(sheetError(err.message, 'loadGourmetEntries()') + `<button type="button" onclick="paintGourmetDeliveries()" class="press-98 wide-btn quiet">Zurück</button>`, escapeHtml(tour.name));
+  }
+}
+
+// ---------------------------------------------------------------------
+// Prüfen — the list, looked over before it lands.
+//
+// Every stop as the portal has it, one row each: who, where, what is in the
+// parcels, the note. A row can be corrected (tap it) or taken out (the ×).
+// A row that could not become a stop says why, in orange, and is left out
+// until it is fixed. Only "Übernehmen" looks the addresses up and changes
+// the tour — and an address that is then not found stays right here, marked,
+// to be corrected and tried again, instead of being lost in a summary.
+// ---------------------------------------------------------------------
+/// Why this entry cannot become a stop as it stands, or `null`.
+function reviewProblem(e) {
+  if (!e.kunde.trim()) return 'Kein Name';
+  if (!e.strasse.trim()) return 'Keine Straße';
+  if (!e.plz.trim()) return 'Keine Postleitzahl';
+  if (!/^[1-9]\d{3}$/.test(e.plz.trim())) return `${e.plz} ist keine gültige Postleitzahl`;
+  return e.failed || null;
+}
+
+function paintReview() {
+  const { entries, tour } = gourmet;
+  if (!entries) return;
+  const problems = entries.filter(reviewProblem).length;
+  const ready = entries.length - entries.filter((e) => reviewProblem(e) && !e.failed).length;
+  const count = entries.length === 1 ? '1 Eintrag' : `${entries.length} Einträge`;
+  const tk = tour.name.trim().toLowerCase().startsWith('tk');
+  const row = (e, i) => {
+    const problem = reviewProblem(e);
+    const paket = tk ? (e.paket_count == null ? '' : e.paket_count === 1 ? '1 Paket' : `${e.paket_count} Pakete`) : e.paket;
+    return `
+      <div class="review-row">
+        <button type="button" onclick="editReviewEntry(${i})" class="review-main">
+          <span class="block font-medium">${escapeHtml(e.kunde || 'Ohne Namen')}</span>
+          <span class="block text-[13px] text-black/55">${escapeHtml([e.strasse, e.plz].filter(Boolean).join(', ') || 'Keine Adresse')}</span>
+          ${paket ? `<span class="review-fact"><span>${ICONS.box}</span><span>${escapeHtml(paket)}</span></span>` : ''}
+          ${e.notiz ? `<span class="review-fact"><span>${ICONS.note}</span><span>${escapeHtml(e.notiz)}</span></span>` : ''}
+          ${problem ? `<span class="review-fact warn"><span>${ICONS.warning}</span><span>${escapeHtml(problem)}</span></span>` : ''}
+        </button>
+        <button type="button" onclick="removeReviewEntry(${i})" aria-label="${escapeAttr(`${e.kunde || 'Eintrag'} entfernen`)}" title="Entfernen" class="review-x">${ICONS.close}</button>
+      </div>`;
+  };
   gourmetBody(`
-    ${sheetBusy(`${n === 1 ? '1 Stopp wird' : `${n} Stopps werden`} geladen …`)}
+    ${gourmet.loaded ? `<div class="sheet-note" style="background:rgba(52,199,89,.14);color:#1B6B32"><span style="color:#248A3D">${ICONS.checkCircle}</span><span>${gourmet.loaded === 1 ? '1 Stopp ist' : `${gourmet.loaded} Stopps sind`} schon in der Tour. Die folgenden fehlen noch.</span></div>` : ''}
+    <p class="sheet-lead">${entries.length
+      ? (problems
+          ? 'Orange markierte Einträge antippen und korrigieren — oder mit dem × weglassen.'
+          : 'Kurz durchsehen. Antippen zum Korrigieren, × zum Weglassen. Erst „Übernehmen“ ändert die Tour.')
+      : 'Alle Einträge wurden entfernt.'}</p>
+    ${entries.length ? `
+      <p class="now-caption" style="padding:0 .25rem .5rem">${count}${problems ? ` · ${problems === 1 ? '1 Warnung' : `${problems} Warnungen`}` : ''}</p>
+      <div class="${GROUP}">${entries.map(row).join('')}</div>` : ''}
+    <div class="sheet-actions">
+      <button type="button" onclick="applyReview()" ${ready ? '' : 'disabled'} class="press-98 wide-btn accent">${ready === 1 ? '1 Stopp übernehmen' : `${ready} Stopps übernehmen`}</button>
+      <button type="button" onclick="leaveReview()" class="press-98 wide-btn quiet">${gourmet.loaded ? 'Fertig' : 'Zurück'}</button>
+    </div>
+  `, 'Prüfen');
+}
+
+function removeReviewEntry(i) {
+  const top = document.querySelector('.sheet-panel > .overflow-y-auto')?.scrollTop;
+  gourmet.entries.splice(i, 1);
+  paintReview();
+  const scroller = document.querySelector('.sheet-panel > .overflow-y-auto');
+  if (scroller && top != null) scroller.scrollTop = top;
+}
+
+/// Back out of Prüfen: to the stop picker before anything was loaded, and
+/// to the tour itself once part of the list is on it.
+function leaveReview() {
+  if (gourmet.loaded) { closeSheet(); return; }
+  paintGourmetDeliveries();
+}
+
+function editReviewEntry(i, message = '') {
+  const e = gourmet.entries[i];
+  if (!e) return;
+  gourmetBody(`
+    ${message ? `<div class="sheet-note warn"><span>${ICONS.warning}</span><span>${escapeHtml(message)}</span></div>` : (e.failed ? `<div class="sheet-note warn"><span>${ICONS.warning}</span><span>${escapeHtml(e.failed)}</span></div>` : '')}
+    <form id="review-form" novalidate class="space-y-3 pb-2">
+      <div><label class="${LABEL}" for="rv-kunde">Kunde</label><input id="rv-kunde" name="kunde" autocomplete="off" maxlength="${LIMITS.kunde}" value="${escapeAttr(e.kunde)}" class="${FIELD}" /></div>
+      <div><label class="${LABEL}" for="rv-strasse">Straße &amp; Hausnummer</label><input id="rv-strasse" name="strasse" autocomplete="off" maxlength="${LIMITS.strasse}" value="${escapeAttr(e.strasse)}" class="${FIELD}" /></div>
+      <div><label class="${LABEL}" for="rv-plz">Postleitzahl</label><input id="rv-plz" name="plz" inputmode="numeric" maxlength="4" autocomplete="off" value="${escapeAttr(e.plz)}" class="${FIELD}" /></div>
+      <div><label class="${LABEL}" for="rv-paket">Paket</label><input id="rv-paket" name="paket" autocomplete="off" maxlength="${LIMITS.paket}" value="${escapeAttr(e.paket)}" class="${FIELD}" /></div>
+      <div><label class="${LABEL}" for="rv-notiz">Notiz</label><textarea id="rv-notiz" name="notiz" rows="2" maxlength="${LIMITS.notiz}" class="${FIELD} resize-none">${escapeHtml(e.notiz)}</textarea></div>
+      <div><label class="${LABEL}" for="rv-telefon">Telefon</label><input id="rv-telefon" name="telefon" type="tel" inputmode="tel" autocomplete="off" maxlength="40" value="${escapeAttr(e.telefon)}" class="${FIELD}" /></div>
+      <div style="padding-top:.5rem">
+        <button type="submit" class="press-98 wide-btn accent">Speichern</button>
+        <button type="button" onclick="paintReview()" class="press-98 wide-btn quiet">Abbrechen</button>
+      </div>
+    </form>
+  `, 'Eintrag korrigieren');
+  const form = document.getElementById('review-form');
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const next = { ...e };
+    for (const k of ['kunde', 'strasse', 'plz', 'paket', 'notiz', 'telefon']) next[k] = form[k].value.trim();
+    // A corrected address gets a fresh try; the old verdict was about the old one.
+    if (next.strasse !== e.strasse || next.plz !== e.plz) delete next.failed;
+    gourmet.entries[i] = next;
+    paintReview();
+  });
+}
+
+/// Übernehmen. The server looks every address up and puts the tour in
+/// driving order before it answers, which takes about a minute for a full
+/// round — said on screen, so the wait is not mistaken for a hang.
+async function applyReview() {
+  const { tour, date, entries } = gourmet;
+  if (!tour || !entries || importController) return;
+  const sending = entries.filter((e) => !reviewProblem(e) || e.failed);
+  const held = entries.filter((e) => reviewProblem(e) && !e.failed);
+  if (!sending.length) return;
+  const n = sending.length;
+  gourmetBody(`
+    ${sheetBusy(`${n === 1 ? '1 Stopp wird' : `${n} Stopps werden`} übernommen …`)}
     <p class="sheet-lead" style="text-align:center">Adressen werden gesucht und die Tour wird sortiert. Das dauert etwa eine Minute — bitte die App offen lassen.</p>
     <button type="button" onclick="importController?.abort()" class="press-98 wide-btn quiet">Abbrechen</button>
   `, escapeHtml(tour.name));
   importController = new AbortController();
   const seq = nextSeq();
   try {
-    const body = { tour_id: tour.id, tour_name: tour.name, date, route_id: routeId };
-    if (n !== deliveries.length) body.delivery_ids = [...picked];
+    const body = {
+      tour_name: tour.name, date, route_id: gourmet.routeId,
+      entries: sending.map(({ failed, ...e }) => e),
+    };
     const result = await api('/portal/import', { method: 'POST', body: JSON.stringify(body), timeoutMs: 8 * 60 * 1000, signal: importController.signal });
     importController = null;
-    closeSheet();
+    // From here on the tour exists: a second "Übernehmen" adds to it.
+    gourmet.routeId = result.id;
     adoptRoute(seq, result);
     state.tab = 'routes';
     state.detailOrigin = 'routes';
     resetStopFilter();
     render();
     if (navigator.vibrate) navigator.vibrate([12, 40, 12]);
-    showImportResult(result, n);
+
+    // What did not make it stays on the list, each with its reason.
+    const key = (x) => `${(x.kunde || '').trim()}|${(x.strasse || '').trim()}|${(x.plz || '').trim()}`;
+    const notFound = new Set((result.geocode_failures || []).map(key));
+    const invalid = new Map((result.validation_failures || []).map((v) => [v.label, v.reason]));
+    const left = sending.filter((e) => notFound.has(key(e)) || invalid.has(e.kunde.trim()))
+      .map((e) => ({ ...e, failed: invalid.get(e.kunde.trim()) || 'Adresse nicht gefunden — bitte Straße, Hausnummer und Postleitzahl prüfen.' }));
+    gourmet.loaded = (gourmet.loaded || 0) + (n - left.length);
+    gourmet.entries = [...left, ...held];
+    if (gourmet.entries.length) {
+      paintReview();
+      return;
+    }
+    closeSheet();
+    showImportResult(result, gourmet.loaded);
   } catch (err) {
     importController = null;
-    if (err.code === 'aborted') { showGourmetDeliveries(tour.id); toast('Laden abgebrochen.', 'info'); }
-    else gourmetBody(sheetError(err.message, 'runGourmetImport()') + `<button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Schließen</button>`, escapeHtml(tour.name));
+    if (err.code === 'aborted') { paintReview(); toast('Übernehmen abgebrochen.', 'info'); }
+    else gourmetBody(sheetError(err.message, 'applyReview()') + `<button type="button" onclick="paintReview()" class="press-98 wide-btn quiet">Zurück zur Liste</button>`, escapeHtml(tour.name));
   } finally {
     // A new version of the app may have arrived while this was running and
     // been made to wait — see the reload listener near the bottom.
@@ -4820,23 +4993,17 @@ async function runGourmetImport() {
 
 /// What a load did, in the words of somebody who has to act on it: how many
 /// stops are there, and which ones need a look before setting off.
-function showImportResult(result, asked) {
-  const missing = [...(result.geocode_failures || []), ...(result.validation_failures || []).map((v) => ({ kunde: v.label, strasse: v.reason, plz: '' }))];
+function showImportResult(result, loaded) {
   const rough = result.approximate || [];
-  const loaded = asked - missing.length;
-  if (!missing.length && !rough.length) {
-    toast(`${loaded === 1 ? '1 Stopp' : `${loaded} Stopps`} geladen ✓`, 'success');
+  if (!rough.length) {
+    toast(`${loaded === 1 ? '1 Stopp' : `${loaded} Stopps`} übernommen ✓`, 'success');
     return;
   }
   const row = (x) => `<div class="px-4 py-3"><p class="font-medium">${escapeHtml(x.kunde)}</p><p class="text-[13px] text-black/55">${escapeHtml([x.strasse, x.plz].filter(Boolean).join(', '))}</p></div>`;
   renderSheetShell(`
-    <h2 class="sheet-title">${loaded === 1 ? '1 Stopp geladen' : `${loaded} Stopps geladen`}</h2>
-    ${missing.length ? `
-      <p class="sheet-lead"><b>${missing.length === 1 ? 'Eine Adresse wurde' : `${missing.length} Adressen wurden`} nicht gefunden</b> und ${missing.length === 1 ? 'fehlt' : 'fehlen'} in der Tour. Bitte mit dem <span class="text-brand-600 font-semibold">+</span> oben von Hand hinzufügen.</p>
-      <div class="${GROUP} mb-4">${missing.map(row).join('')}</div>` : ''}
-    ${rough.length ? `
-      <p class="sheet-lead"><b>${rough.length === 1 ? 'Bei einem Stopp' : `Bei ${rough.length} Stopps`} ist die Position nur ungefähr.</b> Sie sind in der Liste orange markiert — Stopp antippen, „Bearbeiten“, dann den Pin auf das richtige Haus setzen.</p>
-      <div class="${GROUP} mb-4">${rough.map(row).join('')}</div>` : ''}
+    <h2 class="sheet-title">${loaded === 1 ? '1 Stopp übernommen' : `${loaded} Stopps übernommen`}</h2>
+    <p class="sheet-lead"><b>${rough.length === 1 ? 'Bei einem Stopp' : `Bei ${rough.length} Stopps`} ist die Position nur ungefähr.</b> Sie sind in der Liste orange markiert — Stopp antippen, „Bearbeiten“, dann den Pin auf das richtige Haus setzen.</p>
+    <div class="${GROUP} mb-4">${rough.map(row).join('')}</div>
     <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn accent">Verstanden</button></div>
   `, { label: 'Ergebnis' });
 }
@@ -4977,24 +5144,48 @@ function paketQty(paket) {
 /// its label. So such a tour shows how many parcels a door gets rather than
 /// what is in them, and its Ladeliste goes customer by customer, last door
 /// first, which is the order the van is packed in.
-const isTkTour = (r) => !!r && r.name.trim().toLowerCase().startsWith('tk');
+/// The mode in force for a tour: the driver's pick in the Ladeliste if they
+/// made one, the guess from the name otherwise ("Tk1", "TK 3 …"). The one
+/// place that question is answered, because every screen that draws a stop
+/// asks it.
+const ladelisteMode = (r) => (r?.ladeliste_mode === 'vm' || r?.ladeliste_mode === 'tk')
+  ? r.ladeliste_mode
+  : (r && r.name.trim().toLowerCase().startsWith('tk') ? 'tk' : 'vm');
+const isTkTour = (r) => ladelisteMode(r) === 'tk';
+
+/// The Paket as the app should *show* it. On a TK round the dish names
+/// decide nothing at any door — what matters is how many parcels to carry
+/// up, the portal's own count — and where that is not known the field is
+/// hidden. A display rule only: the Paket itself is still edited, still
+/// summed for the VM list.
 function displayPaket(s, r = state.currentRoute) {
   if (!isTkTour(r)) return s.paket || '';
   if (s.paket_count == null) return '';
   return s.paket_count === 1 ? '1 Paket' : `${s.paket_count} Pakete`;
 }
 
-function ladelisteItems(route) {
-  if (isTkTour(route)) {
-    return route.stops
-      .filter((s) => s.kind === 'customer' && !skipsDoor(s))
-      .map((s) => ({ key: `tk:${s.id}`, label: s.kunde, qty: s.paket_count || 1 }))
-      .reverse();
+/// What loads the van, for the mode given.
+///   VM — the Pakete, summed across the tour: TGM lines first, then the
+///        most of anything, then by name.
+///   TK — the customers themselves, last door first, so the last one in is
+///        the first one out.
+/// A door the van does not go to is on neither.
+function ladelisteItems(route, mode = ladelisteMode(route)) {
+  const owed = route.stops.filter((s) => s.kind === 'customer' && !skipsDoor(s));
+  if (mode === 'tk') {
+    return owed.slice().reverse().map((s, i) => {
+      const parcels = s.paket_count == null ? '' : (s.paket_count === 1 ? '1 Paket' : `${s.paket_count} Pakete`);
+      return {
+        key: `stop:${s.id}`,
+        qty: i + 1,
+        label: (s.kunde || '').trim() || 'Stopp',
+        sub: [stopAddress(s), parcels].filter(Boolean).join(' · '),
+      };
+    });
   }
   const byKey = new Map();
-  for (const s of route.stops) {
-    // A meal that goes to the Lager with the van is not loaded for a door.
-    if (s.kind !== 'customer' || !s.paket || skipsDoor(s)) continue;
+  for (const s of owed) {
+    if (!s.paket) continue;
     for (const { qty, label } of parsePaketItems(s.paket)) {
       const key = label.toLowerCase().replace(/\s+/g, ' ');
       const entry = byKey.get(key);
@@ -5002,78 +5193,101 @@ function ladelisteItems(route) {
       else byKey.set(key, { key, label, qty });
     }
   }
-  return Array.from(byKey.values()).sort((a, b) => b.qty - a.qty || a.label.localeCompare(b.label, 'de'));
+  const rank = (it) => (it.key.includes('tgm') ? 0 : 1);
+  return Array.from(byKey.values()).sort((a, b) => rank(a) - rank(b) || b.qty - a.qty || a.label.localeCompare(b.label, 'de-AT'));
 }
 
 // Shared by the initial render and the in-place repaint below, so a ticked
 // row can never drift into looking different depending on which of the two
 // last touched it.
 const ladeQtyClass = (on) => `shrink-0 w-12 text-[17px] font-bold tabular-nums ${on ? 'text-black/55' : 'text-brand-600'}`;
-const ladeLabelClass = (on) => `flex-1 min-w-0 text-[15px] font-medium ${on ? 'text-black/40 line-through' : ''}`;
+const ladeLabelClass = (on) => `block text-[15px] font-medium ${on ? 'text-black/40 line-through' : ''}`;
 const ladeMarkClass = (on) => `shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-[20px] shadow-sm ${on ? 'bg-success text-white' : 'bg-white border-2 border-black/45 text-black/40'}`;
 
-function ladelisteProgress(items, checked) {
-  // Counted from the items actually on screen, not from `checked.size` —
-  // the set can still hold a key from a package that has since been edited
-  // away, and "4 von 3 abgehakt" is a great way to lose a driver's trust in
-  // the whole list.
+function ladelisteProgress(items, checked, mode = ladelisteMode(state.currentRoute)) {
   const done = items.filter((it) => checked.has(it.key)).length;
+  if (mode === 'tk') return done >= items.length ? 'Alles geladen' : `${done} von ${items.length} geladen`;
   const pieces = items.reduce((n, it) => n + it.qty, 0);
-  return done >= items.length
-    ? `Alles abgehakt ✓ · ${pieces} Stück gesamt`
-    : `${done} von ${items.length} Positionen abgehakt · ${pieces} Stück gesamt`;
+  const total = pieces > 0 ? ` · ${pieces} Stück` : '';
+  return done >= items.length ? `Alles abgehakt${total}` : `${done} von ${items.length} abgehakt${total}`;
 }
 
 function renderLadeliste() {
   const r = state.currentRoute;
   if (!r) return;
-  const items = ladelisteItems(r);
+  const mode = ladelisteMode(r);
+  const items = ladelisteItems(r, mode);
   ladelisteRenderedItems = items;
   const checked = ladelisteChecked.get(r.id) || new Set();
-  const tk = isTkTour(r);
-  const withoutPaket = tk ? 0 : r.stops.filter((s) => s.kind === 'customer' && !skipsDoor(s) && !s.paket).length;
 
-  // The row index, not the label, is what goes into `onclick`: the label is
-  // the driver's own free text and has no business being interpolated into
-  // an attribute as a JS string literal. Indices are stable while the sheet
-  // is open because `toggleLadelisteItem` reads back from
-  // `ladelisteRenderedItems` — this exact `items` array, snapshotted just
-  // below — rather than recomputing from `state.currentRoute`, which is
-  // free to change in the background while the sheet stays open.
   const row = (it, i) => {
     const on = checked.has(it.key);
     return `
       <button type="button" id="lade-row-${i}" role="checkbox" aria-checked="${on}"
-        aria-label="${escapeAttr(`${it.qty} mal ${it.label}`)}"
+        aria-label="${escapeAttr(mode === 'tk' ? `${it.qty}. ${it.label}${it.sub ? `, ${it.sub}` : ''}` : `${it.qty} mal ${it.label}`)}"
         onclick="toggleLadelisteItem(${i})"
         class="w-full flex items-center gap-3 px-4 py-3.5 text-left press-fade">
-        <span data-lade-qty class="${ladeQtyClass(on)}">${it.qty}×</span>
-        <span data-lade-label class="${ladeLabelClass(on)}">${escapeHtml(it.label)}</span>
+        <span data-lade-qty class="${ladeQtyClass(on)}">${it.qty}${mode === 'tk' ? '' : '×'}</span>
+        <span class="flex-1 min-w-0">
+          <span data-lade-label class="${ladeLabelClass(on)}">${escapeHtml(it.label)}</span>
+          ${it.sub ? `<span class="block text-[13px] text-black/55 truncate">${escapeHtml(it.sub)}</span>` : ''}
+        </span>
         <span data-lade-mark class="${ladeMarkClass(on)}">${on ? ICONS.checkCircleFill : ICONS.circle}</span>
       </button>`;
   };
+  const seg = (m, label) => `<button type="button" role="radio" aria-checked="${mode === m}" onclick="setLadelisteMode('${m}')" class="seg-btn ${mode === m ? 'on' : ''}">${label}</button>`;
 
   renderSheetShell(`
-    <h2 class="text-[22px] font-bold mb-1">Ladeliste</h2>
-    <p class="text-[13px] text-black/55 mb-4 leading-snug">${tk ? 'Kunde für Kunde, der letzte Stopp zuerst — so wird das Auto beladen. Abhaken, was drin liegt.' : 'Alle Pakete dieser Tour zusammengezählt. Vor der Abfahrt abhaken, was tatsächlich im Auto liegt.'}</p>
+    <h2 class="sheet-title">Ladeliste</h2>
+    <div class="seg" role="radiogroup" aria-label="Tourart">${seg('vm', 'VM')}${seg('tk', 'TK')}</div>
+    <p class="text-[13px] text-black/55 mb-3 px-1 leading-snug">${mode === 'tk'
+      ? 'Tiefkühl-Tour: die Kunden, der letzte Stopp zuerst.'
+      : 'Vormittags-Tour: alle Pakete der Tour, zusammengezählt.'}</p>
     ${items.length ? `
-      <p id="lade-progress" aria-live="polite" class="text-[13px] font-medium text-black/55 px-1 pb-1.5">${ladelisteProgress(items, checked)}</p>
+      <p id="lade-progress" aria-live="polite" class="text-[13px] font-medium text-black/55 px-1 pb-1.5">${ladelisteProgress(items, checked, mode)}</p>
       <div class="${GROUP}">${items.map(row).join('')}</div>
-      ${withoutPaket ? `<p class="text-[12px] text-black/55 mt-3 px-1 leading-snug">${withoutPaket} Kundenstopp(e) ohne Paketangabe – die stehen hier nicht drin.</p>` : ''}
+      <p class="text-[12px] text-black/55 mt-3 px-1 leading-snug">${mode === 'tk'
+        ? 'Von oben nach unten einladen: der letzte Kunde zuerst, damit er zuletzt wieder herauskommt. Was mitkommt, steht auf den Paketen — dort steht der Name drauf.'
+        : 'Tippen zum Abhaken. Die Haken gelten nur für diese Tour.'}</p>
       <div class="flex gap-3 mt-4 pb-2">
-        <button type="button" onclick="resetLadeliste()" class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold text-sm">Zurücksetzen</button>
+        <button type="button" onclick="resetLadeliste()" ${checked.size ? '' : 'disabled'} class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold text-sm disabled:opacity-40">Zurücksetzen</button>
         <button type="button" onclick="closeSheet()" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">Fertig</button>
       </div>
     ` : `
       <div class="${CARD} px-4 py-6 text-center">
-        <p class="text-[15px] font-medium text-black/70">Keine Paketangaben</p>
-        <p class="text-[13px] text-black/55 mt-1 leading-snug">Kein Stopp dieser Tour hat etwas im Feld „Paket" stehen. Trag es beim Stopp ein (z.B. „2x TGM7"), dann wird hier automatisch zusammengezählt.</p>
+        <p class="text-[15px] font-medium text-black/70">${mode === 'tk' ? 'Keine Kunden' : 'Keine Pakete'}</p>
+        <p class="text-[13px] text-black/55 mt-1 leading-snug">${mode === 'tk' ? 'Diese Tour hat noch keine Stopps.' : 'Trag bei den Stopps im Feld „Paket“ ein, was mitkommt.'}</p>
       </div>
       <div class="mt-4 pb-2">
-        <button type="button" onclick="closeSheet()" class="press-98 w-full py-3 rounded-xl bg-brand-600 font-semibold text-white">Schließen</button>
+        <button type="button" onclick="closeSheet()" class="press-98 w-full py-3 rounded-xl bg-brand-600 font-semibold text-white">Fertig</button>
       </div>
     `}
   `, { label: 'Ladeliste' });
+}
+
+/// VM or TK, picked by hand. It belongs to the tour, not to the day: it is
+/// kept on the server with the tour, survives "Zurücksetzen", and changes
+/// what every stop row, Jetzt and the map show for the Paket from now on.
+async function setLadelisteMode(mode) {
+  const r = state.currentRoute;
+  if (!r || ladelisteMode(r) === mode) return;
+  const before = r.ladeliste_mode ?? null;
+  r.ladeliste_mode = mode;
+  renderLadeliste();
+  patchRouteDetail() || render(true);
+  if (navigator.vibrate) navigator.vibrate(10);
+  const seq = nextSeq();
+  try {
+    const updated = await api(`/routes/${r.id}`, { method: 'PATCH', retry: true, body: JSON.stringify({ ladeliste_mode: mode }) });
+    applyRouteUpdate(seq, r.id, updated);
+  } catch (err) {
+    if (state.currentRoute?.id === r.id) {
+      state.currentRoute.ladeliste_mode = before;
+      if (document.getElementById('lade-progress') || document.querySelector('.seg')) renderLadeliste();
+      patchRouteDetail() || render(true);
+    }
+    toast(err.message, 'error');
+  }
 }
 
 function toggleLadelisteItem(index) {
@@ -5313,6 +5527,8 @@ function renderTabBar() {
     { id: 'now', label: 'Jetzt', icon: ICONS.tabNow },
     { id: 'map', label: 'Karte', icon: ICONS.tabMap },
     { id: 'verlauf', label: 'Verlauf', icon: ICONS.archive },
+    // Only the administrator has this one: the people who use the app.
+    ...(state.user?.is_admin ? [{ id: 'admin', label: 'Admin', icon: ICONS.people }] : []),
     { id: 'more', label: 'Mehr', icon: ICONS.tabMore },
   ];
   return `
@@ -5436,10 +5652,13 @@ function renderScreen(skipRowAnim) {
     ? { start: prevFilterInput.selectionStart, end: prevFilterInput.selectionEnd }
     : null;
 
+  if (!state.user) { renderLoginScreen(); return; }
+
   const showingDetail = isDetailShowing();
   const screenKey = currentScreenKey();
   let screen;
   if (showingDetail) screen = renderRouteDetail();
+  else if (state.tab === 'admin' && state.user.is_admin) screen = renderAdminTab();
   else if (state.tab === 'routes') screen = renderRoutesTab();
   else if (state.tab === 'now') screen = renderNowTab();
   else if (state.tab === 'map') screen = renderMapTab();
@@ -6203,8 +6422,13 @@ function preflightFindings(r) {
   if (stale) {
     out.push({ level: 'problem', icon: ICONS.checkCircle, title: `${stale} ${stale === 1 ? 'Stopp ist' : 'Stopps sind'} noch von einem früheren Tag abgehakt`, detail: 'Setz den Lieferstatus zurück, bevor du losfährst.', action: 'resetDelivered()', actionLabel: 'Zurücksetzen' });
   }
-  const pieces = ladelisteItems(r).reduce((a, x) => a + x.qty, 0);
-  if (pieces) out.push({ level: 'note', icon: ICONS.box, title: `${pieces} ${pieces === 1 ? 'Position' : 'Positionen'} einladen`, detail: 'Die Ladeliste zählt sie zusammen.', action: 'renderLadeliste()', actionLabel: 'Ladeliste' });
+  if (isTkTour(r)) {
+    const doors = owed.length;
+    out.push({ level: 'note', icon: ICONS.box, title: `${doors} ${doors === 1 ? 'Kunde' : 'Kunden'} einladen`, detail: 'Die Ladeliste zählt sie rückwärts auf — letzter Kunde zuerst.', action: 'renderLadeliste()', actionLabel: 'Ladeliste' });
+  } else {
+    const pieces = ladelisteItems(r, 'vm').reduce((a, x) => a + x.qty, 0);
+    if (pieces) out.push({ level: 'note', icon: ICONS.box, title: `${pieces} ${pieces === 1 ? 'Position' : 'Positionen'} einladen`, detail: 'Die Ladeliste hat sie aufgeschlüsselt.', action: 'renderLadeliste()', actionLabel: 'Ladeliste' });
+  }
   const notes = owed.filter((s) => (s.notiz || '').trim()).length;
   if (notes) out.push({ level: 'note', icon: ICONS.note, title: `${notes} ${notes === 1 ? 'Notiz' : 'Notizen'} auf der Tour`, detail: 'Stehen bei den Stopps — vor dem Läuten lesen.' });
   const finish = snap.etaFinish();
@@ -6237,6 +6461,289 @@ function openPreflightSheet() {
       <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Schließen</button>
     </div>
   `, { label: 'Tour vorbereiten' });
+}
+
+// ---------------------------------------------------------------------
+// Signing in.
+//
+// Everybody who uses the app has an account, and sees their own tours and
+// nobody else's. The server keeps them signed in on this phone for a month
+// from the last use (a cookie the page itself cannot read), so the login is
+// a screen most drivers see once. There is no "register": accounts are made
+// by the administrator, in the Admin tab only that account has.
+// ---------------------------------------------------------------------
+function renderLoginScreen(message = '') {
+  dismissUndo();
+  document.getElementById('modal-root').innerHTML = '';
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div role="main" class="flex-1 min-h-0 overflow-y-auto" style="padding: calc(env(safe-area-inset-top) + 3.5rem) 1.5rem 2rem">
+      <div class="text-center" style="margin-bottom:2rem">
+        <img data-logo-src alt="" style="width:5rem;height:5rem;border-radius:1.125rem;margin:0 auto 1rem;display:block" />
+        <h1 class="now-name" style="font-size:28px">EAR Routing</h1>
+        <p class="text-[15px] text-black/55 mt-1">Bitte anmelden, um deine Touren zu sehen.</p>
+      </div>
+      ${message ? `<div class="sheet-note warn"><span>${ICONS.warning}</span><span>${escapeHtml(message)}</span></div>` : ''}
+      <form id="login-form" novalidate class="space-y-3">
+        <div>
+          <label class="${LABEL}" for="login-user">Benutzername</label>
+          <input id="login-user" name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="next" class="${FIELD}" />
+        </div>
+        <div>
+          <label class="${LABEL}" for="login-pass">Passwort</label>
+          <input id="login-pass" name="password" type="password" autocomplete="current-password" enterkeyhint="go" class="${FIELD}" />
+        </div>
+        <div style="padding-top:.75rem"><button type="submit" class="press-98 wide-btn accent">Anmelden</button></div>
+      </form>
+      <p class="sheet-foot">Noch kein Zugang? Den legt der Administrator für dich an.</p>
+    </div>`;
+  app.querySelectorAll('[data-logo-src]').forEach((img) => (img.src = APP_LOGO));
+  const form = document.getElementById('login-form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = form.username.value.trim();
+    const password = form.password.value;
+    if (!username || !password) { renderLoginScreen('Bitte Benutzername und Passwort eingeben.'); return; }
+    const btn = form.querySelector('[type=submit]');
+    btn.disabled = true;
+    btn.textContent = 'Wird angemeldet …';
+    try {
+      const user = await api('/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+      await signedIn(user);
+    } catch (err) {
+      renderLoginScreen(err.message);
+      const again = document.getElementById('login-user');
+      if (again) again.value = username;
+      document.getElementById('login-pass')?.focus();
+    }
+  });
+  if (!message) setTimeout(() => document.getElementById('login-user')?.focus(), 80);
+}
+
+/// Starts the app for a user who has just been recognised.
+async function signedIn(user) {
+  state.user = user;
+  state.tab = 'routes';
+  state.routes = [];
+  state.currentRoute = null;
+  state.detailOrigin = null;
+  await loadRoutes();
+  loadPaceHistory();
+}
+
+/// Back to the login, with nothing of the last user left in memory — the
+/// next person to sign in on this phone must not glimpse their tours.
+function signedOut() {
+  if (!state.user) return;
+  state.user = null;
+  state.routes = [];
+  state.currentRoute = null;
+  state.detailOrigin = null;
+  state.tab = 'routes';
+  pendingDelivered.clear();
+  pendingDeliveredGen.clear();
+  adminUsers = null;
+  importController = null;
+  render();
+}
+
+async function logOut() {
+  const ok = await confirmSheet({ title: 'Abmelden?', message: 'Deine Touren bleiben gespeichert und sind nach dem Anmelden wieder da.', confirmLabel: 'Abmelden' });
+  if (!ok) return;
+  try { await api('/logout', { method: 'POST' }); } catch (_) { /* signed out on this phone either way */ }
+  signedOut();
+}
+
+/// The first thing the app does: ask who is signed in.
+async function boot() {
+  try {
+    const user = await api('/me', { retry: true });
+    await signedIn(user);
+  } catch (err) {
+    hideSplash();
+    if (err.code === 'unauthorized' || err.code === 'http_401') { state.user = null; renderLoginScreen(); return; }
+    document.getElementById('app').innerHTML = `
+      <div class="px-6 pt-28 text-center text-black/55">
+        <p class="text-sm mb-4">Verbindung zum Server fehlgeschlagen.</p>
+        <button onclick="boot()" class="press-98 px-5 py-3 rounded-xl bg-brand-600 font-semibold text-white text-sm">Erneut versuchen</button>
+      </div>`;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Admin tab — the people who use the app. Only the administrator has it.
+// A list, a "+", and one sheet per person with the three things that can
+// be done to an account: rename it, give it a new password, delete it.
+// ---------------------------------------------------------------------
+let adminUsers = null;
+let adminLoading = false;
+
+async function loadAdminUsers() {
+  if (adminLoading) return;
+  adminLoading = true;
+  try {
+    adminUsers = (await api('/admin/users')).users;
+  } catch (err) {
+    toast(err.message, 'error');
+    adminUsers = adminUsers || [];
+  } finally {
+    adminLoading = false;
+  }
+  if (state.tab === 'admin') render(true);
+}
+
+function renderAdminTab() {
+  if (adminUsers === null) setTimeout(loadAdminUsers, 0);
+  const users = adminUsers || [];
+  const row = (u) => `
+    <button onclick="openUserSheet(${u.id})" class="${ROW}" style="padding-top:.75rem;padding-bottom:.75rem">
+      <span class="w-9 h-9 shrink-0 rounded-full ${u.is_admin ? 'bg-brand-600 text-white' : 'bg-brand-50 text-brand-600'} flex items-center justify-center text-lg">${u.is_admin ? ICONS.key : ICONS.person}</span>
+      <div class="flex-1 min-w-0">
+        <p class="font-medium truncate">${escapeHtml(u.username)}${u.is_admin ? ' <span class="text-[10px] font-semibold uppercase tracking-wide text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded">Admin</span>' : ''}</p>
+        <p class="text-[13px] text-black/55 truncate">${u.route_count === 1 ? '1 Tour' : `${u.route_count} Touren`} · ${u.portal_username ? 'Gourmet verbunden' : 'Gourmet fehlt noch'}</p>
+      </div>
+      <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+    </button>`;
+  return `
+    <div data-scroll role="main" class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
+      <div class="sticky top-0 z-20 bg-[#F2F2F7]/85 backdrop-blur-xl border-b border-black/10" style="padding-top: calc(env(safe-area-inset-top) + 0.5rem)">
+        <div class="flex items-center justify-between px-4 pb-2.5">
+          <span class="w-8"></span>
+          <p data-compact-title class="compact-title text-[17px] font-semibold" style="opacity:0">Benutzer</p>
+          <button onclick="openNewUserSheet()" aria-label="Neuer Benutzer" title="Neuer Benutzer" class="tap-target press-fade w-8 h-8 flex items-center justify-center text-brand-600 text-lg">${ICONS.plus}</button>
+        </div>
+      </div>
+      <div class="px-4">
+        <h1 data-large-title class="large-title text-[34px] font-bold tracking-tight pt-3 pb-1">Benutzer</h1>
+        <p class="text-[15px] text-black/55 pb-4 leading-snug">Wer die App verwenden darf. Jeder sieht nur die eigenen Touren.</p>
+        ${adminUsers === null ? sheetBusy('Benutzer werden geladen …') : `
+          <div class="${GROUP}">${users.map(row).join('')}</div>
+          <button onclick="openNewUserSheet()" class="press-98 wide-btn accent" style="margin-top:1rem">${ICONS.plus} Neuer Benutzer</button>`}
+      </div>
+    </div>`;
+}
+
+function openNewUserSheet(prefill = {}, message = '') {
+  renderSheetShell(`
+    <h2 class="sheet-title">Neuer Benutzer</h2>
+    <p class="sheet-lead">Namen und Passwort festlegen und der Person weitergeben. Sie meldet sich damit an.</p>
+    ${message ? `<div class="sheet-note warn"><span>${ICONS.warning}</span><span>${escapeHtml(message)}</span></div>` : ''}
+    <form id="user-form" novalidate class="space-y-3">
+      <div>
+        <label class="${LABEL}" for="user-name">Benutzername</label>
+        <input id="user-name" name="username" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="40" enterkeyhint="next" value="${escapeAttr(prefill.username || '')}" placeholder="z.B. max" class="${FIELD}" />
+      </div>
+      <div>
+        <label class="${LABEL}" for="user-pass">Passwort</label>
+        <input id="user-pass" name="password" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="done" value="${escapeAttr(prefill.password || '')}" placeholder="mindestens 6 Zeichen" class="${FIELD}" />
+      </div>
+      <div style="padding-top:.5rem" class="pb-2">
+        <button type="submit" class="press-98 wide-btn accent">Benutzer anlegen</button>
+        <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
+      </div>
+    </form>
+  `, { label: 'Neuer Benutzer' });
+  const form = document.getElementById('user-form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = form.username.value.trim();
+    const password = form.password.value;
+    if (!username) { openNewUserSheet({ username, password }, 'Bitte einen Benutzernamen eingeben.'); return; }
+    if (password.length < 6) { openNewUserSheet({ username, password }, 'Das Passwort braucht mindestens 6 Zeichen.'); return; }
+    showProgress();
+    try {
+      await api('/admin/users', { method: 'POST', body: JSON.stringify({ username, password }) });
+      closeSheet();
+      toast(`„${username}“ angelegt ✓`, 'success');
+      await loadAdminUsers();
+    } catch (err) {
+      openNewUserSheet({ username, password }, err.message);
+    } finally {
+      hideProgress();
+    }
+  });
+  if (!message) setTimeout(() => document.getElementById('user-name')?.focus(), 80);
+}
+
+function openUserSheet(userId, message = '') {
+  const u = adminUsers?.find((x) => x.id === userId);
+  if (!u) return;
+  if (u.is_admin) {
+    renderSheetShell(`
+      <h2 class="sheet-title">${escapeHtml(u.username)}</h2>
+      <div class="sheet-note"><span>${ICONS.key}</span><span>Das ist das Administrator-Konto. Name und Passwort sind fest eingestellt und können hier nicht geändert werden.</span></div>
+      <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Schließen</button></div>
+    `, { label: u.username });
+    return;
+  }
+  renderSheetShell(`
+    <h2 class="sheet-title">${escapeHtml(u.username)}</h2>
+    <p class="sheet-lead">${u.route_count === 1 ? '1 Tour' : `${u.route_count} Touren`} · ${u.portal_username ? `Gourmet verbunden als ${escapeHtml(u.portal_username)}` : 'Gourmet noch nicht verbunden'}</p>
+    ${message ? `<div class="sheet-note warn"><span>${ICONS.warning}</span><span>${escapeHtml(message)}</span></div>` : ''}
+    <form id="user-form" novalidate class="space-y-3">
+      <div>
+        <label class="${LABEL}" for="user-name">Benutzername</label>
+        <input id="user-name" name="username" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="40" value="${escapeAttr(u.username)}" class="${FIELD}" />
+      </div>
+      <div>
+        <label class="${LABEL}" for="user-pass">Neues Passwort</label>
+        <input id="user-pass" name="password" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="leer lassen, um es nicht zu ändern" class="${FIELD}" />
+      </div>
+      <div style="padding-top:.5rem">
+        <button type="submit" class="press-98 wide-btn accent">Speichern</button>
+        <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
+      </div>
+    </form>
+    <div class="pb-2" style="margin-top:1.5rem">
+      <button type="button" onclick="deleteUser(${u.id})" class="press-98 wide-btn quiet" style="color:#D70015">${ICONS.trash} Benutzer löschen</button>
+    </div>
+  `, { label: u.username });
+  const form = document.getElementById('user-form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = form.username.value.trim();
+    const password = form.password.value;
+    const body = {};
+    if (username && username !== u.username) body.username = username;
+    if (password) body.password = password;
+    if (!username) { openUserSheet(userId, 'Der Benutzername darf nicht leer sein.'); return; }
+    if (password && password.length < 6) { openUserSheet(userId, 'Das Passwort braucht mindestens 6 Zeichen.'); return; }
+    if (!Object.keys(body).length) { closeSheet(); return; }
+    showProgress();
+    try {
+      await api(`/admin/users/${userId}`, { method: 'PATCH', body: JSON.stringify(body) });
+      closeSheet();
+      toast(body.password ? 'Gespeichert ✓ — das neue Passwort gilt ab sofort.' : 'Gespeichert ✓', 'success');
+      await loadAdminUsers();
+    } catch (err) {
+      openUserSheet(userId, err.message);
+    } finally {
+      hideProgress();
+    }
+  });
+}
+
+async function deleteUser(userId) {
+  const u = adminUsers?.find((x) => x.id === userId);
+  if (!u) return;
+  closeSheet();
+  const tours = u.route_count === 1 ? 'die eine Tour' : u.route_count ? `alle ${u.route_count} Touren` : 'alle Daten';
+  const ok = await confirmSheet({
+    title: `„${u.username}“ löschen?`,
+    message: `Das Konto und ${tours} dieser Person werden endgültig gelöscht. Das kann nicht rückgängig gemacht werden.`,
+    confirmLabel: 'Löschen', danger: true,
+  });
+  if (!ok) return;
+  showProgress();
+  try {
+    await api(`/admin/users/${userId}`, { method: 'DELETE' });
+    toast(`„${u.username}“ gelöscht ✓`, 'success');
+    await loadAdminUsers();
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    hideProgress();
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -6442,7 +6949,22 @@ function renderMoreTab() {
           <h1 class="text-[34px] font-bold tracking-tight">Mehr</h1>
         </div>
 
-        <p class="${SECTION_LABEL} !pt-0">Über diese App</p>
+        <p class="${SECTION_LABEL} !pt-0">Konto</p>
+        <div class="${GROUP}">
+          <div class="flex items-center gap-3 px-4 py-3.5">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center">${ICONS.person}</span>
+            <div class="flex-1 min-w-0">
+              <p class="font-medium truncate">${escapeHtml(state.user?.username || '')}</p>
+              <p class="text-[13px] text-black/55">${state.user?.is_admin ? 'Administrator' : 'Angemeldet'}</p>
+            </div>
+          </div>
+          <button onclick="logOut()" class="${ROW}" style="color:#D70015">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 flex items-center justify-center">${ICONS.external}</span>
+            <p class="flex-1 text-[15px] font-medium">Abmelden</p>
+          </button>
+        </div>
+
+        <p class="${SECTION_LABEL}">Über diese App</p>
         <div class="${GROUP}">
           <div class="flex items-center gap-3 px-4 py-3.5">
             <img data-logo-src alt="ASBÖ" class="w-10 h-10 rounded-xl shrink-0" />
@@ -6769,6 +7291,7 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
         <p class="text-[13px] ${delivered ? 'text-black/55' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)}</p>
         ${displayPaket(s) ? (() => {
           const qty = isTkTour(state.currentRoute) ? (s.paket_count || 1) : paketQty(s.paket);
+          // (TK: the parcels to carry up. VM: the pieces in the Paket.)
           const multi = qty > 1 && !delivered;
           return `<p class="inline-flex items-center gap-1 max-w-full text-[12px] ${multi ? 'font-bold' : 'font-medium'} mt-1.5 px-1.5 py-0.5 rounded ${
             delivered ? 'text-black/55 bg-black/5' : multi ? 'text-white bg-brand-600 shadow-sm' : 'text-brand-700 bg-brand-50'
@@ -8540,7 +9063,7 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// Top-level (not nested in the `if` block below) so `runGourmetImport` can
+// Top-level (not nested in the `if` block below) so `applyReview` can
 // call `reloadForUpdateIfPending()` from wherever it's defined in the
 // file — see the comments inside the `if` block for why this exists.
 let reloadingForUpdate = false;
@@ -8616,7 +9139,7 @@ if ('serviceWorker' in navigator) {
     if (!hadController || reloadingForUpdate) return;
     // Not during a save: an import can legitimately run for minutes, and a
     // reload mid-request abandons it with no way to know what landed. The
-    // reload isn't dropped, only deferred — `runGourmetImport`'s `finally`
+    // reload isn't dropped, only deferred — `applyReview`'s `finally`
     // calls `reloadForUpdateIfPending()` the moment the save settles, so a
     // deploy landing mid-import still gets picked up instead of leaving
     // this tab running stale JavaScript against a new server indefinitely
@@ -8631,8 +9154,7 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-loadRoutes();
-loadPaceHistory();
+boot();
 </script>
 </body>
 </html>

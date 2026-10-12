@@ -269,6 +269,14 @@ mod text {
     /// that a geocoder result actually landed on the street we asked for
     /// rather than a fuzzy string-similarity match onto a *different*
     /// street entirely (see `wien_ogd_search_one`).
+    /// The first part of what follows the house number: "A" out of
+    /// "Töllergasse 26 A" and of "26/A/3", "1" out of "129/1/23".
+    pub fn first_sub_segment(strasse: &str) -> Option<String> {
+        let caps = SUB_ADDRESS_RE.captures(strasse)?;
+        let sub = caps["sub"].trim();
+        (!sub.is_empty()).then(|| sub.to_string())
+    }
+
     pub fn street_name_only(strasse: &str) -> String {
         match HOUSENUMBER_RE.captures(strasse) {
             Some(caps) => caps["street"].trim().to_string(),
@@ -506,6 +514,8 @@ enum AppError {
     NotFound(String),
     BadRequest(String),
     Forbidden(String),
+    /// Nobody is signed in. The app answers this one by showing the login.
+    Unauthorized,
     /// A geocoding outcome the frontend has a designed response for, keyed
     /// by `code` rather than by parsing `message`. `plz` carries the
     /// district the register actually files the address under, for the one
@@ -523,6 +533,10 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, json!({ "detail": msg })),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, json!({ "detail": msg })),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, json!({ "detail": msg })),
+            AppError::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                json!({ "detail": { "message": "Bitte anmelden.", "code": "unauthorized" } }),
+            ),
             AppError::Geocode { status, code, message, plz } => {
                 let mut detail = json!({ "message": message, "code": code });
                 // Only present on the codes that have one, so the frontend can
@@ -1079,7 +1093,13 @@ CREATE TABLE IF NOT EXISTS routes (
     -- 1 once the driver has put the stops in an order of their own. Such a
     -- tour is routed as listed -- an edit never throws that order away --
     -- until they ask for a fresh one.
-    hand_ordered INTEGER NOT NULL DEFAULT 0
+    hand_ordered INTEGER NOT NULL DEFAULT 0,
+    -- Whose tour this is.
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    -- 'vm' or 'tk', once the driver has picked one in the Ladeliste. NULL
+    -- until then, on purpose: a tour nobody has switched by hand keeps
+    -- following its name, including after a rename.
+    ladeliste_mode TEXT
 );
 
 CREATE TABLE IF NOT EXISTS stops (
@@ -1124,6 +1144,10 @@ CREATE TABLE IF NOT EXISTS stops (
     -- How many physical parcels this delivery is: the portal's bundle count.
     -- NULL on every stop not loaded from the portal.
     paket_count INTEGER,
+    -- The house number's entrance, where the register has one: what a
+    -- navigation app is sent to. NULL outside Vienna and until looked up.
+    entrance_lat REAL,
+    entrance_lon REAL,
     -- NULL = exact match (or a human placed the pin). 'street'/'district'
     -- mean geocoding only found an approximate fallback location — see
     -- `Precision` and `geocode_address`. Surfaced in the UI so a driver knows
@@ -1170,6 +1194,26 @@ CREATE INDEX IF NOT EXISTS idx_stops_route_order ON stops(route_id, order_index)
 
 -- The few things this server remembers that are not a route: today, the
 -- Zusteller-Portal login.
+-- Who may use the app. Every route belongs to one of them (`routes.user_id`)
+-- and nobody sees another's. The portal login is each driver's own, kept on
+-- their row once they have entered it.
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    portal_username TEXT,
+    portal_password TEXT
+);
+
+-- One row per signed-in browser. The token is the cookie's value.
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    last_seen INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -1205,6 +1249,9 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     if !stop_cols.contains("telefon") {
         conn.execute("ALTER TABLE stops ADD COLUMN telefon TEXT", [])?;
     }
+    if !stop_cols.contains("entrance_lat") {
+        conn.execute_batch("ALTER TABLE stops ADD COLUMN entrance_lat REAL; ALTER TABLE stops ADD COLUMN entrance_lon REAL;")?;
+    }
     if !stop_cols.contains("paket_count") {
         conn.execute("ALTER TABLE stops ADD COLUMN paket_count INTEGER", [])?;
     }
@@ -1222,6 +1269,37 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     if !route_cols.contains("hand_ordered") {
         conn.execute("ALTER TABLE routes ADD COLUMN hand_ordered INTEGER NOT NULL DEFAULT 0", [])?;
     }
+    if !route_cols.contains("ladeliste_mode") {
+        conn.execute("ALTER TABLE routes ADD COLUMN ladeliste_mode TEXT", [])?;
+    }
+    if !route_cols.contains("user_id") {
+        conn.execute("ALTER TABLE routes ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE", [])?;
+    }
+
+    // The administrator. Its name and password are fixed here rather than
+    // kept only in the database, so there is always one account that can
+    // get in and make the others -- including after a database has been
+    // replaced or its admin row edited by hand. The password is written
+    // back on every start; what is stored is its hash.
+    let admin_hash = hash_password(ADMIN_PASSWORD)?;
+    conn.execute(
+        "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?1, ?2, 1, ?3) \
+         ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash, is_admin = 1",
+        params![ADMIN_USERNAME, admin_hash, now_iso()],
+    )?;
+    let admin_id: i64 = conn.query_row("SELECT id FROM users WHERE username = ?1", params![ADMIN_USERNAME], |r| r.get(0))?;
+    // Everything from before there were accounts belongs to the admin: the
+    // tours, and the portal login the server used to keep for everybody.
+    conn.execute("UPDATE routes SET user_id = ?1 WHERE user_id IS NULL", params![admin_id])?;
+    for (key, column) in [("portal_username", "portal_username"), ("portal_password", "portal_password")] {
+        conn.execute(
+            &format!("UPDATE users SET {column} = (SELECT value FROM settings WHERE key = ?1) \
+                      WHERE id = ?2 AND {column} IS NULL AND EXISTS (SELECT 1 FROM settings WHERE key = ?1)"),
+            params![key, admin_id],
+        )?;
+    }
+    conn.execute("DELETE FROM settings WHERE key IN ('portal_username', 'portal_password')", [])?;
+
     let cache_cols: HashSet<String> = conn
         .prepare("PRAGMA table_info(geocode_cache)")?
         .query_map([], |r| r.get::<_, String>(1))?
@@ -1514,6 +1592,8 @@ struct OgdProperties {
     adresse: Option<String>,
     #[serde(rename = "Ranking")]
     ranking: Option<f64>,
+    #[serde(rename = "StreetNumber")]
+    street_number: Option<String>,
 }
 
 /// Picks the one usable feature out of an OGD response.
@@ -2384,6 +2464,7 @@ struct RouteRow {
     geometry: Option<String>,
     needs_optimize: bool,
     hand_ordered: bool,
+    ladeliste_mode: Option<String>,
 }
 
 impl RouteRow {
@@ -2397,6 +2478,7 @@ impl RouteRow {
             geometry: r.get("geometry")?,
             needs_optimize: r.get::<_, i64>("needs_optimize")? != 0,
             hand_ordered: r.get::<_, i64>("hand_ordered")? != 0,
+            ladeliste_mode: r.get("ladeliste_mode")?,
         })
     }
 }
@@ -2422,6 +2504,8 @@ struct StopRow {
     settled_at: Option<String>,
     telefon: Option<String>,
     paket_count: Option<i64>,
+    entrance_lat: Option<f64>,
+    entrance_lon: Option<f64>,
 }
 
 /// What happened at a door. The raw values are the iOS app's own, so a
@@ -2489,6 +2573,8 @@ impl StopRow {
             settled_at: r.get("settled_at")?,
             telefon: r.get("telefon")?,
             paket_count: r.get("paket_count")?,
+            entrance_lat: r.get("entrance_lat")?,
+            entrance_lon: r.get("entrance_lon")?,
         })
     }
 }
@@ -2525,6 +2611,9 @@ struct StopOut {
     settled_at: Option<String>,
     telefon: Option<String>,
     paket_count: Option<i64>,
+    /// The house number's entrance, for navigation -- see `wien_entrance`.
+    entrance_lat: Option<f64>,
+    entrance_lon: Option<f64>,
 }
 
 /// Geometric centre of Vienna — the last-resort position for a stop whose
@@ -2585,6 +2674,8 @@ fn to_stop_out(r: StopRow) -> StopOut {
         settled_at: r.settled_at,
         telefon: r.telefon,
         paket_count: r.paket_count,
+        entrance_lat: finite_or_none(r.entrance_lat),
+        entrance_lon: finite_or_none(r.entrance_lon),
     }
 }
 
@@ -2600,6 +2691,8 @@ struct RouteDetail {
     needs_optimize: bool,
     /// The driver has put the stops in an order of their own.
     hand_ordered: bool,
+    /// The driver's own pick of VM or TK for this tour, if they made one.
+    ladeliste_mode: Option<String>,
     delivered_count: i64,
     customer_count: i64,
     total_km: f64,
@@ -2714,6 +2807,7 @@ fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, App
         completed_at: route.completed_at,
         needs_optimize: route.needs_optimize,
         hand_ordered: route.hand_ordered,
+        ladeliste_mode: route.ladeliste_mode,
         delivered_count: customer_stops.iter().filter(|s| s.delivered).count() as i64,
         customer_count: customer_stops.len() as i64,
         total_km: strip_negative_zero((total_km * 10.0).round() / 10.0),
@@ -3185,6 +3279,608 @@ async fn reoptimize_best_effort(state: &AppState, route_id: i64) {
 }
 
 // ---------------------------------------------------------------------
+// Entrances
+//
+// Where the register puts an address's house number on the street: the
+// entrance, `ogdwien:ZUGANGSADROGD`. This is what a navigation app is sent
+// to. A stop's own `lat`/`lon` stay the building or the Stiege, which is
+// what the map and the route planning want -- and for a Gemeindebau that
+// point can be in a courtyard two streets from the door the van pulls up to.
+// ---------------------------------------------------------------------
+
+const WIEN_ENTRANCES_URL: &str = "https://data.wien.gv.at/daten/geo";
+
+#[derive(Deserialize)]
+struct EntranceCollection {
+    #[serde(default)]
+    features: Vec<EntranceFeature>,
+}
+
+#[derive(Deserialize)]
+struct EntranceFeature {
+    geometry: EntranceGeometry,
+    properties: EntranceProperties,
+}
+
+#[derive(Deserialize)]
+struct EntranceGeometry {
+    #[serde(default)]
+    coordinates: Vec<f64>,
+}
+
+#[derive(Deserialize)]
+struct EntranceProperties {
+    #[serde(rename = "NAME_ONR")]
+    number: Option<String>,
+    #[serde(rename = "PLZ")]
+    plz: Option<String>,
+}
+
+fn is_in_vienna(lat: f64, lon: f64) -> bool {
+    lat.is_finite() && lon.is_finite() && (47.7..=48.6).contains(&lat) && (15.8..=16.8).contains(&lon)
+}
+
+/// "82" out of "82-92", "82/1" and "82 Kindertagesheim"; "12a" out of
+/// "12a/3". The part of the number the entrance layer files it under.
+fn entrance_number(street_number: &str) -> Option<String> {
+    let mut chars = street_number.trim().chars().peekable();
+    let mut digits = String::new();
+    while let Some(c) = chars.peek().copied().filter(char::is_ascii_digit) {
+        digits.push(c);
+        chars.next();
+    }
+    if digits.is_empty() {
+        return None;
+    }
+    // One letter straight after the digits belongs to the number -- "12a" --
+    // but only if nothing but a separator or the end follows it, so the "K"
+    // of "82 Kindertagesheim" is not mistaken for one.
+    if let Some(c) = chars.next().filter(|c| c.is_alphabetic()) {
+        if matches!(chars.next(), None | Some('/') | Some(' ') | Some('-')) {
+            digits.extend(c.to_lowercase());
+        }
+    }
+    Some(digits)
+}
+
+/// The entrance whose number is this one -- never "129a" or "1290" for
+/// "129", which the prefix query also returns. The layer is not consistent
+/// about ranges ("82-92" filed as "82", "31-35" as "31-35"), so a number
+/// written exactly as asked wins, and otherwise a range starting with it
+/// counts.
+fn pick_entrance(features: &[EntranceFeature], number: &str, plz: &str) -> Option<(f64, f64)> {
+    let want: String = number.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect();
+    let raw = |f: &EntranceFeature| -> String {
+        f.properties.number.as_deref().unwrap_or("").to_lowercase().chars().filter(|c| !c.is_whitespace()).collect()
+    };
+    let here: Vec<&EntranceFeature> = features.iter().filter(|f| f.properties.plz.as_deref() == Some(plz)).collect();
+    let hit = here
+        .iter()
+        .find(|f| raw(f) == want)
+        .or_else(|| here.iter().find(|f| entrance_number(&raw(f)).as_deref() == Some(want.as_str())))?;
+    let (lon, lat) = match hit.geometry.coordinates.as_slice() {
+        [lon, lat] => (*lon, *lat),
+        _ => return None,
+    };
+    is_in_vienna(lat, lon).then_some((lat, lon))
+}
+
+/// `None` when the call failed; an empty list when it answered "none".
+async fn entrance_fetch(state: &AppState, street: &str, number: &str, plz: &str) -> Option<Vec<EntranceFeature>> {
+    // Digits only in the prefix, so "12a" still finds "12A"; the exact
+    // number is picked out of what comes back. Quotes doubled, which is how
+    // CQL escapes them inside a string.
+    let digits: String = number.chars().take_while(char::is_ascii_digit).collect();
+    let quoted = |s: &str| s.replace('\'', "''");
+    let filter = format!("NAME LIKE '{} {}%' AND PLZ='{}'", quoted(street), digits, quoted(plz));
+    let resp = state
+        .http
+        .get(WIEN_ENTRANCES_URL)
+        .query(&[
+            ("service", "WFS"),
+            ("request", "GetFeature"),
+            ("version", "1.1.0"),
+            ("typeName", "ogdwien:ZUGANGSADROGD"),
+            ("srsName", "EPSG:4326"),
+            ("outputFormat", "json"),
+            // Generous: the prefix also matches every longer number, and on
+            // a long street "1" alone brings back 1, 10-19 and 100-199.
+            ("maxFeatures", "500"),
+            ("cql_filter", filter.as_str()),
+        ])
+        .header(reqwest::header::USER_AGENT, UPSTREAM_USER_AGENT)
+        .send()
+        .await
+        .map_err(|e| tracing::warn!(error = %e, "wien entrance lookup failed"))
+        .ok()?;
+    if !resp.status().is_success() {
+        tracing::warn!(status = %resp.status(), "wien entrance lookup error status");
+        return None;
+    }
+    resp.json::<EntranceCollection>()
+        .await
+        .map(|c| c.features)
+        .map_err(|e| tracing::warn!(error = %e, "wien entrance answer did not parse"))
+        .ok()
+}
+
+/// The answers already had, for as long as the server runs. Only answers:
+/// a failed call is not one, and is asked again next time.
+static ENTRANCES: once_cell::sync::Lazy<StdMutex<HashMap<String, Option<(f64, f64)>>>> =
+    once_cell::sync::Lazy::new(|| StdMutex::new(HashMap::new()));
+
+/// The entrance for an address, or `None` -- outside Vienna, when either
+/// lookup fails, and when the register has no entrance for the number.
+///
+/// Two calls. The address register first, to learn the street the way the
+/// city spells it: the entrance layer only matches its own spelling. Then
+/// the entrance layer itself, which has one point per house number -- so
+/// every Stiege of a Gemeindebau gets the one entrance.
+async fn wien_entrance(state: &AppState, strasse: &str, plz: &str) -> Option<(f64, f64)> {
+    if !is_valid_vienna_plz(plz) {
+        return None;
+    }
+    let normalized = normalize_strasse_text(strasse);
+    let simplified = simplify_housenumber(&normalized);
+    // Only for the number that was asked for. For one it does not know, the
+    // register answers with the nearest one it does -- and that entrance is
+    // a precise point at the wrong house, worse than sending the address.
+    let asked = simplified.split(' ').next_back().and_then(entrance_number);
+    // "Töllergasse 26 A" is house 26A, whose entrance is its own. Tried
+    // first, and part of the key.
+    let lettered = asked.as_deref().filter(|n| n.ends_with(|c: char| c.is_ascii_digit())).and_then(|n| {
+        let first = text::first_sub_segment(&normalized)?;
+        let token = first.split_whitespace().next()?;
+        let mut letters = token.chars();
+        match (letters.next(), letters.next()) {
+            (Some(c), None) if c.is_alphabetic() => Some(format!("{n}{}", c.to_lowercase())),
+            _ => None,
+        }
+    });
+    let key = format!("{}{}|{plz}", text::address_match_key(&simplified), lettered.as_deref().unwrap_or(""));
+    if let Some(known) = ENTRANCES.lock().ok().and_then(|m| m.get(&key).copied()) {
+        return known;
+    }
+    let remember = |point: Option<(f64, f64)>| {
+        if let Ok(mut m) = ENTRANCES.lock() {
+            m.insert(key.clone(), point);
+        }
+        point
+    };
+    let Some(asked) = asked else { return remember(None) };
+
+    // An empty answer is as good as none: the register returns nothing at
+    // all for a house it does not know, and the entrance layer may still.
+    let features = wien_ogd_fetch(state, &simplified).await.unwrap_or_default();
+    let street_key = text::street_name_only(&simplified).to_lowercase();
+    // Picked among the answers carrying that number, not taken as the best
+    // answer overall: asked for "Serravagasse 2" the register ranks
+    // "Serravagasse 2E" first -- the house next door.
+    let same_number: Vec<OgdFeature> = features
+        .into_iter()
+        .filter(|f| f.properties.street_number.as_deref().and_then(entrance_number).as_deref() == Some(asked.as_str()))
+        .collect();
+    // The register does not know every house the entrance layer does. Then
+    // the entrance layer is asked directly, with the street as typed.
+    let street = pick_ogd_feature(same_number, plz, &street_key, None)
+        .filter(|f| f.properties.ranking.unwrap_or(f64::MAX) < 1.0)
+        .and_then(|f| f.properties.street_name)
+        .unwrap_or_else(|| text::street_name_only(&simplified));
+
+    let candidates = entrance_fetch(state, &street, &asked, plz).await?;
+    let point = lettered
+        .as_deref()
+        .and_then(|n| pick_entrance(&candidates, n, plz))
+        .or_else(|| pick_entrance(&candidates, &asked, plz));
+    remember(point)
+}
+
+/// Looks up an entrance for every customer of the route still without one,
+/// a few at a time. Best effort: a stop it finds none for is navigated to
+/// by its address, as before. Not for a hand-placed pin, which outranks it.
+async fn fill_entrances(state: &Arc<AppState>, route_id: i64) {
+    let wanted: Vec<(i64, String, String)> = {
+        let Ok(conn) = state.db() else { return };
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT id, strasse, plz FROM stops WHERE route_id = ?1 AND kind = 'customer' AND pinned = 0 \
+             AND entrance_lat IS NULL AND strasse IS NOT NULL AND TRIM(strasse) <> '' AND plz IS NOT NULL",
+        ) else {
+            return;
+        };
+        let rows = stmt
+            .query_map(params![route_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+            .unwrap_or_default();
+        rows.into_iter().filter(|(_, _, plz): &(i64, String, String)| is_valid_vienna_plz(plz)).collect()
+    };
+    if wanted.is_empty() {
+        return;
+    }
+    let semaphore = Arc::new(Semaphore::new(6));
+    let mut jobs: JoinSet<Option<(i64, f64, f64)>> = JoinSet::new();
+    for (id, strasse, plz) in wanted {
+        let state = Arc::clone(state);
+        let semaphore = Arc::clone(&semaphore);
+        jobs.spawn(async move {
+            let _permit = semaphore.acquire().await.ok()?;
+            let (lat, lon) = wien_entrance(&state, &strasse, &plz).await?;
+            Some((id, lat, lon))
+        });
+    }
+    let mut found: Vec<(i64, f64, f64)> = Vec::new();
+    while let Some(joined) = jobs.join_next().await {
+        if let Ok(Some(hit)) = joined {
+            found.push(hit);
+        }
+    }
+    let Ok(conn) = state.db() else { return };
+    for (id, lat, lon) in found {
+        // Only onto the address it was looked up for: `pinned = 0` and still
+        // without one, in case the stop was edited while this was out.
+        let _ = conn.execute(
+            "UPDATE stops SET entrance_lat = ?1, entrance_lon = ?2 WHERE id = ?3 AND pinned = 0 AND entrance_lat IS NULL",
+            params![lat, lon, id],
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// Accounts
+//
+// A driver signs in with a name and a password; a cookie keeps them signed
+// in on that phone for a month from the last time they used it. Each one
+// has their own tours and their own portal login. One account, the admin,
+// also makes, changes and removes the others.
+//
+// Who owns what is decided in one place, `auth_mw`, from the address of the
+// request: a route or a stop that is not the signed-in user's does not
+// exist as far as they can tell. The handlers behind it stay written as if
+// there were only one driver.
+// ---------------------------------------------------------------------
+
+const ADMIN_USERNAME: &str = "admin";
+const ADMIN_PASSWORD: &str = "Meinkonto07!";
+const SESSION_COOKIE: &str = "ear_session";
+/// A month, counted from the last request rather than from signing in.
+const SESSION_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
+const MAX_USERNAME_LEN: usize = 40;
+const MIN_PASSWORD_LEN: usize = 6;
+const MAX_PASSWORD_LEN: usize = 200;
+
+/// The signed-in user, attached to every request that got past `auth_mw`.
+#[derive(Clone)]
+struct AuthUser {
+    id: i64,
+    username: String,
+    is_admin: bool,
+}
+
+fn hash_password(password: &str) -> Result<String, AppError> {
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    let salt = SaltString::generate(&mut rand_core::OsRng);
+    argon2::Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| {
+            tracing::error!(error = %e, "password hashing failed");
+            AppError::Internal("Das Passwort konnte nicht gespeichert werden.".into())
+        })
+}
+
+fn verify_password(password: &str, hash: &str) -> bool {
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    PasswordHash::new(hash)
+        .map(|parsed| argon2::Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
+        .unwrap_or(false)
+}
+
+/// 32 random bytes, in hex: the cookie's value and the session's key.
+fn new_session_token() -> String {
+    use rand_core::RngCore;
+    let mut bytes = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn session_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(name, _)| *name == SESSION_COOKIE)
+        .map(|(_, value)| value.to_string())
+        .filter(|t| t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// `Secure` whenever the request came in over HTTPS -- which, behind the
+/// tunnel this runs behind, the proxy says in a header. Left off on plain
+/// HTTP, where a `Secure` cookie would simply never be sent back and nobody
+/// could sign in on a laptop at home.
+fn session_cookie(headers: &HeaderMap, token: &str, max_age: i64) -> HeaderValue {
+    let https = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https");
+    let secure = if https { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{SESSION_COOKIE}={token}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure}"
+    ))
+    .unwrap_or_else(|_| HeaderValue::from_static(""))
+}
+
+fn user_for_session(conn: &Connection, token: &str) -> Result<Option<AuthUser>, AppError> {
+    let now = chrono::Utc::now().timestamp();
+    let found = conn
+        .query_row(
+            "SELECT u.id, u.username, u.is_admin, s.last_seen FROM sessions s JOIN users u ON u.id = s.user_id \
+             WHERE s.token = ?1",
+            params![token],
+            |r| {
+                Ok((
+                    AuthUser { id: r.get(0)?, username: r.get(1)?, is_admin: r.get::<_, i64>(2)? != 0 },
+                    r.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((user, last_seen)) = found else { return Ok(None) };
+    if now - last_seen > SESSION_MAX_AGE_SECS {
+        conn.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
+        return Ok(None);
+    }
+    // Slid forward at most once an hour: every request would otherwise be a
+    // write, on a database with one writer.
+    if now - last_seen > 3600 {
+        conn.execute("UPDATE sessions SET last_seen = ?1 WHERE token = ?2", params![now, token])?;
+    }
+    Ok(Some(user))
+}
+
+/// Everything under `/api/` needs a signed-in user, except signing in and
+/// the health check. `/api/admin/` needs the admin. And a route or a stop
+/// named in the address has to be the user's own -- anybody else's answers
+/// exactly as one that was never there.
+async fn auth_mw(State(state): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    if !path.starts_with("/api/") || path == "/api/login" || path == "/api/health" {
+        return next.run(req).await;
+    }
+    let checked = (|| -> Result<AuthUser, AppError> {
+        let token = session_token(req.headers()).ok_or(AppError::Unauthorized)?;
+        let conn = state.db()?;
+        let user = user_for_session(&conn, &token)?.ok_or(AppError::Unauthorized)?;
+        if path.starts_with("/api/admin/") && !user.is_admin {
+            return Err(AppError::Forbidden("Nur für den Administrator.".into()));
+        }
+        let mut parts = path.trim_start_matches("/api/").split('/');
+        let owner: Option<Option<i64>> = match (parts.next(), parts.next().and_then(|id| id.parse::<i64>().ok())) {
+            (Some("routes"), Some(id)) => Some(
+                conn.query_row("SELECT user_id FROM routes WHERE id = ?1", params![id], |r| r.get(0)).optional()?,
+            ),
+            (Some("stops"), Some(id)) => Some(
+                conn.query_row(
+                    "SELECT r.user_id FROM stops s JOIN routes r ON r.id = s.route_id WHERE s.id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            ),
+            _ => None,
+        };
+        match owner {
+            Some(Some(owner)) if owner != user.id => Err(AppError::NotFound("Nicht gefunden".into())),
+            _ => Ok(user),
+        }
+    })();
+    match checked {
+        Ok(user) => {
+            req.extensions_mut().insert(user);
+            next.run(req).await
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+fn user_json(user: &AuthUser) -> Value {
+    json!({ "id": user.id, "username": user.username, "is_admin": user.is_admin })
+}
+
+/// `POST /api/login`. One answer for a wrong name and a wrong password, so
+/// the form cannot be used to find out which names exist.
+async fn login(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<LoginRequest>,
+) -> Result<Response, AppError> {
+    let username = payload.username.trim().to_string();
+    let found: Option<(AuthUser, String)> = {
+        let conn = state.db()?;
+        conn.query_row(
+            "SELECT id, username, is_admin, password_hash FROM users WHERE username = ?1",
+            params![username],
+            |r| {
+                Ok((
+                    AuthUser { id: r.get(0)?, username: r.get(1)?, is_admin: r.get::<_, i64>(2)? != 0 },
+                    r.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()?
+    };
+    let password = payload.password;
+    let hash = found.as_ref().map(|(_, h)| h.clone());
+    // Hashing is slow on purpose; kept off the threads that serve requests.
+    let ok = tokio::task::spawn_blocking(move || hash.is_some_and(|h| verify_password(&password, &h)))
+        .await
+        .unwrap_or(false);
+    let Some((user, _)) = found.filter(|_| ok) else {
+        // A guess costs a second, whichever half of it was wrong.
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        return Err(AppError::BadRequest("Benutzername oder Passwort stimmt nicht.".into()));
+    };
+    let token = new_session_token();
+    {
+        let conn = state.db()?;
+        let now = chrono::Utc::now().timestamp();
+        conn.execute("DELETE FROM sessions WHERE last_seen < ?1", params![now - SESSION_MAX_AGE_SECS])?;
+        conn.execute("INSERT INTO sessions (token, user_id, last_seen) VALUES (?1, ?2, ?3)", params![token, user.id, now])?;
+    }
+    let mut response = Json(user_json(&user)).into_response();
+    response.headers_mut().insert(header::SET_COOKIE, session_cookie(&headers, &token, SESSION_MAX_AGE_SECS));
+    Ok(response)
+}
+
+async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<Response, AppError> {
+    if let Some(token) = session_token(&headers) {
+        let conn = state.db()?;
+        conn.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
+    }
+    let mut response = Json(json!({ "ok": true })).into_response();
+    response.headers_mut().insert(header::SET_COOKIE, session_cookie(&headers, "", 0));
+    Ok(response)
+}
+
+async fn me(axum::Extension(user): axum::Extension<AuthUser>) -> Json<Value> {
+    Json(user_json(&user))
+}
+
+fn clean_username(raw: &str) -> Result<String, AppError> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("Bitte einen Benutzernamen eingeben.".into()));
+    }
+    check_len(name, "Benutzername", MAX_USERNAME_LEN)?;
+    check_no_control_chars(name, "Benutzername", false)?;
+    Ok(name.to_string())
+}
+
+fn check_new_password(password: &str) -> Result<(), AppError> {
+    if password.chars().count() < MIN_PASSWORD_LEN {
+        return Err(AppError::BadRequest(format!("Das Passwort braucht mindestens {MIN_PASSWORD_LEN} Zeichen.")));
+    }
+    check_len(password, "Passwort", MAX_PASSWORD_LEN)
+}
+
+fn username_taken(e: rusqlite::Error) -> AppError {
+    match e {
+        rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation => {
+            AppError::BadRequest("Diesen Benutzernamen gibt es schon.".into())
+        }
+        other => other.into(),
+    }
+}
+
+/// `GET /api/admin/users`: everybody, with what the admin wants to see at a
+/// glance -- how many tours they have and whether their portal login is in.
+async fn admin_list_users(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    let conn = state.db()?;
+    let mut stmt = conn.prepare(
+        "SELECT u.id, u.username, u.is_admin, u.created_at, u.portal_username, \
+                (SELECT COUNT(*) FROM routes r WHERE r.user_id = u.id) \
+         FROM users u ORDER BY u.is_admin DESC, u.username COLLATE NOCASE",
+    )?;
+    let users: Vec<Value> = stmt
+        .query_map([], |r| {
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?,
+                "username": r.get::<_, String>(1)?,
+                "is_admin": r.get::<_, i64>(2)? != 0,
+                "created_at": r.get::<_, String>(3)?,
+                "portal_username": r.get::<_, Option<String>>(4)?,
+                "route_count": r.get::<_, i64>(5)?,
+            }))
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(Json(json!({ "users": users })))
+}
+
+#[derive(Deserialize)]
+struct UserCreate {
+    username: String,
+    password: String,
+}
+
+async fn admin_create_user(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<UserCreate>,
+) -> Result<Json<Value>, AppError> {
+    let username = clean_username(&payload.username)?;
+    check_new_password(&payload.password)?;
+    let hash = hash_password(&payload.password)?;
+    let conn = state.db()?;
+    conn.execute(
+        "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?1, ?2, 0, ?3)",
+        params![username, hash, now_iso()],
+    )
+    .map_err(username_taken)?;
+    Ok(Json(json!({ "id": conn.last_insert_rowid(), "username": username })))
+}
+
+#[derive(Deserialize)]
+struct UserUpdate {
+    username: Option<String>,
+    password: Option<String>,
+}
+
+/// `PATCH /api/admin/users/:id`: a new name, a new password, or both. A new
+/// password signs that user out everywhere, which is the point of setting
+/// one. The admin's own name and password are fixed in this file.
+async fn admin_update_user(
+    State(state): State<Arc<AppState>>,
+    AxPath(user_id): AxPath<i64>,
+    Json(payload): Json<UserUpdate>,
+) -> Result<Json<Value>, AppError> {
+    let username = payload.username.as_deref().map(clean_username).transpose()?;
+    if let Some(password) = &payload.password {
+        check_new_password(password)?;
+    }
+    let hash = payload.password.as_deref().map(hash_password).transpose()?;
+    let mut conn = state.db()?;
+    let tx = conn.transaction()?;
+    let is_admin: bool = tx
+        .query_row("SELECT is_admin FROM users WHERE id = ?1", params![user_id], |r| r.get::<_, i64>(0))
+        .optional()?
+        .ok_or_else(|| AppError::NotFound("Benutzer nicht gefunden".into()))?
+        != 0;
+    if is_admin {
+        return Err(AppError::Forbidden("Das Administrator-Konto ist fest eingestellt und kann hier nicht geändert werden.".into()));
+    }
+    if let Some(username) = &username {
+        tx.execute("UPDATE users SET username = ?1 WHERE id = ?2", params![username, user_id]).map_err(username_taken)?;
+    }
+    if let Some(hash) = &hash {
+        tx.execute("UPDATE users SET password_hash = ?1 WHERE id = ?2", params![hash, user_id])?;
+        tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?;
+    }
+    tx.commit()?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// `DELETE /api/admin/users/:id`: the user, their tours and their portal
+/// login, all at once (`ON DELETE CASCADE`). Not the admin.
+async fn admin_delete_user(
+    State(state): State<Arc<AppState>>,
+    AxPath(user_id): AxPath<i64>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db()?;
+    let is_admin: bool = conn
+        .query_row("SELECT is_admin FROM users WHERE id = ?1", params![user_id], |r| r.get::<_, i64>(0))
+        .optional()?
+        .ok_or_else(|| AppError::NotFound("Benutzer nicht gefunden".into()))?
+        != 0;
+    if is_admin {
+        return Err(AppError::Forbidden("Das Administrator-Konto kann nicht gelöscht werden.".into()));
+    }
+    conn.execute("DELETE FROM users WHERE id = ?1", params![user_id])?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+// ---------------------------------------------------------------------
 // Request bodies
 // ---------------------------------------------------------------------
 
@@ -3197,6 +3893,8 @@ struct RouteCreate {
 struct RouteUpdate {
     name: Option<String>,
     status: Option<String>,
+    /// "vm" or "tk": which kind of tour the Ladeliste treats this as.
+    ladeliste_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -3235,7 +3933,10 @@ struct StopUpdate {
 // Routes API
 // ---------------------------------------------------------------------
 
-async fn list_routes(State(state): State<Arc<AppState>>) -> Result<Json<Vec<RouteSummary>>, AppError> {
+async fn list_routes(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+) -> Result<Json<Vec<RouteSummary>>, AppError> {
     let conn = state.db()?;
     // The same two numbers `get_route_detail` reports -- see there.
     let mut stmt = conn.prepare(&format!(
@@ -3243,10 +3944,11 @@ async fn list_routes(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Rout
                 COUNT(CASE WHEN s.kind = 'customer' AND NOT COALESCE({SQL_SKIPS_DOOR}, 0) THEN 1 END) AS customer_count,
                 SUM(CASE WHEN s.kind = 'customer' AND s.delivered = 1 AND NOT COALESCE({SQL_SKIPS_DOOR}, 0) THEN 1 ELSE 0 END) AS delivered_count
          FROM routes r LEFT JOIN stops s ON s.route_id = r.id
+         WHERE r.user_id = ?1
          GROUP BY r.id ORDER BY r.created_at DESC",
     ))?;
     let rows = stmt
-        .query_map([], |r| {
+        .query_map(params![user.id], |r| {
             Ok(RouteSummary {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -3263,7 +3965,7 @@ async fn list_routes(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Rout
 }
 
 /// Writes a new route and its three fixed stops, flagged for optimizing.
-fn insert_route(state: &AppState, name: &str) -> Result<i64, AppError> {
+fn insert_route(state: &AppState, user_id: i64, name: &str) -> Result<i64, AppError> {
     // One timestamp for the whole creation, not one per INSERT — the route
     // and its three fixed stops are created in the same instant, and four
     // separate `now_iso()` calls only make that look otherwise.
@@ -3281,8 +3983,8 @@ fn insert_route(state: &AppState, name: &str) -> Result<i64, AppError> {
     // would sit in the list looking complete while having no geometry
     // and no leg distances at all, with no banner offering to fix it.
     tx.execute(
-        "INSERT INTO routes (name, status, created_at, needs_optimize) VALUES (?1, 'active', ?2, 1)",
-        params![name, created_at],
+        "INSERT INTO routes (name, status, created_at, needs_optimize, user_id) VALUES (?1, 'active', ?2, 1, ?3)",
+        params![name, created_at, user_id],
     )?;
     let route_id = tx.last_insert_rowid();
     // Fixed points, geocoded once ahead of time (see START_LAT/VIA_LAT)
@@ -3308,6 +4010,7 @@ fn insert_route(state: &AppState, name: &str) -> Result<i64, AppError> {
 
 async fn create_route(
     State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
     Json(payload): Json<RouteCreate>,
 ) -> Result<Json<RouteDetail>, AppError> {
     let name = payload
@@ -3320,13 +4023,17 @@ async fn create_route(
     check_len(&name, "Name", MAX_ROUTE_NAME_LEN)?;
     check_no_control_chars(&name, "Name", false)?;
 
-    let route_id = insert_route(&state, &name)?;
+    let route_id = insert_route(&state, user.id, &name)?;
     reoptimize_best_effort(&state, route_id).await;
     let conn = state.db()?;
     Ok(Json(get_route_detail(&conn, route_id)?))
 }
 
 async fn get_route(State(state): State<Arc<AppState>>, AxPath(route_id): AxPath<i64>) -> Result<Json<RouteDetail>, AppError> {
+    // A tour from before entrances existed catches up behind this answer;
+    // the next time it is opened they are there.
+    let filler = Arc::clone(&state);
+    tokio::spawn(async move { fill_entrances(&filler, route_id).await });
     let conn = state.db()?;
     Ok(Json(get_route_detail(&conn, route_id)?))
 }
@@ -3358,9 +4065,16 @@ async fn update_route(
         other => other,
     };
 
+    if payload.ladeliste_mode.as_deref().is_some_and(|m| m != "vm" && m != "tk") {
+        return Err(AppError::BadRequest("Ungültige Tourart".into()));
+    }
+
     let tx = conn.transaction()?;
     if let Some(name) = &new_name {
         tx.execute("UPDATE routes SET name = ?1 WHERE id = ?2", params![name, route_id])?;
+    }
+    if let Some(mode) = &payload.ladeliste_mode {
+        tx.execute("UPDATE routes SET ladeliste_mode = ?1 WHERE id = ?2", params![mode, route_id])?;
     }
     if let Some(status) = new_status {
         let completed_at = if status == "completed" { Some(now_iso()) } else { None };
@@ -3510,16 +4224,19 @@ fn learn_pace(tours: &[Vec<PaceStop>]) -> PaceHistory {
 
 /// `GET /api/pace`. Only finished tours: one still being driven is its own
 /// measurement, taken in the app, and must not be counted twice.
-async fn pace_history(State(state): State<Arc<AppState>>) -> Result<Json<PaceHistory>, AppError> {
+async fn pace_history(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+) -> Result<Json<PaceHistory>, AppError> {
     let conn = state.db()?;
     let mut stmt = conn.prepare(
         "SELECT s.route_id, s.kind, s.excluded, s.outcome, s.delivered, s.settled_at, s.next_leg_min \
-         FROM stops s JOIN (SELECT id, created_at FROM routes WHERE status = 'completed' \
+         FROM stops s JOIN (SELECT id, created_at FROM routes WHERE status = 'completed' AND user_id = ?2 \
                             ORDER BY created_at DESC LIMIT ?1) r ON r.id = s.route_id \
          ORDER BY s.route_id, s.order_index, s.id",
     )?;
     let rows: Vec<(i64, PaceStop)> = stmt
-        .query_map(params![PACE_TOURS], |r| {
+        .query_map(params![PACE_TOURS, user.id], |r| {
             Ok((
                 r.get(0)?,
                 PaceStop {
@@ -3990,6 +4707,7 @@ async fn add_stop(
         tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
         tx.commit()?;
     }
+    fill_entrances(&state, route_id).await;
     // OSRM solves this in one fast network round-trip now — no reason to
     // make the driver remember a separate "optimize" tap after every
     // single stop like the old local solver required.
@@ -4346,8 +5064,11 @@ async fn update_stop(
             // re-check of the route's addresses knows to leave a
             // hand-placed pin alone — and to stop leaving one alone once the
             // driver edits the address and a geocoder answers instead.
+            // The entrance belonged to the address the stop had: gone with
+            // it, and looked up again below for the new one.
             tx.execute(
-                "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3, pinned = ?4 WHERE id = ?5",
+                "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3, pinned = ?4, \
+                 entrance_lat = NULL, entrance_lon = NULL WHERE id = ?5",
                 params![lat, lon, precision, manual_pin as i64, stop_id],
             )?;
         }
@@ -4366,6 +5087,7 @@ async fn update_stop(
     // package text never touch order/geometry, so there's nothing to
     // re-solve for those.
     if replan {
+        fill_entrances(&state, route_id).await;
         reoptimize_best_effort(&state, route_id).await;
     }
     let conn = state.db()?;
@@ -4881,7 +5603,8 @@ async fn import_entries(
                 // hand-placed pin.
                 tx.execute(
                     "UPDATE stops SET kunde = ?1, strasse = ?2, plz = ?3, paket = ?4, notiz = ?5, \
-                     lat = ?6, lon = ?7, location_precision = ?8, pinned = 0 WHERE id = ?9",
+                     lat = ?6, lon = ?7, location_precision = ?8, pinned = 0, \
+                     entrance_lat = NULL, entrance_lon = NULL WHERE id = ?9",
                     params![kunde, strasse, plz, paket, notiz, lat, lon, precision, id],
                 )?;
             }
@@ -4949,6 +5672,9 @@ async fn import_entries(
     };
     drop(route_guard);
 
+    // Every stop still without an entrance gets one looked up -- which is
+    // also how a tour loaded before entrances existed catches up.
+    fill_entrances(state, route_id).await;
     if changed {
         reoptimize_best_effort(state, route_id).await;
     }
@@ -5068,16 +5794,14 @@ fn form_encode(value: &str) -> String {
     out
 }
 
-fn setting(conn: &Connection, key: &str) -> Result<Option<String>, AppError> {
-    Ok(conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0)).optional()?)
-}
-
-/// A token for the login this server holds, or a plain-language refusal
+/// A token for the signed-in user's own portal login, or a plain-language refusal
 /// when there is none.
-async fn portal_token(state: &AppState) -> Result<String, AppError> {
-    let (username, password) = {
+async fn portal_token(state: &AppState, user: &AuthUser) -> Result<String, AppError> {
+    let (username, password): (Option<String>, Option<String>) = {
         let conn = state.db()?;
-        (setting(&conn, "portal_username")?, setting(&conn, "portal_password")?)
+        conn.query_row("SELECT portal_username, portal_password FROM users WHERE id = ?1", params![user.id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
     };
     let (Some(username), Some(password)) = (username, password) else {
         return Err(AppError::BadRequest("Bitte zuerst beim Zusteller-Portal anmelden.".into()));
@@ -5095,6 +5819,7 @@ struct PortalCredentials {
 /// kept once it has been seen to work.
 async fn portal_login_handler(
     State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
     Json(payload): Json<PortalCredentials>,
 ) -> Result<Json<Value>, AppError> {
     let username = payload.username.trim().to_string();
@@ -5104,27 +5829,30 @@ async fn portal_login_handler(
     check_len(&username, "Benutzername", 200)?;
     check_len(&payload.password, "Passwort", 200)?;
     portal_login(&state, &username, &payload.password).await?;
-    let mut conn = state.db()?;
-    let tx = conn.transaction()?;
-    for (key, value) in [("portal_username", &username), ("portal_password", &payload.password)] {
-        tx.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value],
-        )?;
-    }
-    tx.commit()?;
+    let conn = state.db()?;
+    conn.execute(
+        "UPDATE users SET portal_username = ?1, portal_password = ?2 WHERE id = ?3",
+        params![username, payload.password, user.id],
+    )?;
     Ok(Json(json!({ "logged_in": true, "username": username })))
 }
 
-async fn portal_status(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+async fn portal_status(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+) -> Result<Json<Value>, AppError> {
     let conn = state.db()?;
-    let username = setting(&conn, "portal_username")?;
+    let username: Option<String> =
+        conn.query_row("SELECT portal_username FROM users WHERE id = ?1", params![user.id], |r| r.get(0))?;
     Ok(Json(json!({ "logged_in": username.is_some(), "username": username })))
 }
 
-async fn portal_logout(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+async fn portal_logout(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+) -> Result<Json<Value>, AppError> {
     let conn = state.db()?;
-    conn.execute("DELETE FROM settings WHERE key IN ('portal_username', 'portal_password')", [])?;
+    conn.execute("UPDATE users SET portal_username = NULL, portal_password = NULL WHERE id = ?1", params![user.id])?;
     Ok(Json(json!({ "logged_in": false })))
 }
 
@@ -5169,10 +5897,11 @@ struct PortalDateQuery {
 /// `GET /api/portal/tours?date=YYYY-MM-DD`: the tours driven that day.
 async fn portal_tours(
     State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
     axum::extract::Query(q): axum::extract::Query<PortalDateQuery>,
 ) -> Result<Json<Value>, AppError> {
     let day = german_weekday(parse_portal_date(&q.date)?);
-    let token = portal_token(&state).await?;
+    let token = portal_token(&state, &user).await?;
     let tours: Vec<PortalTour> =
         portal_json(portal_request(&state, reqwest::Method::GET, "supplier/tours", Some(&token)), "Tourenliste").await?;
     let mut today: Vec<&PortalTour> = tours.iter().filter(|t| t.runs_on(day)).collect();
@@ -5357,10 +6086,11 @@ struct PortalDeliveriesQuery {
 /// driver to look over before anything is loaded.
 async fn portal_deliveries(
     State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
     axum::extract::Query(q): axum::extract::Query<PortalDeliveriesQuery>,
 ) -> Result<Json<Value>, AppError> {
     let date = parse_portal_date(&q.date)?;
-    let token = portal_token(&state).await?;
+    let token = portal_token(&state, &user).await?;
     let deliveries = portal_deliveries_of(&state, &token, q.tour_id, date).await?;
     Ok(Json(json!({
         "deliveries": deliveries
@@ -5371,25 +6101,35 @@ async fn portal_deliveries(
 }
 
 #[derive(Deserialize)]
-struct PortalImport {
+struct PortalEntriesRequest {
     tour_id: i64,
-    tour_name: String,
     date: String,
     /// The deliveries to load. Absent loads the whole tour.
     delivery_ids: Option<Vec<i64>>,
+}
+
+#[derive(Deserialize)]
+struct PortalImport {
+    tour_name: String,
+    date: String,
+    /// The stops to load, as `portal_entries` returned them -- and as the
+    /// driver corrected them on the Prüfen screen.
+    entries: Vec<Value>,
     /// The route to load into. Absent makes a new one, named for the tour.
     route_id: Option<i64>,
 }
 
-/// `POST /api/portal/import`: loads a tour's deliveries as stops -- into a
-/// new route, or into one that is already there, where stops added by hand
-/// are left alone and stops already on it are recognised rather than doubled.
-async fn portal_import(
+/// `POST /api/portal/entries`: the chosen deliveries in full -- name,
+/// address, what is in the parcels, the note, the phone number -- for the
+/// driver to look over and correct before any of it touches a tour. Nothing
+/// is looked up or saved here.
+async fn portal_entries(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<PortalImport>,
-) -> Result<Json<BulkJsonResult>, AppError> {
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Json(payload): Json<PortalEntriesRequest>,
+) -> Result<Json<Value>, AppError> {
     let date = parse_portal_date(&payload.date)?;
-    let token = portal_token(&state).await?;
+    let token = portal_token(&state, &user).await?;
     let mut deliveries = portal_deliveries_of(&state, &token, payload.tour_id, date).await?;
     if let Some(ids) = &payload.delivery_ids {
         let wanted: HashSet<i64> = ids.iter().copied().collect();
@@ -5426,12 +6166,34 @@ async fn portal_import(
         entries[index] = Some(entry);
     }
     let entries: Vec<Value> = entries.into_iter().flatten().collect();
+    Ok(Json(json!({ "entries": entries })))
+}
+
+/// `POST /api/portal/import`: puts the entries the driver has looked over
+/// onto a tour -- a new one, or one that is already there, where stops added
+/// by hand are left alone and stops already on it are recognised rather
+/// than doubled.
+async fn portal_import(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Json(payload): Json<PortalImport>,
+) -> Result<Json<BulkJsonResult>, AppError> {
+    let date = parse_portal_date(&payload.date)?;
+    let entries = payload.entries;
+    if entries.is_empty() {
+        return Err(AppError::BadRequest("Es ist kein Stopp ausgewählt.".into()));
+    }
 
     let created = payload.route_id.is_none();
     let route_id = match payload.route_id {
         Some(id) => {
             let conn = state.db()?;
-            require_route_exists(&conn, id)?;
+            // The route arrives in the body, where `auth_mw` cannot see it.
+            let owner: Option<Option<i64>> =
+                conn.query_row("SELECT user_id FROM routes WHERE id = ?1", params![id], |r| r.get(0)).optional()?;
+            if owner != Some(Some(user.id)) {
+                return Err(AppError::NotFound("Route nicht gefunden".into()));
+            }
             // Never past what a route can be planned with.
             let have: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM stops WHERE route_id = ?1 AND kind = 'customer'",
@@ -5454,12 +6216,16 @@ async fn portal_import(
                 // The tour's own name; the day with it once an active route
                 // already carries that name.
                 let taken: bool = conn
-                    .query_row("SELECT 1 FROM routes WHERE name = ?1 AND status = 'active'", params![base], |_| Ok(()))
+                    .query_row(
+                        "SELECT 1 FROM routes WHERE name = ?1 AND status = 'active' AND user_id = ?2",
+                        params![base, user.id],
+                        |_| Ok(()),
+                    )
                     .optional()?
                     .is_some();
                 if taken { format!("{base} – {}", date.format("%d.%m.")) } else { base }
             };
-            insert_route(&state, &name)?
+            insert_route(&state, user.id, &name)?
         }
     };
 
@@ -5686,18 +6452,25 @@ fn build_router(state: Arc<AppState>) -> Router {
         // runs every few seconds must not consume the budget meant for the
         // driver, and must not start failing as a *side effect* of the
         // flood it exists to report.
+        .route("/api/login", post(login))
+        .route("/api/logout", post(logout))
+        .route("/api/me", get(me))
+        .route("/api/admin/users", get(admin_list_users).post(admin_create_user))
+        .route("/api/admin/users/:id", patch(admin_update_user).delete(admin_delete_user))
         .route("/api/pace", get(pace_history))
         .route("/api/portal/status", get(portal_status))
         .route("/api/portal/login", post(portal_login_handler))
         .route("/api/portal/logout", post(portal_logout))
         .route("/api/portal/tours", get(portal_tours))
         .route("/api/portal/deliveries", get(portal_deliveries))
+        .route("/api/portal/entries", post(portal_entries))
         .route("/api/portal/import", post(portal_import))
         .route("/api/health", get(health))
         .route("/", get(index))
         .route("/sw.js", get(sw_js))
         .route("/icon.png", get(icon_png))
         .fallback(not_found)
+        .layer(middleware::from_fn_with_state(state.clone(), auth_mw))
         .with_state(state)
         // A hung/misbehaving upstream (Nominatim, OSRM, or a stalled TCP
         // connection) shouldn't be able to tie up a handler forever — set
@@ -5936,6 +6709,7 @@ mod tests {
                 kategorie: Some("Adresse".to_string()),
                 adresse: Some(format!("{street} 1")),
                 ranking: Some(ranking),
+                street_number: Some("1".to_string()),
             },
         }
     }
@@ -5993,6 +6767,7 @@ mod tests {
                 kategorie: Some("Adresse".to_string()),
                 adresse: Some(adresse.to_string()),
                 ranking: Some(ranking),
+                street_number: Some("1".to_string()),
             },
         }
     }
@@ -6049,6 +6824,8 @@ mod tests {
             settled_at: None,
             telefon: None,
             paket_count: None,
+            entrance_lat: None,
+            entrance_lon: None,
         }
     }
 
@@ -6177,6 +6954,30 @@ mod tests {
         let learned = learn_pace(&[tour(12)]);
         assert_eq!(learned.door_minutes, Some(6.0));
         assert_eq!(learned.lager_minutes, None);
+    }
+
+    #[test]
+    fn entrance_numbers_are_read_the_way_the_layer_files_them() {
+        assert_eq!(entrance_number("82-92").as_deref(), Some("82"));
+        assert_eq!(entrance_number("82/1").as_deref(), Some("82"));
+        assert_eq!(entrance_number("82 Kindertagesheim").as_deref(), Some("82"));
+        assert_eq!(entrance_number("12a/3").as_deref(), Some("12a"));
+        assert_eq!(entrance_number("12A").as_deref(), Some("12a"));
+        assert_eq!(entrance_number("Stiege 2"), None);
+    }
+
+    #[test]
+    fn the_entrance_picked_is_the_number_asked_for_and_no_neighbour() {
+        let f = |number: &str, plz: &str| EntranceFeature {
+            geometry: EntranceGeometry { coordinates: vec![16.34, 48.23] },
+            properties: EntranceProperties { number: Some(number.into()), plz: Some(plz.into()) },
+        };
+        let all = vec![f("1290", "1180"), f("129A", "1180"), f("129", "1190"), f("129", "1180"), f("31-35", "1180")];
+        assert_eq!(pick_entrance(&all, "129", "1180"), Some((48.23, 16.34)));
+        assert_eq!(pick_entrance(&all[..3], "129", "1180"), None);
+        assert_eq!(pick_entrance(&all, "129a", "1180"), Some((48.23, 16.34)));
+        // A range filed under its own spelling still answers to its first number.
+        assert_eq!(pick_entrance(&all, "31", "1180"), Some((48.23, 16.34)));
     }
 
     fn nominatim_hit(road: Option<&str>, postcode: Option<&str>, house_number: Option<&str>) -> NominatimHit {

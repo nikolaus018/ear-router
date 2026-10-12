@@ -91,15 +91,18 @@ and nothing in it is more technical than a postcode.
 
 | | |
 |---|---|
-| Touren | "+" asks where the stops come from: *Von Gourmet laden* (sign in once, pick the day's tour, untick anybody not driven) or *Leere Tour* |
+| Touren | "+" asks where the stops come from: *Von Gourmet laden* (sign in once, pick the day's tour, untick anybody not driven, look the list over in *Prüfen*) or *Leere Tour* |
 | A tour | The stops in driving order with their arrival times; tap one for *Nicht angetroffen*, *Ins Lager mitnehmen*, *Bearbeiten*, *Aus der Tour entfernen*. *Tour vorbereiten* checks it over before the yard is left |
-| Jetzt | The stop the driver is at: Navigation, Geliefert, Anrufen, and a banner that takes the last answer back |
+| Jetzt | The stop the driver is at: Navigation (a hand-placed pin, else the house entrance from the city's register, else the address), Geliefert, Anrufen, and a banner that takes the last answer back |
+| Ladeliste | VM sums the Pakete; TK lists the customers, last door first. The switch is kept with the tour and decides what every row shows for the Paket |
 | Karte | The tour on the map |
 | Closing a tour | The Tagesabschluss, ready to send to the office |
 
-The server keeps the portal login (table `settings`) and does the talking to
-`odoo.gourmet.at`, because a browser cannot. Anybody who can reach the server
-can use the app, so it belongs behind something that asks who is there.
+Everybody signs in. Each account has its own tours and its own portal login,
+kept on its row in `users`; the server does the talking to `odoo.gourmet.at`,
+because a browser cannot. The account `admin` — its name and password are set
+in `src/main.rs` — also has an Admin tab, where the other accounts are made,
+renamed, given a new password and deleted.
 
 Not in the web version, on purpose: the JSON editor, Erays Planer, Globale
 Infos, the other driver's stops, the toilets, backups, splitting a tour on
