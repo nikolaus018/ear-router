@@ -74,6 +74,21 @@ struct ImportMatchingTests {
         #expect(!b.delivered)
     }
 
+    /// The portal import into a tour that already has stops adds to it: stops
+    /// the list does not mention stay.
+    @Test func importingWithoutReplacingKeepsStopsTheListDoesNotMention() async throws {
+        let a = stop("Fam. Gruber", "Gentzgasse 129/1")
+        let b = stop("Fam. Novak", "Währinger Straße 4", lat: 48.232)
+        let (route, context) = try makeRoute([a, b])
+
+        let result = try await RouteStore.importJSON(
+            [entry("Fam. Gruber", "Gentzgasse 129/1")],
+            into: route, in: context, replacing: false)
+
+        #expect(result.deleted == 0)
+        #expect(route.customerStops.count == 2)
+    }
+
     /// The other half of that rule: an entry that really did change is counted,
     /// once, however many of its fields moved.
     @Test func anEntryThatActuallyChangedIsCountedOnce() async throws {

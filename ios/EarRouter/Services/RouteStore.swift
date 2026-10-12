@@ -752,6 +752,7 @@ enum RouteStore {
     static func importJSON(
         _ entries: [CustomerJSON], into route: Route, in context: ModelContext,
         reroute: Bool = true,
+        replacing: Bool = true,
         onProgress: ((Int, Int) -> Void)? = nil
     ) async throws -> ImportResult {
         guard entries.count <= maxBulkStops else {
@@ -804,7 +805,7 @@ enum RouteStore {
         // new ones used to save and then fail to optimize. Checked before
         // anything is written, as if the paste's deletions all go through.
         let adding = unresolved.count { $0.existing == nil }
-        let dropping = existing.count { !matched.contains($0.id) && !$0.isSettled }
+        let dropping = replacing ? existing.count { !matched.contains($0.id) && !$0.isSettled } : 0
         let total = existing.count - dropping + adding
         guard total <= maxBulkStops else {
             throw AppError.message(
@@ -964,7 +965,10 @@ enum RouteStore {
         result.deletionsSkipped =
             !result.geocodeFailures.isEmpty || !result.validationFailures.isEmpty
             || result.cancelled
-        if !result.deletionsSkipped {
+        // `replacing: false` is an addition to the tour (the portal import into
+        // a tour that already has stops): nothing is dropped, however the
+        // list compares to what is there.
+        if replacing && !result.deletionsSkipped {
             for stop in existing where !matched.contains(stop.id) && !stop.isSettled {
                 context.delete(stop)
                 result.deleted += 1

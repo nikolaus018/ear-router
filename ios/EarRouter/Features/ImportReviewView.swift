@@ -32,6 +32,9 @@ struct ImportReviewView: View {
     /// route already, which is why this stays an afterthought parameter
     /// rather than a required one.
     var onImported: (() -> Void)?
+    /// Whether stops already on the tour that the list does not mention are
+    /// removed. False adds the list to the tour instead.
+    var replacing = true
 
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -334,8 +337,9 @@ struct ImportReviewView: View {
 
     private func submit() {
         let payload = submittable
-        let preview = RouteStore.deletionPreview(payload, in: route)
-        if !preview.names.isEmpty {
+        let preview = replacing
+            ? RouteStore.deletionPreview(payload, in: route) : nil
+        if let preview, !preview.names.isEmpty {
             pendingDeletions = PendingDeletions(
                 entries: payload, names: preview.names, skipped: entries.count - payload.count)
             return
@@ -349,7 +353,7 @@ struct ImportReviewView: View {
 
         do {
             let r = try await RouteStore.importJSON(
-                payload, into: route, in: context
+                payload, into: route, in: context, replacing: replacing
             ) { done, total in
                 progress = "Adresse \(done + 1) von \(total) wird gesucht …"
             }
