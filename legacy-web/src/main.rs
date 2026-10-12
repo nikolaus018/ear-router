@@ -30,7 +30,7 @@
 //!     lot of real routing software. Its `/trip` endpoint solves the
 //!     actual multi-stop ordering problem; there's no reason to hand-roll
 //!     a weaker 2-opt/or-opt solver when a well-tested one is a request
-//!     away. See `osrm_route_leg`/`osrm_trip` below.
+//!     away. See `osrm_route_through`/`osrm_trip` below.
 //!
 //! Both Nominatim and OSRM's public servers are free to use but shared —
 //! Nominatim's usage policy caps at ~1 request/second, enforced here via
@@ -305,7 +305,7 @@ const WIEN_OGD_URL_DEFAULT: &str = "https://data.wien.gv.at/daten/OGDAddressServ
 /// `geocode_address`. Override with `EAR_NOMINATIM_URL`.
 const NOMINATIM_URL_DEFAULT: &str = "https://nominatim.openstreetmap.org/search";
 /// OSRM base URL, no trailing slash — routing/trip-optimization, see
-/// `osrm_route_leg`/`osrm_trip`. Override with `EAR_OSRM_URL`. Currently a
+/// `osrm_route_through`/`osrm_trip`. Override with `EAR_OSRM_URL`. Currently a
 /// self-hosted instance on the local network; `osrm_get` automatically
 /// falls back to `OSRM_PUBLIC_FALLBACK` if this one is unreachable, so a
 /// self-host outage degrades routing rather than breaking it.
@@ -1074,6 +1074,13 @@ CREATE TABLE IF NOT EXISTS stops (
     -- address, so `recheck_addresses` leaves it alone: the driver stood in
     -- front of the building and told us where it is.
     pinned INTEGER NOT NULL DEFAULT 0,
+    -- What happened at the door: 'delivered', 'notHome' or 'toLager'. NULL is
+    -- an open stop -- or one ticked before this column existed, which reads
+    -- as delivered through its `delivered` bit (see `effective_outcome`).
+    -- `delivered` stays alongside as the summary every count already reads.
+    outcome TEXT,
+    -- When the driver said so. NULL on an open stop.
+    settled_at TEXT,
     -- NULL = exact match (or a human placed the pin). 'street'/'district'
     -- mean geocoding only found an approximate fallback location — see
     -- `Precision` and `geocode_address`. Surfaced in the UI so a driver knows
@@ -1138,6 +1145,12 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     }
     if !stop_cols.contains("pinned") {
         conn.execute("ALTER TABLE stops ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0", [])?;
+    }
+    if !stop_cols.contains("outcome") {
+        conn.execute("ALTER TABLE stops ADD COLUMN outcome TEXT", [])?;
+    }
+    if !stop_cols.contains("settled_at") {
+        conn.execute("ALTER TABLE stops ADD COLUMN settled_at TEXT", [])?;
     }
     let cache_cols: HashSet<String> = conn
         .prepare("PRAGMA table_info(geocode_cache)")?
@@ -1999,9 +2012,10 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
 // routing engine (contraction hierarchies), instead of a hand-rolled
 // Dijkstra graph + a hand-rolled 2-opt/or-opt solver. Two calls do
 // everything the old local code did across three modules:
-//   - `osrm_route_leg` for the one fixed leg (depot -> warehouse) that
-//     never needs reordering, just its real distance/duration/geometry.
-//   - `osrm_trip` for warehouse -> [customers, order TBD] -> destination:
+//   - `osrm_route_through` for the part nothing may reorder (depot ->
+//     warehouse, and on through the doors already driven to): just its
+//     real distance/duration/geometry.
+//   - `osrm_trip` for the last of those -> [customers, order TBD] -> destination:
 //     OSRM's own multi-stop trip-optimization endpoint, which solves
 //     exactly the ordering problem the old `solve_route_order` was
 //     reimplementing (worse, and only for whatever fit in a Vienna-only
@@ -2022,8 +2036,8 @@ struct OsrmRouteResp {
 #[derive(Deserialize)]
 struct OsrmRouteEntry {
     geometry: OsrmGeometry,
-    distance: f64,
-    duration: f64,
+    #[serde(default)]
+    legs: Vec<OsrmLeg>,
 }
 
 #[derive(Deserialize)]
@@ -2168,17 +2182,22 @@ async fn osrm_get<T: DeserializeOwned>(state: &AppState, path_and_query: &str) -
     osrm_try::<T>(&state.http, OSRM_PUBLIC_FALLBACK, path_and_query).await.map_err(osrm_unreachable)
 }
 
-/// Real distance/duration/geometry for a single fixed leg (no ordering
-/// choice involved) — used for the depot -> warehouse leg, which is
-/// always first and never reordered.
-async fn osrm_route_leg(state: &AppState, a: (f64, f64), b: (f64, f64)) -> Result<(f64, f64, Vec<[f64; 2]>), AppError> {
-    let path = format!("/route/v1/driving/{}?overview=full&geometries=geojson", osrm_coord_string(&[a, b]));
+/// One `/route` call through every point in the order given: the part of a
+/// tour nothing is allowed to reorder -- depot, warehouse, and the doors
+/// already driven to. Returns per-leg (distance_m, duration_s) and the
+/// geometry of the whole path.
+async fn osrm_route_through(state: &AppState, coords: &[(f64, f64)]) -> Result<(Vec<(f64, f64)>, Vec<[f64; 2]>), AppError> {
+    let path = format!("/route/v1/driving/{}?overview=full&geometries=geojson", osrm_coord_string(coords));
     let resp: OsrmRouteResp = osrm_get(state, &path).await?;
     if resp.code != "Ok" {
         return Err(AppError::Internal(format!("OSRM route: {}", resp.code)));
     }
     let route = resp.routes.into_iter().next().ok_or_else(|| AppError::Internal("OSRM: keine Route gefunden".into()))?;
-    Ok((route.distance, route.duration, geojson_to_polyline(route.geometry)))
+    if route.legs.len() + 1 != coords.len() {
+        return Err(AppError::Internal("OSRM: unerwartete Anzahl an Teilstrecken".into()));
+    }
+    let legs = route.legs.iter().map(|l| (l.distance, l.duration)).collect();
+    Ok((legs, geojson_to_polyline(route.geometry)))
 }
 
 /// Solves the actual multi-stop ordering problem via OSRM's `/trip`
@@ -2321,7 +2340,51 @@ struct StopRow {
     location_precision: Option<String>,
     excluded: bool,
     pinned: bool,
+    outcome: Option<String>,
+    settled_at: Option<String>,
 }
+
+/// What happened at a door. The raw values are the iOS app's own, so a
+/// backup written by one reads in the other.
+///
+/// Two answers besides the plain tick: `notHome` -- driven to, nobody there,
+/// the door stays in the route as a driven one -- and `toLager`, known
+/// beforehand, which is not driven to at all. `cancelled` and `neighbour` are
+/// no longer offered and only ever arrive in an old backup; they are read so
+/// such a stop still counts the way it did.
+mod outcome {
+    pub const DELIVERED: &str = "delivered";
+    pub const NOT_HOME: &str = "notHome";
+    pub const TO_LAGER: &str = "toLager";
+
+    /// The outcomes a request may set.
+    pub fn is_settable(o: &str) -> bool {
+        matches!(o, DELIVERED | NOT_HOME | TO_LAGER)
+    }
+
+    /// Whether the meal left the van -- what the `delivered` column means.
+    pub fn handed_over(o: &str) -> bool {
+        matches!(o, DELIVERED | "neighbour")
+    }
+
+    /// The van does not go to this door at all: it is left out of the route,
+    /// the counts and the Ladeliste.
+    pub fn skips_door(o: &str) -> bool {
+        matches!(o, TO_LAGER | "cancelled")
+    }
+}
+
+/// A stop's outcome as stored, or `delivered` for a row ticked before
+/// outcomes existed -- which is exactly what that bit meant.
+fn effective_outcome(outcome: Option<String>, delivered: bool) -> Option<String> {
+    outcome
+        .filter(|o| !o.is_empty())
+        .or_else(|| delivered.then(|| outcome::DELIVERED.to_string()))
+}
+
+/// SQL for "this customer row is not driven to": the same rule as
+/// `outcome::skips_door`, for the queries that count without loading rows.
+const SQL_SKIPS_DOOR: &str = "(s.outcome IN ('toLager', 'cancelled'))";
 
 impl StopRow {
     fn from_row(r: &rusqlite::Row) -> rusqlite::Result<Self> {
@@ -2342,6 +2405,8 @@ impl StopRow {
             location_precision: r.get("location_precision")?,
             excluded: r.get::<_, i64>("excluded")? != 0,
             pinned: r.get::<_, i64>("pinned")? != 0,
+            outcome: r.get("outcome")?,
+            settled_at: r.get("settled_at")?,
         })
     }
 }
@@ -2372,6 +2437,10 @@ struct StopOut {
     /// can say so, and so a re-check of the route's addresses can leave it
     /// alone -- see `recheck_addresses`.
     pinned: bool,
+    /// What happened at the door -- see `mod outcome`. Absent on an open stop.
+    outcome: Option<String>,
+    /// When that was said, RFC 3339.
+    settled_at: Option<String>,
 }
 
 /// Geometric centre of Vienna — the last-resort position for a stop whose
@@ -2428,6 +2497,8 @@ fn to_stop_out(r: StopRow) -> StopOut {
         location_precision: precision,
         excluded: r.excluded,
         pinned: r.pinned,
+        outcome: effective_outcome(r.outcome, r.delivered),
+        settled_at: r.settled_at,
     }
 }
 
@@ -2523,7 +2594,12 @@ fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, App
     drop(stmt);
 
     let stop_outs: Vec<StopOut> = stops.into_iter().map(to_stop_out).collect();
-    let customer_stops: Vec<&StopOut> = stop_outs.iter().filter(|s| s.kind == "customer").collect();
+    // Counted against the meals owed: a door the van does not go to is not
+    // a stop of the day, so it is in neither number.
+    let customer_stops: Vec<&StopOut> = stop_outs
+        .iter()
+        .filter(|s| s.kind == "customer" && !s.outcome.as_deref().is_some_and(outcome::skips_door))
+        .collect();
     // Summed from the sanitized stops (see `finite_or_none`), so these can
     // only be finite — but a sum of finite values can still overflow to
     // infinity, and infinity is exactly as unserializable as NaN.
@@ -2594,6 +2670,15 @@ struct RouteNodes {
     via: Option<FixedStop>,
     end: Option<FixedStop>,
     customers: Vec<StopCoord>,
+    /// The customers the van does not go to ("Ins Lager mitnehmen"), in list
+    /// order. Not routed -- going through the door anyway put a detour into
+    /// the line, the kilometres and every arrival time after it -- but still
+    /// listed, after the doors that are driven.
+    skipped: Vec<StopCoord>,
+    /// The customers already driven to, in list order, with the one answered
+    /// for last at the end: where the van is now. Empty until the first door
+    /// of the day, which leaves a fresh tour planned exactly as it always was.
+    driven: Vec<StopCoord>,
 }
 
 impl RouteNodes {
@@ -2624,10 +2709,11 @@ fn append_geometry(acc: &mut Vec<[f64; 2]>, segment: Vec<[f64; 2]>) {
 /// by `routed` (that ordering is the whole point of the optimization).
 fn display_order(nodes: &RouteNodes, routed: &[StopCoord]) -> Vec<StopCoord> {
     let customer_ids: HashSet<i64> = nodes.customers.iter().map(|c| c.id).collect();
-    let mut out: Vec<StopCoord> = Vec::with_capacity(routed.len() + 3);
+    let mut out: Vec<StopCoord> = Vec::with_capacity(routed.len() + nodes.skipped.len() + 3);
     out.extend(nodes.start.map(|f| f.coord));
     out.extend(nodes.via.map(|f| f.coord));
     out.extend(routed.iter().copied().filter(|n| customer_ids.contains(&n.id)));
+    out.extend(nodes.skipped.iter().copied());
     out.extend(nodes.end.map(|f| f.coord));
     out
 }
@@ -2659,41 +2745,39 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
 
     // What this solution was planned from, checked again at write time —
     // see `planning_fingerprint`.
-    let planned_from: Vec<(i64, f64, f64, bool)>;
+    let planned_from: Vec<(i64, f64, f64, bool, bool)>;
 
     let nodes = {
         let conn = state.db()?;
-        // Only id/kind/lat/lon/excluded, not `SELECT *`: this runs on every
-        // single add/edit/delete of a stop (via `reoptimize_best_effort`),
-        // and every other column — `kunde`, `strasse`, up to 1000 chars of
-        // `notiz`, etc. — would be fetched into a `String` here only to be
-        // dropped a few lines down; none of it is used for planning.
-        let mut stmt = conn
-            .prepare("SELECT id, kind, lat, lon, excluded FROM stops WHERE route_id = ?1 ORDER BY id")?;
-        let stops: Vec<(i64, String, f64, f64, bool)> = stmt
-            .query_map(params![route_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? != 0))
-            })?
-            .collect::<Result<_, _>>()?;
-        drop(stmt);
+        let stops = planning_rows(&conn, route_id)?;
         planned_from = planning_fingerprint(&stops);
 
-        let mut nodes =
-            RouteNodes { start: None, via: None, end: None, customers: Vec::new() };
-        for (id, kind, lat, lon, excluded) in stops {
-            let coord = StopCoord { id, lat, lon };
-            let fixed = FixedStop { coord, excluded };
+        let mut nodes = RouteNodes {
+            start: None,
+            via: None,
+            end: None,
+            customers: Vec::new(),
+            skipped: Vec::new(),
+            driven: driven_order(&stops),
+        };
+        let mut skipped: Vec<&PlanningRow> = Vec::new();
+        for s in &stops {
+            let coord = StopCoord { id: s.id, lat: s.lat, lon: s.lon };
+            let fixed = FixedStop { coord, excluded: s.excluded };
             // `excluded` is only ever written to a fixed stop, and a
             // customer row carrying it anyway (a hand-edited database)
             // must not silently disappear from the tour — hence matching
             // on the kind rather than on the flag.
-            match kind.as_str() {
+            match s.kind.as_str() {
                 "start" => nodes.start = Some(fixed),
                 "via" => nodes.via = Some(fixed),
                 "end" => nodes.end = Some(fixed),
+                _ if s.skips_door() => skipped.push(s),
                 _ => nodes.customers.push(coord),
             }
         }
+        skipped.sort_by_key(|s| (s.order_index, s.id));
+        nodes.skipped = skipped.iter().map(|s| StopCoord { id: s.id, lat: s.lat, lon: s.lon }).collect();
         nodes
     };
 
@@ -2703,29 +2787,36 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
     // `routed` is the driving order and `legs[i]` is the leg from
     // `routed[i]` to `routed[i + 1]`, so `legs.len() + 1 == routed.len()`
     // holds from here to the write below.
-    let mut routed: Vec<StopCoord> = head.clone();
+    //
+    // Depot -> warehouse, and on through the doors already driven to: fixed,
+    // never reordered, so routed as listed rather than handed to the trip
+    // optimizer. With nothing driven and either fixed point off there is no
+    // such leg at all.
+    let mut routed: Vec<StopCoord> = head.iter().chain(nodes.driven.iter()).copied().collect();
     let mut legs: Vec<(f64, f64)> = Vec::new();
     let mut geometry: Vec<[f64; 2]> = Vec::new();
 
-    // Depot -> warehouse: fixed, never reordered, so a plain point-to-point
-    // call rather than anything the trip optimizer needs to see. Written as
-    // a loop over pairs because the head is 0, 1 or 2 points depending on
-    // what this tour skips — with either of them off there is no such leg.
-    for pair in head.windows(2) {
-        let (dist, dur, geom) =
-            osrm_route_leg(state, (pair[0].lat, pair[0].lon), (pair[1].lat, pair[1].lon)).await?;
-        legs.push((dist, dur));
-        append_geometry(&mut geometry, geom);
+    if routed.len() >= 2 {
+        let coords: Vec<(f64, f64)> = routed.iter().map(|n| (n.lat, n.lon)).collect();
+        let (path_legs, path_geom) = osrm_route_through(state, &coords).await?;
+        legs.extend(path_legs);
+        append_geometry(&mut geometry, path_geom);
     }
 
-    // The optimized section runs from the last fixed head point through
-    // every customer to the destination. That head point is the anchor: it
+    // The optimized section runs from the last point already driven through
+    // every open customer to the destination. That point is the anchor: it
     // is already in `routed` and goes into this call only to be routed
     // *from*, never to be added a second time.
-    let anchor = head.last().copied();
+    //
+    // Mid-tour it is the last door answered for, not the warehouse. Planned
+    // from the depot every time, one stop added after the fifteenth delivery
+    // could land between the third and fourth -- become "next", and send the
+    // driver back across town.
+    let anchor = routed.last().copied();
+    let driven_ids: HashSet<i64> = nodes.driven.iter().map(|n| n.id).collect();
     let mut trip_nodes: Vec<StopCoord> = Vec::new();
     trip_nodes.extend(anchor);
-    trip_nodes.extend(nodes.customers.iter().copied());
+    trip_nodes.extend(nodes.customers.iter().copied().filter(|c| !driven_ids.contains(&c.id)));
     trip_nodes.extend(end);
 
     if trip_nodes.len() >= 2 {
@@ -2803,17 +2894,7 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
     // and geometry are still written either way — a fresher-than-nothing
     // solution beats leaving the old one — but the flag only clears when
     // this solution actually describes the route on disk.
-    let current = planning_fingerprint(&{
-        let mut stmt =
-            tx.prepare("SELECT id, kind, lat, lon, excluded FROM stops WHERE route_id = ?1 ORDER BY id")?;
-        let rows: Vec<(i64, String, f64, f64, bool)> = stmt
-            .query_map(params![route_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? != 0))
-            })?
-            .collect::<Result<_, _>>()?;
-        drop(stmt);
-        rows
-    });
+    let current = planning_fingerprint(&planning_rows(&tx, route_id)?);
     let still_current = current == planned_from;
     if !still_current {
         tracing::info!(
@@ -2847,8 +2928,72 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
 /// between the read and the write does not make the computed order or
 /// geometry wrong, and treating it as if it did would leave routes
 /// perpetually flagged for re-optimization over an edited Notiz.
-fn planning_fingerprint(stops: &[(i64, String, f64, f64, bool)]) -> Vec<(i64, f64, f64, bool)> {
-    stops.iter().map(|(id, _, lat, lon, excluded)| (*id, *lat, *lon, *excluded)).collect()
+fn planning_fingerprint(stops: &[PlanningRow]) -> Vec<(i64, f64, f64, bool, bool)> {
+    stops.iter().map(|s| (s.id, s.lat, s.lon, s.excluded, s.skips_door())).collect()
+}
+
+/// One stop as the optimizer reads it.
+struct PlanningRow {
+    id: i64,
+    kind: String,
+    lat: f64,
+    lon: f64,
+    excluded: bool,
+    order_index: i64,
+    outcome: Option<String>,
+    settled_at: Option<String>,
+}
+
+impl PlanningRow {
+    fn skips_door(&self) -> bool {
+        self.kind == "customer" && self.outcome.as_deref().is_some_and(outcome::skips_door)
+    }
+    /// A door the van has been to: answered for, in any way but one that
+    /// says it never goes there.
+    fn is_driven(&self) -> bool {
+        self.kind == "customer" && self.outcome.is_some() && !self.skips_door()
+    }
+}
+
+/// Every stop of a route, by id -- "the first customer" means the one
+/// entered first, which the no-fixed-points anchor rule relies on.
+fn planning_rows(conn: &Connection, route_id: i64) -> Result<Vec<PlanningRow>, AppError> {
+    // Not `SELECT *`: this runs on every single add/edit/delete of a stop
+    // (via `reoptimize_best_effort`), and none of the text columns are used
+    // for planning.
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, lat, lon, excluded, order_index, outcome, delivered, settled_at \
+         FROM stops WHERE route_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map(params![route_id], |r| {
+            Ok(PlanningRow {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                lat: r.get(2)?,
+                lon: r.get(3)?,
+                excluded: r.get::<_, i64>(4)? != 0,
+                order_index: r.get(5)?,
+                outcome: effective_outcome(r.get(6)?, r.get::<_, i64>(7)? != 0),
+                settled_at: r.get(8)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// The doors already answered for, as `RouteNodes::driven` wants them: in
+/// list order, with the most recent answer moved to the end.
+fn driven_order(stops: &[PlanningRow]) -> Vec<StopCoord> {
+    let mut done: Vec<&PlanningRow> = stops.iter().filter(|s| s.is_driven()).collect();
+    done.sort_by_key(|s| (s.order_index, s.id));
+    // The last of equals, so a tour ticked before timestamps existed keeps
+    // its last listed door as where the van is.
+    if let Some(last) = (0..done.len()).max_by_key(|&i| (done[i].settled_at.clone().unwrap_or_default(), i)) {
+        let row = done.remove(last);
+        done.push(row);
+    }
+    done.iter().map(|s| StopCoord { id: s.id, lat: s.lat, lon: s.lon }).collect()
 }
 
 /// `reoptimize_route` for the callers that have *already committed* their
@@ -2910,6 +3055,10 @@ struct StopUpdate {
     paket: Option<String>,
     notiz: Option<String>,
     delivered: Option<bool>,
+    /// What happened at the door: one of `mod outcome`'s three, or "open"
+    /// to take the answer back. `delivered` is the older spelling of the
+    /// plain tick and still accepted.
+    outcome: Option<String>,
     lat: Option<f64>,
     lon: Option<f64>,
     /// Fixed stops (start/via/end) only -- switch this one out of, or back
@@ -2923,13 +3072,14 @@ struct StopUpdate {
 
 async fn list_routes(State(state): State<Arc<AppState>>) -> Result<Json<Vec<RouteSummary>>, AppError> {
     let conn = state.db()?;
-    let mut stmt = conn.prepare(
+    // The same two numbers `get_route_detail` reports -- see there.
+    let mut stmt = conn.prepare(&format!(
         "SELECT r.id, r.name, r.status, r.created_at, r.completed_at, r.needs_optimize,
-                COUNT(CASE WHEN s.kind = 'customer' THEN 1 END) AS customer_count,
-                SUM(CASE WHEN s.kind = 'customer' AND s.delivered = 1 THEN 1 ELSE 0 END) AS delivered_count
+                COUNT(CASE WHEN s.kind = 'customer' AND NOT COALESCE({SQL_SKIPS_DOOR}, 0) THEN 1 END) AS customer_count,
+                SUM(CASE WHEN s.kind = 'customer' AND s.delivered = 1 AND NOT COALESCE({SQL_SKIPS_DOOR}, 0) THEN 1 ELSE 0 END) AS delivered_count
          FROM routes r LEFT JOIN stops s ON s.route_id = r.id
          GROUP BY r.id ORDER BY r.created_at DESC",
-    )?;
+    ))?;
     let rows = stmt
         .query_map([], |r| {
             Ok(RouteSummary {
@@ -3313,12 +3463,34 @@ async fn recheck_addresses(
 }
 
 async fn reset_delivered(State(state): State<Arc<AppState>>, AxPath(route_id): AxPath<i64>) -> Result<Json<RouteDetail>, AppError> {
+    // Opens every stop again -- Lager and Ziel with the doors -- and plans
+    // the tour afresh behind itself: the order it had was made for the day it
+    // was driven, the doors answered for sitting in front as they were driven
+    // and the rest planned from wherever the van was. A finished tour is
+    // active again, since it now has doors left.
+    let was_driven = {
+        let mut conn = state.db()?;
+        require_route_exists(&conn, route_id)?;
+        let tx = conn.transaction()?;
+        let was_driven = tx.execute(
+            "UPDATE stops SET outcome = NULL, delivered = 0, settled_at = NULL \
+             WHERE route_id = ?1 AND (outcome IS NOT NULL OR delivered = 1)",
+            params![route_id],
+        )? > 0;
+        tx.execute(
+            "UPDATE routes SET status = 'active', completed_at = NULL WHERE id = ?1 AND status = 'completed'",
+            params![route_id],
+        )?;
+        if was_driven {
+            tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        }
+        tx.commit()?;
+        was_driven
+    };
+    if was_driven {
+        reoptimize_best_effort(&state, route_id).await;
+    }
     let conn = state.db()?;
-    require_route_exists(&conn, route_id)?;
-    conn.execute(
-        "UPDATE stops SET delivered = 0 WHERE route_id = ?1 AND kind = 'customer'",
-        params![route_id],
-    )?;
     Ok(Json(get_route_detail(&conn, route_id)?))
 }
 
@@ -3429,15 +3601,93 @@ async fn add_stop(
     Ok(Json(get_route_detail(&conn, route_id)?))
 }
 
+/// What a PATCH asks of a stop's outcome: `None` when the request says
+/// nothing about it, `Some(None)` to re-open the stop, `Some(Some(o))` to
+/// record `o`.
+fn requested_outcome(payload: &StopUpdate) -> Result<Option<Option<&str>>, AppError> {
+    match (payload.outcome.as_deref(), payload.delivered) {
+        (Some("open"), _) => Ok(Some(None)),
+        (Some(o), _) if outcome::is_settable(o) => Ok(Some(Some(o))),
+        (Some(_), _) => Err(AppError::BadRequest("Ungültiger Lieferstatus".into())),
+        (None, Some(true)) => Ok(Some(Some(outcome::DELIVERED))),
+        (None, Some(false)) => Ok(Some(None)),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Records what happened at a stop, or re-opens it with `None`. Returns
+/// whether the route has to be planned again.
+///
+/// The three stored facts -- the outcome, the `delivered` summary and the
+/// time -- are written together and only here, so they cannot drift.
+///
+/// A door answered for means the van has loaded, so an open Lager is ticked
+/// along with it: left open it stayed "next" for the whole day and the
+/// remaining kilometres were counted from the depot. Taking that door back
+/// takes the Lager back too -- but only a Lager ticked *by* that door, the
+/// same moment to the stamp, and only while no other door says the van has
+/// loaded. One the driver ticked by hand stays as they left it. Not for
+/// "Ins Lager mitnehmen": that is usually said in the yard, before anything
+/// is loaded.
+///
+/// Asking for the outcome a stop already has changes nothing, the time
+/// included -- the tick is the one request the app resends on a dropped
+/// connection, and a second stamp would cut the Lager loose from its door.
+fn record_outcome(tx: &Connection, route_id: i64, stop_id: i64, kind: &str, new: Option<&str>) -> Result<bool, AppError> {
+    let (prev, prev_at): (Option<String>, Option<String>) = tx.query_row(
+        "SELECT outcome, delivered, settled_at FROM stops WHERE id = ?1",
+        params![stop_id],
+        |r| Ok((effective_outcome(r.get(0)?, r.get::<_, i64>(1)? != 0), r.get(2)?)),
+    )?;
+    if prev.as_deref() == new {
+        return Ok(false);
+    }
+    let now = now_iso();
+    tx.execute(
+        "UPDATE stops SET outcome = ?1, delivered = ?2, settled_at = ?3 WHERE id = ?4",
+        params![new, new.is_some_and(outcome::handed_over) as i64, new.map(|_| now.as_str()), stop_id],
+    )?;
+    if kind != "customer" {
+        return Ok(false);
+    }
+
+    let passes = |o: Option<&str>| o.is_some_and(|o| !outcome::skips_door(o));
+    if passes(new) {
+        tx.execute(
+            "UPDATE stops SET outcome = 'delivered', delivered = 1, settled_at = ?1 \
+             WHERE route_id = ?2 AND kind = 'via' AND excluded = 0 AND outcome IS NULL AND delivered = 0",
+            params![now, route_id],
+        )?;
+    } else if passes(prev.as_deref()) {
+        if let Some(prev_at) = prev_at {
+            tx.execute(
+                &format!(
+                    "UPDATE stops SET outcome = NULL, delivered = 0, settled_at = NULL \
+                     WHERE route_id = ?1 AND kind = 'via' AND settled_at = ?2 AND NOT EXISTS ( \
+                         SELECT 1 FROM stops s WHERE s.route_id = ?1 AND s.kind = 'customer' \
+                         AND (s.outcome IS NOT NULL OR s.delivered = 1) AND NOT COALESCE({SQL_SKIPS_DOOR}, 0))"
+                ),
+                params![route_id, prev_at],
+            )?;
+        }
+    }
+
+    // The one answer that changes the route: that door is not driven, so
+    // marking it, or taking it back, plans the tour again.
+    let skips = |o: Option<&str>| o.is_some_and(outcome::skips_door);
+    Ok(skips(prev.as_deref()) != skips(new))
+}
+
 async fn update_stop(
     State(state): State<Arc<AppState>>,
     AxPath(stop_id): AxPath<i64>,
     Json(payload): Json<StopUpdate>,
 ) -> Result<Json<RouteDetail>, AppError> {
-    let (route_id, kind, cur_strasse, cur_plz) = {
+    let new_outcome = requested_outcome(&payload)?;
+    let (route_id, kind, cur_strasse, cur_plz, cur_excluded) = {
         let conn = state.db()?;
         conn.query_row(
-            "SELECT route_id, kind, strasse, plz FROM stops WHERE id = ?1",
+            "SELECT route_id, kind, strasse, plz, excluded FROM stops WHERE id = ?1",
             params![stop_id],
             |r| {
                 Ok((
@@ -3445,6 +3695,7 @@ async fn update_stop(
                     r.get::<_, String>(1)?,
                     r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    r.get::<_, i64>(4)? != 0,
                 ))
             },
         )
@@ -3465,6 +3716,30 @@ async fn update_stop(
     // returned early — none of the customer-field validation below applies
     // to a request that carries no customer fields.
     if kind != "customer" {
+        // Lager and Ziel are ticked off like a door -- loading at the
+        // warehouse and getting back are two stops of the shift as much as
+        // any customer -- but they are not deliveries: the plain tick and
+        // nothing else. Not Start: the driver is standing in it when the
+        // tour begins. Not one this tour skips, either.
+        if let (Some(outcome), None) = (new_outcome, payload.excluded) {
+            let is_checkpoint = (kind == "via" || kind == "end") && !cur_excluded;
+            let plain_tick = matches!(outcome, None | Some(outcome::DELIVERED));
+            let nothing_else = payload.kunde.is_none()
+                && payload.strasse.is_none()
+                && payload.plz.is_none()
+                && payload.paket.is_none()
+                && payload.notiz.is_none()
+                && payload.lat.is_none()
+                && payload.lon.is_none();
+            if !is_checkpoint || !plain_tick || !nothing_else {
+                return Err(AppError::Forbidden("Nur Lager und Ziel können abgehakt werden".into()));
+            }
+            let mut conn = state.db()?;
+            let tx = conn.transaction()?;
+            record_outcome(&tx, route_id, stop_id, &kind, outcome)?;
+            tx.commit()?;
+            return Ok(Json(get_route_detail(&conn, route_id)?));
+        }
         let Some(excluded) = payload.excluded else {
             return Err(AppError::Forbidden("Fixe Stopps können nicht bearbeitet werden".into()));
         };
@@ -3473,7 +3748,7 @@ async fn update_stop(
             && payload.plz.is_none()
             && payload.paket.is_none()
             && payload.notiz.is_none()
-            && payload.delivered.is_none()
+            && new_outcome.is_none()
             && payload.lat.is_none()
             && payload.lon.is_none();
         if !only_exclusion {
@@ -3493,6 +3768,10 @@ async fn update_stop(
                 "UPDATE stops SET excluded = ?1 WHERE id = ?2",
                 params![excluded as i64, stop_id],
             )?;
+            // A stop the tour skips is not one it ticks.
+            if excluded {
+                record_outcome(&tx, route_id, stop_id, &kind, None)?;
+            }
             tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
             tx.commit()?;
         }
@@ -3576,7 +3855,7 @@ async fn update_stop(
         });
     }
 
-    {
+    let replan = {
         let mut conn = state.db()?;
         // Up to 6 separate field updates land here depending on what the
         // caller sent — a transaction keeps them atomic, so a crash
@@ -3584,6 +3863,7 @@ async fn update_stop(
         // dropping others (say, the `needs_optimize` flag that address
         // change should have set).
         let tx = conn.transaction()?;
+        let mut replan = new_coords.is_some();
         if let Some(k) = &kunde {
             tx.execute("UPDATE stops SET kunde = ?1 WHERE id = ?2", params![k, stop_id])?;
         }
@@ -3599,11 +3879,8 @@ async fn update_stop(
                 params![new_strasse, new_plz, stop_id],
             )?;
         }
-        if let Some(delivered) = payload.delivered {
-            tx.execute(
-                "UPDATE stops SET delivered = ?1 WHERE id = ?2",
-                params![delivered as i64, stop_id],
-            )?;
+        if let Some(outcome) = new_outcome {
+            replan = record_outcome(&tx, route_id, stop_id, &kind, outcome)?;
         }
         if let Some((lat, lon, precision)) = new_coords {
             // `pinned` tracks where these coordinates came from, so a later
@@ -3615,16 +3892,21 @@ async fn update_stop(
                 params![lat, lon, precision, manual_pin as i64, stop_id],
             )?;
         }
-        if new_coords.is_some() {
+        // Flagged, not cleared: for a door taken out of the tour the old
+        // line still drives past it -- a detour, not a wrong turn -- and it
+        // has to last until OSRM can be asked again.
+        if replan {
             tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
         }
         tx.commit()?;
-    }
+        replan
+    };
 
-    // Only a moved stop changes the route's shape — marking delivered,
-    // editing the note/package text etc. never touch order/geometry, so
-    // there's nothing to re-solve for those.
-    if new_coords.is_some() {
+    // Only a moved stop, or a door taken out of the tour or put back into
+    // it, changes the route's shape — the plain tick, the note and the
+    // package text never touch order/geometry, so there's nothing to
+    // re-solve for those.
+    if replan {
         reoptimize_best_effort(&state, route_id).await;
     }
     let conn = state.db()?;
@@ -4718,7 +5000,96 @@ mod tests {
             location_precision: None,
             excluded: false,
             pinned: false,
+            outcome: None,
+            settled_at: None,
         }
+    }
+
+    /// A route with Start, Lager, Ziel and `n` customers, in memory.
+    fn outcome_db(n: i64) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute("INSERT INTO routes (id, name, created_at) VALUES (1, 'T', 'x')", []).unwrap();
+        for (id, kind) in [(1, "start"), (2, "via"), (3, "end")] {
+            conn.execute(
+                "INSERT INTO stops (id, route_id, kind, lat, lon, order_index, created_at) VALUES (?1, 1, ?2, 48.2, 16.3, ?1, 'x')",
+                params![id, kind],
+            )
+            .unwrap();
+        }
+        for i in 0..n {
+            conn.execute(
+                "INSERT INTO stops (id, route_id, kind, lat, lon, order_index, created_at) VALUES (?1, 1, 'customer', 48.2, 16.3, ?1, 'x')",
+                params![10 + i],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    fn outcome_of(conn: &Connection, id: i64) -> Option<String> {
+        conn.query_row("SELECT outcome FROM stops WHERE id = ?1", params![id], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn first_door_ticks_the_lager_and_taking_it_back_reopens_it() {
+        let conn = outcome_db(2);
+        assert!(!record_outcome(&conn, 1, 10, "customer", Some(outcome::DELIVERED)).unwrap());
+        assert_eq!(outcome_of(&conn, 2).as_deref(), Some("delivered"));
+        record_outcome(&conn, 1, 10, "customer", None).unwrap();
+        assert_eq!(outcome_of(&conn, 2), None);
+    }
+
+    #[test]
+    fn lager_stays_ticked_while_another_door_says_the_van_has_loaded() {
+        let conn = outcome_db(2);
+        record_outcome(&conn, 1, 10, "customer", Some(outcome::DELIVERED)).unwrap();
+        record_outcome(&conn, 1, 11, "customer", Some(outcome::NOT_HOME)).unwrap();
+        record_outcome(&conn, 1, 10, "customer", None).unwrap();
+        assert_eq!(outcome_of(&conn, 2).as_deref(), Some("delivered"));
+    }
+
+    #[test]
+    fn a_lager_ticked_by_hand_is_left_alone() {
+        let conn = outcome_db(1);
+        record_outcome(&conn, 1, 2, "via", Some(outcome::DELIVERED)).unwrap();
+        conn.execute("UPDATE stops SET settled_at = 'earlier' WHERE id = 2", []).unwrap();
+        record_outcome(&conn, 1, 10, "customer", Some(outcome::DELIVERED)).unwrap();
+        record_outcome(&conn, 1, 10, "customer", None).unwrap();
+        assert_eq!(outcome_of(&conn, 2).as_deref(), Some("delivered"));
+    }
+
+    #[test]
+    fn ins_lager_replans_and_does_not_tick_the_lager() {
+        let conn = outcome_db(1);
+        assert!(record_outcome(&conn, 1, 10, "customer", Some(outcome::TO_LAGER)).unwrap());
+        assert_eq!(outcome_of(&conn, 2), None);
+        let delivered: i64 = conn.query_row("SELECT delivered FROM stops WHERE id = 10", [], |r| r.get(0)).unwrap();
+        assert_eq!(delivered, 0);
+        // Taking it back puts the door into the tour again.
+        assert!(record_outcome(&conn, 1, 10, "customer", None).unwrap());
+    }
+
+    #[test]
+    fn a_repeated_tick_keeps_its_first_time() {
+        let conn = outcome_db(1);
+        record_outcome(&conn, 1, 10, "customer", Some(outcome::DELIVERED)).unwrap();
+        conn.execute("UPDATE stops SET settled_at = 'first' WHERE id = 10", []).unwrap();
+        record_outcome(&conn, 1, 10, "customer", Some(outcome::DELIVERED)).unwrap();
+        let at: String = conn.query_row("SELECT settled_at FROM stops WHERE id = 10", [], |r| r.get(0)).unwrap();
+        assert_eq!(at, "first");
+    }
+
+    #[test]
+    fn driven_doors_end_on_the_one_answered_last_and_leave_ins_lager_out() {
+        let conn = outcome_db(4);
+        for (id, o, at) in [(10, "delivered", "3"), (11, "notHome", "1"), (12, "toLager", "9"), (13, "delivered", "2")] {
+            conn.execute("UPDATE stops SET outcome = ?1, settled_at = ?2 WHERE id = ?3", params![o, at, id]).unwrap();
+        }
+        let rows = planning_rows(&conn, 1).unwrap();
+        let ids: Vec<i64> = driven_order(&rows).iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec![11, 13, 10]);
+        assert!(rows.iter().find(|r| r.id == 12).unwrap().skips_door());
     }
 
     fn nominatim_hit(road: Option<&str>, postcode: Option<&str>, house_number: Option<&str>) -> NominatimHit {

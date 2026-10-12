@@ -2258,6 +2258,7 @@ const ICONS = {
   mapPin: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
   checkCircle: icon('<circle cx="12" cy="12" r="9"/><path d="M8 12.4l2.5 2.5L16 9.4"/>'),
   circle: icon('<circle cx="12" cy="12" r="9"/>'),
+  bellOff: icon('<path d="M8.6 4.3A6 6 0 0 1 18 9c0 2.4.5 4.1 1.1 5.3"/><path d="M6.3 6.6A6 6 0 0 0 6 9c0 5-2.2 6.5-2.2 6.5h11.7"/><path d="M10.3 19.5a2 2 0 0 0 3.4 0"/><line x1="3.5" y1="3.5" x2="20.5" y2="20.5"/>'),
   // The tick is stroked in the success green, not in white. Both places
   // this icon is used draw it as `text-white` on a `bg-success` fill (the
   // delivered toggle and the Ladeliste's tick) — so a white tick sat on the
@@ -3056,6 +3057,39 @@ function nextSeq() {
 // dropped the moment its own request settles. What the driver did stays on
 // screen until the server has actually spoken about that exact stop.
 const pendingDelivered = new Map();
+
+// What happened at a door. The server stores one of these per stop (see
+// `mod outcome` in src/main.rs); `null`/absent is an open stop. Two answers
+// besides the plain tick: "Nicht angetroffen" — driven to, nobody there, the
+// door stays in the route — and "Ins Lager mitnehmen", known beforehand,
+// which the van does not drive to at all.
+const OUTCOMES = {
+  delivered: { label: 'Geliefert', short: 'geliefert' },
+  notHome: { label: 'Nicht angetroffen', short: 'nicht angetroffen' },
+  toLager: { label: 'Ins Lager mitnehmen', short: 'ins Lager' },
+  // No longer offered; only ever on a stop from an old backup.
+  neighbour: { label: 'Bei Nachbarn abgegeben', short: 'bei Nachbarn' },
+  cancelled: { label: 'Abbestellt', short: 'abbestellt' },
+};
+const handedOver = (outcome) => outcome === 'delivered' || outcome === 'neighbour';
+/// The van does not go to this door: out of the route, the counts and the
+/// Ladeliste.
+const skipsDoor = (s) => s.kind === 'customer' && (s.outcome === 'toLager' || s.outcome === 'cancelled');
+/// Lager and Ziel, on a tour that drives them. Ticked off like a door, but
+/// not deliveries. Not Start — the driver is standing in it.
+const isCheckpoint = (s) => (s.kind === 'via' || s.kind === 'end') && !s.excluded;
+/// A stop still to be ticked off, delivery or checkpoint.
+const isOpenStop = (s) => (s.kind === 'customer' || isCheckpoint(s)) && !s.outcome;
+const firstOpenIndex = (stops) => stops.findIndex(isOpenStop);
+
+/// Both counts, derived from the stops and against the meals owed — the same
+/// rule `get_route_detail` counts by.
+function recountRoute(r) {
+  const owed = r.stops.filter((s) => s.kind === 'customer' && !skipsDoor(s));
+  r.customer_count = owed.length;
+  r.delivered_count = owed.filter((s) => s.delivered).length;
+}
+const deliveredCountText = (r) => `${r.delivered_count} / ${r.customer_count} geliefert`;
 // Per-stop generation counter backing `toggleDelivered`'s own race guard —
 // see the comment there. Not the same thing `nextSeq()`/`lastAppliedSeq`
 // guard: those order which *route* snapshot wins app-wide, this orders
@@ -3069,11 +3103,11 @@ const pendingDeliveredGen = new Map();
 function rebasePendingDelivered() {
   const r = state.currentRoute;
   if (!r || !Array.isArray(r.stops)) return;
-  for (const [stopId, delivered] of pendingDelivered) {
+  for (const [stopId, outcome] of pendingDelivered) {
     const stop = r.stops.find((s) => s.id === stopId);
-    if (stop) stop.delivered = delivered;
+    if (stop) { stop.outcome = outcome; stop.delivered = handedOver(outcome); }
   }
-  r.delivered_count = r.stops.filter((s) => s.kind === 'customer' && s.delivered).length;
+  recountRoute(r);
 }
 
 // Everything this app draws hangs off a route object it got over the wire,
@@ -3497,7 +3531,7 @@ function applyDeliveredDomPatch(stopId) {
   if (!r || !isDetailShowing()) return false;
 
   const stops = r.stops;
-  const firstOpenIdx = stops.findIndex(s => s.kind === 'customer' && !s.delivered);
+  const firstOpenIdx = firstOpenIndex(stops);
   const newNextId = firstOpenIdx >= 0 ? stops[firstOpenIdx].id : null;
   const oldNextRow = document.querySelector('[data-next-stop]');
   const oldNextId = oldNextRow ? Number(oldNextRow.getAttribute('data-stop-row')) : null;
@@ -3516,7 +3550,7 @@ function applyDeliveredDomPatch(stopId) {
     // the same three, in the same order (the row itself, the toggle, the
     // maps link).
     const focusedIndex = Array.from(el.querySelectorAll(FOCUSABLE)).indexOf(document.activeElement);
-    el.outerHTML = renderCustomerRow(stop, id === newNextId, null, doors.get(id)?.length);
+    el.outerHTML = renderStopRow(stop, id === newNextId, null, doors);
     if (focusedIndex >= 0) {
       const rebuilt = document.querySelector(`[data-stop-row="${id}"]`);
       rebuilt?.querySelectorAll(FOCUSABLE)[focusedIndex]?.focus({ preventScroll: true });
@@ -3540,7 +3574,7 @@ function applyDeliveredDomPatch(stopId) {
   if (barSlot) barSlot.innerHTML = nextStopBarHtml();
 
   const countEl = document.querySelector('[data-delivered-count-text]');
-  if (countEl) countEl.textContent = `${r.delivered_count} / ${r.customer_count} zugestellt`;
+  if (countEl) countEl.textContent = deliveredCountText(r);
   const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
   const barEl = document.querySelector('[data-progress-bar]');
   if (barEl) barEl.style.width = `${progress}%`;
@@ -3557,12 +3591,24 @@ function applyDeliveredDomPatch(stopId) {
 // the driver having navigated to a different route before the response
 // lands, so a slow/failed request can never stomp whatever's on screen by
 // then.
-async function toggleDelivered(stopId, delivered) {
+/// The plain tick: on means geliefert, off means not answered for yet.
+function toggleDelivered(stopId, delivered) {
+  return setOutcome(stopId, delivered ? 'delivered' : null);
+}
+
+/// Everything in the route a tick can change besides the ticked row itself:
+/// which stops there are, in what order, and what each one's answer is.
+const outcomeSignature = (r, exceptId) =>
+  r.stops.map((s) => `${s.id}:${s.id === exceptId ? '' : s.outcome || ''}`).join(',');
+
+async function setOutcome(stopId, outcome) {
   const route = state.currentRoute;
   if (!route) return;
   const stop = route.stops.find((s) => s.id === stopId);
   if (!stop) return;
+  const delivered = handedOver(outcome);
 
+  const prevOutcome = stop.outcome || null;
   const prevDelivered = stop.delivered;
   // A generation counter per stop, not just the presence of a
   // `pendingDelivered` entry: a rapid double-tap of the same checkbox
@@ -3572,9 +3618,10 @@ async function toggleDelivered(stopId, delivered) {
   // generation is allowed to clear/revert it below.
   const gen = (pendingDeliveredGen.get(stopId) || 0) + 1;
   pendingDeliveredGen.set(stopId, gen);
-  pendingDelivered.set(stopId, delivered);
+  pendingDelivered.set(stopId, outcome);
+  stop.outcome = outcome;
   stop.delivered = delivered;
-  route.delivered_count = route.stops.filter((s) => s.kind === 'customer' && s.delivered).length;
+  recountRoute(route);
   // The list screens read their counts from `state.routes`, not from the
   // route in focus — without this the prediction only shows on the detail
   // screen, and backing out to Routen before the server answers shows the
@@ -3590,7 +3637,7 @@ async function toggleDelivered(stopId, delivered) {
   // toast + distinct vibration pattern for the specific case that still
   // needs a driver's attention, not just a quiet visual that's easy to
   // have already scrolled past.
-  if (delivered) {
+  if (delivered && stop.kind === 'customer') {
     // The same memoized grouping the on-row badge uses (see
     // `sameDoorGroups`), so "same door" means one thing everywhere in the
     // app — including the pair of stops whose addresses are written
@@ -3602,7 +3649,7 @@ async function toggleDelivered(stopId, delivered) {
       // naming one of them would leave the others unmentioned even though
       // the on-row badge counts them all.
       const openSiblings = route.stops.filter(
-        (s) => s.id !== stopId && !s.delivered && door.includes(s.id)
+        (s) => s.id !== stopId && !s.outcome && door.includes(s.id)
       );
       if (openSiblings.length) {
         const names = openSiblings.map((s) => s.kunde).join(', ');
@@ -3613,24 +3660,34 @@ async function toggleDelivered(stopId, delivered) {
     }
   }
 
+  // "Ins Lager mitnehmen" takes the door out of the tour, and taking it back
+  // puts it in again — the server plans the route afresh for either, which
+  // takes as long as OSRM does.
+  const replans = skipsDoor(stop) !== (stop.kind === 'customer' && (prevOutcome === 'toLager' || prevOutcome === 'cancelled'));
+  if (replans) showProgress('Route wird neu geplant …');
+
   const seq = nextSeq();
+  const before = outcomeSignature(route, stopId);
   try {
-    // `retry: true`: this PATCH is a pure "set this flag to this value"
-    // (see `update_stop` in src/main.rs) — sending it twice lands on the
+    // `retry: true`: this PATCH is a pure "set this stop to this answer"
+    // (see `record_outcome` in src/main.rs) — sending it twice lands on the
     // same row in the same state, so it is safe to resend in a way the
     // app's creating POSTs are not. Opted in because this is the single
     // most-tapped action in the app AND the one taken in the worst possible
     // conditions: standing between buildings, phone handing over between
     // cells. Without it a dropped packet flips the tick back and shows an
     // error for something that was about to work.
-    const updated = await api(`/stops/${stopId}`, { method: 'PATCH', retry: true, body: JSON.stringify({ delivered }) });
+    const updated = await api(`/stops/${stopId}`, { method: 'PATCH', retry: true, body: JSON.stringify({ outcome: outcome || 'open' }) });
     // Confirmed: this stop's own request has been answered, so the
     // prediction for it is no longer needed to hold the screen steady —
     // unless a newer tap for the same stop has since started, in which
     // case this reply is stale and must not clear *its* prediction.
     if (pendingDeliveredGen.get(stopId) === gen) pendingDelivered.delete(stopId);
     if (!applyRouteUpdate(seq, route.id, updated)) return;
-    applyDeliveredDomPatch(stopId) || render(true);
+    // One row, unless the answer moved something else too: the Lager ticked
+    // along with the first door, or the list in a new order after a re-plan.
+    const sameElsewhere = outcomeSignature(state.currentRoute, stopId) === before && !replans;
+    (sameElsewhere && applyDeliveredDomPatch(stopId)) || patchRouteDetail() || render(true);
   } catch (err) {
     if (pendingDeliveredGen.get(stopId) === gen) pendingDelivered.delete(stopId);
     // Looked up fresh, not the `route`/`stop` captured at the top of this
@@ -3644,14 +3701,16 @@ async function toggleDelivered(stopId, delivered) {
     const currentRoute = state.currentRoute;
     if (currentRoute?.id === route.id) {
       const currentStop = currentRoute.stops.find((s) => s.id === stopId);
-      if (currentStop) currentStop.delivered = prevDelivered;
+      if (currentStop) { currentStop.outcome = prevOutcome; currentStop.delivered = prevDelivered; }
       // Derived, never nudged: a count adjusted by ±1 through a sequence of
       // races ends up describing a route that doesn't exist.
-      currentRoute.delivered_count = currentRoute.stops.filter((s) => s.kind === 'customer' && s.delivered).length;
+      recountRoute(currentRoute);
       syncRouteSummary();
       applyDeliveredDomPatch(stopId) || render(true);
     }
     toast(err.message, 'error');
+  } finally {
+    if (replans) hideProgress();
   }
 }
 
@@ -3697,7 +3756,13 @@ async function renameRoute() {
 async function resetDelivered() {
   const routeId = state.currentRoute?.id;
   if (routeId == null) return;
-  const ok = await confirmSheet({ title: 'Zustellungen zurücksetzen?', message: 'Alle Häkchen dieser Route werden entfernt. Adressen und Reihenfolge bleiben erhalten.', confirmLabel: 'Zurücksetzen' });
+  // Settled, not delivered: this clears a "nicht angetroffen" too, and a
+  // dialog that promised to reset three stops while quietly reopening five
+  // would be understating what the button does.
+  const n = state.currentRoute.stops.filter((s) => s.outcome).length;
+  const what = n === 1 ? '1 abgehakter Stopp wird wieder auf offen gesetzt' : `${n} abgehakte Stopps werden wieder auf offen gesetzt`;
+  const message = state.currentRoute.status === 'completed' ? `${what}, und die Tour wird wieder aktiviert.` : `${what}.`;
+  const ok = await confirmSheet({ title: 'Lieferstatus zurücksetzen?', message, confirmLabel: 'Zurücksetzen', danger: true });
   if (!ok) return;
   const seq = nextSeq();
   showProgress();
@@ -3707,9 +3772,14 @@ async function resetDelivered() {
     // opting in safe here where the app's other POSTs (which create things)
     // could not.
     const updated = await api(`/routes/${routeId}/reset-delivered`, { method: 'POST', retry: true });
+    // The Ladeliste starts the day again with the doors: its ticks outliving
+    // the reset opened a tour driven again with yesterday's boxes already
+    // marked as loaded.
+    ladelisteChecked.delete(routeId);
+    saveLadelisteChecked();
     if (!applyRouteUpdate(seq, routeId, updated)) return;
     patchRouteDetail({ animate: true }) || render();
-    toast('Zustellungen zurückgesetzt ✓', 'success');
+    toast('Lieferstatus zurückgesetzt ✓', 'success');
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -3935,7 +4005,40 @@ function openAddSheet(stop) {
 // (the retry path in `sendStop`), which is always a customer stop.
 function openStopSheet(stop) {
   if (stop?.kind && stop.kind !== 'customer') openFixedStopSheet(stop);
+  else if (stop?.kind && stop.id) openStopMenu(stop);
   else openAddSheet(stop);
+}
+
+// The hold on a customer row: the two answers that are not the plain tick,
+// and the way into the editor. "Nicht angetroffen" and "Ins Lager mitnehmen"
+// live here and nowhere else — at twenty-nine doors out of thirty the tick
+// is the whole answer, and these stay out of its way.
+function openStopMenu(stop) {
+  const item = (onclick, iconSvg, label, sub = '') => `
+    <button type="button" onclick="closeSheet(); ${onclick}" class="w-full flex items-center gap-3 text-left px-4 py-3.5 active:bg-black/5">
+      <span class="w-5 flex shrink-0 text-black/55 text-lg">${iconSvg}</span>
+      <span class="flex-1 min-w-0">
+        <span class="block text-[15px] font-medium">${label}</span>
+        ${sub ? `<span class="block text-[13px] text-black/55 leading-snug mt-0.5">${sub}</span>` : ''}
+      </span>
+    </button>`;
+  const o = stop.outcome || null;
+  renderSheetShell(`
+    <h2 class="text-[22px] font-bold mb-1 truncate">${escapeHtml(stop.kunde)}</h2>
+    <p class="text-[13px] text-black/55 mb-4 leading-snug">${escapeHtml(stopAddress(stop))}${o ? ` · ${OUTCOMES[o]?.short || ''}` : ''}</p>
+    <div class="${GROUP} mb-3">
+      ${o ? item(`setOutcome(${stop.id}, null)`, ICONS.refresh, 'Wieder öffnen') : ''}
+      ${o !== 'delivered' && o ? item(`setOutcome(${stop.id}, 'delivered')`, ICONS.checkCircle, 'Geliefert') : ''}
+      ${o !== 'notHome' ? item(`setOutcome(${stop.id}, 'notHome')`, ICONS.bellOff, 'Nicht angetroffen', 'Angefahren, niemand da. Bleibt in der Route.') : ''}
+      ${o !== 'toLager' ? item(`setOutcome(${stop.id}, 'toLager')`, ICONS.box, 'Ins Lager mitnehmen', 'Wird nicht angefahren und nicht mitgezählt.') : ''}
+    </div>
+    <div class="${GROUP} mb-4">
+      ${item(`openAddSheet(getStop(${stop.id}))`, ICONS.pencil, 'Bearbeiten')}
+    </div>
+    <div class="pb-2">
+      <button type="button" onclick="closeSheet()" class="press-98 w-full py-3 rounded-xl bg-white text-black/70 font-semibold">Abbrechen</button>
+    </div>
+  `, { label: `${stop.kunde}: Aktionen` });
 }
 
 // ---------------------------------------------------------------------
@@ -3966,7 +4069,7 @@ let editHintShown = false;
 function hintLongPressToEdit() {
   if (editHintShown) return;
   editHintShown = true;
-  toast('Zum Bearbeiten den Stopp gedrückt halten.', 'info', 3000);
+  toast('Für mehr den Stopp gedrückt halten.', 'info', 3000);
 }
 
 function getStop(stopOrId) {
@@ -4604,7 +4707,8 @@ function paketQty(paket) {
 function ladelisteItems(route) {
   const byKey = new Map();
   for (const s of route.stops) {
-    if (s.kind !== 'customer' || !s.paket) continue;
+    // A meal that goes to the Lager with the van is not loaded for a door.
+    if (s.kind !== 'customer' || !s.paket || skipsDoor(s)) continue;
     for (const { qty, label } of parsePaketItems(s.paket)) {
       const key = label.toLowerCase().replace(/\s+/g, ' ');
       const entry = byKey.get(key);
@@ -4993,7 +5097,7 @@ function renderCrashScreen(err) {
       <div role="main" class="flex-1 min-h-0 flex flex-col items-center justify-center px-8 text-center">
         <span class="text-4xl flex justify-center mb-3 text-warnText">${ICONS.warning}</span>
         <p class="text-[15px] font-semibold mb-1">Anzeige konnte nicht aufgebaut werden</p>
-        <p class="text-[13px] text-black/55 leading-snug mb-5">Die Daten dieser Ansicht sind unerwartet. Deine Zustellungen sind gespeichert — nichts ist verloren.</p>
+        <p class="text-[13px] text-black/55 leading-snug mb-5">Die Daten dieser Ansicht sind unerwartet. Deine Lieferungen sind gespeichert — nichts ist verloren.</p>
         <div class="flex flex-col gap-2 w-full max-w-[240px]">
           <button onclick="recoverToOverview()" class="press-98 w-full py-3 rounded-xl bg-brand-600 font-semibold text-white text-sm">Zur Übersicht</button>
           <button onclick="location.reload()" class="press-98 w-full py-3 rounded-xl bg-white font-semibold text-black/70 text-sm">App neu laden</button>
@@ -5131,7 +5235,7 @@ function renderRoutesTab() {
           ${escapeHtml(r.name)}
           ${r.needs_optimize ? `<span class="w-1.5 h-1.5 rounded-full bg-warn shrink-0" title="Route nicht aktuell"></span>` : ''}
         </p>
-        <p class="text-[13px] text-black/55 mt-0.5">${fmtDate(r.created_at)} · ${r.delivered_count}/${r.customer_count} zugestellt</p>
+        <p class="text-[13px] text-black/55 mt-0.5">${fmtDate(r.created_at)} · ${r.delivered_count}/${r.customer_count} geliefert</p>
         ${r.customer_count ? `<div class="h-1 bg-black/10 rounded-full overflow-hidden mt-1.5"><div class="h-full bg-success" style="width:${progress}%"></div></div>` : ''}
       </div>
       <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
@@ -5247,7 +5351,7 @@ function renderMapTab() {
           <button data-bottom-dock onclick="openCurrentRouteDetail()" class="press-98 w-full text-left bg-white/90 backdrop-blur-xl rounded-2xl p-4 shadow-lg flex items-center gap-3">
             <div class="flex-1 min-w-0">
               <p class="font-semibold truncate">${escapeHtml(r.name)}</p>
-              <p class="text-[13px] text-black/55 mt-0.5">${r.delivered_count}/${r.customer_count} zugestellt · ≈ ${r.total_km} km · ${r.total_min} min</p>
+              <p class="text-[13px] text-black/55 mt-0.5">${r.delivered_count}/${r.customer_count} geliefert · ≈ ${r.total_km} km · ${r.total_min} min</p>
               <div class="h-1 bg-black/10 rounded-full overflow-hidden mt-1.5"><div class="h-full bg-success" style="width:${progress}%"></div></div>
             </div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
@@ -5501,13 +5605,19 @@ function rowAnimAttrs(animIndex) {
 // it just lands on `openFixedStopSheet` instead (see `openStopSheet`).
 // A skipped stop is dimmed and labelled rather than hidden: the row is the
 // only way back to the switch that skipped it.
-function renderFixedRow(s, meta, animIndex = null) {
+function renderFixedRow(s, meta, animIndex = null, isNext = false) {
   const url = navUrl(s);
   const skipped = !!s.excluded;
+  const done = !!s.outcome;
   const { cls: animClass, style: animStyle } = rowAnimAttrs(animIndex);
+  // Lager and Ziel are ticked off like a door. Start is not, and neither is
+  // one this tour skips.
+  const tick = isCheckpoint(s)
+    ? `<button onclick="toggleDelivered(${s.id}, ${!done})" aria-pressed="${done}" aria-label="${done ? `${meta.title} wieder öffnen` : `${meta.title} abhaken`}" title="${done ? 'Wieder öffnen' : 'Abhaken'}" class="tap-target press-95 shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${done ? 'bg-success text-white' : 'bg-white border-2 border-black/45 text-black/40'}">${done ? ICONS.checkCircleFill : ICONS.circle}</button>`
+    : '';
 
   return `
-    <div class="${animClass}flex items-start gap-3 px-4 py-3.5"${animStyle}>
+    <div data-stop-row="${s.id}" ${isNext ? 'data-next-stop' : ''} class="${animClass}flex items-start gap-3 px-4 py-3.5 ${isNext ? 'bg-brand-50/60' : ''}"${animStyle}>
       <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 flex items-center justify-center text-base ${skipped ? 'text-black/25' : 'text-black/60'}">${meta.icon}</span>
       <div class="flex-1 min-w-0 pt-0.5 select-none cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
         role="button" tabindex="0"
@@ -5523,15 +5633,25 @@ function renderFixedRow(s, meta, animIndex = null) {
         onkeydown="stopRowKeydown(event, ${s.id})"
         oncontextmenu="stopLongPressContext(event, ${s.id})">
         <div class="flex items-center gap-1.5 flex-wrap">
-          <p class="font-medium ${skipped ? 'text-black/40 line-through' : ''}">${meta.title}</p>
+          <p class="font-medium ${skipped ? 'text-black/40 line-through' : done ? 'text-black/55 line-through' : ''}">${meta.title}</p>
+          ${isNext ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded">Nächster Stopp</span>` : ''}
           ${skipped ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-black/55 bg-black/[0.07] px-1.5 py-0.5 rounded">Übersprungen</span>` : ''}
         </div>
         <p class="text-[13px] ${skipped ? 'text-black/35' : 'text-black/55'}">${escapeHtml(meta.subtitle)}</p>
         ${skipped ? '' : legLabel(s)}
       </div>
       <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="tap-target press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/55'}">${ICONS.mapPin}</a>
+      ${tick}
     </div>
   `;
+}
+
+/// Any row of the stop list. One function, so the full render and the
+/// one-row patch after a tick cannot draw the same stop two ways.
+function renderStopRow(s, isNext, animIndex, doors) {
+  const meta = stopKindMeta(s);
+  if (meta) return renderFixedRow(s, meta, animIndex, isNext);
+  return renderCustomerRow(s, isNext, animIndex, doors.get(s.id)?.length);
 }
 
 // A single customer row's markup — factored out of renderRouteDetail so
@@ -5544,7 +5664,24 @@ function renderFixedRow(s, meta, animIndex = null) {
 // Neither does a row in a filtered list, which is rebuilt on every keystroke.
 function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
   const url = navUrl(s);
-  const delivered = s.delivered;
+  // "Done" for everything the row dims and stops shouting about: any answer
+  // at all, not only a delivery. The strike-through stays a delivery's own —
+  // a meal that came back is not crossed off.
+  const delivered = !!s.outcome;
+  const struck = !!s.delivered;
+  const outcomeBadge = s.outcome === 'notHome'
+    ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-white bg-warn px-1.5 py-0.5 rounded">Nicht angetroffen</span>`
+    : skipsDoor(s)
+    ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-black/55 bg-black/5 px-1.5 py-0.5 rounded">${s.outcome === 'toLager' ? 'Ins Lager' : escapeHtml(OUTCOMES[s.outcome]?.short || '')}</span>`
+    : s.outcome === 'neighbour'
+    ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-black/55 bg-black/5 px-1.5 py-0.5 rounded">Bei Nachbarn</span>`
+    : '';
+  const tickClass = !delivered ? 'bg-white border-2 border-black/45 text-black/40'
+    : struck ? 'bg-success text-white'
+    : s.outcome === 'notHome' ? 'bg-warn text-white'
+    : 'bg-black/10 text-black/55';
+  const tickIcon = !delivered ? ICONS.circle : struck ? ICONS.checkCircleFill : s.outcome === 'notHome' ? ICONS.bellOff : ICONS.box;
+  const tickLabel = !delivered ? 'Als geliefert markieren' : struck ? 'Lieferung zurücknehmen' : 'Wieder öffnen';
   const precisionBadge = s.location_precision === 'street'
     ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Genaue Hausnummer nicht gefunden — nächstgelegene bekannte Adresse auf der Straße verwendet.">≈ Straße</span>`
     : s.location_precision === 'district'
@@ -5562,7 +5699,7 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
     <div data-stop-row="${s.id}" ${isNext && !delivered ? 'data-next-stop' : ''} class="${animClass}flex items-start gap-2 px-4 py-3.5 ${isNext && !delivered ? 'bg-brand-50/60' : ''}"${animStyle}>
       <div class="flex-1 min-w-0 select-none cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
         role="button" tabindex="0"
-        aria-label="${escapeAttr(`${s.kunde}, ${s.strasse}, ${s.plz} Wien — bearbeiten`)}"
+        aria-label="${escapeAttr(`${s.kunde}, ${s.strasse}, ${s.plz} Wien${s.outcome ? `, ${OUTCOMES[s.outcome]?.short || ''}` : ''} — Aktionen`)}"
         ontouchstart="stopLongPressStart(event, ${s.id})"
         ontouchend="stopLongPressEnd(event)"
         ontouchcancel="stopLongPressEnd(event)"
@@ -5575,10 +5712,11 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
         oncontextmenu="stopLongPressContext(event, ${s.id})">
         <div class="flex items-center gap-1.5 flex-wrap">
           ${isNext && !delivered ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded">Nächster Stopp</span>` : ''}
+          ${outcomeBadge}
           ${duplicateBadge}
           ${precisionBadge}
         </div>
-        <p class="font-medium ${delivered ? 'text-black/55 line-through' : ''}">${escapeHtml(s.kunde)}</p>
+        <p class="font-medium ${delivered ? 'text-black/55' : ''} ${struck ? 'line-through' : ''}">${escapeHtml(s.kunde)}</p>
         <p class="text-[13px] ${delivered ? 'text-black/55' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien</p>
         ${s.paket ? (() => {
           const qty = paketQty(s.paket);
@@ -5592,11 +5730,11 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
           }<span class="truncate">${escapeHtml(s.paket)}</span></p>`;
         })() : ''}
         ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
-        ${legLabel(s, 'mt-1.5')}
+        ${skipsDoor(s) ? '' : legLabel(s, 'mt-1.5')}
       </div>
       <div class="flex flex-col gap-2 shrink-0 mt-0.5">
-        <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" title="${delivered ? 'Zustellung zurücknehmen' : 'Als zugestellt markieren'}" class="tap-target press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${delivered ? 'bg-success text-white' : 'bg-white border-2 border-black/45 text-black/40'}">
-          ${delivered ? ICONS.checkCircleFill : ICONS.circle}
+        <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${tickLabel}" title="${tickLabel}" class="tap-target press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${tickClass}">
+          ${tickIcon}
         </button>
         <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="tap-target press-fade w-10 h-10 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-[17px] shadow-sm">${ICONS.mapPin}</a>
       </div>
@@ -6407,7 +6545,7 @@ function routeMarkerSignature(r) {
   // function is called) rather than the coordinate array, which would cost
   // more to compare on every sync than the redraw it's trying to avoid.
   const stopsSig = r.stops
-    .map(s => `${s.id}:${s.lat}:${s.lon}:${s.delivered ? 1 : 0}:${s.excluded ? 1 : 0}:${s.location_precision || ''}:${s.kunde}:${s.strasse}:${s.plz}`)
+    .map(s => `${s.id}:${s.lat}:${s.lon}:${s.outcome || ''}:${s.excluded ? 1 : 0}:${s.location_precision || ''}:${s.kunde}:${s.strasse}:${s.plz}`)
     .join('|');
   return `${r.id}|${r.total_km}|${r.total_min}|${stopsSig}`;
 }
@@ -6593,7 +6731,7 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
     }
   }
 
-  const firstOpenIdx = r.stops.findIndex(s => s.kind === 'customer' && !s.delivered);
+  const firstOpenIdx = firstOpenIndex(r.stops);
   let customerNum = 0;
 
   // One dot per distinct registered point, and every badge collected for
@@ -6627,15 +6765,20 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
       el = elFromHtml(`<div class="marker-fixed">${meta.icon}</div>`);
       label = `${meta.title}: ${meta.subtitle}`;
     } else {
-      customerNum++;
+      // A door the van does not go to takes no number: it is not a stop of
+      // the tour, and counting it would shift every number after it away
+      // from the order the list drives in.
+      const skipped = skipsDoor(s);
+      if (!skipped) customerNum++;
       const isNext = i === firstOpenIdx;
-      const bg = s.delivered ? '#34C759' : isNext ? '#ED1639' : '#8E8E93';
+      const bg = s.delivered ? '#34C759' : s.outcome === 'notHome' ? '#FF9500' : skipped ? '#C7C7CC' : isNext ? '#ED1639' : '#8E8E93';
       const ring = s.location_precision ? 'box-shadow:0 0 0 3px #FF9500,0 1px 4px rgba(0,0,0,.4);' : '';
-      el = elFromHtml(`<div class="marker-badge" style="background:${bg};${ring}">${s.delivered ? '✓' : customerNum}</div>`);
+      const glyph = s.delivered ? '✓' : s.outcome === 'notHome' ? '!' : skipped ? '–' : customerNum;
+      el = elFromHtml(`<div class="marker-badge" style="background:${bg};${ring}">${glyph}</div>`);
       // Position in the tour, who it is, and its state — the three things
       // the marker's colour and number convey to someone who can see it.
-      const status = s.delivered ? 'zugestellt' : isNext ? 'nächster Stopp' : 'offen';
-      label = `Stopp ${customerNum}: ${s.kunde}, ${s.strasse}, ${s.plz} Wien — ${status}`;
+      const status = s.outcome ? OUTCOMES[s.outcome]?.short || 'erledigt' : isNext ? 'nächster Stopp' : 'offen';
+      label = `${skipped ? 'Stopp' : `Stopp ${customerNum}`}: ${s.kunde}, ${s.strasse}, ${s.plz} Wien — ${status}`;
     }
     el.classList.add('ear-route-marker');
     const precisionNote = s.location_precision === 'street' ? '<br><i>≈ nächstgelegene bekannte Hausnummer</i>'
@@ -6897,7 +7040,7 @@ function renderRouteDetail() {
         <button onclick="switchTab('map')" class="${CARD} w-full text-left px-4 py-3.5 flex items-center gap-3 mb-4">
           <div class="flex-1 min-w-0">
             <div class="flex justify-between items-baseline mb-1.5">
-              <p data-delivered-count-text class="text-[15px] font-semibold">${r.delivered_count} / ${r.customer_count} zugestellt</p>
+              <p data-delivered-count-text class="text-[15px] font-semibold">${deliveredCountText(r)}</p>
               <p data-route-totals class="text-[12px] text-black/55">${routeTotalsText()}</p>
             </div>
             <div class="h-1.5 bg-black/10 rounded-full overflow-hidden">
@@ -6934,7 +7077,7 @@ function nextStopBar(stops, firstOpenIdx) {
       <span class="w-8 h-8 shrink-0 rounded-full bg-white/20 flex items-center justify-center">${ICONS.mapPin}</span>
       <span class="flex-1 min-w-0">
         <span class="block text-[11px] font-semibold uppercase tracking-wide text-white">Nächster Stopp</span>
-        <span class="block text-[15px] font-semibold truncate">${escapeHtml(next.kunde)}</span>
+        <span class="block text-[15px] font-semibold truncate">${escapeHtml(stopKindMeta(next)?.title || next.kunde)}</span>
         <span class="block text-[12px] text-white truncate">${escapeHtml(next.strasse)}, ${escapeHtml(next.plz)} Wien</span>
       </span>
       <span class="shrink-0 text-white/70 flex">${ICONS.chevron}</span>
@@ -7089,7 +7232,7 @@ function stopListHtml({ animate = false } = {}) {
   if (!r) return '';
   const stops = r.stops;
   const doors = sameDoorGroups(stops);
-  const firstOpenIdx = stops.findIndex((s) => s.kind === 'customer' && !s.delivered);
+  const firstOpenIdx = firstOpenIndex(stops);
   // Identified by id, not by position in the list being rendered: a filtered
   // list has its own indices, and "next stop" is a fact about the route
   // rather than about what happens to be on screen.
@@ -7101,9 +7244,7 @@ function stopListHtml({ animate = false } = {}) {
     // keystroke, and replaying the entrance animation each time makes it
     // flicker rather than narrow.
     const animIndex = animate && !tokens ? i : null;
-    const meta = stopKindMeta(s);
-    if (meta) return renderFixedRow(s, meta, animIndex);
-    return renderCustomerRow(s, s.id === nextId, animIndex, doors.get(s.id)?.length);
+    return renderStopRow(s, s.id === nextId, animIndex, doors);
   };
 
   if (!tokens) return `<div class="${GROUP}">${stops.map(row).join('')}</div>`;
@@ -7152,7 +7293,7 @@ function paintStopFilter() {
 function nextStopBarHtml() {
   if (stopFilterActive()) return '';
   const stops = state.currentRoute?.stops || [];
-  return nextStopBar(stops, stops.findIndex((s) => s.kind === 'customer' && !s.delivered));
+  return nextStopBar(stops, firstOpenIndex(stops));
 }
 
 /// The "Route nicht aktuell" banner, or nothing. Split out of
@@ -7217,7 +7358,7 @@ function patchRouteDetail({ animate = false } = {}) {
   if (optimizeSlot) optimizeSlot.innerHTML = optimizeBannerHtml();
 
   const countEl = document.querySelector('[data-delivered-count-text]');
-  if (countEl) countEl.textContent = `${r.delivered_count} / ${r.customer_count} zugestellt`;
+  if (countEl) countEl.textContent = deliveredCountText(r);
   const totalsEl = document.querySelector('[data-route-totals]');
   if (totalsEl) totalsEl.textContent = routeTotalsText();
   const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
@@ -7280,8 +7421,8 @@ function renderRouteMenu() {
       ${item("manualOptimize()", ICONS.compass, "Neu optimieren")}
       ${item("recheckAddresses()", ICONS.mapPin, "Adressen neu prüfen")}
       ${item("renderJsonForm();", ICONS.doc, "Als JSON bearbeiten")}
-      ${item("resetDelivered()", ICONS.refresh, "Zustellungen zurücksetzen")}
       ${item("toggleRouteStatus()", ICONS.checkCircle, r.status === 'completed' ? 'Wieder aktivieren' : 'Route abschließen')}
+      ${item("resetDelivered()", ICONS.refresh, "Lieferstatus zurücksetzen", true)}
       ${item("deleteRoute()", ICONS.trash, "Löschen", true)}
     </div>
   `;
