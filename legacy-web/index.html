@@ -288,6 +288,11 @@
   .now-follow { display: flex; align-items: flex-start; gap: .5rem; text-align: left; font-size: 15px; margin-top: .5rem; }
   .now-follow > span:first-child { flex: none; display: flex; margin-top: .2em; color: #FF9500; }
   .tab-grid { display: grid; }
+  .blocker { background: #D70015; color: #fff; border-radius: 1rem; padding: .875rem 1rem 1rem; margin-bottom: 1rem; }
+  .blocker-title { display: flex; align-items: center; gap: .5rem; font-size: 16px; font-weight: 700; }
+  .blocker-text { font-size: 13px; line-height: 1.4; margin-top: .25rem; opacity: .92; }
+  .blocker-row { display: flex; align-items: center; gap: .75rem; margin-top: .75rem; padding-top: .75rem; border-top: 1px solid rgba(255,255,255,.25); }
+  .blocker-btn { flex: none; display: flex; align-items: center; gap: .375rem; padding: .5rem .75rem; border-radius: 999px; background: #fff; color: #D70015; font-size: 14px; font-weight: 700; }
   .review-row { display: flex; align-items: flex-start; }
   .review-main { flex: 1; min-width: 0; text-align: left; padding: .75rem 0 .75rem 1rem; }
   .review-fact { display: flex; gap: .375rem; align-items: flex-start; font-size: 13px; line-height: 1.35; margin-top: .25rem; color: rgba(0,0,0,.7); overflow-wrap: anywhere; }
@@ -3335,7 +3340,7 @@ async function selectMapRoute(id) {
 
 function openCurrentRouteDetail() {
   if (!state.currentRoute) return;
-  state.tab = state.currentRoute.status === 'completed' ? 'verlauf' : 'routes';
+  state.tab = 'routes';
   state.detailOrigin = state.tab;
   render();
 }
@@ -3614,7 +3619,13 @@ async function sendStop(data, coords) {
       openAddSheet(corrected.stopId ? { ...corrected, id: corrected.stopId } : corrected);
       return;
     }
-    if (!coords && (err.code === 'address_not_found' || err.code === 'geocode_unavailable') && state.currentRoute?.id === routeId) {
+    if (!coords && err.code === 'address_not_found' && state.currentRoute?.id === routeId) {
+      openAddSheet(data.stopId ? { ...data, id: data.stopId } : data, { notFound: true });
+      return;
+    }
+    // The lookup itself is down — nothing about the address to correct.
+    if (!coords && err.code === 'geocode_unavailable' && state.currentRoute?.id === routeId) {
+      toast('Die Adresssuche ist gerade nicht erreichbar. Später noch einmal versuchen — oder den Pin von Hand setzen.', 'warning', 8000);
       openPinDropSheet(data);
       return;
     }
@@ -3923,7 +3934,7 @@ async function toggleRouteStatus() {
   const ok = await confirmSheet({
     title: newStatus === 'completed' ? 'Tour abschließen?' : 'Tour wieder aktivieren?',
     message: newStatus === 'completed'
-      ? `„${state.currentRoute.name}" wandert in den Verlauf. Danach kommt der Tagesabschluss für das Büro.`
+      ? `„${state.currentRoute.name}" steht dann unter „Erledigt“. Danach kommt der Tagesabschluss für das Büro.`
       : `„${state.currentRoute.name}" steht dann wieder bei den aktiven Touren.`,
     confirmLabel: newStatus === 'completed' ? 'Abschließen' : 'Reaktivieren',
   });
@@ -3936,7 +3947,7 @@ async function toggleRouteStatus() {
     // A completed route belongs in Verlauf and an active one in Routen, so
     // the detail screen follows it across rather than being left in a tab
     // whose list no longer contains it.
-    state.tab = newStatus === 'completed' ? 'verlauf' : 'routes';
+    state.tab = 'routes';
     state.detailOrigin = state.tab;
     render();
     if (newStatus === 'completed') openReportSheet();
@@ -4027,6 +4038,13 @@ async function recheckAddresses() {
 async function manualOptimize() {
   const route = state.currentRoute;
   if (!route) return;
+  // Nothing to ask the server it would only refuse: say what is in the way.
+  const unplaced = unplacedStops(route);
+  if (unplaced.length) {
+    toast(`Erst die Adresse von „${unplaced[0].kunde}“${unplaced.length > 1 ? ` und ${unplaced.length - 1} weiteren` : ''} korrigieren — sie wurde nicht gefunden.`, 'error', 7000);
+    document.querySelector('.blocker')?.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
+    return;
+  }
   // A tour that starts where the driver is has to be told where that is.
   await sendPositionIfStartingHere(route, route.stops.some((s) => s.kind === 'start' && s.excluded));
   await refreshCurrentRoute(() => api(`/routes/${route.id}/optimize`, { method: 'POST' }), 'Reihenfolge wird berechnet …');
@@ -4119,9 +4137,15 @@ function closeSheet() {
 // here too, so there's exactly one place to reach for each: "+" always
 // means "one stop", "..." always means "the whole route".
 // ---------------------------------------------------------------------
-function openAddSheet(stop) {
-  renderManualForm(stop);
-  if (!stop?.id) setTimeout(() => document.querySelector('#stop-form [name=kunde]')?.focus(), 80);
+/// `notFound` opens the form on an address the lookup could not place: it
+/// says so at the top, puts the caret in the street, and offers the map as
+/// the second way out. Correcting the address comes first — a typo fixed is
+/// an exact position and an entrance to navigate to, where a pin is one
+/// person's guess at a roof.
+function openAddSheet(stop, { notFound = false } = {}) {
+  renderManualForm(stop, { notFound });
+  if (notFound) setTimeout(() => { const f = document.querySelector('#stop-form [name=strasse]'); f?.focus(); f?.select?.(); }, 80);
+  else if (!stop?.id) setTimeout(() => document.querySelector('#stop-form [name=kunde]')?.focus(), 80);
 }
 
 // Every gesture that opens "the sheet for this stop" comes through here.
@@ -4409,8 +4433,10 @@ async function saveFixedStop(stopId) {
 const FIELD = 'mt-1 w-full bg-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-600';
 const LABEL = 'text-[13px] font-medium text-black/55';
 
-function renderManualForm(stop) {
+function renderManualForm(stop, { notFound = false } = {}) {
   const isEdit = !!stop?.id;
+  // Not found now, or carried on the stop from before such stops were refused.
+  const unplaced = notFound || stop?.location_precision === 'district';
   const defaultPlz = stop?.plz || (isEdit ? '' : lastUsedPlz) || '';
 
   // Every field is wired to its input with a real for/id pair rather than
@@ -4421,6 +4447,7 @@ function renderManualForm(stop) {
 
   renderSheetShell(`
     <h2 class="text-[22px] font-bold mb-4">${isEdit ? 'Stopp bearbeiten' : 'Neuer Stopp'}</h2>
+    ${unplaced ? `<div class="sheet-note" style="background:#D70015;color:#fff"><span style="color:#fff">${ICONS.warning}</span><span><b>Diese Adresse wurde nicht gefunden.</b> Bitte Straße, Hausnummer und Postleitzahl prüfen — oft ist es ein Tippfehler oder die falsche Postleitzahl.</span></div>` : ''}
     <form id="stop-form" novalidate class="space-y-3 pb-2">
       <div>
         <label class="${LABEL}" for="${uid('kunde')}">Kunde</label>
@@ -4446,15 +4473,15 @@ function renderManualForm(stop) {
         <label class="${LABEL}" for="${uid('telefon')}">Telefon</label>
         <input id="${uid('telefon')}" name="telefon" type="tel" inputmode="tel" autocomplete="off" maxlength="40" enterkeyhint="done" value="${escapeAttr(stop?.telefon || '')}" placeholder="z.B. 0664 1234567" class="${FIELD}" />
       </div>
-      ${isEdit ? `
-        <button type="button" onclick="pinDropFromForm(${stop.id})"
-          class="press-98 w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left ${stop.location_precision ? 'bg-warn/15 text-warnText' : 'bg-white text-black/70'}">
+      ${isEdit || unplaced ? `
+        <button type="button" onclick="pinDropFromForm(${isEdit ? stop.id : 'null'})"
+          class="press-98 w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left bg-white text-black/70">
           <span class="flex shrink-0 text-[17px]">${ICONS.mapPin}</span>
           <span class="flex-1 min-w-0">
-            <span class="block text-[15px] font-medium">Standort auf der Karte setzen</span>
-            <span class="block text-[12px] leading-snug ${stop.location_precision ? '' : 'text-black/55'}">${
-              stop.location_precision === 'district'
-                ? 'Adresse nicht gefunden — der Pin steht nur in der Bezirksmitte.'
+            <span class="block text-[15px] font-medium">${unplaced ? 'Adresse stimmt, wird aber nicht gefunden?' : 'Standort auf der Karte setzen'}</span>
+            <span class="block text-[12px] leading-snug text-black/55">${
+              unplaced
+                ? 'Dann das Haus auf der Karte suchen und den Pin von Hand setzen.'
                 : stop.location_precision === 'street'
                 ? 'Nur ungefähr — die genaue Hausnummer ist nicht registriert.'
                 : 'Pin von Hand auf das richtige Haus setzen.'
@@ -4531,23 +4558,24 @@ function renderManualForm(stop) {
 function pinDropFromForm(stopId) {
   const form = document.getElementById('stop-form');
   if (!form) return;
-  // Missing only if the route was replaced under this sheet; the pin sheet
-  // still works, it just opens on the district instead of on the old pin.
-  const stop = getStop(stopId);
+  const stop = stopId == null ? null : getStop(stopId);
   const data = {
     kunde: form.kunde.value.trim(),
     strasse: form.strasse.value.trim(),
     plz: form.plz.value.trim(),
     paket: form.paket.value.trim(),
     notiz: form.notiz.value.trim(),
-    stopId,
+    telefon: form.telefon.value.trim(),
   };
-  if (!data.kunde || !data.strasse || !data.plz) {
-    toast('Bitte zuerst Kunde, Straße und Bezirk ausfüllen.', 'error');
+  if (stopId != null) data.stopId = stopId;
+  if (!data.kunde || !data.strasse || !/^[1-9]\d{3}$/.test(data.plz)) {
+    toast('Bitte zuerst Kunde, Straße und Postleitzahl ausfüllen.', 'error');
     return;
   }
   closeSheet();
-  openPinDropSheet(data, stop ? { lat: stop.lat, lon: stop.lon } : null);
+  // A stop that only has its district's centre has no position worth
+  // opening on: the sheet starts as it does for an address never found.
+  openPinDropSheet(data, stop && stop.location_precision !== 'district' ? { lat: stop.lat, lon: stop.lon } : null);
 }
 
 function autoFillDistrictFromText(strasseInput, plzSelect) {
@@ -4974,7 +5002,7 @@ async function applyReview() {
     const notFound = new Set((result.geocode_failures || []).map(key));
     const invalid = new Map((result.validation_failures || []).map((v) => [v.label, v.reason]));
     const left = sending.filter((e) => notFound.has(key(e)) || invalid.has(e.kunde.trim()))
-      .map((e) => ({ ...e, failed: invalid.get(e.kunde.trim()) || 'Adresse nicht gefunden — bitte Straße, Hausnummer und Postleitzahl prüfen.' }));
+      .map((e) => ({ ...e, failed: invalid.get(e.kunde.trim()) || 'Adresse nicht gefunden — antippen und Straße, Hausnummer und Postleitzahl korrigieren. Stimmt sie und wird trotzdem nicht gefunden: weglassen und danach mit + hinzufügen, dort lässt sich der Pin von Hand setzen.' }));
     gourmet.loaded = (gourmet.loaded || 0) + (n - left.length);
     gourmet.entries = [...left, ...held];
     if (gourmet.entries.length) {
@@ -5377,11 +5405,11 @@ function openPinDropSheet(data, current = null) {
   const center = correcting ? [current.lat, current.lon] : (district ? district.center : [48.2082, 16.3738]);
   // House level when nudging an existing pin; district level when the app
   // genuinely does not know where this is and the driver has to find it.
-  const zoom = correcting ? 18 : 15;
-  const heading = correcting ? 'Standort auf der Karte setzen' : 'Adresse nicht automatisch gefunden';
+  const zoom = correcting ? 18 : (district ? 15 : 10);
+  const heading = correcting ? 'Standort auf der Karte setzen' : 'Wo ist dieses Haus?';
   const explainer = correcting
     ? `Tippe auf das richtige Haus für „${escapeHtml(data.strasse)}, ${escapeHtml(data.plz)}" — oder ziehe den Pin dorthin. Mit „Luftbild" siehst du die Dächer.`
-    : `„${escapeHtml(data.strasse)}, ${escapeHtml(data.plz)}" – tippe auf die Karte, um den Standort selbst zu markieren. Der Stopp wird trotzdem hinzugefügt.`;
+    : `„${escapeHtml(data.strasse)}, ${escapeHtml(data.plz)}" wurde nicht gefunden. Such das Haus auf der Karte und tippe darauf — mit „Luftbild" siehst du die Dächer. Oder geh zurück und korrigiere die Adresse.`;
 
   renderSheetShell(`
     <h2 class="text-[19px] font-bold mb-1">${heading}</h2>
@@ -5389,7 +5417,7 @@ function openPinDropSheet(data, current = null) {
     <div id="pin-map" class="w-full h-72 rounded-2xl mb-4 overflow-hidden"></div>
     <div class="flex gap-3 pb-2">
       <button type="button" id="pin-back" class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold">Zurück</button>
-      <button type="button" id="pin-confirm" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">Standort bestätigen</button>
+      <button type="button" id="pin-confirm" disabled class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white disabled:opacity-40">Erst auf das Haus tippen</button>
     </div>
   `, { scrollable: false, label: 'Standort manuell setzen' });
 
@@ -5408,7 +5436,17 @@ function openPinDropSheet(data, current = null) {
         pinDropMap = map;
         const marker = new maplibregl.Marker({ color: '#ED1639', draggable: true }).setLngLat(centerLngLat).addTo(map);
         pinDropMarker = marker;
-        map.on('click', (e) => marker.setLngLat(e.lngLat));
+        // Confirming is only possible once the pin has been put somewhere.
+        // It starts in the middle of the district (or wherever the stop was
+        // guessed to be), and "Standort bestätigen" on a pin nobody moved
+        // saved exactly the guess this sheet exists to replace — marked as
+        // placed by hand, which silenced every warning about it.
+        const placed = () => {
+          const btn = document.getElementById('pin-confirm');
+          if (btn) { btn.disabled = false; btn.textContent = 'Standort bestätigen'; }
+        };
+        map.on('click', (e) => { marker.setLngLat(e.lngLat); placed(); });
+        marker.on('dragend', placed);
         setTimeout(() => { if (pinDropMap === map) map.resize(); }, 60);
       })
       .catch(() => { toast('Karte konnte nicht geladen werden.', 'error'); });
@@ -5422,7 +5460,7 @@ function openPinDropSheet(data, current = null) {
   });
   document.getElementById('pin-back').addEventListener('click', () => {
     closeSheet();
-    openAddSheet(data.stopId ? { ...data, id: data.stopId } : { ...data });
+    openAddSheet(data.stopId ? { ...data, id: data.stopId } : { ...data }, { notFound: !correcting });
   });
 }
 
@@ -5546,7 +5584,6 @@ function renderTabBar() {
     { id: 'routes', label: 'Touren', icon: ICONS.tabRoutes },
     { id: 'now', label: 'Jetzt', icon: ICONS.tabNow },
     { id: 'map', label: 'Karte', icon: ICONS.tabMap },
-    { id: 'verlauf', label: 'Verlauf', icon: ICONS.archive },
     // Only the administrator has this one: the people who use the app.
     ...(state.user?.is_admin ? [{ id: 'admin', label: 'Admin', icon: ICONS.people }] : []),
     { id: 'more', label: 'Mehr', icon: ICONS.tabMore },
@@ -5682,7 +5719,6 @@ function renderScreen(skipRowAnim) {
   else if (state.tab === 'routes') screen = renderRoutesTab();
   else if (state.tab === 'now') screen = renderNowTab();
   else if (state.tab === 'map') screen = renderMapTab();
-  else if (state.tab === 'verlauf') screen = renderVerlaufTab();
   else screen = renderMoreTab();
 
   app.innerHTML = screen + renderTabBar();
@@ -5754,6 +5790,18 @@ function forgetScrollMemory(key) {
 // ---------------------------------------------------------------------
 function renderRoutesTab() {
   const active = state.routes.filter(r => r.status === 'active');
+  // The finished tours live under the active ones, newest first — one tab
+  // for every tour there is, as in the iOS app.
+  const done = state.routes.filter(r => r.status === 'completed');
+  const doneRow = (r) => `
+    <button onclick="openRoute(${r.id})" class="${ROW}">
+      <span class="w-9 h-9 shrink-0 rounded-full bg-success/10 text-success flex items-center justify-center text-lg">${ICONS.checkCircle}</span>
+      <div class="flex-1 min-w-0">
+        <p class="font-medium truncate">${escapeHtml(r.name)}</p>
+        <p class="text-[13px] text-black/55 mt-0.5">${fmtDate(r.completed_at || r.created_at)} · ${r.delivered_count}/${r.customer_count} geliefert</p>
+      </div>
+      <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+    </button>`;
 
   const routeRow = (r) => {
     const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
@@ -5786,15 +5834,20 @@ function renderRoutesTab() {
       <div class="px-4">
         <h1 data-large-title class="large-title text-[34px] font-bold tracking-tight pt-3 pb-4">Touren</h1>
 
+        ${active.length && done.length ? `<p class="${SECTION_LABEL} !pt-0">Aktiv</p>` : ''}
         ${active.length ? `<div class="${GROUP}">${active.map(routeRow).join('')}</div>` : `
           <div class="text-center text-black/55" style="padding: 3.5rem .5rem 1rem">
             <span class="text-4xl flex justify-center mb-3 opacity-40">${ICONS.box}</span>
-            <p class="font-semibold text-black/70">${state.routes.length ? 'Keine aktive Tour' : 'Noch keine Tour'}</p>
+            <p class="font-semibold text-black/70">${done.length ? 'Keine aktive Tour' : 'Noch keine Tour'}</p>
             <p class="text-[15px] mt-1 leading-snug">Lade die Tour des Tages aus dem Zusteller-Portal — die Stopps kommen fertig sortiert.</p>
             <button onclick="openGourmetSheet()" class="press-98 wide-btn accent" style="margin-top:1.25rem">${ICONS.download} Tour von Gourmet laden</button>
             <button onclick="createRoute()" class="press-98 wide-btn quiet">Leere Tour anlegen</button>
           </div>
         `}
+
+        ${done.length ? `
+          <p class="${SECTION_LABEL}">Erledigt</p>
+          <div class="${GROUP}">${done.map(doneRow).join('')}</div>` : ''}
       </div>
     </div>
   `;
@@ -5969,8 +6022,11 @@ function renderNowTab() {
       <div class="h-full bg-success transition-all duration-500" style="width: ${customers.length ? Math.round((settled / customers.length) * 100) : 0}%"></div>
     </div>`;
 
+  // Not driven around a point where nobody lives: fix first, then go.
+  if (unplacedStops(r).length) return frame(r.name, chips + optimizeBannerHtml());
+
   const idx = firstOpenIndex(stops);
-  if (idx >= 0) return frame(r.name, chips + progress + nowStopCard(r, stops[idx]));
+  if (idx >= 0) return frame(r.name, chips + optimizeBannerHtml() + progress + nowStopCard(r, stops[idx]));
 
   if (!customers.length) {
     return frame(r.name, chips + empty(ICONS.box, 'Noch keine Stopps',
@@ -6431,9 +6487,15 @@ function preflightFindings(r) {
   } else {
     out.push({ level: 'ok', icon: ICONS.checkCircle, title: r.hand_ordered ? 'Eigene Reihenfolge' : 'Reihenfolge ist berechnet', detail: `${fmtKm(snap.totalKm)} · ${Math.round(snap.totalMinutes)} min Fahrzeit` });
   }
-  const rough = owed.filter((s) => s.location_precision && !s.pinned);
-  if (rough.length) {
-    out.push({ level: 'problem', icon: ICONS.warning, title: `${rough.length} ungenaue ${rough.length === 1 ? 'Adresse' : 'Adressen'}`, detail: `${rough.slice(0, 3).map((s) => s.kunde).join(', ')}${rough.length > 3 ? ' …' : ''} — Stopp antippen, „Bearbeiten“, Pin auf das Haus setzen.` });
+  const unplaced = unplacedStops(r);
+  for (const s of unplaced) {
+    out.push({ level: 'problem', icon: ICONS.warning, title: `Adresse von ${s.kunde} nicht gefunden`, detail: `${stopAddress(s)} — der Pin steht nur in der Bezirksmitte. So kann die Tour nicht gefahren werden.`, action: `fixStopAddress(${s.id})`, actionLabel: 'Adresse korrigieren' });
+  }
+  const rough = owed.filter((s) => s.location_precision === 'street' && !s.pinned);
+  if (unplaced.length) {
+    // said above, one line each
+  } else if (rough.length) {
+    out.push({ level: 'note', icon: ICONS.warning, title: `${rough.length} ungefähre ${rough.length === 1 ? 'Adresse' : 'Adressen'}`, detail: `${rough.slice(0, 3).map((s) => s.kunde).join(', ')}${rough.length > 3 ? ' …' : ''} — Stopp antippen, „Bearbeiten“, Pin auf das Haus setzen.` });
   } else {
     out.push({ level: 'ok', icon: ICONS.mapPin, title: 'Alle Adressen gefunden' });
   }
@@ -6913,47 +6975,6 @@ function syncWakeLock() {
 document.addEventListener('visibilitychange', syncWakeLock);
 
 // ---------------------------------------------------------------------
-// Verlauf tab — completed routes, own tab (not buried under Mehr) so a
-// driver can pull up "did I already do this address?" as fast as the
-// active list. Same grouped-list language as Routen.
-// ---------------------------------------------------------------------
-function renderVerlaufTab() {
-  const done = state.routes.filter(r => r.status === 'completed');
-
-  const routeRow = (r) => `
-    <button onclick="openRoute(${r.id})" class="${ROW}">
-      <span class="w-9 h-9 shrink-0 rounded-full bg-success/10 text-success flex items-center justify-center text-lg">${ICONS.checkCircle}</span>
-      <div class="flex-1 min-w-0">
-        <p class="font-medium truncate">${escapeHtml(r.name)}</p>
-        <p class="text-[13px] text-black/55 mt-0.5">${fmtDate(r.completed_at || r.created_at)} · ${r.customer_count} Kunden</p>
-      </div>
-      <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
-    </button>
-  `;
-
-  return `
-    <div data-scroll role="main" class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
-      <div class="sticky top-0 z-20 bg-[#F2F2F7]/85 backdrop-blur-xl compact-title" data-compact-title style="opacity:0; padding-top: calc(env(safe-area-inset-top) + 0.5rem)">
-        <p class="text-[17px] font-semibold text-center pb-2.5 border-b border-black/10">Verlauf</p>
-      </div>
-
-      <div class="px-4">
-        <div data-large-title class="large-title pt-3 pb-4">
-          <h1 class="text-[34px] font-bold tracking-tight">Verlauf</h1>
-        </div>
-
-        ${done.length ? `<div class="${GROUP}">${done.map(routeRow).join('')}</div>` : `
-          <div class="text-center py-20 text-black/55">
-            <span class="text-4xl flex justify-center mb-3 opacity-40">${ICONS.archive}</span>
-            <p class="text-[15px]">Noch keine abgeschlossene Tour.</p>
-          </div>
-        `}
-      </div>
-    </div>
-  `;
-}
-
-// ---------------------------------------------------------------------
 // Mehr tab — app/data-source info + utilities. Grouped inset list, large
 // title, matching the Routen tab's language.
 // ---------------------------------------------------------------------
@@ -7275,7 +7296,7 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
   const precisionBadge = s.location_precision === 'street'
     ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Genaue Hausnummer nicht gefunden — nächstgelegene bekannte Adresse auf der Straße verwendet.">≈ Straße</span>`
     : s.location_precision === 'district'
-    ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Straße nicht gefunden — nur Bezirksmitte verwendet. Position bitte prüfen.">≈ Bezirk</span>`
+    ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-white px-1.5 py-0.5 rounded" style="background:#D70015" title="Adresse nicht gefunden — bitte korrigieren.">Adresse fehlt</span>`
     : '';
   // Loud, solid-fill — not the quieter tinted style the precision badge
   // above uses — on purpose: missing this is the one thing it exists to
@@ -8901,8 +8922,38 @@ function nextStopBarHtml() {
 /// `renderRouteDetail` for the same reason `nextStopBarHtml` was: the full
 /// render and `patchRouteDetail` both need it, and two copies of the
 /// condition are two things that can drift apart.
+/// The customers the van is meant to drive to whose position is only the
+/// middle of their district. Such a stop is no longer let onto a tour at
+/// all (the server refuses the address and asks for a pin instead), so this
+/// is about the ones that were there before — and about a tour never being
+/// driven around a point where nobody lives.
+const unplacedStops = (r) => (r?.stops || []).filter((s) => s.kind === 'customer' && !skipsDoor(s) && s.location_precision === 'district' && !s.pinned);
+
+/// The way out for a stop that could not be placed: its form, opened on
+/// the address, with the map as the fallback underneath.
+function fixStopAddress(stopId) {
+  const s = getStop(stopId);
+  if (s) openAddSheet(s, { notFound: true });
+}
+
 function optimizeBannerHtml() {
-  if (!state.currentRoute?.needs_optimize) return '';
+  const r = state.currentRoute;
+  const unplaced = unplacedStops(r);
+  // This one stops the tour, so it does not look like the amber "not up to
+  // date" beside it: red, by name, each with the one button that fixes it.
+  if (unplaced.length) {
+    return `
+      <div class="blocker" role="alert">
+        <p class="blocker-title"><span class="flex">${ICONS.warning}</span>${unplaced.length === 1 ? 'Eine Adresse wurde nicht gefunden' : `${unplaced.length} Adressen wurden nicht gefunden`}</p>
+        <p class="blocker-text">Die Tour kann erst berechnet und gefahren werden, wenn ${unplaced.length === 1 ? 'diese Adresse stimmt' : 'diese Adressen stimmen'}. Meist ist es ein Tippfehler oder die falsche Postleitzahl.</p>
+        ${unplaced.map((s) => `
+          <div class="blocker-row">
+            <span class="flex-1 min-w-0"><span class="block font-semibold truncate">${escapeHtml(s.kunde)}</span><span class="block text-[13px] truncate" style="opacity:.8">${escapeHtml(stopAddress(s))}</span></span>
+            <button type="button" onclick="fixStopAddress(${s.id})" class="press-98 blocker-btn">${ICONS.pencil} Adresse korrigieren</button>
+          </div>`).join('')}
+      </div>`;
+  }
+  if (!r?.needs_optimize) return '';
   return `
     <button onclick="manualOptimize()" class="press-98 w-full flex items-center justify-between gap-2 bg-warn/10 text-warnText text-[13px] font-semibold px-4 py-2.5 rounded-xl mb-3">
       <span class="flex items-center gap-1.5"><span class="flex">${ICONS.warning}</span>Reihenfolge nicht aktuell</span>

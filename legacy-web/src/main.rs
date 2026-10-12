@@ -2043,7 +2043,27 @@ async fn nominatim_search_one(
 /// street vs. only a coarser area), so an approximate result still gets
 /// flagged to the driver instead of silently passed off as exact. Only a
 /// genuine no-match falls through to the frontend's manual pin-drop.
+/// Where an address is -- or a refusal.
+///
+/// The middle of a district is not an answer. The lookup behind this can
+/// fall back to one when it finds neither the house nor the street, and a
+/// stop placed there used to go onto the tour with a small "≈" on its row:
+/// easy to miss, and the route then drove to a point where nobody lives,
+/// with every stop after it planned around the detour. So that fallback is
+/// a failure here, the same as an address nobody knows -- the driver is
+/// asked to correct it or to put the pin on the house themselves, before
+/// the stop exists. The nearest house number on the right street is still
+/// accepted: it is a few doors off, not a few kilometres.
 async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(f64, f64, String, Precision), AppError> {
+    match geocode_address_any(state, strasse, plz).await? {
+        (_, _, _, Precision::District) => {
+            Err(geocode_error_not_found(&format!("{}, {}", strasse.trim(), place_suffix(plz))))
+        }
+        found => Ok(found),
+    }
+}
+
+async fn geocode_address_any(state: &AppState, strasse: &str, plz: &str) -> Result<(f64, f64, String, Precision), AppError> {
     let place = place_suffix(plz);
     let in_vienna = is_valid_vienna_plz(plz);
     let original_query = format!("{}, {place}", strasse.trim());
@@ -2942,6 +2962,20 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
     let lock = state.route_lock(route_id).await;
     let _guard = lock.lock().await;
 
+    // No route through a stop nobody knows the place of. One whose pin is
+    // only the middle of its district (from before such stops were refused,
+    // or with coordinates that turned out unusable) would be planned around
+    // as if it were a door, and the whole order after it would be wrong
+    // without looking wrong. Refused by name, so the fix is obvious; the
+    // route stays flagged until it is made.
+    {
+        let conn = state.db()?;
+        let unplaced = unplaced_stops(&conn, route_id)?;
+        if !unplaced.is_empty() {
+            return Err(AppError::BadRequest(unplaced_message(&unplaced)));
+        }
+    }
+
     // What this solution was planned from, checked again at write time —
     // see `planning_fingerprint`.
     let planned_from: Vec<(i64, f64, f64, bool, bool)>;
@@ -3179,6 +3213,29 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
     )?;
     tx.commit()?;
     Ok(())
+}
+
+/// The customers of a route the van is meant to drive to but whose position
+/// is only a district's centre, by name.
+fn unplaced_stops(conn: &Connection, route_id: i64) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT COALESCE(s.kunde, 'Stopp') FROM stops s WHERE s.route_id = ?1 AND s.kind = 'customer' \
+         AND s.location_precision = 'district' AND s.pinned = 0 AND NOT COALESCE({SQL_SKIPS_DOOR}, 0) \
+         ORDER BY s.order_index, s.id"
+    ))?;
+    let names = stmt.query_map(params![route_id], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+    Ok(names)
+}
+
+fn unplaced_message(names: &[String]) -> String {
+    let shown = names.iter().take(3).map(|n| format!("„{n}“")).collect::<Vec<_>>().join(", ");
+    let rest = names.len().saturating_sub(3);
+    let who = if rest > 0 { format!("{shown} und {rest} weitere") } else { shown };
+    if names.len() == 1 {
+        format!("Die Adresse von {who} wurde nicht gefunden. Bitte die Adresse korrigieren — vorher kann die Reihenfolge nicht berechnet werden.")
+    } else {
+        format!("Die Adressen von {who} wurden nicht gefunden. Bitte die Adressen korrigieren — vorher kann die Reihenfolge nicht berechnet werden.")
+    }
 }
 
 /// Everything `reoptimize_route` actually plans from, in a form two runs can
@@ -4802,10 +4859,11 @@ async fn update_stop(
     Json(payload): Json<StopUpdate>,
 ) -> Result<Json<RouteDetail>, AppError> {
     let new_outcome = requested_outcome(&payload)?;
-    let (route_id, kind, cur_strasse, cur_plz, cur_excluded) = {
+    let (route_id, kind, cur_strasse, cur_plz, cur_excluded, cur_unplaced) = {
         let conn = state.db()?;
         conn.query_row(
-            "SELECT route_id, kind, strasse, plz, excluded FROM stops WHERE id = ?1",
+            "SELECT route_id, kind, strasse, plz, excluded, \
+                    COALESCE(location_precision = 'district' AND pinned = 0, 0) FROM stops WHERE id = ?1",
             params![stop_id],
             |r| {
                 Ok((
@@ -4814,6 +4872,7 @@ async fn update_stop(
                     r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                     r.get::<_, i64>(4)? != 0,
+                    r.get::<_, i64>(5)? != 0,
                 ))
             },
         )
@@ -5011,8 +5070,13 @@ async fn update_stop(
 
     let new_strasse = payload.strasse.as_deref().map(str::trim).unwrap_or(&cur_strasse).to_string();
     let new_plz = payload.plz.as_deref().map(str::trim).unwrap_or(&cur_plz).to_string();
+    // A stop that was never placed is looked up again whenever its address
+    // is sent, changed or not: the driver has just looked at it and said
+    // "this is right", and the lookup may know it by now -- or will say
+    // once more, in so many words, that it does not.
     let address_changed = (payload.strasse.is_some() && new_strasse != cur_strasse)
-        || (payload.plz.is_some() && new_plz != cur_plz);
+        || (payload.plz.is_some() && new_plz != cur_plz)
+        || (cur_unplaced && (payload.strasse.is_some() || payload.plz.is_some()));
     // A pin the driver placed by hand (the pin-drop sheet) is honored on
     // its own, not only as a side effect of an address edit: re-pinning a
     // stop whose text address stays the same is a legitimate correction,
@@ -6991,6 +7055,19 @@ mod tests {
         assert_eq!(pick_entrance(&all, "129a", "1180"), Some((48.23, 16.34)));
         // A range filed under its own spelling still answers to its first number.
         assert_eq!(pick_entrance(&all, "31", "1180"), Some((48.23, 16.34)));
+    }
+
+    #[test]
+    fn a_stop_at_a_district_centre_is_named_until_it_is_pinned_or_left_out() {
+        let conn = outcome_db(3);
+        conn.execute("UPDATE stops SET kunde = 'Frau A', location_precision = 'district' WHERE id = 10", []).unwrap();
+        conn.execute("UPDATE stops SET kunde = 'Herr B', location_precision = 'street' WHERE id = 11", []).unwrap();
+        conn.execute("UPDATE stops SET kunde = 'Fam. C', location_precision = 'district', outcome = 'toLager' WHERE id = 12", []).unwrap();
+        assert_eq!(unplaced_stops(&conn, 1).unwrap(), vec!["Frau A".to_string()]);
+        assert!(unplaced_message(&["Frau A".into()]).contains("„Frau A“"));
+        // A pin the driver placed is a place, whatever the lookup once said.
+        conn.execute("UPDATE stops SET pinned = 1 WHERE id = 10", []).unwrap();
+        assert!(unplaced_stops(&conn, 1).unwrap().is_empty());
     }
 
     fn nominatim_hit(road: Option<&str>, postcode: Option<&str>, house_number: Option<&str>) -> NominatimHit {
