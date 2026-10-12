@@ -39,7 +39,10 @@
 //! `/trip` call at `OSRM_MAX_TRIP_COORDS` waypoints.
 //!
 //! Environment:
-//!   - `EAR_PORT` — listen port (default 8000).
+//!   - `EAR_PORT` — listen port (default 8000; `PORT` is read when it is
+//!     not set, which is what a hosting panel provides).
+//!   - `EAR_DATA_DIR` — where `rerouter.db` is kept. Defaults to the
+//!     binary's own directory.
 //!   - `EAR_ASSETS_DIR` — where index.html/sw.js/icon.png are read from.
 //!     Defaults to the directory this was built in, then to the binary's
 //!     own directory (see `assets_dir`).
@@ -6439,6 +6442,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/routes/:id/recheck-addresses", post(recheck_addresses))
         .route("/api/routes/:id/stops", post(add_stop))
         .route("/api/stops/:id", patch(update_stop).delete(delete_stop))
+        // Behind the limiter with everything else: a password guess is a
+        // request like any other, and costs a second on top (see `login`).
+        .route("/api/login", post(login))
         // Ordering matters here, and it reads bottom-up: the rate limiter
         // is outermost so a flood is rejected before a body is buffered,
         // then the body limit. Error shaping and cache suppression are
@@ -6452,7 +6458,6 @@ fn build_router(state: Arc<AppState>) -> Router {
         // runs every few seconds must not consume the budget meant for the
         // driver, and must not start failing as a *side effect* of the
         // flood it exists to report.
-        .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
         .route("/api/admin/users", get(admin_list_users).post(admin_create_user))
@@ -6504,7 +6509,13 @@ fn build_router(state: Arc<AppState>) -> Router {
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let db_path = base_dir().join("rerouter.db");
+    // `EAR_DATA_DIR` is where the database lives on a server. Without it
+    // the file sits next to the binary -- fine on a laptop, and on a host
+    // that builds in place it means `target/release/`, which one `cargo
+    // clean` empties of every driver's tours.
+    let data_dir = std::env::var_os("EAR_DATA_DIR").map(PathBuf::from).unwrap_or_else(base_dir);
+    std::fs::create_dir_all(&data_dir).expect("failed to create the data directory");
+    let db_path = data_dir.join("rerouter.db");
     init_db(&db_path).expect("failed to initialize database");
 
     let assets = assets_dir();
@@ -6615,7 +6626,9 @@ async fn main() {
     // Port is overridable so a second instance (or a deployment where 8000
     // is already taken) doesn't need a recompile; 8000 stays the default
     // every existing shortcut and launch.json points at.
+    // `PORT` is what a hosting panel sets; `EAR_PORT` wins where both are.
     let port: u16 = std::env::var("EAR_PORT")
+        .or_else(|_| std::env::var("PORT"))
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8000);
