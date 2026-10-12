@@ -157,7 +157,6 @@ enum RouteStore {
         LadelisteState.forget(id)
         PortalTourLink.forget(id)
         ManualOtherStops.forget(id)
-        PlannedStart.forget(id)
     }
 
     /// Deletes by id rather than by object, because the caller is a list's
@@ -176,7 +175,6 @@ enum RouteStore {
             LadelisteState.forget(id)
             PortalTourLink.forget(id)
             ManualOtherStops.forget(id)
-            PlannedStart.forget(id)
         }
     }
 

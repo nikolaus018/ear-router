@@ -6177,7 +6177,10 @@ async function loadPaceHistory() {
   } catch (_) { /* the assumed pace is a fine place to start from */ }
 }
 
-function routeSnapshot(r) {
+/// `plannedStart` is a departure to count from instead of now — a timestamp,
+/// and only ever handed in by "Tour vorbereiten", which asks "and if I leave
+/// at seven?". Nothing keeps it; every other screen counts from now.
+function routeSnapshot(r, plannedStart = null) {
   const ordered = r.stops;
   const countsAsStop = (s) => s.kind === 'customer' || isCheckpoint(s);
   const passesLager = (s) => s.kind === 'customer' && !!s.outcome && !skipsDoor(s);
@@ -6275,6 +6278,17 @@ function routeSnapshot(r) {
     + (doorsBefore.get(stop.id) || 0) * minutesPerStop
     + (loadingBefore.has(stop.id) ? lagerMinutes : 0);
 
+  // Whether the van has been anywhere yet. Not an abbestellt customer, who is
+  // ticked off the evening before when the office rings.
+  const underWay = ordered.some((s) => countsAsStop(s) && s.outcome && !skipsDoor(s));
+  snap.underWay = underWay;
+
+  /// The departure being asked about, while it is still ahead and the tour
+  /// has not begun — `null` once the first stop is ticked, when the ticks say
+  /// where the van is, and once the time has passed.
+  snap.pendingStart = (now = Date.now()) =>
+    !underWay && Number.isFinite(plannedStart) && plannedStart > now ? plannedStart : null;
+
   const nextStopTimes = (now) => {
     const nextStop = snap.nextOpen;
     if (!nextStop) return null;
@@ -6290,6 +6304,7 @@ function routeSnapshot(r) {
   /// When the van reaches `stop`, as a timestamp — or `null` for a stop
   /// that is settled, behind the van, or on a tour with no legs yet.
   snap.eta = (stop, now = Date.now()) => {
+    now = snap.pendingStart(now) ?? now;
     if (!(minutes > 0) || stop.outcome || !arrivals.has(stop.id)) return null;
     const n = nextStopTimes(now);
     if (!n) return null;
@@ -6303,6 +6318,7 @@ function routeSnapshot(r) {
 
   /// When the whole tour is done, back at Ziel.
   snap.etaFinish = (now = Date.now()) => {
+    now = snap.pendingStart(now) ?? now;
     if (!(minutes > 0) || snap.openCount <= 0) return null;
     const n = nextStopTimes(now);
     if (!n) return null;
@@ -6312,9 +6328,19 @@ function routeSnapshot(r) {
     return Math.max(now, n.departure + Math.max(0, beyond) * 60000);
   };
 
+  /// Minutes from setting off to the last point the tour drives to.
+  snap.plannedDuration = (now = Date.now()) => {
+    const finish = snap.etaFinish(now);
+    return finish == null ? null : (finish - (snap.pendingStart(now) ?? now)) / 60000;
+  };
+
   return snap;
 }
 
+const fmtDuration = (minutes) => {
+  const total = Math.round(minutes);
+  return total < 60 ? `${total} min` : `${Math.floor(total / 60)} h ${total % 60} min`;
+};
 const fmtClock = (ms) => {
   const d = new Date(ms);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -6609,9 +6635,77 @@ function preflightFindings(r) {
   }
   const notes = owed.filter((s) => (s.notiz || '').trim()).length;
   if (notes) out.push({ level: 'note', icon: ICONS.note, title: `${notes} ${notes === 1 ? 'Notiz' : 'Notizen'} auf der Tour`, detail: 'Stehen bei den Stopps — vor dem Läuten lesen.' });
-  const finish = snap.etaFinish();
-  if (finish && !out.some((f) => f.level === 'problem')) out.push({ level: 'note', icon: ICONS.flag, title: `Fertig gegen ${fmtClock(finish)}`, detail: 'Wenn du jetzt losfährst.' });
   return out;
+}
+
+// When the tour is done — and, the evening before, when it would be if the
+// van left at a time of the driver's choosing. Counted from now, a tour
+// loaded at nine at night is "fertig" at three in the morning.
+//
+// The departure is a question asked of this sheet and nothing more: it is
+// gone when the sheet closes, and no other screen's times move with it. Only
+// the time of day last asked about is remembered, so the field opens
+// somewhere sensible.
+const ABFAHRT_CLOCK_KEY = 'ear_abfahrt_clock';
+let preflightStart = null;
+
+/// The next time the clock shows what was asked about last, or eight o'clock.
+function suggestedDeparture(now = Date.now()) {
+  let minutes = 8 * 60;
+  try {
+    const saved = Number(localStorage.getItem(ABFAHRT_CLOCK_KEY));
+    if (localStorage.getItem(ABFAHRT_CLOCK_KEY) != null && saved >= 0 && saved < 1440) minutes = saved;
+  } catch (_) { /* private-browsing storage lockout */ }
+  const d = new Date(now);
+  d.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+  if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+  return d.getTime();
+}
+
+/// `datetime-local` speaks local wall-clock time with no zone.
+function localInputValue(ms) {
+  const d = new Date(ms), p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function setPreflightStart(ms) {
+  preflightStart = Number.isFinite(ms) ? ms : null;
+  if (preflightStart != null) {
+    const d = new Date(preflightStart);
+    try { localStorage.setItem(ABFAHRT_CLOCK_KEY, String(d.getHours() * 60 + d.getMinutes())); } catch (_) { /* private mode */ }
+  }
+  const el = document.getElementById('preflight-plan');
+  if (el && state.currentRoute) el.innerHTML = preflightPlanHtml(state.currentRoute);
+}
+
+function preflightPlanHtml(r) {
+  const snap = routeSnapshot(r, preflightStart);
+  const finish = snap.etaFinish();
+  if (!finish) return '';
+  const start = snap.pendingStart();
+  const row = (label, value) => `
+    <div class="flex items-center justify-between gap-3 px-4 py-3.5">
+      <span class="text-[15px] font-medium">${label}</span>
+      <span class="text-[15px] text-black/60" style="font-variant-numeric:tabular-nums">${value}</span>
+    </div>`;
+  return `
+    <div class="${GROUP} mb-2">
+      ${start ? `
+        <label class="flex items-center justify-between gap-3 px-4 py-2.5">
+          <span class="text-[15px] font-medium">Abfahrt</span>
+          <input type="datetime-local" value="${localInputValue(start)}" min="${localInputValue(Date.now())}"
+            onchange="setPreflightStart(this.value ? new Date(this.value).getTime() : null)"
+            class="text-[15px]" style="background:rgba(120,120,128,.14);border-radius:8px;padding:.375rem .5rem" aria-label="Abfahrt" />
+        </label>` : ''}
+      ${row('Voraussichtlich fertig', fmtClock(finish))}
+      ${start ? row('Dauer', `ca. ${fmtDuration(snap.plannedDuration())}`) : ''}
+    </div>
+    <p class="now-caption" style="padding:0 .25rem .75rem">${start
+      ? 'Die Abfahrt gilt nur hier zum Nachrechnen und wird nicht gespeichert.'
+      : 'Wenn du jetzt losfährst.'}</p>
+    ${start
+      ? `<button type="button" onclick="setPreflightStart(null)" class="press-98 wide-btn quiet" style="margin-bottom:1rem">Ab jetzt rechnen</button>`
+      : (snap.underWay ? '' : `<button type="button" onclick="setPreflightStart(suggestedDeparture())" class="press-98 wide-btn quiet" style="margin-bottom:1rem">Mit Abfahrtszeit rechnen</button>`)}`;
 }
 
 function openPreflightSheet() {
@@ -6619,6 +6713,7 @@ function openPreflightSheet() {
   if (!r) return;
   const findings = preflightFindings(r);
   const ready = !findings.some((f) => f.level === 'problem');
+  preflightStart = null;
   const tone = { ok: '#248A3D', note: 'rgba(0,0,0,.45)', problem: '#B26A00' };
   renderSheetShell(`
     <h2 class="sheet-title">Tour vorbereiten</h2>
@@ -6634,6 +6729,7 @@ function openPreflightSheet() {
           </span>
         </div>`).join('')}
     </div>
+    <div id="preflight-plan">${preflightPlanHtml(r)}</div>
     <div class="pb-2">
       ${ready ? `<button type="button" onclick="closeSheet(); switchTab('now')" class="press-98 wide-btn accent">Losfahren</button>` : ''}
       <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Schließen</button>

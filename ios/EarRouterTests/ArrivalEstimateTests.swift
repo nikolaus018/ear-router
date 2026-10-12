@@ -100,7 +100,7 @@ struct ArrivalEstimateTests {
         let a = customer("A"), b = customer("B"), c = customer("C")
         let route = try route([a, b, c])
         let plain = snap(route)
-        let planned = RouteSnapshot(route, history: .none, plannedStart: .some(at(600)))
+        let planned = RouteSnapshot(route, history: .none, plannedStart: at(600))
 
         #expect(planned.pendingStart(from: noon) == at(600))
         #expect(minutesAfterNoon(planned.eta(for: a, from: noon)) == 600)
@@ -120,16 +120,16 @@ struct ArrivalEstimateTests {
         let a = customer("A"), b = customer("B"), c = customer("C")
         let route = try route([a, b, c])
 
-        let late = RouteSnapshot(route, history: .none, plannedStart: .some(at(-30)))
+        let late = RouteSnapshot(route, history: .none, plannedStart: at(-30))
         #expect(late.pendingStart(from: noon) == nil)
         #expect(late.etaFinish(from: noon) == snap(route).etaFinish(from: noon))
 
         c.record(.cancelled, at: noon)
-        let cancelled = RouteSnapshot(route, history: .none, plannedStart: .some(at(600)))
+        let cancelled = RouteSnapshot(route, history: .none, plannedStart: at(600))
         #expect(cancelled.pendingStart(from: noon) == at(600))
 
         a.record(.delivered, at: noon)
-        let started = RouteSnapshot(route, history: .none, plannedStart: .some(at(600)))
+        let started = RouteSnapshot(route, history: .none, plannedStart: at(600))
         #expect(started.pendingStart(from: noon) == nil)
         #expect(started.etaFinish(from: noon) == snap(route).etaFinish(from: noon))
     }

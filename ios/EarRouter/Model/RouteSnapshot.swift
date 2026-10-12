@@ -78,8 +78,9 @@ struct RouteSnapshot {
     /// before the first tick, and when doors were ticked out of order — then
     /// the last tick says nothing about where the van is.
     private let anchorTime: Date?
-    /// When the driver means to set off, if they have said — see
-    /// `PlannedStart`.
+    /// A departure to count from instead of now, for the one screen that
+    /// asks "what if I leave at seven" — see `PlannedStart`. `nil` everywhere
+    /// else.
     let plannedStart: Date?
     /// Whether the van has been anywhere yet: a door answered at the door, or
     /// the Lager or Ziel ticked. Not an abbestellt customer, who is ticked off
@@ -167,16 +168,14 @@ struct RouteSnapshot {
         static let anchorMaxAge: TimeInterval = 90 * 60
     }
 
-    /// `plannedStart` is read from `PlannedStart` unless the caller hands one
-    /// in; `.some(nil)` is a tour with none, whatever is stored.
     init(
         _ route: Route, now: Date = Date(), history: PaceHistory = .current,
-        plannedStart: Date?? = nil
+        plannedStart: Date? = nil
     ) {
         let ordered = route.orderedStops
         self.ordered = ordered
         self.history = history
-        self.plannedStart = plannedStart ?? PlannedStart.load(for: route.id)
+        self.plannedStart = plannedStart
         self.underWay = ordered.contains {
             $0.countsAsStop && $0.isSettled && $0.outcome?.skipsDoor != true
         }
@@ -435,7 +434,7 @@ extension RouteSnapshot {
         return (next, max(planned, now), departure)
     }
 
-    /// The departure the driver planned, while it is still ahead and the tour
+    /// The departure being asked about, while it is still ahead and the tour
     /// has not begun. Every estimate is then counted from there instead of
     /// from now — the evening before, "now" would have the van setting off at
     /// nine at night.

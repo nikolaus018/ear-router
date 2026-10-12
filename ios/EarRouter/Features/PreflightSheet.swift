@@ -25,25 +25,13 @@ struct PreflightSheet: View {
     /// "Lieferstatus zurücksetzen", waiting to be confirmed — the same question
     /// the tour's own menu asks before it clears every tick of the day.
     @State private var confirmingReset = false
-    /// The departure the driver planned for this tour, mirrored from
-    /// `PlannedStart` so the picker has something to bind to and the estimate
-    /// under it follows every turn of the wheel.
+    /// A departure to try the estimate with. Lives exactly as long as this
+    /// sheet is open: it is a question — "and if I leave at seven?" — not a
+    /// setting, and no other screen's times move with it.
     @State private var plannedStart: Date?
 
-    init(
-        route: Route, onOptimize: @escaping () -> Void, onRecheck: @escaping () -> Void,
-        onResetDelivered: @escaping () -> Void, onLadeliste: @escaping () -> Void
-    ) {
-        self.route = route
-        self.onOptimize = onOptimize
-        self.onRecheck = onRecheck
-        self.onResetDelivered = onResetDelivered
-        self.onLadeliste = onLadeliste
-        _plannedStart = State(initialValue: PlannedStart.load(for: route.id))
-    }
-
     var body: some View {
-        let snapshot = RouteSnapshot(route, plannedStart: .some(plannedStart))
+        let snapshot = RouteSnapshot(route, plannedStart: plannedStart)
         let known = stockwerkNotes.floorQuestionClosed(for: snapshot.ordered)
         let preflight = Preflight(route: route, snapshot: snapshot, floorsKnown: known)
 
@@ -77,13 +65,17 @@ struct PreflightSheet: View {
                         }
                     } footer: {
                         Text(
-                            snapshot.pace.measured
+                            (snapshot.pace.measured
                                 ? "Gerechnet mit deinem heutigen Tempo an der Tür."
                                 : snapshot.pace.learned
                                 ? "Gerechnet mit deinem Tempo der letzten Touren — wird "
                                     + "genauer, sobald die ersten Stopps abgehakt sind."
                                 : "Grobe Schätzung — wird genauer, sobald die ersten "
                                     + "Stopps abgehakt sind.")
+                                + (snapshot.pendingStart() != nil
+                                    ? " Die Abfahrt gilt nur hier zum Nachrechnen und wird "
+                                        + "nicht gespeichert."
+                                    : ""))
                     }
                 }
             }
@@ -110,12 +102,11 @@ struct PreflightSheet: View {
         }
     }
 
-    /// When the driver means to set off. Without it the estimate below starts
-    /// now — right on the day, and no use the evening before.
+    /// A departure to work the estimate out for. Without it the estimate below
+    /// starts now — right on the day, and no use the evening before.
     ///
-    /// Gone once the tour is under way or the time has passed: the estimate
-    /// has stopped listening to it by then, and a picker that changes nothing
-    /// is a question about why.
+    /// Not offered once the tour is under way: the ticks say where the van
+    /// is by then.
     @ViewBuilder
     private func departure(_ snapshot: RouteSnapshot) -> some View {
         if snapshot.pendingStart() != nil {
@@ -126,9 +117,9 @@ struct PreflightSheet: View {
                     set: { setPlannedStart($0) }),
                 in: Date()...,
                 displayedComponents: [.date, .hourAndMinute])
-            Button("Abfahrt entfernen") { setPlannedStart(nil) }
+            Button("Ab jetzt rechnen") { setPlannedStart(nil) }
         } else if !snapshot.underWay {
-            Button("Abfahrt planen", systemImage: "clock") {
+            Button("Mit Abfahrtszeit rechnen", systemImage: "clock") {
                 setPlannedStart(PlannedStart.suggestion())
             }
         }
@@ -136,11 +127,7 @@ struct PreflightSheet: View {
 
     private func setPlannedStart(_ date: Date?) {
         plannedStart = date
-        if let date {
-            PlannedStart.save(date, for: route.id)
-        } else {
-            PlannedStart.forget(route.id)
-        }
+        if let date { PlannedStart.remember(date) }
     }
 
     private func row(_ finding: Preflight.Finding) -> some View {
