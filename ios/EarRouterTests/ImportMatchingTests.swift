@@ -83,10 +83,67 @@ struct ImportMatchingTests {
 
         let result = try await RouteStore.importJSON(
             [entry("Fam. Gruber", "Gentzgasse 129/1")],
-            into: route, in: context, replacing: false)
+            into: route, in: context, reroute: false, replacing: false)
 
         #expect(result.deleted == 0)
+        #expect(!result.deletionsSkipped)
         #expect(route.customerStops.count == 2)
+    }
+
+    /// Added to a tour, a list only ever recognises its own customer at their
+    /// own door. The weaker claims are right for a list that replaces the tour
+    /// and wrong here: a second household at a door already on the tour would
+    /// take the first one's stop, and a namesake from another tour would move
+    /// a customer across town.
+    @Test func anAddedListTakesNoStopByNameOrAddressAlone() throws {
+        let gruber = stop("Fam. Gruber", "Gentzgasse 129/1")
+        let novak = stop("Fam. Novak", "Währinger Straße 4", lat: 48.232)
+
+        let match = RouteStore.match(
+            [entry("Fam. Gruber", "Gentzgasse 129/1"),
+             entry("Fr. Berger", "Währinger Straße 4"),
+             entry("Fam. Novak", "Hauptstraße 3")],
+            against: [gruber, novak], exactOnly: true)
+
+        #expect(match.toUpdate.map(\.1.id) == [gruber.id])
+        #expect(match.matched == [gruber.id])
+        #expect(match.unresolved.map(\.entry.kunde) == ["Fr. Berger", "Fam. Novak"])
+        #expect(match.unresolved.allSatisfy { $0.existing == nil })
+    }
+
+    /// The same list added twice is still one tour: every entry finds its own
+    /// stop again, the Paket is brought up to date, and nothing is doubled.
+    @Test func addingTheSameListAgainDoublesNothing() async throws {
+        let a = stop("Fam. Gruber", "Gentzgasse 129/1", paket: "1x Menü A", delivered: true)
+        let b = stop("Fam. Novak", "Währinger Straße 4", lat: 48.232)
+        let (route, context) = try makeRoute([a, b])
+
+        let result = try await RouteStore.importJSON(
+            [entry("Fam. Gruber", "Gentzgasse 129/1", paket: "2x Menü A"),
+             entry("Fam. Novak", "Währinger Straße 4")],
+            into: route, in: context, reroute: false, replacing: false)
+
+        #expect(result.inserted == 0)
+        #expect(result.updated == 1)
+        #expect(route.customerStops.count == 2)
+        #expect(a.paket == "2x Menü A")
+        #expect(a.delivered)
+    }
+
+    /// The tour's size limit counts what is already there: an addition drops
+    /// nothing to make room.
+    @Test func anAdditionThatWouldOverfillTheTourIsRefused() async throws {
+        let have = (0..<maxBulkStops).map {
+            stop("Kunde \($0)", "Gasse \($0)", lat: 48.2 + Double($0) / 10_000)
+        }
+        let (route, context) = try makeRoute(have)
+
+        await #expect(throws: AppError.self) {
+            try await RouteStore.importJSON(
+                [entry("Neu", "Neugasse 1")],
+                into: route, in: context, reroute: false, replacing: false)
+        }
+        #expect(route.customerStops.count == maxBulkStops)
     }
 
     /// The other half of that rule: an entry that really did change is counted,

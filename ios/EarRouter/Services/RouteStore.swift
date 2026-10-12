@@ -749,6 +749,10 @@ enum RouteStore {
     /// checking — the tour is sorted by OSRM afterwards. `reroute: false`
     /// leaves that routing to the caller; only tests use it, to stay off the
     /// network.
+    ///
+    /// `replacing: false` adds the list to the tour instead: nothing is
+    /// deleted, and an entry is an existing stop only by the same name at the
+    /// same address — everything else becomes a stop of its own.
     static func importJSON(
         _ entries: [CustomerJSON], into route: Route, in context: ModelContext,
         reroute: Bool = true,
@@ -796,7 +800,7 @@ enum RouteStore {
         }
 
         let existing = route.customerStops
-        let match = Self.match(normalized, against: existing)
+        let match = Self.match(normalized, against: existing, exactOnly: !replacing)
         let matched = match.matched
         let toUpdate = match.toUpdate
         let unresolved = match.unresolved
@@ -962,9 +966,9 @@ enum RouteStore {
         // done. Read as "no longer on the round", every one of them was
         // deleted — outcome, time and all — the day's record of who got a
         // meal, taken out of the tour a report is about to be written from.
-        result.deletionsSkipped =
-            !result.geocodeFailures.isEmpty || !result.validationFailures.isEmpty
-            || result.cancelled
+        result.deletionsSkipped = replacing
+            && (!result.geocodeFailures.isEmpty || !result.validationFailures.isEmpty
+                || result.cancelled)
         // `replacing: false` is an addition to the tour (the portal import into
         // a tour that already has stops): nothing is dropped, however the
         // list compares to what is there.
@@ -1191,7 +1195,16 @@ enum RouteStore {
     /// loop — which is what this did — a weak claim made early could take the
     /// stop a strong claim later in the paste was owed, and which one won
     /// depended on nothing but the order the list happened to be in.
-    static func match(_ entries: [CustomerJSON], against existing: [Stop]) -> PasteMatch {
+    ///
+    /// `exactOnly` stops after the first pass, for a list that is added to the
+    /// tour rather than replacing it. The two weaker claims lean on the stop
+    /// being dropped otherwise: with nothing dropped, a second household at a
+    /// door already on the tour would overwrite the first one's name and Paket,
+    /// and a namesake from another tour would move a customer to a new address.
+    /// Both are stops of their own there.
+    static func match(
+        _ entries: [CustomerJSON], against existing: [Stop], exactOnly: Bool = false
+    ) -> PasteMatch {
         var byAddress: [AddressKey: [Stop]] = [:]
         for s in existing {
             byAddress[AddressKey(s.strasse ?? "", s.plz ?? ""), default: []].append(s)
@@ -1233,7 +1246,7 @@ enum RouteStore {
             atAddress[i] = stop
             taken.insert(stop.id)
         }
-        let open = entries.indices.filter { atAddress[$0] == nil }
+        let open = exactOnly ? [] : entries.indices.filter { atAddress[$0] == nil }
 
         // --- Pass 2: same name, different address — a customer who moved ---
         // Address matching alone cannot tell "Fam. Gruber moved to a new flat"

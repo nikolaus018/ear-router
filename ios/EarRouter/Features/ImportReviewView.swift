@@ -34,7 +34,7 @@ struct ImportReviewView: View {
     var onImported: (() -> Void)?
     /// Whether stops already on the tour that the list does not mention are
     /// removed. False adds the list to the tour instead.
-    var replacing = true
+    let replacing: Bool
 
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -115,9 +115,13 @@ struct ImportReviewView: View {
         }
     }
 
-    init(route: Route, entries: [CustomerJSON], onImported: (() -> Void)? = nil) {
+    init(
+        route: Route, entries: [CustomerJSON], replacing: Bool = true,
+        onImported: (() -> Void)? = nil
+    ) {
         self.route = route
         _entries = State(initialValue: entries.map(Entry.init))
+        self.replacing = replacing
         self.onImported = onImported
     }
 
@@ -130,9 +134,12 @@ struct ImportReviewView: View {
                     ContentUnavailableView {
                         Label("Nichts mehr übrig", systemImage: "tray")
                     } description: {
+                        // Only a list that replaces the tour can empty it.
                         Text(
-                            "Alle Einträge wurden entfernt. „Übernehmen“ würde damit jeden "
-                                + "offenen Kundenstopp dieser Tour löschen.")
+                            replacing
+                                ? "Alle Einträge wurden entfernt. „Übernehmen“ würde damit jeden "
+                                    + "offenen Kundenstopp dieser Tour löschen."
+                                : "Alle Einträge wurden entfernt. Es gibt nichts zu übernehmen.")
                     }
                 } else {
                     list
@@ -314,7 +321,10 @@ struct ImportReviewView: View {
             if busy {
                 ProgressView()
             } else {
+                // An addition with nothing in it is not an import: pressed, it
+                // reported a new tour as filled and left an empty one behind.
                 Button("Übernehmen") { submit() }
+                    .disabled(!replacing && submittable.isEmpty)
             }
         }
     }

@@ -131,11 +131,12 @@ struct GourmetImportSheet: View {
             }
         }
         .sheet(item: $review, onDismiss: reviewDismissed) { ctx in
-            // Into a tour that already has stops the portal's stops are
-            // added to them; only a new tour is filled from scratch.
-            ImportReviewView(
-                route: ctx.route, entries: ctx.entries, onImported: { imported = true },
-                replacing: false)
+            // Always an addition: what is already on the tour stays, whatever
+            // the portal's list says. A new tour has nothing to keep, so there
+            // it comes to the same thing.
+            ImportReviewView(route: ctx.route, entries: ctx.entries, replacing: false) {
+                imported = true
+            }
         }
     }
 
