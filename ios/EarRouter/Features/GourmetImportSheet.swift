@@ -401,7 +401,7 @@ struct GourmetImportSheet: View {
 /// Between the tour's full delivery list and the review screen: a
 /// searchable checklist so the driver can drop stops that are not theirs to
 /// drive before any of them pay for a detail fetch — every entry starts
-/// selected, since keeping everything is the common case.
+/// unselected: the driver picks the stops they drive, and "Alle auswählen" is one tap.
 ///
 /// The order the stops are picked in is kept and handed on: the Prüfen list
 /// arrives in that order rather than in the portal's. Tapping everything off
@@ -426,7 +426,7 @@ struct GourmetStopSelectionView: View {
     init(deliveries: [GourmetPortal.Delivery], onContinue: @escaping ([GourmetPortal.Delivery]) -> Void) {
         self.deliveries = deliveries
         self.onContinue = onContinue
-        _selected = State(initialValue: deliveries.map(\.id))
+        _selected = State(initialValue: [])
     }
 
     private var allSelected: Bool { selected.count == deliveries.count }
@@ -472,6 +472,8 @@ struct GourmetStopSelectionView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            // Picking a row while searching must not close the keyboard.
+            .scrollDismissesKeyboard(.never)
             // Over the list rather than a footer inside it, the same as every
             // other search in the app: "Keine Treffer." set in footnote grey
             // under an empty inset block read as a list that had failed to

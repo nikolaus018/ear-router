@@ -337,7 +337,7 @@
   .day-chip input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; }
   .pick-bar { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 500; color: rgba(0,0,0,.55); padding: 0 .25rem .5rem; }
   .pick-bar button { font-weight: 600; color: #ED1639; padding: .25rem .5rem; }
-  .pick-row { width: 100%; display: flex; align-items: center; gap: .75rem; text-align: left; padding: .75rem 1rem; opacity: .45; }
+  .pick-row { width: 100%; display: flex; align-items: center; gap: .75rem; text-align: left; padding: .75rem 1rem; }
   .pick-row.on { opacity: 1; }
   .pick-num { flex: none; width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid rgba(0,0,0,.3); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: #fff; }
   .pick-num.on { border-color: #34C759; background: #34C759; }
@@ -4803,7 +4803,7 @@ async function showGourmetDeliveries(tourId) {
     const { deliveries } = await api(`/portal/deliveries?tour_id=${tourId}&date=${gourmet.date}`);
     if (gourmet.tour?.id !== tourId) return;
     gourmet.deliveries = deliveries;
-    gourmet.picked = new Set(deliveries.map((d) => d.id));
+    gourmet.picked = new Set();
     gourmet.pickQuery = '';
     if (!deliveries.length) {
       gourmetBody(`<div class="sheet-note"><span>${ICONS.box}</span><span>Für diese Tour gibt es ${dayLabel(gourmet.date).toLowerCase()} keine offenen Lieferungen.</span></div>${back}`, escapeHtml(tour.name));
@@ -4825,7 +4825,7 @@ function paintGourmetDeliveries() {
   const { deliveries, tour } = gourmet;
   gourmet.pickQuery = gourmet.pickQuery || '';
   gourmetBody(`
-    <p class="sheet-lead">${dayLabel(gourmet.date)} · ${deliveries.length === 1 ? '1 Stopp' : `${deliveries.length} Stopps`}. Alle sind ausgewählt — tippe einen an, den du nicht fährst.</p>
+    <p class="sheet-lead">${dayLabel(gourmet.date)} · ${deliveries.length === 1 ? '1 Stopp' : `${deliveries.length} Stopps`}. Tippe die Stopps an, die du fährst.</p>
     <div class="relative mb-3">
       <span class="absolute left-3 top-1/2 -translate-y-1/2 text-black/55 text-[17px] flex pointer-events-none">${ICONS.search}</span>
       <input id="pick-search" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" autocorrect="off" spellcheck="false"
@@ -4857,14 +4857,14 @@ function paintPickList() {
     : deliveries;
   list.innerHTML = `
     <div class="pick-bar">
-      <span>${all ? 'Alle ausgewählt' : `${n} von ${deliveries.length} ausgewählt`}</span>
-      <button type="button" onclick="gourmetPickAll(${!all})">${all ? 'Keine auswählen' : 'Alle auswählen'}</button>
+      <span>${all ? 'Alle ausgewählt' : n === 0 ? 'Keine ausgewählt' : `${n} von ${deliveries.length} ausgewählt`}</span>
+      <button type="button" onmousedown="event.preventDefault()" onpointerdown="event.preventDefault()" onclick="gourmetPickAll(${!all})">${all ? 'Keine auswählen' : 'Alle auswählen'}</button>
     </div>
     ${shown.length ? `<div class="${GROUP} pick-list">
       ${shown.map((d) => {
         const pos = position.get(d.id);
         return `
-        <button type="button" role="checkbox" aria-checked="${!!pos}" onclick="gourmetTogglePick(${d.id})" class="pick-row ${pos ? 'on' : ''}">
+        <button type="button" role="checkbox" aria-checked="${!!pos}" onmousedown="event.preventDefault()" onpointerdown="event.preventDefault()" onclick="gourmetTogglePick(${d.id})" class="pick-row ${pos ? 'on' : ''}">
           <span class="pick-num ${pos ? 'on' : ''}">${pos || ''}</span>
           <span class="flex-1 min-w-0"><span class="block font-medium truncate">${escapeHtml(d.kunde || 'Ohne Namen')}</span><span class="block text-[13px] text-black/55 truncate">${escapeHtml([d.strasse, d.plz].filter(Boolean).join(', ') || 'Keine Adresse')}</span></span>
         </button>`;
