@@ -288,6 +288,34 @@
   .now-follow { display: flex; align-items: flex-start; gap: .5rem; text-align: left; font-size: 15px; margin-top: .5rem; }
   .now-follow > span:first-child { flex: none; display: flex; margin-top: .2em; color: #FF9500; }
   .tab-grid { display: grid; }
+  .sheet-title { font-size: 22px; font-weight: 700; margin-bottom: .25rem; overflow-wrap: anywhere; }
+  .sheet-lead { font-size: 15px; line-height: 1.4; color: rgba(0,0,0,.6); margin-bottom: 1rem; }
+  .sheet-foot { font-size: 12px; line-height: 1.4; color: rgba(0,0,0,.5); text-align: center; margin: 1rem .5rem .5rem; }
+  .sheet-busy { display: flex; flex-direction: column; align-items: center; gap: .875rem; padding: 2.25rem 1rem; color: rgba(0,0,0,.6); font-size: 15px; font-weight: 500; text-align: center; }
+  .sheet-note { display: flex; gap: .625rem; align-items: flex-start; background: #fff; border-radius: .875rem; padding: .875rem 1rem; font-size: 15px; line-height: 1.35; color: rgba(0,0,0,.7); margin-bottom: .75rem; }
+  .sheet-note > span:first-child { flex: none; display: flex; margin-top: .15em; font-size: 18px; color: rgba(0,0,0,.4); }
+  .sheet-note.warn { background: rgba(255,149,0,.14); color: #7A4700; }
+  .sheet-note.warn > span:first-child { color: #B26A00; }
+  .sheet-actions { position: sticky; bottom: 0; padding: .75rem 0 .5rem; background: linear-gradient(to bottom, rgba(242,242,247,0), #F2F2F7 22%); }
+  .wide-btn:disabled { opacity: .4; }
+  .choice { width: 100%; display: flex; align-items: center; gap: .875rem; text-align: left; background: #fff; border-radius: 1rem; padding: 1rem; margin-bottom: .625rem; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .choice.primary { background: #ED1639; color: #fff; padding: 1.125rem 1rem; }
+  .choice-icon { flex: none; width: 2.5rem; height: 2.5rem; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; background: rgba(120,120,128,.12); color: #ED1639; }
+  .choice.primary .choice-icon { background: rgba(255,255,255,.22); color: #fff; }
+  .choice > span:nth-child(2) { flex: 1; min-width: 0; }
+  .choice-title { display: block; font-size: 17px; font-weight: 600; }
+  .choice-sub { display: block; font-size: 13px; line-height: 1.35; margin-top: .125rem; opacity: .75; }
+  .choice-chevron { flex: none; display: flex; font-size: 18px; opacity: .45; }
+  .day-row { display: flex; gap: .5rem; overflow-x: auto; margin-bottom: 1rem; padding-bottom: .125rem; }
+  .day-chip { position: relative; flex: none; padding: .5rem .875rem; border-radius: 999px; background: #fff; font-size: 14px; font-weight: 600; color: rgba(0,0,0,.7); white-space: nowrap; }
+  .day-chip.on { background: #ED1639; color: #fff; }
+  .day-chip input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; }
+  .pick-bar { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 500; color: rgba(0,0,0,.55); padding: 0 .25rem .5rem; }
+  .pick-bar button { font-weight: 600; color: #ED1639; padding: .25rem .5rem; }
+  .pick-row { width: 100%; display: flex; align-items: center; gap: .75rem; text-align: left; padding: .75rem 1rem; opacity: .45; }
+  .pick-row.on { opacity: 1; }
+  .pick-mark { flex: none; display: flex; font-size: 24px; color: rgba(0,0,0,.3); }
+  .pick-row.on .pick-mark { color: #34C759; }
   .eta-line { font-size: 12px; color: rgba(0,0,0,.55); margin-top: .25rem; font-variant-numeric: tabular-nums; }
   .eta-line:empty { display: none; }
   #undo-banner { position: fixed; left: 0; right: 0; z-index: 45; display: flex; justify-content: center; padding: 0 1rem; bottom: calc(env(safe-area-inset-bottom, 0px) + 4.25rem); pointer-events: none; }
@@ -2288,6 +2316,7 @@ const ICONS = {
   people: icon('<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6"/><path d="M17.5 14.3A6 6 0 0 1 21 20"/>'),
   phone: icon('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2Z"/>'),
   gauge: icon('<path d="M4.5 18a9 9 0 1 1 15 0"/><path d="M12 13l4-5"/><circle cx="12" cy="13" r="1.4" fill="currentColor" stroke="none"/>'),
+  download: icon('<path d="M12 4v11"/><polyline points="7.5 11 12 15.5 16.5 11"/><path d="M5 19.5h14"/>', 'stroke-width="2"'),
   tabMap: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
   tabMore: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>',
   mapPin: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
@@ -3846,8 +3875,10 @@ async function toggleRouteStatus() {
   if (routeId == null) return;
   const newStatus = state.currentRoute.status === 'completed' ? 'active' : 'completed';
   const ok = await confirmSheet({
-    title: newStatus === 'completed' ? 'Route abschließen?' : 'Route reaktivieren?',
-    message: `„${state.currentRoute.name}" ${newStatus === 'completed' ? 'als abgeschlossen markieren.' : 'wieder als aktiv markieren.'}`,
+    title: newStatus === 'completed' ? 'Tour abschließen?' : 'Tour wieder aktivieren?',
+    message: newStatus === 'completed'
+      ? `„${state.currentRoute.name}" wandert in den Verlauf. Danach kommt der Tagesabschluss für das Büro.`
+      : `„${state.currentRoute.name}" steht dann wieder bei den aktiven Touren.`,
     confirmLabel: newStatus === 'completed' ? 'Abschließen' : 'Reaktivieren',
   });
   if (!ok) return;
@@ -3862,7 +3893,8 @@ async function toggleRouteStatus() {
     state.tab = newStatus === 'completed' ? 'verlauf' : 'routes';
     state.detailOrigin = state.tab;
     render();
-    toast(newStatus === 'completed' ? 'Route abgeschlossen ✓' : 'Route wieder aktiv ✓', 'success');
+    if (newStatus === 'completed') openReportSheet();
+    else toast('Tour wieder aktiv ✓', 'success');
     // A tour just finished is one more to learn door times from.
     loadPaceHistory();
   } catch (err) {
@@ -4017,10 +4049,10 @@ function renderSheetShell(bodyHtml, { scrollable = true, label = '' } = {}) {
 }
 
 function closeSheet() {
-  // A bulk import in flight has deliberately locked the sheet (see
-  // setJsonSheetBusy) — Escape and the back button must not be a way around
-  // that, or the sheet can be dismissed mid-save after all.
-  if (jsonSaveController) return;
+  // A load from Gourmet in flight has deliberately locked the sheet (see
+  // `importController`) — Escape and the back button must not be a way
+  // around that. Its own Abbrechen button is.
+  if (importController) return;
   document.getElementById('modal-root').innerHTML = '';
   onModalEscape = null;
   if (pinDropMap) { pinDropMap.remove(); pinDropMap = null; pinDropMarker = null; }
@@ -4037,22 +4069,6 @@ function closeSheet() {
 // here too, so there's exactly one place to reach for each: "+" always
 // means "one stop", "..." always means "the whole route".
 // ---------------------------------------------------------------------
-const EXAMPLE_CUSTOMER_STOP = {
-  kunde: 'BEISPIEL – Fam. Mustermann',
-  strasse: 'Beispielgasse 12',
-  plz: '1190',
-  paket: '1x Mittagsmenü',
-  notiz: 'Bitte klingeln, 2. Stock',
-};
-function stopToCustomerJson(s) {
-  const out = { kunde: s.kunde, strasse: s.strasse, plz: s.plz, paket: s.paket || '', notiz: s.notiz || '' };
-  // Only where there is one, so a list typed by hand stays the five fields
-  // it always was.
-  if (s.telefon) out.telefon = s.telefon;
-  if (s.paket_count != null) out.paketCount = s.paket_count;
-  return out;
-}
-
 function openAddSheet(stop) {
   renderManualForm(stop);
   if (!stop?.id) setTimeout(() => document.querySelector('#stop-form [name=kunde]')?.focus(), 80);
@@ -4430,212 +4446,285 @@ function autoFillDistrictFromText(strasseInput, plzSelect) {
 }
 
 // ---------------------------------------------------------------------
-// "Kundenstopps als JSON" editor — plain array of the 5 customer-facing
-// fields (kunde, strasse, plz, paket, notiz).
-// ---------------------------------------------------------------------
-function renderJsonForm() {
-  const r = state.currentRoute;
-  // Reachable only from a route's own "..." menu, so this is all but
-  // guaranteed — but it reads `r.stops` on the very next line, and a route
-  // closed out from under an open menu (a resume refresh finding it deleted
-  // elsewhere) would take the whole screen down with a TypeError instead of
-  // doing nothing.
-  if (!r || !Array.isArray(r.stops)) { toast('Keine Route ausgewählt.', 'error'); return; }
-  const customers = r.stops.filter((s) => s.kind === 'customer').map(stopToCustomerJson);
-  const editorInitial = JSON.stringify(customers.length ? customers : [EXAMPLE_CUSTOMER_STOP], null, 2);
-
-  renderSheetShell(`
-    <h2 class="text-[22px] font-bold mb-1">Als JSON bearbeiten</h2>
-    <p class="text-[12px] text-black/55 mb-2 leading-snug">Nur Kunde, Straße &amp; Hausnummer, Bezirk, Paket, Notiz. Start/Lager/Ziel sind fix und stehen hier nicht drin. Einen Stopp entfernst du, indem du sein Objekt aus der Liste löschst; neue fügst du als zusätzliche Objekte hinzu.</p>
-    ${!customers.length ? `<p class="text-[12px] text-warnText mb-2">Noch keine Kundenstopps – unten steht ein Beispiel-Objekt. Bearbeite es zu einem echten Stopp oder lösche es, bevor du speicherst.</p>` : ''}
-    <div class="flex gap-2 mb-2">
-      <button type="button" onclick="pasteIntoJsonEditor()" class="press-98 flex-1 py-2 rounded-lg bg-white text-black/70 text-xs font-semibold disabled:opacity-50">Einfügen</button>
-      <button type="button" onclick="clearJsonEditor()" class="press-98 flex-1 py-2 rounded-lg bg-white text-black/70 text-xs font-semibold disabled:opacity-50">Leeren</button>
-    </div>
-    <textarea id="json-editor" spellcheck="false" autocapitalize="off" autocomplete="off"
-      class="w-full h-[38vh] text-base leading-relaxed font-mono bg-white rounded-xl p-3 overflow-auto whitespace-pre focus:outline-none focus:ring-2 focus:ring-brand-600 momentum disabled:opacity-50"
-    >${escapeHtml(editorInitial)}</textarea>
-    <div class="flex gap-3 mt-4 pb-2">
-      <button type="button" onclick="copyJsonToClipboard()" class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold text-sm disabled:opacity-50">Kopieren</button>
-      <button type="button" id="json-cancel-btn" onclick="cancelJsonSave()" class="hidden press-98 px-4 py-3 rounded-xl bg-white text-red-600 font-semibold text-sm">Abbrechen</button>
-      <button type="button" id="json-save-btn" onclick="saveJsonEdits()" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white disabled:opacity-50">Speichern &amp; Optimieren</button>
-    </div>
-  `, { label: 'Kundenstopps als JSON bearbeiten' });
-}
-
-async function copyJsonToClipboard() {
-  const editor = document.getElementById('json-editor');
-  if (!editor) return;
-  try {
-    await navigator.clipboard.writeText(editor.value);
-    toast('JSON kopiert ✓', 'success');
-  } catch (_) {
-    toast('Kopieren nicht möglich – bitte im Feld manuell markieren.', 'error');
-  }
-}
-
-async function pasteIntoJsonEditor() {
-  const editor = document.getElementById('json-editor');
-  if (!editor) return;
-  try {
-    const text = await navigator.clipboard.readText();
-    if (!text) { toast('Zwischenablage ist leer.', 'error'); return; }
-    editor.value = text;
-    editor.focus();
-    toast('Eingefügt ✓', 'success');
-  } catch (_) {
-    toast('Einfügen aus Zwischenablage nicht möglich – bitte manuell ins Feld einfügen (lange drücken → Einfügen).', 'error');
-  }
-}
-
-function clearJsonEditor() {
-  const editor = document.getElementById('json-editor');
-  if (!editor) return;
-  editor.value = '[]';
-  editor.focus();
-}
-
-// Disables every control in the JSON sheet (including the backdrop, so a
-// stray tap can't dismiss it) while the bulk-import request is in flight —
-// now that there's no full-screen blocking modal to physically stop a
-// second tap, this is what actually prevents a double-submit or the sheet
-// being closed mid-save (this endpoint can legitimately run for a minute
-// or more against Nominatim's rate limit).
+// Tour von Gourmet laden.
 //
-// The one control deliberately left alive is the cancel button: without
-// it, a request that stalls on a dead mobile connection leaves the driver
-// staring at a locked sheet with no way out but force-quitting the app.
-function setJsonSheetBusy(busy) {
-  const root = document.getElementById('modal-root');
-  root.querySelectorAll('button, textarea').forEach((el) => {
-    if (el.id !== 'json-cancel-btn') el.disabled = busy;
-  });
-  // The backdrop is deliberately left clickable here, not set to
-  // `pointer-events: none` — it's `position: absolute; inset: 0`, covering
-  // the *entire* viewport (the sheet panel only occupies the bottom
-  // portion), so it's the only thing standing between a stray tap and
-  // whatever's behind the modal in `#app`. Disabling its pointer events
-  // let clicks in the exposed strip above the sheet fall straight through
-  // to the route detail screen underneath — which could open a *second*
-  // sheet on top of this "locked" one (wiping this one's DOM, including
-  // its own cancel button, via the next `renderSheetShell`'s
-  // `root.innerHTML = ...`) while `jsonSaveController` was still set, at
-  // which point `closeSheet()`'s own guard for that same controller
-  // refused to close *anything* until the original import — which can
-  // legitimately run for minutes — finally settled in the background.
-  // `closeSheet()` already no-ops while `jsonSaveController` is set (see
-  // its own guard), so simply leaving the backdrop's clicks intact and
-  // routed to it, as normal, is what actually keeps a stray tap from
-  // reaching anything behind the sheet during a save.
-  const saveBtn = document.getElementById('json-save-btn');
-  if (saveBtn) saveBtn.textContent = busy ? 'Wird gespeichert …' : 'Speichern & Optimieren';
-  const cancelBtn = document.getElementById('json-cancel-btn');
-  if (cancelBtn) cancelBtn.classList.toggle('hidden', !busy);
+// The one way a list of stops gets into this app besides typing them in: the
+// day's tour, straight from the Zusteller-Portal. Three steps, each a sheet
+// of its own with one thing to do on it — sign in (once), pick the tour,
+// look over who is on it — and then the tour opens with its stops in driving
+// order. The server does the talking to the portal and keeps the login; see
+// the `Zusteller-Portal` section of src/main.rs.
+// ---------------------------------------------------------------------
+// Set while stops are being loaded. The sheet cannot be closed then (see
+// `closeSheet`) and a new version of the app waits its turn (see
+// `reloadForUpdateIfPending`): a load takes a minute, and abandoning it
+// halfway leaves nobody knowing what arrived.
+let importController = null;
+const gourmet = { routeId: null, date: null, tours: null, tour: null, deliveries: null, picked: null };
+
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const dayLabel = (iso) => {
+  const today = new Date();
+  const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  if (iso === isoDay(today)) return 'Heute';
+  if (iso === isoDay(tomorrow)) return 'Morgen';
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('de-AT', { weekday: 'long', day: 'numeric', month: 'long' });
+};
+const sheetBusy = (text) => `<div class="sheet-busy"><div class="spinner"></div><p>${text}</p></div>`;
+const sheetError = (message, retry) => `
+  <div class="sheet-note warn"><span>${ICONS.warning}</span><span>${escapeHtml(message)}</span></div>
+  <button type="button" onclick="${retry}" class="press-98 wide-btn quiet">Noch einmal versuchen</button>`;
+
+/// The "+" on Routen. Two choices, the usual one first and larger.
+function openNewTourSheet() {
+  renderSheetShell(`
+    <h2 class="sheet-title">Neue Tour</h2>
+    <p class="sheet-lead">Woher kommen die Stopps?</p>
+    <button type="button" onclick="openGourmetSheet()" class="press-98 choice primary">
+      <span class="choice-icon">${ICONS.download}</span>
+      <span><span class="choice-title">Von Gourmet laden</span><span class="choice-sub">Die Tour des Tages aus dem Zusteller-Portal. Alle Stopps kommen fertig sortiert.</span></span>
+      <span class="choice-chevron">${ICONS.chevron}</span>
+    </button>
+    <button type="button" onclick="closeSheet(); createRoute()" class="press-98 choice">
+      <span class="choice-icon">${ICONS.pencil}</span>
+      <span><span class="choice-title">Leere Tour</span><span class="choice-sub">Stopps selbst eintragen, einen nach dem anderen.</span></span>
+      <span class="choice-chevron">${ICONS.chevron}</span>
+    </button>
+    <div class="pb-2" style="margin-top:1rem"><button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button></div>
+  `, { label: 'Neue Tour' });
 }
 
-let jsonSaveController = null;
-
-function cancelJsonSave() {
-  if (jsonSaveController) jsonSaveController.abort();
-}
-
-async function saveJsonEdits() {
-  const editor = document.getElementById('json-editor');
-  if (!editor || !state.currentRoute) return;
-  let parsed;
+/// Opens the Gourmet flow — for a new tour, or with `routeId` to add a
+/// tour's stops to the one that is open.
+async function openGourmetSheet(routeId = null) {
+  Object.assign(gourmet, { routeId, date: isoDay(new Date()), tours: null, tour: null, deliveries: null, picked: null });
+  renderSheetShell(`<div data-gourmet><h2 class="sheet-title">Von Gourmet laden</h2>${sheetBusy('Einen Moment …')}</div>`, { label: 'Von Gourmet laden' });
   try {
-    parsed = JSON.parse(editor.value);
+    const status = await api('/portal/status');
+    if (status.logged_in) showGourmetTours(); else showGourmetLogin();
   } catch (err) {
-    toast('Ungültiges JSON: ' + err.message, 'error');
-    return;
+    gourmetBody(sheetError(err.message, `openGourmetSheet(${routeId})`));
   }
-  if (!Array.isArray(parsed)) {
-    toast('Erwarte eine Liste von Kundenstopps ([...]).', 'error');
-    return;
+}
+
+/// Replaces everything under the sheet's title, if the sheet is still the
+/// Gourmet one — the driver may have closed it while a request was out.
+function gourmetBody(html, title = 'Von Gourmet laden') {
+  const body = document.querySelector('[data-gourmet]');
+  if (!body) {
+    if (!document.getElementById('modal-root').innerHTML) return false;
+    renderSheetShell(`<div data-gourmet></div>`, { label: title });
   }
-  // Caught here as well as on the server so an oversized paste is rejected
-  // instantly, instead of after a full upload that can only end in the
-  // same refusal.
-  if (parsed.length > MAX_BULK_STOPS) {
-    toast(`Zu viele Stopps auf einmal (${parsed.length}, max. ${MAX_BULK_STOPS}). Bitte in kleineren Gruppen importieren.`, 'error', 7000);
-    return;
-  }
-  const routeId = state.currentRoute.id;
-  const seq = nextSeq();
-  jsonSaveController = new AbortController();
-  setJsonSheetBusy(true);
-  showProgress('Adressen werden abgeglichen — bitte nicht schließen …');
+  document.querySelector('[data-gourmet]').innerHTML = `<h2 class="sheet-title">${title}</h2>${html}`;
+  return true;
+}
+
+function showGourmetLogin(message = '') {
+  renderSheetShell(`<div data-gourmet></div>`, { label: 'Bei Gourmet anmelden' });
+  gourmetBody(`
+    <p class="sheet-lead">Mit den Zugangsdaten vom Zusteller-Portal anmelden. Das ist nur einmal nötig.</p>
+    ${message ? `<div class="sheet-note warn"><span>${ICONS.warning}</span><span>${escapeHtml(message)}</span></div>` : ''}
+    <form id="gourmet-login" novalidate class="space-y-3">
+      <div>
+        <label class="${LABEL}" for="gourmet-user">Benutzername</label>
+        <input id="gourmet-user" name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="next" class="${FIELD}" />
+      </div>
+      <div>
+        <label class="${LABEL}" for="gourmet-pass">Passwort</label>
+        <input id="gourmet-pass" name="password" type="password" autocomplete="current-password" enterkeyhint="go" class="${FIELD}" />
+      </div>
+      <div style="padding-top:.5rem">
+        <button type="submit" class="press-98 wide-btn accent">Anmelden</button>
+        <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
+      </div>
+    </form>
+    <p class="sheet-foot">Die Anmeldung wird auf dem Server dieser App gespeichert, damit sie nicht jeden Tag neu eingegeben werden muss.</p>
+  `, 'Bei Gourmet anmelden');
+  const form = document.getElementById('gourmet-login');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = form.username.value.trim();
+    const password = form.password.value;
+    if (!username || !password) { toast('Bitte Benutzername und Passwort eingeben.', 'error'); return; }
+    const btn = form.querySelector('[type=submit]');
+    btn.disabled = true;
+    btn.textContent = 'Wird angemeldet …';
+    try {
+      await api('/portal/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+      showGourmetTours();
+    } catch (err) {
+      showGourmetLogin(err.message);
+    }
+  });
+  setTimeout(() => document.getElementById('gourmet-user')?.focus(), 80);
+}
+
+async function gourmetLogout() {
+  const ok = await confirmSheet({ title: 'Von Gourmet abmelden?', message: 'Zum Laden einer Tour ist dann wieder eine Anmeldung nötig.', confirmLabel: 'Abmelden' });
+  if (!ok) return;
+  try { await api('/portal/logout', { method: 'POST' }); toast('Abgemeldet ✓', 'success'); } catch (err) { toast(err.message, 'error'); }
+}
+
+/// Step two: which tour. Today's are asked for straight away; the day can
+/// be changed for a tour prepared the evening before.
+async function showGourmetTours(date = gourmet.date) {
+  gourmet.date = date;
+  gourmet.tours = null;
+  const today = new Date();
+  const days = [0, 1].map((n) => isoDay(new Date(today.getFullYear(), today.getMonth(), today.getDate() + n)));
+  const head = `
+    <p class="sheet-lead">Welche Tour fährst du?</p>
+    <div class="day-row">
+      ${days.map((d) => `<button type="button" onclick="showGourmetTours('${d}')" class="press-98 day-chip ${d === date ? 'on' : ''}">${dayLabel(d)}</button>`).join('')}
+      <label class="day-chip ${days.includes(date) ? '' : 'on'}">${days.includes(date) ? 'Anderer Tag' : dayLabel(date)}
+        <input type="date" value="${date}" onchange="if (this.value) showGourmetTours(this.value)" aria-label="Anderen Tag wählen" />
+      </label>
+    </div>`;
+  if (!gourmetBody(head + sheetBusy('Touren werden geladen …'))) return;
   try {
-    const data = await api(`/routes/${routeId}/json`, {
-      method: 'PUT',
-      body: JSON.stringify(parsed),
-      timeoutMs: API_TIMEOUT_LONG_MS,
-      signal: jsonSaveController.signal,
-    });
-    // Cleared the moment the request resolves, not in `finally`: it's what
-    // closeSheet() checks to refuse dismissing a save that's still running,
-    // and the success path below closes the sheet itself.
-    jsonSaveController = null;
-    // This request can legitimately run for a minute against the
-    // geocoders' rate limit — long enough for the driver to have moved to
-    // another route, whose screen must not be replaced by this one's result.
-    if (!applyRouteUpdate(seq, routeId, data)) { closeSheet(); return; }
+    const { tours } = await api(`/portal/tours?date=${date}`);
+    if (gourmet.date !== date) return;
+    gourmet.tours = tours;
+    gourmetBody(head + (tours.length ? `
+      <div class="${GROUP}">
+        ${tours.map((t) => `
+          <button type="button" onclick="showGourmetDeliveries(${t.id})" class="${ROW}" style="padding-top:.875rem;padding-bottom:.875rem">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-lg">${ICONS.box}</span>
+            <span class="flex-1 min-w-0 font-medium truncate">${escapeHtml(t.name)}</span>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>`).join('')}
+      </div>` : `<div class="sheet-note"><span>${ICONS.box}</span><span>${dayLabel(date)} fährt laut Portal keine Tour. Oben einen anderen Tag wählen.</span></div>`) + `
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet" style="margin-top:1rem">Abbrechen</button>
+      <p class="sheet-foot"><button type="button" onclick="closeSheet(); gourmetLogout()" class="underline">Von Gourmet abmelden</button></p>`);
+  } catch (err) {
+    if (/anmelden|Anmeldung/.test(err.message)) { showGourmetLogin(err.message); return; }
+    gourmetBody(head + sheetError(err.message, `showGourmetTours('${date}')`));
+  }
+}
+
+/// Step three: who is on it. Everybody is ticked; a stop another driver is
+/// taking is unticked here rather than deleted afterwards.
+async function showGourmetDeliveries(tourId) {
+  const tour = gourmet.tours?.find((t) => t.id === tourId);
+  if (!tour) return;
+  gourmet.tour = tour;
+  gourmet.deliveries = null;
+  const back = `<button type="button" onclick="showGourmetTours()" class="press-98 wide-btn quiet">Zurück</button>`;
+  if (!gourmetBody(sheetBusy('Stopps werden geladen …'), escapeHtml(tour.name))) return;
+  try {
+    const { deliveries } = await api(`/portal/deliveries?tour_id=${tourId}&date=${gourmet.date}`);
+    if (gourmet.tour?.id !== tourId) return;
+    gourmet.deliveries = deliveries;
+    gourmet.picked = new Set(deliveries.map((d) => d.id));
+    if (!deliveries.length) {
+      gourmetBody(`<div class="sheet-note"><span>${ICONS.box}</span><span>Für diese Tour gibt es ${dayLabel(gourmet.date).toLowerCase()} keine offenen Lieferungen.</span></div>${back}`, escapeHtml(tour.name));
+      return;
+    }
+    paintGourmetDeliveries();
+  } catch (err) {
+    gourmetBody(sheetError(err.message, `showGourmetDeliveries(${tourId})`) + back, escapeHtml(tour.name));
+  }
+}
+
+function paintGourmetDeliveries() {
+  const { deliveries, picked, tour } = gourmet;
+  const n = picked.size;
+  const all = n === deliveries.length;
+  gourmetBody(`
+    <p class="sheet-lead">${dayLabel(gourmet.date)} · ${deliveries.length === 1 ? '1 Stopp' : `${deliveries.length} Stopps`}. Alle sind ausgewählt — tippe einen an, den du nicht fährst.</p>
+    <div class="pick-bar">
+      <span>${all ? 'Alle ausgewählt' : `${n} von ${deliveries.length} ausgewählt`}</span>
+      <button type="button" onclick="gourmetPickAll(${!all})">${all ? 'Keine' : 'Alle'}</button>
+    </div>
+    <div class="${GROUP} pick-list">
+      ${deliveries.map((d) => `
+        <button type="button" role="checkbox" aria-checked="${picked.has(d.id)}" onclick="gourmetTogglePick(${d.id})" class="pick-row ${picked.has(d.id) ? 'on' : ''}">
+          <span class="pick-mark">${picked.has(d.id) ? ICONS.checkCircle : ICONS.circle}</span>
+          <span class="flex-1 min-w-0"><span class="block font-medium truncate">${escapeHtml(d.kunde || 'Ohne Namen')}</span><span class="block text-[13px] text-black/55 truncate">${escapeHtml([d.strasse, d.plz].filter(Boolean).join(', '))}</span></span>
+        </button>`).join('')}
+    </div>
+    <div class="sheet-actions">
+      <button type="button" onclick="runGourmetImport()" ${n ? '' : 'disabled'} class="press-98 wide-btn accent">${n === 1 ? '1 Stopp laden' : `${n} Stopps laden`}</button>
+      <button type="button" onclick="showGourmetTours()" class="press-98 wide-btn quiet">Zurück</button>
+    </div>
+  `, escapeHtml(tour.name));
+}
+
+function gourmetTogglePick(id) {
+  // The list is redrawn below; the sheet must not jump back to its top.
+  const sheetScroller = () => document.querySelector('.sheet-panel > .overflow-y-auto');
+  const top = sheetScroller()?.scrollTop;
+  if (gourmet.picked.has(id)) gourmet.picked.delete(id); else gourmet.picked.add(id);
+  paintGourmetDeliveries();
+  const scroller = sheetScroller();
+  if (scroller && top != null) scroller.scrollTop = top;
+}
+
+function gourmetPickAll(on) {
+  gourmet.picked = new Set(on ? gourmet.deliveries.map((d) => d.id) : []);
+  paintGourmetDeliveries();
+}
+
+/// Loads the picked stops. The server looks every address up and puts the
+/// tour in driving order before it answers, which takes about a minute for
+/// a full round — said on screen, so the wait is not mistaken for a hang.
+async function runGourmetImport() {
+  const { tour, date, picked, deliveries, routeId } = gourmet;
+  if (!tour || !picked?.size || importController) return;
+  const n = picked.size;
+  gourmetBody(`
+    ${sheetBusy(`${n === 1 ? '1 Stopp wird' : `${n} Stopps werden`} geladen …`)}
+    <p class="sheet-lead" style="text-align:center">Adressen werden gesucht und die Tour wird sortiert. Das dauert etwa eine Minute — bitte die App offen lassen.</p>
+    <button type="button" onclick="importController?.abort()" class="press-98 wide-btn quiet">Abbrechen</button>
+  `, escapeHtml(tour.name));
+  importController = new AbortController();
+  const seq = nextSeq();
+  try {
+    const body = { tour_id: tour.id, tour_name: tour.name, date, route_id: routeId };
+    if (n !== deliveries.length) body.delivery_ids = [...picked];
+    const result = await api('/portal/import', { method: 'POST', body: JSON.stringify(body), timeoutMs: 8 * 60 * 1000, signal: importController.signal });
+    importController = null;
     closeSheet();
-    // This rewrites the route's customer list wholesale — stops added,
-    // removed and moved — so a filter typed against the old one is stale by
-    // definition and would hide most of what just landed.
+    adoptRoute(seq, result);
+    state.tab = 'routes';
+    state.detailOrigin = 'routes';
     resetStopFilter();
     render();
-    // Independent counts, not mutually exclusive: a batch can have invalid
-    // entries, unresolvable addresses, AND separate ones that only
-    // resolved approximately, all at once. A plain if/else-if here would
-    // silently drop whichever category came second — those stops still
-    // saved (or, for invalid entries, still simply weren't included) and
-    // still need attention, so every non-empty category gets folded into
-    // one combined toast instead of the others being lost.
-    const validationCount = data.validation_failures ? data.validation_failures.length : 0;
-    const failureCount = data.geocode_failures ? data.geocode_failures.length : 0;
-    const approxCount = data.approximate ? data.approximate.length : 0;
-    if (validationCount || failureCount) {
-      const parts = [];
-      if (validationCount) {
-        const names = data.validation_failures.map((f) => `${f.label} (${f.reason})`).join('; ');
-        const noun = validationCount === 1 ? 'Eintrag' : 'Einträge';
-        parts.push(`${validationCount} ${noun} ungültig, übersprungen: ${names}.`);
-      }
-      if (failureCount) {
-        const names = data.geocode_failures.map((f) => `${f.kunde} (${f.strasse}, ${f.plz})`).join('; ');
-        parts.push(`${failureCount} Adresse(n) nicht gefunden, übersprungen: ${names}.`);
-      }
-      const skipNote = data.deletions_skipped ? ' Entfernte Adressen wurden diesmal nicht gelöscht, bis alle Adressen aufgelöst sind.' : '';
-      const approxNote = approxCount ? ` Außerdem ${approxCount} Adresse(n) nur ungefähr lokalisiert, bitte im Kartenpin prüfen.` : '';
-      toast(`${parts.join(' ')}${skipNote}${approxNote} Restliche Route wurde gespeichert.`, 'error', 14000);
-    } else if (approxCount) {
-      toast(`Route aktualisiert ✓ — ${approxCount} Adresse(n) nur ungefähr lokalisiert, bitte im Kartenpin prüfen.`, 'success', 6000);
-    } else {
-      toast('Route aktualisiert & optimiert ✓', 'success');
-    }
+    if (navigator.vibrate) navigator.vibrate([12, 40, 12]);
+    showImportResult(result, n);
   } catch (err) {
-    // A cancel is the driver's own decision, not a failure to apologize
-    // for — and it explicitly cannot promise nothing was saved, since the
-    // server may well have finished the import after the connection was
-    // dropped. Saying so is what stops a driver from pasting it all again
-    // on top of a route that already has it.
-    if (err.code === 'aborted') {
-      toast('Abgebrochen. Bitte die Route prüfen — Teile könnten schon gespeichert sein.', 'info', 7000);
-    } else {
-      toast(err.message || 'Speichern fehlgeschlagen.', 'error');
-    }
-    setJsonSheetBusy(false); // sheet stays open on failure — let the driver retry/edit
+    importController = null;
+    if (err.code === 'aborted') { showGourmetDeliveries(tour.id); toast('Laden abgebrochen.', 'info'); }
+    else gourmetBody(sheetError(err.message, 'runGourmetImport()') + `<button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Schließen</button>`, escapeHtml(tour.name));
   } finally {
-    jsonSaveController = null;
-    hideProgress();
-    // A deploy's controllerchange event may have landed while this save was
-    // still running and been deferred rather than acted on — see the
-    // reload listener near the bottom of this file. Now that the save has
-    // actually settled, act on it if it did.
+    // A new version of the app may have arrived while this was running and
+    // been made to wait — see the reload listener near the bottom.
     reloadForUpdateIfPending();
   }
+}
+
+/// What a load did, in the words of somebody who has to act on it: how many
+/// stops are there, and which ones need a look before setting off.
+function showImportResult(result, asked) {
+  const missing = [...(result.geocode_failures || []), ...(result.validation_failures || []).map((v) => ({ kunde: v.label, strasse: v.reason, plz: '' }))];
+  const rough = result.approximate || [];
+  const loaded = asked - missing.length;
+  if (!missing.length && !rough.length) {
+    toast(`${loaded === 1 ? '1 Stopp' : `${loaded} Stopps`} geladen ✓`, 'success');
+    return;
+  }
+  const row = (x) => `<div class="px-4 py-3"><p class="font-medium">${escapeHtml(x.kunde)}</p><p class="text-[13px] text-black/55">${escapeHtml([x.strasse, x.plz].filter(Boolean).join(', '))}</p></div>`;
+  renderSheetShell(`
+    <h2 class="sheet-title">${loaded === 1 ? '1 Stopp geladen' : `${loaded} Stopps geladen`}</h2>
+    ${missing.length ? `
+      <p class="sheet-lead"><b>${missing.length === 1 ? 'Eine Adresse wurde' : `${missing.length} Adressen wurden`} nicht gefunden</b> und ${missing.length === 1 ? 'fehlt' : 'fehlen'} in der Tour. Bitte mit dem <span class="text-brand-600 font-semibold">+</span> oben von Hand hinzufügen.</p>
+      <div class="${GROUP} mb-4">${missing.map(row).join('')}</div>` : ''}
+    ${rough.length ? `
+      <p class="sheet-lead"><b>${rough.length === 1 ? 'Bei einem Stopp' : `Bei ${rough.length} Stopps`} ist die Position nur ungefähr.</b> Sie sind in der Liste orange markiert — gedrückt halten, „Bearbeiten“, dann den Pin auf das richtige Haus setzen.</p>
+      <div class="${GROUP} mb-4">${rough.map(row).join('')}</div>` : ''}
+    <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn accent">Verstanden</button></div>
+  `, { label: 'Ergebnis' });
 }
 
 // ---------------------------------------------------------------------
@@ -5318,7 +5407,7 @@ function renderRoutesTab() {
         <div class="flex items-center justify-between px-4 pb-2.5">
           <span class="w-8"></span>
           <p data-compact-title class="compact-title text-[17px] font-semibold" style="opacity:0">Routen</p>
-          <button onclick="createRoute()" aria-label="Neue Route anlegen" title="Neue Route anlegen" class="tap-target press-fade w-8 h-8 flex items-center justify-center text-brand-600 text-lg">${ICONS.plus}</button>
+          <button onclick="openNewTourSheet()" aria-label="Neue Tour" title="Neue Tour" class="tap-target press-fade w-8 h-8 flex items-center justify-center text-brand-600 text-lg">${ICONS.plus}</button>
         </div>
       </div>
 
@@ -5326,9 +5415,12 @@ function renderRoutesTab() {
         <h1 data-large-title class="large-title text-[34px] font-bold tracking-tight pt-3 pb-4">Routen</h1>
 
         ${active.length ? `<div class="${GROUP}">${active.map(routeRow).join('')}</div>` : `
-          <div class="text-center py-20 text-black/55">
+          <div class="text-center text-black/55" style="padding: 3.5rem .5rem 1rem">
             <span class="text-4xl flex justify-center mb-3 opacity-40">${ICONS.box}</span>
-            <p class="text-[15px]">${state.routes.length ? 'Keine aktiven Routen.' : 'Noch keine Route angelegt.'}<br/>Starte mit dem <span class="text-brand-600 font-medium">+</span> oben.</p>
+            <p class="font-semibold text-black/70">${state.routes.length ? 'Keine aktive Tour' : 'Noch keine Tour'}</p>
+            <p class="text-[15px] mt-1 leading-snug">Lade die Tour des Tages aus dem Zusteller-Portal — die Stopps kommen fertig sortiert.</p>
+            <button onclick="openGourmetSheet()" class="press-98 wide-btn accent" style="margin-top:1.25rem">${ICONS.download} Tour von Gourmet laden</button>
+            <button onclick="createRoute()" class="press-98 wide-btn quiet">Leere Tour anlegen</button>
           </div>
         `}
       </div>
@@ -5745,6 +5837,137 @@ function routeSummaryText(r, snap = routeSnapshot(r)) {
 }
 
 // ---------------------------------------------------------------------
+// Tagesabschluss — the day in the form the office has to hear it.
+//
+// Shown when a tour is closed, and from its menu afterwards. The part that
+// matters is the list of who did not get their meal: on the screen it is
+// read out at a glance, and as plain text it goes to the office with one
+// tap on Teilen. Same wording as the iOS app's `TourReport`.
+// ---------------------------------------------------------------------
+function tourReport(r) {
+  const snap = routeSnapshot(r);
+  const customers = r.stops.filter((s) => s.kind === 'customer');
+  const count = (o) => customers.filter((s) => s.outcome === o).length;
+  const entry = (s) => [s.kunde || 'Ohne Namen', [s.strasse, s.plz].filter(Boolean).join(', ')].filter(Boolean).join(', ') + (s.telefon ? ` · ${s.telefon}` : '');
+  const notHome = customers.filter((s) => s.outcome === 'notHome');
+  const stillOpen = customers.filter((s) => !s.outcome);
+  const lager = count('toLager'), cancelled = count('cancelled'), neighbour = count('neighbour');
+  const owed = customers.length - lager - cancelled;
+  const handed = count('delivered') + neighbour;
+  const times = customers.filter((s) => s.settled_at && !skipsDoor(s)).map((s) => Date.parse(s.settled_at)).filter(Number.isFinite).sort((a, b) => a - b);
+  const day = fmtDate(r.completed_at || r.created_at);
+  const odometer = kilometerFor(r);
+
+  let span = '';
+  if (times.length) {
+    span = `${fmtClock(times[0])} – ${fmtClock(times[times.length - 1])}`;
+    const minutes = Math.round((times[times.length - 1] - times[0]) / 60000);
+    if (minutes >= 1) span += ` (${minutes >= 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes} min`})`;
+  }
+  const stops = (n) => (n === 1 ? '1 Stopp' : `${n} Stopps`);
+  const lines = [r.name.includes(day) ? r.name : `${r.name} — ${day}`];
+  if (span) lines.push(span);
+  lines.push('', `Geliefert: ${handed} von ${stops(owed)}`);
+  if (neighbour) lines.push(`davon bei Nachbarn abgegeben: ${neighbour}`);
+  if (cancelled) lines.push(`Abbestellt: ${cancelled}`);
+  if (lager) lines.push(`Ins Lager mitgenommen: ${lager}`);
+  if (notHome.length) lines.push('', `Nicht angetroffen (${notHome.length}):`, ...notHome.map((s) => `· ${entry(s)}`));
+  if (stillOpen.length) lines.push('', `Nicht angefahren (${stillOpen.length}):`, ...stillOpen.map((s) => `· ${entry(s)}`));
+  lines.push('');
+  if (snap.totalKm >= 0.05) lines.push(`Strecke laut Planung: ${fmtKm(snap.totalKm)}`);
+  if (odometer != null) lines.push(`Laut Tacho: ${odometer} km`);
+  return { text: lines.join('\n').trim(), span, handed, owed, lager, notHome, stillOpen, km: snap.totalKm, odometer, day };
+}
+
+function openReportSheet() {
+  const r = state.currentRoute;
+  if (!r) return;
+  const rep = tourReport(r);
+  const person = (s) => `<div class="px-4 py-3"><p class="font-medium">${escapeHtml(s.kunde || 'Ohne Namen')}</p><p class="text-[13px] text-black/55">${escapeHtml([s.strasse, s.plz].filter(Boolean).join(', '))}${s.telefon ? ` · ${escapeHtml(s.telefon)}` : ''}</p></div>`;
+  const fact = (label, value) => `<div class="flex items-baseline justify-between gap-3 px-4 py-3"><span class="text-[15px] text-black/60">${label}</span><span class="font-semibold">${value}</span></div>`;
+  const allGood = !rep.notHome.length && !rep.stillOpen.length;
+  renderSheetShell(`
+    <h2 class="sheet-title">Tagesabschluss</h2>
+    <p class="sheet-lead">${escapeHtml(r.name)} · ${rep.day}${rep.span ? ` · ${rep.span}` : ''}</p>
+    ${allGood ? `<div class="sheet-note" style="background:rgba(52,199,89,.14);color:#1B6B32"><span style="color:#248A3D">${ICONS.checkCircle}</span><span>Alle haben ihr Essen bekommen.</span></div>` : ''}
+    <div class="${GROUP} mb-4">
+      ${fact('Geliefert', `${rep.handed} von ${rep.owed}`)}
+      ${rep.lager ? fact('Ins Lager mitgenommen', rep.lager) : ''}
+      ${rep.km >= 0.05 ? fact('Strecke laut Planung', fmtKm(rep.km)) : ''}
+      ${rep.odometer != null ? fact('Laut Tacho', `${rep.odometer} km`) : ''}
+    </div>
+    ${rep.notHome.length ? `<p class="${SECTION_LABEL} !pt-0" style="color:#B26A00">Nicht angetroffen · ${rep.notHome.length}</p><div class="${GROUP} mb-4">${rep.notHome.map(person).join('')}</div>` : ''}
+    ${rep.stillOpen.length ? `<p class="${SECTION_LABEL} !pt-0">Nicht angefahren · ${rep.stillOpen.length}</p><div class="${GROUP} mb-4">${rep.stillOpen.map(person).join('')}</div>` : ''}
+    <div class="pb-2">
+      <button type="button" onclick="shareReport()" class="press-98 wide-btn accent">${ICONS.external} ${navigator.share ? 'An das Büro senden' : 'Text kopieren'}</button>
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Fertig</button>
+    </div>
+  `, { label: 'Tagesabschluss' });
+}
+
+async function shareReport() {
+  const r = state.currentRoute;
+  if (!r) return;
+  const text = tourReport(r).text;
+  try {
+    if (navigator.share) { await navigator.share({ text }); return; }
+    await navigator.clipboard.writeText(text);
+    toast('Kopiert ✓', 'success');
+  } catch (err) {
+    // Dismissing the share sheet is not a failure worth a message.
+    if (err?.name !== 'AbortError') toast('Teilen nicht möglich.', 'error');
+  }
+}
+
+// ---------------------------------------------------------------------
+// Kilometerstand — what the van's own odometer says the day was. Two
+// numbers, typed in the yard: before setting off and after getting back.
+// Kept on this device per day; the difference goes on the Tagesabschluss.
+// ---------------------------------------------------------------------
+const KM_KEY = 'ear.kilometer.v1';
+function loadKilometer() {
+  try {
+    const v = JSON.parse(localStorage.getItem(KM_KEY) || 'null');
+    if (v && typeof v === 'object' && v.day === isoDay(new Date())) return v;
+  } catch (_) { /* unreadable — start clean */ }
+  return { day: isoDay(new Date()), start: '', end: '' };
+}
+const kmDriven = (v) => {
+  const a = parseFloat(String(v.start).replace(',', '.')), b = parseFloat(String(v.end).replace(',', '.'));
+  return Number.isFinite(a) && Number.isFinite(b) && b >= a ? Math.round((b - a) * 10) / 10 : null;
+};
+/// The day's odometer kilometres, for a tour driven today.
+function kilometerFor(r) {
+  const day = isoDay(new Date(r.completed_at || Date.now()));
+  const v = loadKilometer();
+  return v.day === day ? kmDriven(v) : null;
+}
+function openKilometerSheet() {
+  const v = loadKilometer();
+  renderSheetShell(`
+    <h2 class="sheet-title">Kilometerstand</h2>
+    <p class="sheet-lead">Den Tachostand bei der Abfahrt und bei der Rückkehr eintragen. Gilt für heute.</p>
+    <div class="space-y-3">
+      <div><label class="${LABEL}" for="km-start">Bei der Abfahrt</label><input id="km-start" inputmode="decimal" value="${escapeAttr(v.start)}" placeholder="z.B. 48210" oninput="saveKilometer()" class="${FIELD}" /></div>
+      <div><label class="${LABEL}" for="km-end">Bei der Rückkehr</label><input id="km-end" inputmode="decimal" value="${escapeAttr(v.end)}" placeholder="z.B. 48263" oninput="saveKilometer()" class="${FIELD}" /></div>
+    </div>
+    <div class="now-card" style="margin-top:1rem; text-align:center">
+      <p class="now-caption">Heute gefahren</p>
+      <p id="km-result" class="now-name" style="margin-top:.25rem"></p>
+    </div>
+    <div class="pb-2" style="margin-top:1rem"><button type="button" onclick="closeSheet()" class="press-98 wide-btn accent">Fertig</button></div>
+  `, { label: 'Kilometerstand' });
+  saveKilometer();
+}
+function saveKilometer() {
+  const v = { day: isoDay(new Date()), start: document.getElementById('km-start')?.value.trim() || '', end: document.getElementById('km-end')?.value.trim() || '' };
+  try { localStorage.setItem(KM_KEY, JSON.stringify(v)); } catch (_) { /* private mode — the sum still shows */ }
+  const out = document.getElementById('km-result');
+  const driven = kmDriven(v);
+  if (out) out.textContent = driven != null ? `${String(driven).replace('.', ',')} km` : '–';
+}
+
+// ---------------------------------------------------------------------
 // Phone numbers. A stop can carry the customer's own number (`telefon`), and
 // the office's lists routinely put another one in the note — a daughter, a
 // Heimhilfe. Both are offered on Jetzt, the note's only when it is not the
@@ -5976,6 +6199,14 @@ function renderMoreTab() {
           <button onclick="renderTurcodeSheet()" class="${ROW}">
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.key}</span>
             <p class="flex-1 text-[15px]">Türcode entschlüsseln</p>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>
+          <button onclick="openKilometerSheet()" class="${ROW}">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.gauge}</span>
+            <div class="flex-1 min-w-0">
+              <p class="text-[15px]">Kilometerstand</p>
+              <p class="text-[13px] text-black/55">Gefahrene Kilometer laut Tacho</p>
+            </div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </button>
           <a href="tel:+43189145173,1" class="${ROW}">
@@ -7954,13 +8185,13 @@ function renderRouteMenu() {
     <span class="w-5 flex shrink-0 ${danger ? 'text-red-600' : 'text-black/55'}">${iconSvg}</span>${label}
   </button>`;
   return `
-    <div id="route-menu" role="menu" aria-label="Weitere Aktionen" class="hidden absolute right-0 top-10 w-56 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden z-30 divide-y divide-black/10">
+    <div id="route-menu" role="menu" aria-label="Weitere Aktionen" style="width: 17rem" class="hidden absolute right-0 top-10 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden z-30 divide-y divide-black/10">
       ${item("renderLadeliste()", ICONS.box, "Ladeliste")}
+      ${item(`openGourmetSheet(${r.id})`, ICONS.download, "Stopps von Gourmet laden")}
+      ${item("manualOptimize()", ICONS.compass, "Reihenfolge neu berechnen")}
+      ${item("openReportSheet()", ICONS.doc, "Tagesabschluss")}
       ${item("renameRoute()", ICONS.pencil, "Umbenennen")}
-      ${item("manualOptimize()", ICONS.compass, "Neu optimieren")}
-      ${item("recheckAddresses()", ICONS.mapPin, "Adressen neu prüfen")}
-      ${item("renderJsonForm();", ICONS.doc, "Als JSON bearbeiten")}
-      ${item("toggleRouteStatus()", ICONS.checkCircle, r.status === 'completed' ? 'Wieder aktivieren' : 'Route abschließen')}
+      ${item("toggleRouteStatus()", ICONS.checkCircle, r.status === 'completed' ? 'Wieder aktivieren' : 'Tour abschließen')}
       ${item("resetDelivered()", ICONS.refresh, "Lieferstatus zurücksetzen", true)}
       ${item("deleteRoute()", ICONS.trash, "Löschen", true)}
     </div>
@@ -8018,13 +8249,13 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// Top-level (not nested in the `if` block below) so `saveJsonEdits` can
+// Top-level (not nested in the `if` block below) so `runGourmetImport` can
 // call `reloadForUpdateIfPending()` from wherever it's defined in the
 // file — see the comments inside the `if` block for why this exists.
 let reloadingForUpdate = false;
 let reloadForUpdatePending = false;
 function reloadForUpdateIfPending() {
-  if (!reloadForUpdatePending || jsonSaveController || reloadingForUpdate) return;
+  if (!reloadForUpdatePending || importController || reloadingForUpdate) return;
   reloadForUpdatePending = false;
   reloadingForUpdate = true;
   window.location.reload();
@@ -8094,13 +8325,13 @@ if ('serviceWorker' in navigator) {
     if (!hadController || reloadingForUpdate) return;
     // Not during a save: an import can legitimately run for minutes, and a
     // reload mid-request abandons it with no way to know what landed. The
-    // reload isn't dropped, only deferred — `saveJsonEdits`'s `finally`
+    // reload isn't dropped, only deferred — `runGourmetImport`'s `finally`
     // calls `reloadForUpdateIfPending()` the moment the save settles, so a
     // deploy landing mid-import still gets picked up instead of leaving
     // this tab running stale JavaScript against a new server indefinitely
     // (which, for an installed PWA a driver might not close for days, is a
     // real gap — not just a theoretical one).
-    if (jsonSaveController) {
+    if (importController) {
       reloadForUpdatePending = true;
       return;
     }

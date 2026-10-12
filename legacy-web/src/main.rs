@@ -1142,6 +1142,13 @@ CREATE TABLE IF NOT EXISTS geocode_miss (
 -- each of those — cheap today, needlessly linear in the app's whole
 -- history forever after.
 CREATE INDEX IF NOT EXISTS idx_stops_route_order ON stops(route_id, order_index);
+
+-- The few things this server remembers that are not a route: today, the
+-- Zusteller-Portal login.
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;
 
 fn init_db(path: &FsPath) -> Result<(), AppError> {
@@ -3131,6 +3138,50 @@ async fn list_routes(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Rout
     Ok(Json(rows))
 }
 
+/// Writes a new route and its three fixed stops, flagged for optimizing.
+fn insert_route(state: &AppState, name: &str) -> Result<i64, AppError> {
+    // One timestamp for the whole creation, not one per INSERT — the route
+    // and its three fixed stops are created in the same instant, and four
+    // separate `now_iso()` calls only make that look otherwise.
+    let created_at = now_iso();
+
+    // The route row and its 3 fixed stops are one transaction — without
+    // this, a crash between the route insert and the stop inserts leaves
+    // an orphan route with no stops behind instead of either both existing
+    // or neither.
+    let mut conn = state.db()?;
+    let tx = conn.transaction()?;
+    // `needs_optimize = 1` from the very first moment, cleared only by
+    // the successful optimization below. A route inserted as "up to
+    // date" and then failing to optimize (OSRM briefly unreachable)
+    // would sit in the list looking complete while having no geometry
+    // and no leg distances at all, with no banner offering to fix it.
+    tx.execute(
+        "INSERT INTO routes (name, status, created_at, needs_optimize) VALUES (?1, 'active', ?2, 1)",
+        params![name, created_at],
+    )?;
+    let route_id = tx.last_insert_rowid();
+    // Fixed points, geocoded once ahead of time (see START_LAT/VIA_LAT)
+    // — route creation never needs to resolve these at runtime.
+    tx.execute(
+        "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
+         VALUES (?1, 'start', 'Start', 'Petritschgasse 24', '1210', ?2, ?3, 0, ?4)",
+        params![route_id, START_LAT, START_LON, created_at],
+    )?;
+    tx.execute(
+        "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
+         VALUES (?1, 'via', 'Lager', 'Oberlaaer Straße 298', '1230', ?2, ?3, 1, ?4)",
+        params![route_id, VIA_LAT, VIA_LON, created_at],
+    )?;
+    tx.execute(
+        "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
+         VALUES (?1, 'end', 'Ziel', 'Petritschgasse 24', '1210', ?2, ?3, 2, ?4)",
+        params![route_id, START_LAT, START_LON, created_at],
+    )?;
+    tx.commit()?;
+    Ok(route_id)
+}
+
 async fn create_route(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RouteCreate>,
@@ -3145,48 +3196,7 @@ async fn create_route(
     check_len(&name, "Name", MAX_ROUTE_NAME_LEN)?;
     check_no_control_chars(&name, "Name", false)?;
 
-    // One timestamp for the whole creation, not one per INSERT — the route
-    // and its three fixed stops are created in the same instant, and four
-    // separate `now_iso()` calls only make that look otherwise.
-    let created_at = now_iso();
-
-    // The route row and its 3 fixed stops are one transaction — without
-    // this, a crash between the route insert and the stop inserts leaves
-    // an orphan route with no stops behind instead of either both existing
-    // or neither.
-    let route_id = {
-        let mut conn = state.db()?;
-        let tx = conn.transaction()?;
-        // `needs_optimize = 1` from the very first moment, cleared only by
-        // the successful optimization below. A route inserted as "up to
-        // date" and then failing to optimize (OSRM briefly unreachable)
-        // would sit in the list looking complete while having no geometry
-        // and no leg distances at all, with no banner offering to fix it.
-        tx.execute(
-            "INSERT INTO routes (name, status, created_at, needs_optimize) VALUES (?1, 'active', ?2, 1)",
-            params![name, created_at],
-        )?;
-        let route_id = tx.last_insert_rowid();
-        // Fixed points, geocoded once ahead of time (see START_LAT/VIA_LAT)
-        // — route creation never needs to resolve these at runtime.
-        tx.execute(
-            "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
-             VALUES (?1, 'start', 'Start', 'Petritschgasse 24', '1210', ?2, ?3, 0, ?4)",
-            params![route_id, START_LAT, START_LON, created_at],
-        )?;
-        tx.execute(
-            "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
-             VALUES (?1, 'via', 'Lager', 'Oberlaaer Straße 298', '1230', ?2, ?3, 1, ?4)",
-            params![route_id, VIA_LAT, VIA_LON, created_at],
-        )?;
-        tx.execute(
-            "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
-             VALUES (?1, 'end', 'Ziel', 'Petritschgasse 24', '1210', ?2, ?3, 2, ?4)",
-            params![route_id, START_LAT, START_LON, created_at],
-        )?;
-        tx.commit()?;
-        route_id
-    };
+    let route_id = insert_route(&state, &name)?;
     reoptimize_best_effort(&state, route_id).await;
     let conn = state.db()?;
     Ok(Json(get_route_detail(&conn, route_id)?))
@@ -4207,9 +4217,21 @@ async fn update_route_from_json(
     AxPath(route_id): AxPath<i64>,
     Json(payload): Json<Value>,
 ) -> Result<Json<BulkJsonResult>, AppError> {
-    // Borrowed, not cloned: the editor's payload can be hundreds of
-    // objects, and every one of them is read-only from here on.
-    let stops_in: &Vec<Value> = match &payload {
+    import_entries(&state, route_id, &payload, false).await.map(Json)
+}
+
+/// Brings a route's customers in line with a list of entries.
+///
+/// `keep_unmatched` leaves alone the stops the list does not mention. That
+/// is what a list loaded from the portal wants: a stop the driver added by
+/// hand is theirs, and a second load must not take it away.
+async fn import_entries(
+    state: &Arc<AppState>,
+    route_id: i64,
+    payload: &Value,
+    keep_unmatched: bool,
+) -> Result<BulkJsonResult, AppError> {
+    let stops_in: &Vec<Value> = match payload {
         Value::Array(a) => a,
         Value::Object(o) => match o.get("stops") {
             Some(Value::Array(a)) => a,
@@ -4566,7 +4588,7 @@ async fn update_route_from_json(
     // deletion, and every existing customer stop on the route would be
     // deleted as "no longer present" instead of the import safely no-op'ing.
     let deletions_skipped = !failures.is_empty() || !validation_failures.is_empty();
-    let to_delete: Vec<i64> = if deletions_skipped {
+    let to_delete: Vec<i64> = if deletions_skipped || keep_unmatched {
         Vec::new()
     } else {
         existing_customers.iter().map(|s| s.id).filter(|id| !matched_ids.contains(id)).collect()
@@ -4683,16 +4705,532 @@ async fn update_route_from_json(
     drop(route_guard);
 
     if changed {
-        reoptimize_best_effort(&state, route_id).await;
+        reoptimize_best_effort(state, route_id).await;
     }
     let conn = state.db()?;
-    Ok(Json(BulkJsonResult {
+    Ok(BulkJsonResult {
         route: get_route_detail(&conn, route_id)?,
         validation_failures,
         geocode_failures: failures,
         approximate,
         deletions_skipped,
-    }))
+    })
+}
+
+// ---------------------------------------------------------------------
+// Zusteller-Portal (odoo.gourmet.at)
+//
+// Loading a day's tour instead of typing it in. A browser cannot talk to
+// the portal itself -- it answers no cross-origin request -- so this server
+// does, with a login it keeps in its own database. The app never sees the
+// password again once it has been entered.
+// ---------------------------------------------------------------------
+
+const PORTAL_BASE: &str = "https://odoo.gourmet.at/api";
+/// The deliveries still to be made. A cancelled or finished one is not a
+/// stop of today's tour.
+const PORTAL_OPEN_STATES: [&str; 4] = ["draft", "waiting", "confirmed", "assigned"];
+/// How many delivery details are fetched at once.
+const PORTAL_DETAIL_CONCURRENCY: usize = 6;
+
+fn portal_error(status: reqwest::StatusCode) -> AppError {
+    match status.as_u16() {
+        401 | 403 => AppError::BadRequest(
+            "Anmeldung beim Zusteller-Portal fehlgeschlagen. Bitte Benutzername und Passwort prüfen.".into(),
+        ),
+        other => AppError::Internal(format!("Zusteller-Portal antwortet mit Fehler {other}.")),
+    }
+}
+
+fn portal_unreachable(e: reqwest::Error) -> AppError {
+    tracing::warn!(error = %e, "Zusteller-Portal request failed");
+    AppError::Internal("Das Zusteller-Portal ist gerade nicht erreichbar. Bitte später noch einmal versuchen.".into())
+}
+
+fn portal_request(state: &AppState, method: reqwest::Method, path: &str, token: Option<&str>) -> reqwest::RequestBuilder {
+    let mut req = state
+        .http
+        .request(method, format!("{PORTAL_BASE}/{path}"))
+        .timeout(Duration::from_secs(30))
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Accept-Language", "de")
+        .header("sc-website-key", "5");
+    if let Some(token) = token {
+        req = req.header("x-authorization", format!("Bearer {token}"));
+    }
+    req
+}
+
+async fn portal_json<T: DeserializeOwned>(req: reqwest::RequestBuilder, what: &str) -> Result<T, AppError> {
+    let resp = req.send().await.map_err(portal_unreachable)?;
+    if !resp.status().is_success() {
+        return Err(portal_error(resp.status()));
+    }
+    resp.json::<T>().await.map_err(|e| {
+        tracing::warn!(error = %e, what, "Zusteller-Portal answer not understood");
+        AppError::Internal(format!("{what} des Zusteller-Portals nicht verstanden."))
+    })
+}
+
+async fn portal_login(state: &AppState, username: &str, password: &str) -> Result<String, AppError> {
+    #[derive(Deserialize)]
+    struct LoginResponse {
+        access_token: String,
+    }
+    let form = [
+        ("username", username),
+        ("password", password),
+        ("rememberMe", "true"),
+        ("host", "https://staging.essen-fuer-daheim.at"),
+        ("check_role", "supplier"),
+    ];
+    let body = form
+        .iter()
+        .map(|(k, v)| format!("{k}={}", form_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let req = portal_request(state, reqwest::Method::POST, "login", None)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body);
+    // The portal answers a login it does not accept with 403 -- and with
+    // 400 when the name is not even shaped like one of its own. Either way
+    // the driver's next move is the same: look at what was typed.
+    let resp = req.send().await.map_err(portal_unreachable)?;
+    if matches!(resp.status().as_u16(), 400 | 401 | 403) {
+        return Err(portal_error(reqwest::StatusCode::FORBIDDEN));
+    }
+    if !resp.status().is_success() {
+        return Err(portal_error(resp.status()));
+    }
+    let login: LoginResponse = resp.json().await.map_err(|e| {
+        tracing::warn!(error = %e, "Zusteller-Portal login answer not understood");
+        AppError::Internal("Antwort des Zusteller-Portals nicht verstanden.".into())
+    })?;
+    Ok(login.access_token)
+}
+
+/// Percent-encodes everything but the unreserved characters, so a password
+/// with `&`, `+` or `=` in it arrives as the password.
+fn form_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn setting(conn: &Connection, key: &str) -> Result<Option<String>, AppError> {
+    Ok(conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0)).optional()?)
+}
+
+/// A token for the login this server holds, or a plain-language refusal
+/// when there is none.
+async fn portal_token(state: &AppState) -> Result<String, AppError> {
+    let (username, password) = {
+        let conn = state.db()?;
+        (setting(&conn, "portal_username")?, setting(&conn, "portal_password")?)
+    };
+    let (Some(username), Some(password)) = (username, password) else {
+        return Err(AppError::BadRequest("Bitte zuerst beim Zusteller-Portal anmelden.".into()));
+    };
+    portal_login(state, &username, &password).await
+}
+
+#[derive(Deserialize)]
+struct PortalCredentials {
+    username: String,
+    password: String,
+}
+
+/// `POST /api/portal/login`. Tried against the portal first: a login is only
+/// kept once it has been seen to work.
+async fn portal_login_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<PortalCredentials>,
+) -> Result<Json<Value>, AppError> {
+    let username = payload.username.trim().to_string();
+    if username.is_empty() || payload.password.is_empty() {
+        return Err(AppError::BadRequest("Bitte Benutzername und Passwort eingeben.".into()));
+    }
+    check_len(&username, "Benutzername", 200)?;
+    check_len(&payload.password, "Passwort", 200)?;
+    portal_login(&state, &username, &payload.password).await?;
+    let mut conn = state.db()?;
+    let tx = conn.transaction()?;
+    for (key, value) in [("portal_username", &username), ("portal_password", &payload.password)] {
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+    }
+    tx.commit()?;
+    Ok(Json(json!({ "logged_in": true, "username": username })))
+}
+
+async fn portal_status(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    let conn = state.db()?;
+    let username = setting(&conn, "portal_username")?;
+    Ok(Json(json!({ "logged_in": username.is_some(), "username": username })))
+}
+
+async fn portal_logout(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    let conn = state.db()?;
+    conn.execute("DELETE FROM settings WHERE key IN ('portal_username', 'portal_password')", [])?;
+    Ok(Json(json!({ "logged_in": false })))
+}
+
+#[derive(Deserialize)]
+struct PortalTour {
+    id: i64,
+    name: String,
+    catalogue_type: Option<String>,
+    weekday: Option<String>,
+    #[serde(default)]
+    weekdays: Vec<String>,
+}
+
+impl PortalTour {
+    /// Whether this tour is driven on `day`: a daily-menu tour lists its
+    /// weekdays, every other kind names its one.
+    fn runs_on(&self, day: &str) -> bool {
+        if self.catalogue_type.as_deref() == Some("day") {
+            self.weekdays.iter().any(|d| d == day)
+        } else {
+            self.weekday.as_deref() == Some(day)
+        }
+    }
+}
+
+fn german_weekday(date: chrono::NaiveDate) -> &'static str {
+    use chrono::Datelike;
+    ["montag", "dienstag", "mittwoch", "donnerstag", "freitag", "samstag", "sonntag"]
+        [date.weekday().num_days_from_monday() as usize]
+}
+
+fn parse_portal_date(raw: &str) -> Result<chrono::NaiveDate, AppError> {
+    chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
+        .map_err(|_| AppError::BadRequest("Ungültiges Datum.".into()))
+}
+
+#[derive(Deserialize)]
+struct PortalDateQuery {
+    date: String,
+}
+
+/// `GET /api/portal/tours?date=YYYY-MM-DD`: the tours driven that day.
+async fn portal_tours(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<PortalDateQuery>,
+) -> Result<Json<Value>, AppError> {
+    let day = german_weekday(parse_portal_date(&q.date)?);
+    let token = portal_token(&state).await?;
+    let tours: Vec<PortalTour> =
+        portal_json(portal_request(&state, reqwest::Method::GET, "supplier/tours", Some(&token)), "Tourenliste").await?;
+    let mut today: Vec<&PortalTour> = tours.iter().filter(|t| t.runs_on(day)).collect();
+    today.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(Json(json!({
+        "tours": today.iter().map(|t| json!({ "id": t.id, "name": t.name.trim() })).collect::<Vec<_>>(),
+    })))
+}
+
+#[derive(Deserialize, Default)]
+struct PortalAddress {
+    street: Option<String>,
+    street2: Option<String>,
+    staircase: Option<String>,
+    flat_number: Option<String>,
+    zip: Option<String>,
+    comment: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct PortalCustomer {
+    firstname: Option<String>,
+    lastname: Option<String>,
+    comment: Option<String>,
+    phone: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PortalTourRef {
+    id: i64,
+}
+
+#[derive(Deserialize)]
+struct PortalLine {
+    name: String,
+    quantity: f64,
+}
+
+#[derive(Deserialize)]
+struct PortalBundle {
+    #[serde(default)]
+    delivery_lines: Vec<PortalLine>,
+}
+
+#[derive(Deserialize)]
+struct PortalDelivery {
+    id: i64,
+    #[serde(default)]
+    customer: PortalCustomer,
+    #[serde(default)]
+    delivery_address: PortalAddress,
+    #[serde(default)]
+    tours: Vec<PortalTourRef>,
+    delivery_bundles: Option<Vec<PortalBundle>>,
+}
+
+#[derive(Deserialize)]
+struct PortalDeliveryPage {
+    items: Vec<PortalDelivery>,
+    total_pages: i64,
+}
+
+fn non_empty(s: &Option<String>) -> Option<&str> {
+    s.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+impl PortalDelivery {
+    fn kunde(&self) -> String {
+        [non_empty(&self.customer.firstname), non_empty(&self.customer.lastname)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// "Gentzgasse 129/1/23": the street, then whatever the portal files
+    /// under Zusatz, Stiege and Tür, in the form the geocoder reads.
+    fn strasse(&self) -> String {
+        let a = &self.delivery_address;
+        let mut strasse = non_empty(&a.street).unwrap_or("").to_string();
+        let suffixes: Vec<&str> =
+            [non_empty(&a.street2), non_empty(&a.staircase), non_empty(&a.flat_number)].into_iter().flatten().collect();
+        if !suffixes.is_empty() {
+            if !strasse.is_empty() {
+                strasse.push('/');
+            }
+            strasse.push_str(&suffixes.join("/"));
+        }
+        strasse
+    }
+
+    fn plz(&self) -> String {
+        non_empty(&self.delivery_address.zip).unwrap_or("").to_string()
+    }
+
+    /// What is inside every parcel, as one line: "2x Menü A, Suppe".
+    fn paket(&self) -> Option<String> {
+        let lines: Vec<&PortalLine> = self.delivery_bundles.iter().flatten().flat_map(|b| &b.delivery_lines).collect();
+        if lines.is_empty() {
+            return None;
+        }
+        let parts: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                if l.quantity == 1.0 {
+                    l.name.trim().to_string()
+                } else if l.quantity.fract() == 0.0 && l.quantity.abs() < 1e15 {
+                    format!("{}x {}", l.quantity as i64, l.name.trim())
+                } else {
+                    format!("{:.2}x {}", l.quantity, l.name.trim())
+                }
+            })
+            .collect();
+        Some(clip_chars(&parts.join(", "), MAX_PAKET_LEN))
+    }
+
+    /// One entry of the list `import_entries` reads.
+    fn entry(&self) -> Value {
+        let notiz = non_empty(&self.delivery_address.comment).or(non_empty(&self.customer.comment));
+        json!({
+            "kunde": clip_chars(&self.kunde(), MAX_KUNDE_LEN),
+            "strasse": clip_chars(&self.strasse(), MAX_STRASSE_LEN),
+            "plz": self.plz(),
+            "paket": self.paket(),
+            "notiz": notiz.map(|n| clip_chars(&strip_control(n), MAX_NOTIZ_LEN)),
+            "telefon": non_empty(&self.customer.phone).map(|t| clip_chars(t, MAX_TELEFON_LEN)),
+            "paket_count": self.delivery_bundles.as_ref().map(Vec::len),
+        })
+    }
+}
+
+/// The office's text is not this app's to refuse: a note longer than a stop
+/// holds is shortened rather than costing the driver the whole stop.
+fn clip_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+fn strip_control(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control() || *c == '\n').collect()
+}
+
+/// Every open delivery of one tour on one day, without its parcels: the
+/// list answers with who and where, and the contents come per delivery.
+async fn portal_deliveries_of(
+    state: &AppState,
+    token: &str,
+    tour_id: i64,
+    date: chrono::NaiveDate,
+) -> Result<Vec<PortalDelivery>, AppError> {
+    let mut all: Vec<PortalDelivery> = Vec::new();
+    let mut page = 1;
+    loop {
+        let mut query: Vec<(&str, String)> = vec![
+            ("delivery_date", date.format("%Y-%m-%d").to_string()),
+            ("page", page.to_string()),
+            ("page_size", "100".into()),
+            ("tour_id", tour_id.to_string()),
+        ];
+        query.extend(PORTAL_OPEN_STATES.iter().map(|s| ("state", s.to_string())));
+        let req = portal_request(state, reqwest::Method::GET, "supplier/deliveries", Some(token)).query(&query);
+        let result: PortalDeliveryPage = portal_json(req, "Lieferliste").await?;
+        let done = page >= result.total_pages || result.items.is_empty();
+        all.extend(result.items);
+        if done || page > 50 {
+            break;
+        }
+        page += 1;
+    }
+    // The portal's own filter lets through a customer served on another
+    // tour today; only the ones that name this tour are its stops.
+    all.retain(|d| d.tours.iter().any(|t| t.id == tour_id));
+    Ok(all)
+}
+
+#[derive(Deserialize)]
+struct PortalDeliveriesQuery {
+    tour_id: i64,
+    date: String,
+}
+
+/// `GET /api/portal/deliveries?tour_id=&date=`: who is on the tour, for the
+/// driver to look over before anything is loaded.
+async fn portal_deliveries(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<PortalDeliveriesQuery>,
+) -> Result<Json<Value>, AppError> {
+    let date = parse_portal_date(&q.date)?;
+    let token = portal_token(&state).await?;
+    let deliveries = portal_deliveries_of(&state, &token, q.tour_id, date).await?;
+    Ok(Json(json!({
+        "deliveries": deliveries
+            .iter()
+            .map(|d| json!({ "id": d.id, "kunde": d.kunde(), "strasse": d.strasse(), "plz": d.plz() }))
+            .collect::<Vec<_>>(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct PortalImport {
+    tour_id: i64,
+    tour_name: String,
+    date: String,
+    /// The deliveries to load. Absent loads the whole tour.
+    delivery_ids: Option<Vec<i64>>,
+    /// The route to load into. Absent makes a new one, named for the tour.
+    route_id: Option<i64>,
+}
+
+/// `POST /api/portal/import`: loads a tour's deliveries as stops -- into a
+/// new route, or into one that is already there, where stops added by hand
+/// are left alone and stops already on it are recognised rather than doubled.
+async fn portal_import(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<PortalImport>,
+) -> Result<Json<BulkJsonResult>, AppError> {
+    let date = parse_portal_date(&payload.date)?;
+    let token = portal_token(&state).await?;
+    let mut deliveries = portal_deliveries_of(&state, &token, payload.tour_id, date).await?;
+    if let Some(ids) = &payload.delivery_ids {
+        let wanted: HashSet<i64> = ids.iter().copied().collect();
+        deliveries.retain(|d| wanted.contains(&d.id));
+    }
+    if deliveries.is_empty() {
+        return Err(AppError::BadRequest("Für diese Tour gibt es an diesem Tag keine offenen Lieferungen.".into()));
+    }
+    if deliveries.len() > MAX_BULK_STOPS {
+        return Err(AppError::BadRequest(format!(
+            "Diese Tour hat {} Lieferungen, mehr als eine Route fasst ({MAX_BULK_STOPS}). Bitte weniger auswählen.",
+            deliveries.len()
+        )));
+    }
+
+    // The parcels' contents come one delivery at a time.
+    let semaphore = Arc::new(Semaphore::new(PORTAL_DETAIL_CONCURRENCY));
+    let mut jobs: JoinSet<Result<(usize, Value), AppError>> = JoinSet::new();
+    for (index, delivery) in deliveries.iter().enumerate() {
+        let state = Arc::clone(&state);
+        let token = token.clone();
+        let semaphore = Arc::clone(&semaphore);
+        let id = delivery.id;
+        jobs.spawn(async move {
+            let _permit = semaphore.acquire().await.map_err(|_| AppError::Internal("Abgebrochen.".into()))?;
+            let req = portal_request(&state, reqwest::Method::GET, &format!("supplier/deliveries/{id}"), Some(&token));
+            let detail: PortalDelivery = portal_json(req, "Lieferdaten").await?;
+            Ok((index, detail.entry()))
+        });
+    }
+    let mut entries: Vec<Option<Value>> = vec![None; deliveries.len()];
+    while let Some(joined) = jobs.join_next().await {
+        let (index, entry) = joined.map_err(|_| AppError::Internal("Abgebrochen.".into()))??;
+        entries[index] = Some(entry);
+    }
+    let entries: Vec<Value> = entries.into_iter().flatten().collect();
+
+    let created = payload.route_id.is_none();
+    let route_id = match payload.route_id {
+        Some(id) => {
+            let conn = state.db()?;
+            require_route_exists(&conn, id)?;
+            // Never past what a route can be planned with.
+            let have: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM stops WHERE route_id = ?1 AND kind = 'customer'",
+                params![id],
+                |r| r.get(0),
+            )?;
+            if have as usize + entries.len() > MAX_BULK_STOPS {
+                return Err(AppError::BadRequest(format!(
+                    "Damit hätte die Route mehr als {MAX_BULK_STOPS} Stopps. Bitte weniger auswählen oder eine neue Route anlegen."
+                )));
+            }
+            id
+        }
+        None => {
+            let name = {
+                let conn = state.db()?;
+                let base = clip_chars(payload.tour_name.trim(), MAX_ROUTE_NAME_LEN - 12);
+                let base = if base.is_empty() { "Tour".to_string() } else { base };
+                check_no_control_chars(&base, "Name", false)?;
+                // The tour's own name; the day with it once an active route
+                // already carries that name.
+                let taken: bool = conn
+                    .query_row("SELECT 1 FROM routes WHERE name = ?1 AND status = 'active'", params![base], |_| Ok(()))
+                    .optional()?
+                    .is_some();
+                if taken { format!("{base} – {}", date.format("%d.%m.")) } else { base }
+            };
+            insert_route(&state, &name)?
+        }
+    };
+
+    match import_entries(&state, route_id, &Value::Array(entries), true).await {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => {
+            // A route made for this load and left empty by its failure is
+            // not one the driver asked for.
+            if created {
+                if let Ok(conn) = state.db() {
+                    let _ = conn.execute("DELETE FROM routes WHERE id = ?1", params![route_id]);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -4903,6 +5441,12 @@ fn build_router(state: Arc<AppState>) -> Router {
         // driver, and must not start failing as a *side effect* of the
         // flood it exists to report.
         .route("/api/pace", get(pace_history))
+        .route("/api/portal/status", get(portal_status))
+        .route("/api/portal/login", post(portal_login_handler))
+        .route("/api/portal/logout", post(portal_logout))
+        .route("/api/portal/tours", get(portal_tours))
+        .route("/api/portal/deliveries", get(portal_deliveries))
+        .route("/api/portal/import", post(portal_import))
         .route("/api/health", get(health))
         .route("/", get(index))
         .route("/sw.js", get(sw_js))
