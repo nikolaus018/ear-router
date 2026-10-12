@@ -288,6 +288,8 @@
   .now-follow { display: flex; align-items: flex-start; gap: .5rem; text-align: left; font-size: 15px; margin-top: .5rem; }
   .now-follow > span:first-child { flex: none; display: flex; margin-top: .2em; color: #FF9500; }
   .tab-grid { display: grid; }
+  .eta-line { font-size: 12px; color: rgba(0,0,0,.55); margin-top: .25rem; font-variant-numeric: tabular-nums; }
+  .eta-line:empty { display: none; }
   #undo-banner { position: fixed; left: 0; right: 0; z-index: 45; display: flex; justify-content: center; padding: 0 1rem; bottom: calc(env(safe-area-inset-bottom, 0px) + 4.25rem); pointer-events: none; }
   #undo-banner > div { pointer-events: auto; max-width: 26rem; width: 100%; display: flex; align-items: center; gap: .625rem; padding: .6875rem 1rem; border-radius: 999px; background: rgba(255,255,255,.92); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 4px 18px rgba(0,0,0,.18); font-size: 14px; font-weight: 500; }
   #undo-banner .who { flex: 1; min-width: 0; display: flex; }
@@ -2284,6 +2286,8 @@ const ICONS = {
   arrowTurn: icon('<polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/>', 'stroke-width="2"'),
   check: icon('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 'stroke-width="2.5"'),
   people: icon('<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6"/><path d="M17.5 14.3A6 6 0 0 1 21 20"/>'),
+  phone: icon('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2Z"/>'),
+  gauge: icon('<path d="M4.5 18a9 9 0 1 1 15 0"/><path d="M12 13l4-5"/><circle cx="12" cy="13" r="1.4" fill="currentColor" stroke="none"/>'),
   tabMap: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
   tabMore: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>',
   mapPin: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
@@ -3137,7 +3141,12 @@ function rebasePendingDelivered() {
   if (!r || !Array.isArray(r.stops)) return;
   for (const [stopId, outcome] of pendingDelivered) {
     const stop = r.stops.find((s) => s.id === stopId);
-    if (stop) { stop.outcome = outcome; stop.delivered = handedOver(outcome); }
+    if (stop) {
+      stop.outcome = outcome;
+      stop.delivered = handedOver(outcome);
+      if (!outcome) stop.settled_at = null;
+      else if (!stop.settled_at) stop.settled_at = new Date().toISOString();
+    }
   }
   recountRoute(r);
 }
@@ -3440,10 +3449,11 @@ async function submitStop(form, stopId) {
   const plz = form.plz.value.trim();
   const paket = form.paket.value.trim();
   const notiz = form.notiz.value.trim();
+  const telefon = form.telefon.value.trim();
   if (!kunde || !strasse || !plz) { toast('Bitte Kunde, Straße und Bezirk ausfüllen.', 'error'); return; }
 
   lastUsedPlz = plz;
-  const data = { kunde, strasse, plz, paket, notiz, stopId };
+  const data = { kunde, strasse, plz, paket, notiz, telefon, stopId };
   // closeSheet() first, always: the confirm dialog below shares #modal-root
   // with this sheet, so closing afterwards would wipe the dialog out of the
   // DOM while it's still being awaited.
@@ -3480,6 +3490,9 @@ async function sendStop(data, coords) {
   if (!state.currentRoute) { toast('Keine Route ausgewählt.', 'error'); return; }
   const routeId = state.currentRoute.id;
   const payload = { kunde: data.kunde, strasse: data.strasse, plz: data.plz, paket: data.paket, notiz: data.notiz };
+  // Only when the form carried one: the pin-drop retry path passes plain
+  // stop data through here, and a missing field must not clear the number.
+  if (data.telefon !== undefined) payload.telefon = data.telefon || '';
   if (coords) { payload.lat = coords.lat; payload.lon = coords.lon; }
   const body = JSON.stringify(payload);
 
@@ -3611,6 +3624,7 @@ function applyDeliveredDomPatch(stopId) {
   const barEl = document.querySelector('[data-progress-bar]');
   if (barEl) barEl.style.width = `${progress}%`;
 
+  paintEtas();
   return true;
 }
 
@@ -3653,6 +3667,9 @@ async function setOutcome(stopId, outcome) {
   pendingDelivered.set(stopId, outcome);
   stop.outcome = outcome;
   stop.delivered = delivered;
+  // The arrival times are counted from the last tick, so the prediction
+  // carries the time too; the server's own stamp replaces it a moment later.
+  stop.settled_at = outcome ? new Date().toISOString() : null;
   recountRoute(route);
   // The list screens read their counts from `state.routes`, not from the
   // route in focus — without this the prediction only shows on the detail
@@ -3846,6 +3863,8 @@ async function toggleRouteStatus() {
     state.detailOrigin = state.tab;
     render();
     toast(newStatus === 'completed' ? 'Route abgeschlossen ✓' : 'Route wieder aktiv ✓', 'success');
+    // A tour just finished is one more to learn door times from.
+    loadPaceHistory();
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -4026,7 +4045,12 @@ const EXAMPLE_CUSTOMER_STOP = {
   notiz: 'Bitte klingeln, 2. Stock',
 };
 function stopToCustomerJson(s) {
-  return { kunde: s.kunde, strasse: s.strasse, plz: s.plz, paket: s.paket || '', notiz: s.notiz || '' };
+  const out = { kunde: s.kunde, strasse: s.strasse, plz: s.plz, paket: s.paket || '', notiz: s.notiz || '' };
+  // Only where there is one, so a list typed by hand stays the five fields
+  // it always was.
+  if (s.telefon) out.telefon = s.telefon;
+  if (s.paket_count != null) out.paketCount = s.paket_count;
+  return out;
 }
 
 function openAddSheet(stop) {
@@ -4277,6 +4301,10 @@ function renderManualForm(stop) {
       <div>
         <label class="${LABEL}" for="${uid('notiz')}">Notiz</label>
         <textarea id="${uid('notiz')}" name="notiz" rows="2" maxlength="${LIMITS.notiz}" placeholder="z.B. persönlich übergeben, Lift im Hof, Code 1234" class="${FIELD} resize-none">${escapeHtml(stop?.notiz || '')}</textarea>
+      </div>
+      <div>
+        <label class="${LABEL}" for="${uid('telefon')}">Telefon</label>
+        <input id="${uid('telefon')}" name="telefon" type="tel" inputmode="tel" autocomplete="off" maxlength="40" enterkeyhint="done" value="${escapeAttr(stop?.telefon || '')}" placeholder="z.B. 0664 1234567" class="${FIELD}" />
       </div>
       ${isEdit ? `
         <button type="button" onclick="pinDropFromForm(${stop.id})"
@@ -5245,6 +5273,7 @@ function renderScreen(skipRowAnim) {
   mapTabWasVisible = showingMapTab;
 
   syncWakeLock();
+  paintEtas();
   updateHistoryGuard();
   // The Karte tab docks a route card above the tab bar and the other
   // screens don't, so how far up the toasts have to sit changes with the
@@ -5506,6 +5535,249 @@ function renderNowTab() {
     </div>`);
 }
 
+// ---------------------------------------------------------------------
+// When the driver gets there.
+//
+// Everything one pass of a stop list needs to know about a tour, worked out
+// in a single walk of its stops — the same walk, with the same numbers, as
+// the iOS app's `RouteSnapshot`, so the two cannot promise two different
+// arrival times for one door.
+//
+// An arrival is the drive still ahead, plus a door's worth of minutes for
+// every door in front of it, plus the loading at the Lager while that is
+// still to come — counted from the last tick rather than from now, so the
+// estimate does not slide later for as long as the driver stands at a door.
+// How long a door takes starts from what the finished tours measured
+// (`/api/pace`), or seven minutes where there are none, and is pulled
+// towards today's own ticks as they come in.
+// ---------------------------------------------------------------------
+const PACE = { assumed: 7, cap: 15, priorWeight: 8, sharedDoor: 0.55, lager: 10, anchorMaxAgeMs: 90 * 60 * 1000 };
+let paceHistory = { door_minutes: null, lager_minutes: null };
+
+async function loadPaceHistory() {
+  try {
+    const h = await api('/pace');
+    if (h && typeof h === 'object') paceHistory = h;
+    paintEtas();
+  } catch (_) { /* the assumed pace is a fine place to start from */ }
+}
+
+function routeSnapshot(r) {
+  const ordered = r.stops;
+  const countsAsStop = (s) => s.kind === 'customer' || isCheckpoint(s);
+  const passesLager = (s) => s.kind === 'customer' && !!s.outcome && !skipsDoor(s);
+  const stamp = (s) => (s.settled_at ? Date.parse(s.settled_at) : NaN);
+
+  const arrivals = new Map();
+  const doorsBefore = new Map();
+  const ownDoor = new Map();
+  const loadingBefore = new Set();
+  // The Lager's loading is still ahead until the first door is answered
+  // for — whether the Lager itself is ticked yet or not.
+  const loaded = ordered.some(passesLager);
+  let loadingAhead = false;
+  let customers = 0, open = 0, openDoors = 0;
+  let next = null, openEnd = null, anchor = null;
+  let km = 0, minutes = 0, drivenKm = 0, drivenMinutes = 0, doorsSoFar = 0;
+  let previousLeg = null, previousWasCustomer = false;
+
+  for (const stop of ordered) {
+    // Before this stop's own leg is added, so it is the time the van arrives
+    // here rather than the time it leaves.
+    arrivals.set(stop.id, minutes);
+    doorsBefore.set(stop.id, doorsSoFar);
+    if (loadingAhead) loadingBefore.add(stop.id);
+    if (stop.kind === 'via' && isCheckpoint(stop) && !loaded) loadingAhead = true;
+    if (stop.kind === 'customer' && !skipsDoor(stop)) customers++;
+    if (countsAsStop(stop) && !skipsDoor(stop)) {
+      if (stop.outcome) {
+        // Only while every stop up to here has been settled: a delivery made
+        // out of order must not drag the mark forward past doors still owed.
+        if (!next) { drivenKm = km; drivenMinutes = minutes; anchor = stop; }
+      } else {
+        // Ziel waits for everything else, wherever it is listed.
+        if (stop.kind === 'end') openEnd = stop;
+        else if (!next) next = stop;
+        open++;
+        if (stop.kind === 'customer') {
+          openDoors++;
+          // A second household at the door the van is already standing at.
+          const weight = previousWasCustomer && (previousLeg ?? 1) < 0.3 ? PACE.sharedDoor : 1;
+          ownDoor.set(stop.id, weight);
+          doorsSoFar += weight;
+        }
+      }
+    }
+    // Only the legs actually driven count towards the tour's totals.
+    if (stop.excluded && stop.kind !== 'start') continue;
+    km += stop.next_leg_km || 0;
+    minutes += stop.next_leg_min || 0;
+    if (!skipsDoor(stop)) {
+      previousLeg = stop.next_leg_min;
+      previousWasCustomer = stop.kind === 'customer';
+    }
+  }
+
+  // Only a tick nothing was ticked after: with doors answered for out of
+  // order, the last one in the list is not where the van is.
+  const latest = Math.max(...ordered.filter((s) => countsAsStop(s) && s.outcome && !skipsDoor(s)).map(stamp).filter(Number.isFinite), -Infinity);
+  const anchorAt = anchor ? stamp(anchor) : NaN;
+
+  // Today's own door times: the gap between two ticks, less the drive.
+  const stamped = ordered.filter(passesLager)
+    .map((s) => ({ at: stamp(s), driving: arrivals.get(s.id) }))
+    .filter((x) => Number.isFinite(x.at))
+    .sort((a, b) => a.at - b.at);
+  const samples = [];
+  for (let i = 1; i < stamped.length; i++) {
+    const gap = (stamped[i].at - stamped[i - 1].at) / 60000;
+    const drive = stamped[i].driving - stamped[i - 1].driving;
+    if (gap >= 0.5 && gap <= 45 && drive >= 0.3) samples.push(Math.max(0.5, gap - drive));
+  }
+  const prior = paceHistory.door_minutes ?? PACE.assumed;
+  const minutesPerStop = samples.length
+    ? (samples.reduce((a, x) => a + Math.min(x, PACE.cap), 0) + PACE.priorWeight * prior) / (samples.length + PACE.priorWeight)
+    : prior;
+  const lagerMinutes = paceHistory.lager_minutes ?? PACE.lager;
+
+  const snap = {
+    customerCount: customers,
+    // A tour with no customers yet has nothing to drive.
+    openCount: customers > 0 ? open : 0,
+    openDoors,
+    nextOpen: customers > 0 ? (next || openEnd) : null,
+    totalKm: km,
+    totalMinutes: minutes,
+    // Clamped: legs written by two different optimization runs can be
+    // slightly inconsistent, and a negative "still to drive" is worse than 0.
+    remainingKm: Math.max(0, km - drivenKm),
+    remainingMinutes: Math.max(0, minutes - drivenMinutes),
+    minutesPerStop,
+  };
+
+  const minutesAhead = (stop) =>
+    Math.max(0, (arrivals.get(stop.id) || 0) - drivenMinutes)
+    + (doorsBefore.get(stop.id) || 0) * minutesPerStop
+    + (loadingBefore.has(stop.id) ? lagerMinutes : 0);
+
+  const nextStopTimes = (now) => {
+    const nextStop = snap.nextOpen;
+    if (!nextStop) return null;
+    const since = Number.isFinite(anchorAt) && anchorAt === latest && anchorAt <= now && now - anchorAt <= PACE.anchorMaxAgeMs ? anchorAt : now;
+    const planned = since + minutesAhead(nextStop) * 60000;
+    const door = (ownDoor.get(nextStop.id) || 0) * minutesPerStop;
+    // A minute at least, at a door the plan says the driver should already
+    // have left: they have not ticked it yet.
+    const departure = Math.max(planned + door * 60000, now + (door > 0 ? 60000 : 0));
+    return { stop: nextStop, arrival: Math.max(planned, now), departure };
+  };
+
+  /// When the van reaches `stop`, as a timestamp — or `null` for a stop
+  /// that is settled, behind the van, or on a tour with no legs yet.
+  snap.eta = (stop, now = Date.now()) => {
+    if (!(minutes > 0) || stop.outcome || !arrivals.has(stop.id)) return null;
+    const n = nextStopTimes(now);
+    if (!n) return null;
+    if (stop.id === n.stop.id) return n.arrival;
+    // Only for a point the van has not reached: Start can never be
+    // "settled", and would otherwise promise an arrival of now all day.
+    if (!isOpenStop(stop) && !(arrivals.get(stop.id) > drivenMinutes)) return null;
+    const beyond = minutesAhead(stop) - minutesAhead(n.stop) - (ownDoor.get(n.stop.id) || 0) * minutesPerStop;
+    return Math.max(now, n.departure + beyond * 60000);
+  };
+
+  /// When the whole tour is done, back at Ziel.
+  snap.etaFinish = (now = Date.now()) => {
+    if (!(minutes > 0) || snap.openCount <= 0) return null;
+    const n = nextStopTimes(now);
+    if (!n) return null;
+    const loading = loadingBefore.size && doorsSoFar > 0 ? lagerMinutes : 0;
+    const whole = snap.remainingMinutes + doorsSoFar * minutesPerStop + loading;
+    const beyond = whole - minutesAhead(n.stop) - (ownDoor.get(n.stop.id) || 0) * minutesPerStop;
+    return Math.max(now, n.departure + Math.max(0, beyond) * 60000);
+  };
+
+  return snap;
+}
+
+const fmtClock = (ms) => {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+const fmtKm = (km) => `${km.toFixed(1).replace('.', ',')} km`;
+
+/// Fills every arrival time on screen. Separate from the rows' own markup on
+/// purpose: one tick moves the estimate for every door after it, and the
+/// clock moves all of them once a minute, so they are painted over whatever
+/// rows are there rather than being a reason to rebuild them.
+function paintEtas() {
+  const r = state.currentRoute;
+  const slots = document.querySelectorAll('[data-eta], [data-eta-finish], [data-route-summary]');
+  if (!r || !slots.length) return;
+  const snap = routeSnapshot(r);
+  const active = r.status === 'active';
+  for (const el of slots) {
+    if (el.hasAttribute('data-route-summary')) { el.textContent = routeSummaryText(r, snap); continue; }
+    let text = '';
+    if (active && el.hasAttribute('data-eta-finish')) {
+      const at = snap.etaFinish();
+      if (at) text = `Voraussichtlich fertig gegen ${fmtClock(at)}`;
+    } else if (active) {
+      const stop = r.stops.find((s) => s.id === Number(el.getAttribute('data-eta')));
+      const at = stop && !stop.excluded ? snap.eta(stop) : null;
+      if (at) text = `Ankunft etwa ${fmtClock(at)}`;
+    }
+    el.textContent = text;
+  }
+}
+setInterval(paintEtas, 30 * 1000);
+
+/// The line under a tour's name: what is still ahead, in customers.
+function routeSummaryText(r, snap = routeSnapshot(r)) {
+  if (!snap.customerCount) return 'Noch keine Stopps';
+  const stops = (n) => (n === 1 ? '1 Stopp' : `${n} Stopps`);
+  // A finished tour is history, and history has no "still to drive".
+  if (r.status !== 'active') return [fmtDate(r.completed_at || r.created_at), stops(snap.customerCount), fmtKm(snap.totalKm)].join(' · ');
+  const back = snap.remainingKm >= 0.05 ? ` · Rückfahrt ${fmtKm(snap.remainingKm)}` : '';
+  if (snap.openCount <= 0) return `Alle erledigt${back}`;
+  if (snap.openDoors <= 0) return `Alle Kunden erledigt${back}`;
+  return `Noch ${stops(snap.openDoors)}${snap.remainingKm >= 0.05 ? ` · ${fmtKm(snap.remainingKm)}` : ''}`;
+}
+
+// ---------------------------------------------------------------------
+// Phone numbers. A stop can carry the customer's own number (`telefon`), and
+// the office's lists routinely put another one in the note — a daughter, a
+// Heimhilfe. Both are offered on Jetzt, the note's only when it is not the
+// same number written another way.
+// ---------------------------------------------------------------------
+const dialOf = (raw) => {
+  const t = String(raw || '').trim();
+  const digits = t.replace(/\D/g, '');
+  return digits ? (t.startsWith('+') ? '+' : '') + digits : '';
+};
+/// One key for "+43 664 …", "0043 664 …" and "0664 …".
+const sameNumberKey = (dial) => {
+  let d = dial.startsWith('+') ? dial.slice(1) : dial;
+  if (dial.startsWith('+') && d.startsWith('43') && d.length > 2) d = d.slice(2);
+  else if (d.startsWith('0043') && d.length > 4) d = d.slice(4);
+  if (d.startsWith('0') && d.length > 1) d = d.slice(1);
+  return d;
+};
+function phonesInNote(notiz, besides) {
+  const own = besides ? sameNumberKey(dialOf(besides)) : null;
+  const out = [];
+  for (const m of String(notiz || '').matchAll(/(?:\+|0)[\d][\d\s\/().-]{5,}\d/g)) {
+    const display = m[0].trim();
+    const dial = dialOf(display);
+    const digits = dial.replace('+', '');
+    if (digits.length < 7 || digits.length > 15) continue;
+    const key = sameNumberKey(dial);
+    if (key === own || out.some((p) => sameNumberKey(p.dial) === key)) continue;
+    out.push({ display, dial });
+  }
+  return out;
+}
+
 /// The card for the stop the driver is at.
 function nowStopCard(r, stop) {
   const meta = stopKindMeta(stop);
@@ -5531,7 +5803,10 @@ function nowStopCard(r, stop) {
       <div style="margin-top: 1.25rem">
         <a href="${navUrl(stop)}" target="_blank" rel="noopener" class="press-98 wide-btn quiet">${ICONS.arrowTurn} Navigation</a>
         <button onclick="settleFromNow(${stop.id})" class="press-98 wide-btn primary">${ICONS.check} ${meta ? 'Erledigt' : 'Geliefert'}</button>
+        ${!meta && dialOf(stop.telefon) ? `<a href="tel:${dialOf(stop.telefon)}" class="press-98 wide-btn quiet">${ICONS.phone} Anrufen</a>` : ''}
+        ${meta ? '' : phonesInNote(stop.notiz, stop.telefon).map((ph) => `<a href="tel:${ph.dial}" class="press-98 wide-btn quiet">${ICONS.phone} ${escapeHtml(ph.display)} anrufen</a>`).join('')}
       </div>
+      <p class="eta-line" data-eta-finish style="margin-top:.875rem; font-size:13px"></p>
     </div>`;
 }
 
@@ -5703,6 +5978,13 @@ function renderMoreTab() {
             <p class="flex-1 text-[15px]">Türcode entschlüsseln</p>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </button>
+          <a href="tel:+43189145173,1" class="${ROW}">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.phone}</span>
+            <div class="flex-1 min-w-0">
+              <p class="text-[15px]">Büro anrufen</p>
+              <p class="text-[13px] text-black/55">+43 1 89145173, wählt die 1</p>
+            </div>
+          </a>
         </div>
 
         <p class="${SECTION_LABEL}">Einstellungen</p>
@@ -5892,6 +6174,7 @@ function renderFixedRow(s, meta, animIndex = null, isNext = false) {
         </div>
         <p class="text-[13px] ${skipped ? 'text-black/35' : 'text-black/55'}">${escapeHtml(meta.subtitle)}</p>
         ${skipped ? '' : legLabel(s)}
+        ${s.kind === 'start' ? '' : `<p class="eta-line" data-eta="${s.id}"></p>`}
       </div>
       <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="tap-target press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/55'}">${ICONS.mapPin}</a>
       ${tick}
@@ -5984,6 +6267,7 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
         })() : ''}
         ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
         ${skipsDoor(s) ? '' : legLabel(s, 'mt-1.5')}
+        <p class="eta-line" data-eta="${s.id}"></p>
       </div>
       <div class="flex flex-col gap-2 shrink-0 mt-0.5">
         <button onclick="toggleDelivered(${s.id}, ${!delivered})" aria-pressed="${delivered}" aria-label="${tickLabel}" title="${tickLabel}" class="tap-target press-95 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${tickClass}">
@@ -7286,7 +7570,7 @@ function renderRouteDetail() {
 
       <div class="px-4">
         <h1 data-large-title class="large-title text-[22px] font-bold tracking-tight pt-3 pb-1 truncate">${escapeHtml(r.name)}</h1>
-        <p class="text-[13px] text-black/55 pb-3">${r.status === 'active' ? 'Aktiv' : 'Abgeschlossen'} · ${fmtDate(r.created_at)}</p>
+        <p data-route-summary class="text-[13px] text-black/55 pb-3">${escapeHtml(routeSummaryText(r))}</p>
 
         <div data-optimize-slot>${optimizeBannerHtml()}</div>
 
@@ -7534,6 +7818,7 @@ function paintStopFilter() {
   if (list) list.innerHTML = stopListHtml();
   const barSlot = document.querySelector('[data-next-stop-bar-slot]');
   if (barSlot) barSlot.innerHTML = nextStopBarHtml();
+  paintEtas();
 }
 
 /// The "Nächster Stopp" banner, or nothing while the list is filtered.
@@ -7630,6 +7915,7 @@ function patchRouteDetail({ animate = false } = {}) {
   }
 
   list.innerHTML = stopListHtml({ animate });
+  paintEtas();
   return true;
 }
 
@@ -7824,6 +8110,7 @@ if ('serviceWorker' in navigator) {
 }
 
 loadRoutes();
+loadPaceHistory();
 </script>
 </body>
 </html>

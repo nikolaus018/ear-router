@@ -385,6 +385,18 @@ const MAX_KUNDE_LEN: usize = 120;
 const MAX_STRASSE_LEN: usize = 200;
 const MAX_PAKET_LEN: usize = 200;
 const MAX_NOTIZ_LEN: usize = 1000;
+const MAX_TELEFON_LEN: usize = 40;
+
+/// A phone number as typed: trimmed, `None` when blank, refused when it is
+/// too long or carries control characters. Not parsed further -- how a
+/// number is written is the office's business, and the app only ever hands
+/// its digits to the dialler.
+fn clean_telefon(raw: Option<&str>) -> Result<Option<String>, AppError> {
+    let Some(t) = raw.map(str::trim).filter(|t| !t.is_empty()) else { return Ok(None) };
+    check_len(t, "Telefon", MAX_TELEFON_LEN)?;
+    check_no_control_chars(t, "Telefon", false)?;
+    Ok(Some(t.to_string()))
+}
 const MAX_ROUTE_NAME_LEN: usize = 200;
 /// Upper bound on stops accepted in one bulk "Route als JSON" paste.
 /// Uncached entries each cost a throttled ~1.1s Nominatim round-trip
@@ -421,7 +433,7 @@ const BULK_GEOCODE_CONCURRENCY: usize = 6;
 /// ordinary German text is already two bytes, which alone puts a full-size
 /// import of realistic notes at ~245 KB.
 const MAX_BULK_ENTRY_BYTES: usize = {
-    let field_chars = MAX_KUNDE_LEN + MAX_STRASSE_LEN + MAX_PAKET_LEN + MAX_NOTIZ_LEN + 8 /* plz */;
+    let field_chars = MAX_KUNDE_LEN + MAX_STRASSE_LEN + MAX_PAKET_LEN + MAX_NOTIZ_LEN + MAX_TELEFON_LEN + 8 /* plz */;
     // 4 bytes per char worst case, plus the JSON scaffolding around one
     // object: five `"key": "value",` pairs, braces, and room for escapes.
     field_chars * 4 + 128
@@ -1081,6 +1093,12 @@ CREATE TABLE IF NOT EXISTS stops (
     outcome TEXT,
     -- When the driver said so. NULL on an open stop.
     settled_at TEXT,
+    -- The customer's own number, from the Zusteller-Portal or typed in --
+    -- distinct from one merely mentioned in `notiz`.
+    telefon TEXT,
+    -- How many physical parcels this delivery is: the portal's bundle count.
+    -- NULL on every stop not loaded from the portal.
+    paket_count INTEGER,
     -- NULL = exact match (or a human placed the pin). 'street'/'district'
     -- mean geocoding only found an approximate fallback location — see
     -- `Precision` and `geocode_address`. Surfaced in the UI so a driver knows
@@ -1151,6 +1169,12 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     }
     if !stop_cols.contains("settled_at") {
         conn.execute("ALTER TABLE stops ADD COLUMN settled_at TEXT", [])?;
+    }
+    if !stop_cols.contains("telefon") {
+        conn.execute("ALTER TABLE stops ADD COLUMN telefon TEXT", [])?;
+    }
+    if !stop_cols.contains("paket_count") {
+        conn.execute("ALTER TABLE stops ADD COLUMN paket_count INTEGER", [])?;
     }
     let cache_cols: HashSet<String> = conn
         .prepare("PRAGMA table_info(geocode_cache)")?
@@ -2342,6 +2366,8 @@ struct StopRow {
     pinned: bool,
     outcome: Option<String>,
     settled_at: Option<String>,
+    telefon: Option<String>,
+    paket_count: Option<i64>,
 }
 
 /// What happened at a door. The raw values are the iOS app's own, so a
@@ -2407,6 +2433,8 @@ impl StopRow {
             pinned: r.get::<_, i64>("pinned")? != 0,
             outcome: r.get("outcome")?,
             settled_at: r.get("settled_at")?,
+            telefon: r.get("telefon")?,
+            paket_count: r.get("paket_count")?,
         })
     }
 }
@@ -2441,6 +2469,8 @@ struct StopOut {
     outcome: Option<String>,
     /// When that was said, RFC 3339.
     settled_at: Option<String>,
+    telefon: Option<String>,
+    paket_count: Option<i64>,
 }
 
 /// Geometric centre of Vienna — the last-resort position for a stop whose
@@ -2499,6 +2529,8 @@ fn to_stop_out(r: StopRow) -> StopOut {
         pinned: r.pinned,
         outcome: effective_outcome(r.outcome, r.delivered),
         settled_at: r.settled_at,
+        telefon: r.telefon,
+        paket_count: r.paket_count,
     }
 }
 
@@ -3043,6 +3075,7 @@ struct StopCreate {
     plz: String,
     paket: Option<String>,
     notiz: Option<String>,
+    telefon: Option<String>,
     lat: Option<f64>,
     lon: Option<f64>,
 }
@@ -3054,6 +3087,7 @@ struct StopUpdate {
     plz: Option<String>,
     paket: Option<String>,
     notiz: Option<String>,
+    telefon: Option<String>,
     delivered: Option<bool>,
     /// What happened at the door: one of `mod outcome`'s three, or "open"
     /// to take the answer back. `delivered` is the older spelling of the
@@ -3224,6 +3258,156 @@ async fn optimize_route(State(state): State<Arc<AppState>>, AxPath(route_id): Ax
     reoptimize_route(&state, route_id).await?;
     let conn = state.db()?;
     Ok(Json(get_route_detail(&conn, route_id)?))
+}
+
+// ---------------------------------------------------------------------
+// Pace: what the tours already driven say about the next one
+// ---------------------------------------------------------------------
+
+/// How long a door takes, and how long the loading at the Lager does, as
+/// measured on the finished tours. Either is absent until there is enough
+/// to say. The arrival times themselves are worked out in the app, from
+/// these and from the day's own ticks.
+#[derive(Serialize, Default, Debug, PartialEq)]
+struct PaceHistory {
+    door_minutes: Option<f64>,
+    lager_minutes: Option<f64>,
+}
+
+/// The tours learned from: the most recent, so a change of round or of
+/// season is caught up with inside a few weeks.
+const PACE_TOURS: i64 = 30;
+/// The fewest door times worth calling a history.
+const PACE_FEWEST_SAMPLES: usize = 10;
+/// No single door counts for more than this many minutes: a lunch break is
+/// not a slow customer.
+const PACE_CAP_MIN: f64 = 15.0;
+
+/// One stop of a finished tour, in list order, as the pace is read from it.
+struct PaceStop {
+    kind: String,
+    excluded: bool,
+    outcome: Option<String>,
+    settled_at: Option<chrono::DateTime<chrono::Utc>>,
+    next_leg_min: Option<f64>,
+}
+
+impl PaceStop {
+    fn is_driven_door(&self) -> bool {
+        self.kind == "customer" && self.outcome.as_deref().is_some_and(|o| !outcome::skips_door(o))
+    }
+}
+
+/// What one tour measured: the minutes each door took beyond the drive to
+/// it, and the wait at the Lager before the first of them.
+fn pace_samples(ordered: &[PaceStop]) -> (Vec<f64>, Option<f64>) {
+    // Planned driving minutes up to each stop's arrival. Only the legs
+    // actually driven count: every stop not switched off, and a switched-off
+    // Start, whose leg is the drive from where the driver was.
+    let mut arrivals = Vec::with_capacity(ordered.len());
+    let mut minutes = 0.0;
+    for s in ordered {
+        arrivals.push(minutes);
+        if !s.excluded || s.kind == "start" {
+            minutes += s.next_leg_min.filter(|m| m.is_finite()).unwrap_or(0.0);
+        }
+    }
+
+    let mut stamped: Vec<(chrono::DateTime<chrono::Utc>, f64)> = ordered
+        .iter()
+        .zip(&arrivals)
+        .filter(|(s, _)| s.is_driven_door())
+        .filter_map(|(s, &arr)| s.settled_at.map(|at| (at, arr)))
+        .collect();
+    stamped.sort_by_key(|(at, _)| *at);
+
+    let mut doors = Vec::new();
+    for pair in stamped.windows(2) {
+        let gap = (pair[1].0 - pair[0].0).num_milliseconds() as f64 / 60_000.0;
+        let drive = pair[1].1 - pair[0].1;
+        // Two ticks in the same breath are one door ticked twice over, and
+        // three quarters of an hour is a break; neither is a door time.
+        if (0.5..=45.0).contains(&gap) && drive >= 0.3 {
+            doors.push((gap - drive).max(0.5));
+        }
+    }
+
+    // From the Lager's tick to the first door's, less the drive between
+    // them. Nothing where that first door is what ticked the Lager (see
+    // `record_outcome`): the two stamps are then the same moment.
+    let wait = (|| {
+        let (lager_idx, lager) = ordered.iter().enumerate().find(|(_, s)| s.kind == "via" && !s.excluded)?;
+        let loaded_at = lager.settled_at?;
+        let &(first_at, first_arrival) = stamped.first()?;
+        let from = arrivals[lager_idx];
+        (first_at > loaded_at && first_arrival >= from)
+            .then(|| (first_at - loaded_at).num_milliseconds() as f64 / 60_000.0 - (first_arrival - from))
+    })();
+
+    (doors, wait)
+}
+
+fn learn_pace(tours: &[Vec<PaceStop>]) -> PaceHistory {
+    let mut doors: Vec<f64> = Vec::new();
+    let mut waits: Vec<f64> = Vec::new();
+    for tour in tours {
+        let (d, w) = pace_samples(tour);
+        doors.extend(d);
+        waits.extend(w);
+    }
+    if doors.len() < PACE_FEWEST_SAMPLES {
+        return PaceHistory::default();
+    }
+    let door = doors.iter().map(|d| d.min(PACE_CAP_MIN)).sum::<f64>() / doors.len() as f64;
+    // What is left of the wait once the first door's own time is taken off
+    // it. The median, because one morning spent waiting for the kitchen is
+    // not what the next one will be.
+    let mut loading: Vec<f64> =
+        waits.iter().map(|w| w - door).filter(|l| (-5.0..=90.0).contains(l)).map(|l| l.max(0.0)).collect();
+    loading.sort_by(|a, b| a.total_cmp(b));
+    PaceHistory {
+        door_minutes: Some(door.clamp(2.0, PACE_CAP_MIN)),
+        lager_minutes: (loading.len() >= 2).then(|| loading[loading.len() / 2]),
+    }
+}
+
+/// `GET /api/pace`. Only finished tours: one still being driven is its own
+/// measurement, taken in the app, and must not be counted twice.
+async fn pace_history(State(state): State<Arc<AppState>>) -> Result<Json<PaceHistory>, AppError> {
+    let conn = state.db()?;
+    let mut stmt = conn.prepare(
+        "SELECT s.route_id, s.kind, s.excluded, s.outcome, s.delivered, s.settled_at, s.next_leg_min \
+         FROM stops s JOIN (SELECT id, created_at FROM routes WHERE status = 'completed' \
+                            ORDER BY created_at DESC LIMIT ?1) r ON r.id = s.route_id \
+         ORDER BY s.route_id, s.order_index, s.id",
+    )?;
+    let rows: Vec<(i64, PaceStop)> = stmt
+        .query_map(params![PACE_TOURS], |r| {
+            Ok((
+                r.get(0)?,
+                PaceStop {
+                    kind: r.get(1)?,
+                    excluded: r.get::<_, i64>(2)? != 0,
+                    outcome: effective_outcome(r.get(3)?, r.get::<_, i64>(4)? != 0),
+                    settled_at: r
+                        .get::<_, Option<String>>(5)?
+                        .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
+                        .map(|t| t.with_timezone(&chrono::Utc)),
+                    next_leg_min: r.get(6)?,
+                },
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+    let mut tours: Vec<Vec<PaceStop>> = Vec::new();
+    let mut last_route = None;
+    for (route_id, stop) in rows {
+        if last_route != Some(route_id) {
+            tours.push(Vec::new());
+            last_route = Some(route_id);
+        }
+        tours.last_mut().expect("pushed above").push(stop);
+    }
+    Ok(Json(learn_pace(&tours)))
 }
 
 /// What a re-check did, so the app can tell the driver rather than silently
@@ -3513,6 +3697,7 @@ async fn add_stop(
         return Err(AppError::BadRequest("Kunde, Straße und Bezirk dürfen nicht leer sein.".into()));
     }
     validate_customer_fields(&kunde, &strasse, paket.as_deref(), notiz.as_deref())?;
+    let telefon = clean_telefon(payload.telefon.as_deref())?;
     check_plz(&plz)?;
 
     // OSRM's `/trip` endpoint (see `OSRM_MAX_TRIP_COORDS`) caps how many
@@ -3579,9 +3764,9 @@ async fn add_stop(
             |r| r.get(0),
         )?;
         tx.execute(
-            "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, location_precision, pinned, created_at) \
-             VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order + 1, precision, manual_pin as i64, now_iso()],
+            "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, location_precision, pinned, created_at, telefon) \
+             VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order + 1, precision, manual_pin as i64, now_iso(), telefon],
         )?;
         // Set *before* attempting the reoptimize below, not just on
         // failure: if OSRM is briefly unreachable, the stop is still
@@ -3725,6 +3910,7 @@ async fn update_stop(
             let is_checkpoint = (kind == "via" || kind == "end") && !cur_excluded;
             let plain_tick = matches!(outcome, None | Some(outcome::DELIVERED));
             let nothing_else = payload.kunde.is_none()
+                && payload.telefon.is_none()
                 && payload.strasse.is_none()
                 && payload.plz.is_none()
                 && payload.paket.is_none()
@@ -3744,6 +3930,7 @@ async fn update_stop(
             return Err(AppError::Forbidden("Fixe Stopps können nicht bearbeitet werden".into()));
         };
         let only_exclusion = payload.kunde.is_none()
+            && payload.telefon.is_none()
             && payload.strasse.is_none()
             && payload.plz.is_none()
             && payload.paket.is_none()
@@ -3832,6 +4019,12 @@ async fn update_stop(
         None => None,
     };
 
+    // `Some(None)` clears it, like Paket and Notiz above.
+    let telefon = match payload.telefon.as_deref() {
+        Some(t) => Some(clean_telefon(Some(t))?),
+        None => None,
+    };
+
     let new_strasse = payload.strasse.as_deref().map(str::trim).unwrap_or(&cur_strasse).to_string();
     let new_plz = payload.plz.as_deref().map(str::trim).unwrap_or(&cur_plz).to_string();
     let address_changed = (payload.strasse.is_some() && new_strasse != cur_strasse)
@@ -3872,6 +4065,9 @@ async fn update_stop(
         }
         if let Some(notiz) = &notiz {
             tx.execute("UPDATE stops SET notiz = ?1 WHERE id = ?2", params![notiz, stop_id])?;
+        }
+        if let Some(telefon) = &telefon {
+            tx.execute("UPDATE stops SET telefon = ?1 WHERE id = ?2", params![telefon, stop_id])?;
         }
         if address_changed {
             tx.execute(
@@ -4094,6 +4290,8 @@ async fn update_route_from_json(
     // objects by hand to find it. Collected into `validation_failures`
     // instead, the same shape as `geocode_failures` below, so the rest of
     // a large batch still saves.
+    type Extras = (String, (String, String), Option<Option<String>>, Option<Option<i64>>);
+    let mut extras: Vec<Extras> = Vec::new();
     let mut normalized: Vec<SubmittedStop> = Vec::new();
     let mut validation_failures: Vec<ValidationFailure> = Vec::new();
     for (idx, entry) in stops_in.iter().enumerate() {
@@ -4140,6 +4338,26 @@ async fn update_route_from_json(
                 continue;
             }
             Err(other) => return Err(other),
+        }
+        // The two fields a list from the portal carries beyond the five the
+        // editor shows. Only when the entry names them: a hand-edited paste
+        // that leaves them out must not wipe a number already on the stop.
+        // `paketCount` is how the iOS app's own export spells it.
+        let count_key = if obj.contains_key("paketCount") { "paketCount" } else { "paket_count" };
+        if obj.contains_key("telefon") || obj.contains_key(count_key) {
+            let telefon = match obj.get("telefon") {
+                Some(v) => match clean_telefon(v.as_str()) {
+                    Ok(t) => Some(t),
+                    Err(AppError::BadRequest(reason)) => {
+                        validation_failures.push(ValidationFailure { label, reason });
+                        continue;
+                    }
+                    Err(other) => return Err(other),
+                },
+                None => None,
+            };
+            let paket_count = obj.get(count_key).map(|v| v.as_i64().filter(|n| (0..=9999).contains(n)));
+            extras.push((name_key(&kunde), addr_key(&strasse, &plz), telefon, paket_count));
         }
         normalized.push((kunde, strasse, plz, paket, notiz));
     }
@@ -4428,6 +4646,34 @@ async fn update_route_from_json(
             changed = true;
         }
 
+        // Written onto whichever stop the entry ended up as, found the way
+        // the import itself matches: same name, same address.
+        if !extras.is_empty() {
+            let rows: Vec<(i64, String, String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id, COALESCE(kunde, ''), COALESCE(strasse, ''), COALESCE(plz, '') \
+                     FROM stops WHERE route_id = ?1 AND kind = 'customer'",
+                )?;
+                let rows = stmt
+                    .query_map(params![route_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                    .collect::<Result<_, _>>()?;
+                rows
+            };
+            for (name, addr, telefon, paket_count) in &extras {
+                for (id, kunde, strasse, plz) in &rows {
+                    if &name_key(kunde) != name || &addr_key(strasse, plz) != addr {
+                        continue;
+                    }
+                    if let Some(telefon) = telefon {
+                        tx.execute("UPDATE stops SET telefon = ?1 WHERE id = ?2", params![telefon, id])?;
+                    }
+                    if let Some(paket_count) = paket_count {
+                        tx.execute("UPDATE stops SET paket_count = ?1 WHERE id = ?2", params![paket_count, id])?;
+                    }
+                }
+            }
+        }
+
         if changed {
             tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
         }
@@ -4656,6 +4902,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         // runs every few seconds must not consume the budget meant for the
         // driver, and must not start failing as a *side effect* of the
         // flood it exists to report.
+        .route("/api/pace", get(pace_history))
         .route("/api/health", get(health))
         .route("/", get(index))
         .route("/sw.js", get(sw_js))
@@ -5002,6 +5249,8 @@ mod tests {
             pinned: false,
             outcome: None,
             settled_at: None,
+            telefon: None,
+            paket_count: None,
         }
     }
 
@@ -5090,6 +5339,46 @@ mod tests {
         let ids: Vec<i64> = driven_order(&rows).iter().map(|c| c.id).collect();
         assert_eq!(ids, vec![11, 13, 10]);
         assert!(rows.iter().find(|r| r.id == 12).unwrap().skips_door());
+    }
+
+    fn pace_stop(kind: &str, outcome: Option<&str>, at_min: Option<i64>, leg: f64) -> PaceStop {
+        let base = chrono::DateTime::parse_from_rfc3339("2026-10-05T08:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        PaceStop {
+            kind: kind.into(),
+            excluded: false,
+            outcome: outcome.map(str::to_string),
+            settled_at: at_min.map(|m| base + chrono::Duration::minutes(m)),
+            next_leg_min: Some(leg),
+        }
+    }
+
+    #[test]
+    fn a_door_takes_the_gap_between_ticks_less_the_drive() {
+        // Lager ticked at 0, ten minutes' drive, doors at 25 and 37 with a
+        // five-minute drive between them: the second took 12 - 5 = 7, and
+        // the loading was 25 - 10 = 15 before the first door's own time.
+        let tour = vec![
+            pace_stop("start", None, None, 20.0),
+            pace_stop("via", Some("delivered"), Some(0), 10.0),
+            pace_stop("customer", Some("delivered"), Some(25), 5.0),
+            pace_stop("customer", Some("notHome"), Some(37), 5.0),
+            pace_stop("customer", Some("toLager"), Some(1), 0.0),
+            pace_stop("end", None, None, 0.0),
+        ];
+        let (doors, wait) = pace_samples(&tour);
+        assert_eq!(doors, vec![7.0]);
+        assert_eq!(wait, Some(15.0));
+    }
+
+    #[test]
+    fn pace_needs_enough_doors_to_be_a_history() {
+        let tour = |n: i64| -> Vec<PaceStop> {
+            (0..n).map(|i| pace_stop("customer", Some("delivered"), Some(i * 9), 3.0)).collect()
+        };
+        assert_eq!(learn_pace(&[tour(5)]), PaceHistory::default());
+        let learned = learn_pace(&[tour(12)]);
+        assert_eq!(learned.door_minutes, Some(6.0));
+        assert_eq!(learned.lager_minutes, None);
     }
 
     fn nominatim_hit(road: Option<&str>, postcode: Option<&str>, house_number: Option<&str>) -> NominatimHit {
