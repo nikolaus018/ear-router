@@ -321,6 +321,15 @@
   .sheet-note > span:first-child { flex: none; display: flex; margin-top: .15em; font-size: 18px; color: rgba(0,0,0,.4); }
   .sheet-note.warn { background: rgba(255,149,0,.14); color: #7A4700; }
   .sheet-note.warn > span:first-child { color: #B26A00; }
+  /* The stop picker: header and buttons stay put, only the list scrolls — so
+     the list is what gives way when the keyboard takes half the screen. */
+  [data-gourmet].pick-mode { display: flex; flex-direction: column; height: calc(var(--vvh, 100vh) * .92 - 5.25rem - env(safe-area-inset-bottom) * var(--kb-off, 1)); }
+  .pick-mode [data-pick-list] { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+  .pick-mode .sheet-title, .pick-mode .sheet-lead, .pick-mode .pick-search, .pick-mode [data-pick-actions] { flex: none; }
+  .kb-open .pick-mode .sheet-title, .kb-open .pick-mode .sheet-lead, .kb-open .pick-mode [data-pick-actions] .quiet { display: none; }
+  .kb-open .pick-mode [data-pick-actions] { padding: .5rem 0 0; }
+  .kb-open .pick-mode .pick-search { margin-bottom: .25rem; }
+  .kb-open .pick-mode .pick-row { padding-top: .5rem; padding-bottom: .5rem; }
   .sheet-actions { position: sticky; bottom: 0; padding: .75rem 0 .5rem; background: linear-gradient(to bottom, rgba(242,242,247,0), #F2F2F7 22%); }
   .wide-btn:disabled { opacity: .4; }
   .choice { width: 100%; display: flex; align-items: center; gap: .875rem; text-align: left; background: #fff; border-radius: 1rem; padding: 1rem; margin-bottom: .625rem; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
@@ -4140,14 +4149,21 @@ function renderSheetShell(bodyHtml, { scrollable = true, label = '' } = {}) {
   const vv = window.visualViewport;
   if (!vv) return;
   const update = () => {
-    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    // Only while a field has focus: in a home-screen launch the two viewports
+    // can differ by a few dozen px with no keyboard anywhere, and that must
+    // not lift the sheet.
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
+    const kb = typing ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
     const root = document.documentElement.style;
     root.setProperty('--kb', `${kb > 80 ? kb : 0}px`);
     root.setProperty('--kb-off', kb > 80 ? '0' : '1');
     root.setProperty('--vvh', `${vv.height}px`);
+    document.documentElement.classList.toggle('kb-open', kb > 80);
   };
   vv.addEventListener('resize', update);
   vv.addEventListener('scroll', update);
+  document.addEventListener('focusin', update);
+  document.addEventListener('focusout', () => setTimeout(update, 50));
   update();
 })();
 
@@ -4703,6 +4719,7 @@ function gourmetBody(html, title = 'Von Gourmet laden') {
     if (!document.getElementById('modal-root').innerHTML) return false;
     renderSheetShell(`<div data-gourmet></div>`, { label: title });
   }
+  document.querySelector('[data-gourmet]').classList.remove('pick-mode');
   document.querySelector('[data-gourmet]').innerHTML = `<h2 class="sheet-title">${title}</h2>${html}`;
   return true;
 }
@@ -4844,7 +4861,7 @@ function paintGourmetDeliveries() {
   gourmet.pickQuery = gourmet.pickQuery || '';
   gourmetBody(`
     <p class="sheet-lead">${dayLabel(gourmet.date)} · ${deliveries.length === 1 ? '1 Stopp' : `${deliveries.length} Stopps`}. Tippe die Stopps an, die du fährst.</p>
-    <div class="relative mb-3">
+    <div class="relative mb-3 pick-search">
       <span class="absolute left-3 top-1/2 -translate-y-1/2 text-black/55 text-[17px] flex pointer-events-none">${ICONS.search}</span>
       <input id="pick-search" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" autocorrect="off" spellcheck="false"
         placeholder="Name oder Adresse suchen" aria-label="Stopps durchsuchen" value="${escapeAttr(gourmet.pickQuery)}"
@@ -4854,6 +4871,7 @@ function paintGourmetDeliveries() {
     <div data-pick-list></div>
     <div class="sheet-actions" data-pick-actions></div>
   `, escapeHtml(tour.name));
+  document.querySelector('[data-gourmet]')?.classList.add('pick-mode');
   paintPickList();
 }
 
@@ -4895,7 +4913,7 @@ function paintPickList() {
 
 function gourmetTogglePick(id) {
   // The list is redrawn below; the sheet must not jump back to its top.
-  const sheetScroller = () => document.querySelector('.sheet-panel > .overflow-y-auto');
+  const sheetScroller = () => document.querySelector('[data-pick-list]');
   const top = sheetScroller()?.scrollTop;
   if (gourmet.picked.has(id)) gourmet.picked.delete(id); else gourmet.picked.add(id);
   paintPickList();
