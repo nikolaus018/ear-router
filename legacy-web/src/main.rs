@@ -3679,8 +3679,13 @@ fn session_token(headers: &HeaderMap) -> Option<String> {
 /// HTTP, where a `Secure` cookie would simply never be sent back and nobody
 /// could sign in on a laptop at home.
 fn session_cookie(headers: &HeaderMap, token: &str, max_age: i64) -> HeaderValue {
+    // Also whenever the server is told it sits behind a proxy at all
+    // (`EAR_TRUST_PROXY`): that is the public deployment, which is HTTPS
+    // only, and the cookie must not depend on the proxy remembering to say
+    // so in a header.
+    let behind_proxy = matches!(std::env::var("EAR_TRUST_PROXY").as_deref(), Ok("1") | Ok("true") | Ok("yes"));
     let https = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https");
-    let secure = if https { "; Secure" } else { "" };
+    let secure = if https || behind_proxy { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
         "{SESSION_COOKIE}={token}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure}"
     ))
