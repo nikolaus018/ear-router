@@ -288,6 +288,9 @@
   .now-follow { display: flex; align-items: flex-start; gap: .5rem; text-align: left; font-size: 15px; margin-top: .5rem; }
   .now-follow > span:first-child { flex: none; display: flex; margin-top: .2em; color: #FF9500; }
   .tab-grid { display: grid; }
+  .row-num { display: inline-flex; align-items: center; justify-content: center; min-width: 1.375rem; height: 1.375rem; padding: 0 .3rem; margin-right: .4rem; border-radius: 999px; background: rgba(120,120,128,.18); color: rgba(0,0,0,.7); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; vertical-align: 1px; }
+  .row-num.next { background: #ED1639; color: #fff; }
+  .row-num.done { background: rgba(120,120,128,.12); color: rgba(0,0,0,.4); }
   .blocker { background: #D70015; color: #fff; border-radius: 1rem; padding: .875rem 1rem 1rem; margin-bottom: 1rem; }
   .blocker-title { display: flex; align-items: center; gap: .5rem; font-size: 16px; font-weight: 700; }
   .blocker-text { font-size: 13px; line-height: 1.4; margin-top: .25rem; opacity: .92; }
@@ -3195,7 +3198,21 @@ const skipsDoor = (s) => s.kind === 'customer' && (s.outcome === 'toLager' || s.
 const isCheckpoint = (s) => (s.kind === 'via' || s.kind === 'end') && !s.excluded;
 /// A stop still to be ticked off, delivery or checkpoint.
 const isOpenStop = (s) => (s.kind === 'customer' || isCheckpoint(s)) && !s.outcome;
-const firstOpenIndex = (stops) => stops.findIndex(isOpenStop);
+/// Which stop is next: the first one still open in the list — except that
+/// Ziel waits for everything else, wherever it is listed (a stop added while
+/// the order could not be recomputed sits below it), and a tour with no
+/// customers has no "next" at all: its Lager and Ziel are not a round to be
+/// started, just points waiting for one. The iOS app's rule.
+const firstOpenIndex = (stops) => {
+  if (!stops.some((s) => s.kind === 'customer' && !skipsDoor(s))) return -1;
+  let end = -1;
+  for (let i = 0; i < stops.length; i++) {
+    if (!isOpenStop(stops[i])) continue;
+    if (stops[i].kind !== 'end') return i;
+    if (end < 0) end = i;
+  }
+  return end;
+};
 
 /// Both counts, derived from the stops and against the meals owed — the same
 /// rule `get_route_detail` counts by.
@@ -5979,7 +5996,7 @@ function renderMapTab() {
           <button data-bottom-dock onclick="openCurrentRouteDetail()" class="press-98 w-full text-left bg-white/90 backdrop-blur-xl rounded-2xl p-4 shadow-lg flex items-center gap-3">
             <div class="flex-1 min-w-0">
               <p class="font-semibold truncate">${escapeHtml(r.name)}</p>
-              <p class="text-[13px] text-black/55 mt-0.5">${r.delivered_count}/${r.customer_count} geliefert · ≈ ${r.total_km} km · ${r.total_min} min</p>
+              <p class="text-[13px] text-black/55 mt-0.5">${r.delivered_count}/${r.customer_count} geliefert · ≈ ${fmtKm(r.total_km)} · ${r.total_min} min</p>
               <div class="h-1 bg-black/10 rounded-full overflow-hidden mt-1.5"><div class="h-full bg-success" style="width:${progress}%"></div></div>
             </div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
@@ -7050,25 +7067,6 @@ function renderMoreTab() {
           </button>
         </div>
 
-        <p class="${SECTION_LABEL}">Über diese App</p>
-        <div class="${GROUP}">
-          <div class="flex items-center gap-3 px-4 py-3.5">
-            <img data-logo-src alt="ASBÖ" class="w-10 h-10 rounded-xl shrink-0" />
-            <div class="min-w-0">
-              <p class="font-medium">EAR Routing</p>
-              <p class="text-[13px] text-black/55">Ein Service des Arbeiter-Samariter-Bundes Österreichs</p>
-            </div>
-          </div>
-          <div class="flex items-center gap-3 px-4 py-3">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.mapPin}</span>
-            <p class="text-[14px] text-black/60 leading-snug">Kartendaten: OpenFreeMap &amp; OpenStreetMap-Mitwirkende. Geocoding: Stadt Wien &amp; Nominatim. Routing: OSRM.</p>
-          </div>
-          <button onclick="clearOfflineCache()" class="${ROW}">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.refresh}</span>
-            <div class="flex-1 min-w-0"><p class="text-[15px]">App neu laden</p><p class="text-[13px] text-black/55">Hilft, wenn etwas hängt. Touren bleiben erhalten.</p></div>
-          </button>
-        </div>
-
         <p class="${SECTION_LABEL}">Zusteller-Tools</p>
         <div class="${GROUP}">
           <button onclick="openGourmetAccount()" class="${ROW}">
@@ -7117,6 +7115,25 @@ function renderMoreTab() {
           </label>
         </div>
 
+        <p class="${SECTION_LABEL}">Über diese App</p>
+        <div class="${GROUP}">
+          <div class="flex items-center gap-3 px-4 py-3.5">
+            <img data-logo-src alt="ASBÖ" class="w-10 h-10 rounded-xl shrink-0" />
+            <div class="min-w-0">
+              <p class="font-medium">EAR Routing</p>
+              <p class="text-[13px] text-black/55">Ein Service des Arbeiter-Samariter-Bundes Österreichs</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 px-4 py-3">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.mapPin}</span>
+            <p class="text-[14px] text-black/60 leading-snug">Kartendaten: OpenFreeMap &amp; OpenStreetMap-Mitwirkende. Geocoding: Stadt Wien &amp; Nominatim. Routing: OSRM.</p>
+          </div>
+          <button onclick="clearOfflineCache()" class="${ROW}">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.refresh}</span>
+            <div class="flex-1 min-w-0"><p class="text-[15px]">App neu laden</p><p class="text-[13px] text-black/55">Hilft, wenn etwas hängt. Touren bleiben erhalten.</p></div>
+          </button>
+        </div>
+
         <p class="${SECTION_LABEL}">Entwickelt von</p>
         <div class="${GROUP}">
           <a href="mailto:nikolaus.marek@outlook.com" class="${ROW}">
@@ -7139,7 +7156,7 @@ function renderMoreTab() {
 // rather than letting one missing value render "NaN min".
 function legLabel(stop, extraClass = 'mt-1') {
   if (stop.next_leg_km == null || stop.next_leg_min == null) return '';
-  return `<p class="text-[12px] text-black/55 ${extraClass}">${stop.next_leg_km.toFixed(1)} km · ${Math.round(stop.next_leg_min)} min bis zum nächsten Stopp</p>`;
+  return `<p class="text-[12px] text-black/55 ${extraClass}">${fmtKm(stop.next_leg_km)} · ${Math.round(stop.next_leg_min)} min bis zum nächsten Stopp</p>`;
 }
 
 function stopKindMeta(stop) {
@@ -7192,7 +7209,9 @@ function sameDoorGroups(stops) {
   const cached = dupCountsCache.get(stops);
   if (cached) return cached;
 
-  const customers = stops.filter((s) => s.kind === 'customer');
+  // Not a door the van does not go to: "2 an dieser Adresse" is two meals
+  // carried up, and one of them going back to the Lager is not one.
+  const customers = stops.filter((s) => s.kind === 'customer' && !skipsDoor(s));
   // Union-find. A route caps out around a hundred stops so the cost is
   // irrelevant, but the correctness isn't: "put each stop in the first
   // group it matches" gets the wrong answer when a third stop is the one
@@ -7307,7 +7326,21 @@ function renderFixedRow(s, meta, animIndex = null, isNext = false) {
 function renderStopRow(s, isNext, animIndex, doors) {
   const meta = stopKindMeta(s);
   if (meta) return renderFixedRow(s, meta, animIndex, isNext);
-  return renderCustomerRow(s, isNext, animIndex, doors.get(s.id)?.length);
+  return renderCustomerRow(s, isNext, animIndex, doors.get(s.id)?.length, stopNumber(s));
+}
+
+/// A stop's number: its place among the doors the van drives, which is the
+/// number its pin wears on the map and its card wears on Jetzt. A door the
+/// van does not go to has none.
+function stopNumber(s, r = state.currentRoute) {
+  if (!r || skipsDoor(s)) return null;
+  let n = 0;
+  for (const x of r.stops) {
+    if (x.kind !== 'customer' || skipsDoor(x)) continue;
+    n++;
+    if (x.id === s.id) return n;
+  }
+  return null;
 }
 
 // A single customer row's markup — factored out of renderRouteDetail so
@@ -7318,7 +7351,7 @@ function renderStopRow(s, isNext, animIndex, doors) {
 // animation — it's already on screen, mid-session, and replaying it would be
 // the "list just reloaded" flicker this whole patch path exists to avoid.
 // Neither does a row in a filtered list, which is rebuilt on every keystroke.
-function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
+function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1, number = null) {
   const url = navUrl(s);
   // "Done" for everything the row dims and stops shouting about: any answer
   // at all, not only a delivery. The strike-through stays a delivery's own —
@@ -7339,7 +7372,7 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
   const tickIcon = !delivered ? ICONS.circle : struck ? ICONS.checkCircleFill : s.outcome === 'notHome' ? ICONS.bellOff : ICONS.box;
   const tickLabel = !delivered ? 'Als geliefert markieren' : struck ? 'Lieferung zurücknehmen' : 'Wieder öffnen';
   const precisionBadge = s.location_precision === 'street'
-    ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Genaue Hausnummer nicht gefunden — nächstgelegene bekannte Adresse auf der Straße verwendet.">≈ Straße</span>`
+    ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-warnText bg-warn/10 px-1.5 py-0.5 rounded" title="Genaue Hausnummer nicht gefunden — nächstgelegene bekannte Adresse auf der Straße verwendet.">≈ Hausnummer</span>`
     : s.location_precision === 'district'
     ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-white px-1.5 py-0.5 rounded" style="background:#D70015" title="Adresse nicht gefunden — bitte korrigieren.">Adresse fehlt</span>`
     : '';
@@ -7372,8 +7405,9 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
           ${outcomeBadge}
           ${duplicateBadge}
           ${precisionBadge}
+          ${s.pinned ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-black/55 bg-black/5 px-1.5 py-0.5 rounded" title="Die Position wurde von Hand auf der Karte gesetzt.">Pin von Hand</span>` : ''}
         </div>
-        <p class="font-medium ${delivered ? 'text-black/55' : ''} ${struck ? 'line-through' : ''}">${escapeHtml(s.kunde)}</p>
+        <p class="font-medium ${delivered ? 'text-black/55' : ''}">${number != null ? `<span class="row-num ${delivered ? 'done' : isNext ? 'next' : ''}" aria-hidden="true">${number}</span>` : ''}<span class="${struck ? 'line-through' : ''}">${escapeHtml(s.kunde)}</span></p>
         <p class="text-[13px] ${delivered ? 'text-black/55' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)}</p>
         ${displayPaket(s) ? (() => {
           const qty = isTkTour(state.currentRoute) ? (parcelCount(s) || 1) : paketQty(s.paket);
@@ -9008,7 +9042,7 @@ function optimizeBannerHtml() {
 
 function routeTotalsText() {
   const r = state.currentRoute;
-  return r ? `≈ ${r.total_km} km · ${r.total_min} min` : '';
+  return r ? `≈ ${fmtKm(r.total_km)} · ${r.total_min} min` : '';
 }
 
 /// Repaints the route-detail screen in place — the stop list and every
