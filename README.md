@@ -1,10 +1,17 @@
-# EAR Router
+<h1 align="center">EAR Router</h1>
 
-![iOS 26](https://img.shields.io/badge/iOS-26-blue) ![Swift 6](https://img.shields.io/badge/Swift-6-orange) ![SwiftData](https://img.shields.io/badge/SwiftData-MapKit-green)
+<p align="center">
+  <b>Offline-first route planner for a real delivery service.</b><br>
+  Built for and used by the drivers of Essen auf Rädern (Meals on Wheels) in Vienna. Native SwiftUI, no third-party dependencies.
+</p>
 
-**Offline-first route planner for a real delivery service**, built for and used by the drivers of Essen auf Rädern in Vienna.
-Native SwiftUI, no third-party dependencies, with CarPlay, Siri, Live Activities, on-device geocoding caches and a
-Rust + PWA predecessor kept in `legacy-web/`.
+<p align="center">
+  <a href="https://github.com/nikolaus018/ear-router/actions/workflows/ci.yml"><img src="https://github.com/nikolaus018/ear-router/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/nikolaus018/ear-router" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/iOS-26-blue" alt="iOS 26">
+  <img src="https://img.shields.io/badge/Swift-6-orange" alt="Swift 6">
+  <img src="https://img.shields.io/badge/SwiftData-MapKit-green" alt="SwiftData, MapKit">
+</p>
 
 Delivery route planner for *Essen auf Rädern* (Meals on Wheels) in Vienna,
 for the Arbeiter-Samariter-Bund Österreichs.
