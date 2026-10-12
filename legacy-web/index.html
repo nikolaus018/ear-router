@@ -4007,7 +4007,7 @@ async function recheckAddresses() {
   if (routeId == null) return;
   const ok = await confirmSheet({
     title: 'Adressen neu prüfen?',
-    message: 'Jede Kundenadresse dieser Route wird noch einmal im Adressregister nachgeschlagen. Selbst gesetzte Pins bleiben unverändert. Das kann eine Minute dauern.',
+    message: 'Jede Kundenadresse dieser Tour wird noch einmal im Adressregister nachgeschlagen. Selbst gesetzte Pins bleiben unverändert. Das kann eine Minute dauern.',
     confirmLabel: 'Prüfen',
   });
   if (!ok) return;
@@ -9074,6 +9074,7 @@ function renderRouteMenu() {
       ${item(`openGourmetSheet(${r.id})`, ICONS.download, "Stopps von Gourmet laden")}
       ${item("openReorderSheet()", ICONS.sort, "Reihenfolge ändern")}
       ${item("manualOptimize()", ICONS.compass, r.hand_ordered ? "Kürzeste Reihenfolge berechnen" : "Reihenfolge neu berechnen")}
+      ${item("recheckAddresses()", ICONS.mapPin, "Adressen neu prüfen")}
       ${item("openReportSheet()", ICONS.doc, "Tagesabschluss")}
       ${item("renameRoute()", ICONS.pencil, "Umbenennen")}
       ${item("toggleRouteStatus()", ICONS.checkCircle, r.status === 'completed' ? 'Wieder aktivieren' : 'Tour abschließen')}

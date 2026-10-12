@@ -21,7 +21,7 @@
 // to that by evicting the whole origin's storage, app shell included. Kept
 // separate, the tiles can be trimmed (see `trimCache`) without ever
 // touching the files the app needs to start.
-const CACHE_NAME = 'ear-routing-v3';
+const CACHE_NAME = 'ear-routing-v4';
 const TILE_CACHE = 'ear-routing-tiles-v1';
 // Raised from 600 when the aerial basemap landed (see `TILE_HOSTS`). A
 // driver zoomed into a building on the Luftbild pulls the aerial imagery
