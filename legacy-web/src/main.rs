@@ -214,7 +214,7 @@ mod text {
 
     /// The form two addresses are compared in when deciding whether they are
     /// the *same address* — used to match a re-pasted list against the stops
-    /// already on a route (see `update_route_from_json`), where getting it
+    /// already on a route (see `import_entries`), where getting it
     /// wrong means deleting and re-inserting a stop, and losing the tick
     /// saying it was already delivered.
     ///
@@ -348,11 +348,26 @@ fn is_valid_vienna_plz(plz: &str) -> bool {
     VIENNA_PLZ.contains(&plz)
 }
 
+/// Any Austrian postcode: four digits, the first not a zero. Nearly every
+/// stop is in Vienna, but a tour from the portal reaches into Gerasdorf or
+/// Schwechat often enough that refusing those cost a stop a day.
+fn is_valid_plz(plz: &str) -> bool {
+    plz.len() == 4 && plz.bytes().all(|b| b.is_ascii_digit()) && !plz.starts_with('0')
+}
+
 fn check_plz(plz: &str) -> Result<(), AppError> {
-    if !is_valid_vienna_plz(plz) {
-        return Err(AppError::BadRequest(format!("Ungültiger Bezirk (PLZ): {plz}")));
+    if !is_valid_plz(plz) {
+        return Err(AppError::BadRequest(format!("Ungültige Postleitzahl: {plz}")));
     }
     Ok(())
+}
+
+/// "1180 Wien, Österreich" or "2201, Österreich": what follows the street
+/// when an address is handed to a geocoder. "Wien" only where the postcode
+/// says Vienna -- appended to a Gerasdorf street it sends the search to the
+/// wrong municipality.
+fn place_suffix(plz: &str) -> String {
+    if is_valid_vienna_plz(plz) { format!("{plz} Wien, Österreich") } else { format!("{plz}, Österreich") }
 }
 
 /// Rejects a field that's over `max` chars — cheap insurance against a
@@ -398,7 +413,7 @@ fn clean_telefon(raw: Option<&str>) -> Result<Option<String>, AppError> {
     Ok(Some(t.to_string()))
 }
 const MAX_ROUTE_NAME_LEN: usize = 200;
-/// Upper bound on stops accepted in one bulk "Route als JSON" paste.
+/// Upper bound on stops accepted in one list loaded from the portal.
 /// Uncached entries each cost a throttled ~1.1s Nominatim round-trip
 /// (see `NOMINATIM_MIN_INTERVAL`), so an unbounded list turns one HTTP
 /// request into an effectively unbounded amount of work tying up a
@@ -413,8 +428,8 @@ const MAX_BULK_STOPS: usize = OSRM_MAX_TRIP_COORDS - 2;
 /// call. Breaks the build, not a route, if the two constants ever drift.
 const _: () = assert!(MAX_BULK_STOPS + 2 <= OSRM_MAX_TRIP_COORDS);
 
-/// How many `geocode_address` calls a bulk "Route als JSON" import runs at
-/// once (see `update_route_from_json`). Modest on purpose: this is a
+/// How many `geocode_address` calls a load from the portal runs at
+/// once (see `import_entries`). Modest on purpose: this is a
 /// polite concurrency limit against Vienna's own address service (which
 /// has no documented rate limit but is still a shared production system,
 /// not a load-test target), not an attempt to extract maximum throughput
@@ -459,10 +474,10 @@ const _: () = assert!(MAX_BODY_BYTES >= MAX_BULK_STOPS * MAX_BULK_ENTRY_BYTES);
 /// reject obviously-wrong input (NaN/Infinity smuggled in as an
 /// out-of-range JSON number literal, `0,0`, a swapped lat/lon, a
 /// fat-fingered extra digit) before it's ever stored or handed to OSRM.
-const LAT_MIN: f64 = 47.7;
-const LAT_MAX: f64 = 48.6;
-const LON_MIN: f64 = 15.8;
-const LON_MAX: f64 = 16.8;
+const LAT_MIN: f64 = 46.3;
+const LAT_MAX: f64 = 49.1;
+const LON_MIN: f64 = 9.4;
+const LON_MAX: f64 = 17.2;
 
 fn is_plausible_latlon(lat: f64, lon: f64) -> bool {
     lat.is_finite()
@@ -1054,7 +1069,17 @@ CREATE TABLE IF NOT EXISTS routes (
     created_at TEXT NOT NULL,
     completed_at TEXT,
     geometry TEXT,
-    needs_optimize INTEGER NOT NULL DEFAULT 0
+    needs_optimize INTEGER NOT NULL DEFAULT 0,
+    -- Where the driver was when they last said so, and when (unix seconds).
+    -- Only ever used for a tour whose Start is switched off: "start from
+    -- where I am". See `reoptimize_route`.
+    here_lat REAL,
+    here_lon REAL,
+    here_at INTEGER,
+    -- 1 once the driver has put the stops in an order of their own. Such a
+    -- tour is routed as listed -- an edit never throws that order away --
+    -- until they ask for a fresh one.
+    hand_ordered INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS stops (
@@ -1125,7 +1150,7 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 
 -- Addresses that every geocoder confidently reported as not existing.
 -- Without this, the one flow that's *guaranteed* to resubmit a failed
--- address — the JSON bulk editor, which deliberately skips deletions until
+-- address — a list import, which deliberately skips deletions until
 -- everything resolves, so the driver has to paste again — pays the full
 -- Wien-OGD + two throttled Nominatim + district-fallback round trips for
 -- that same dead address on every single retry. `checked_at` is unix
@@ -1182,6 +1207,20 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     }
     if !stop_cols.contains("paket_count") {
         conn.execute("ALTER TABLE stops ADD COLUMN paket_count INTEGER", [])?;
+    }
+    let route_cols: HashSet<String> = conn
+        .prepare("PRAGMA table_info(routes)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<Result<_, _>>()?;
+    if !route_cols.contains("here_at") {
+        conn.execute_batch(
+            "ALTER TABLE routes ADD COLUMN here_lat REAL; \
+             ALTER TABLE routes ADD COLUMN here_lon REAL; \
+             ALTER TABLE routes ADD COLUMN here_at INTEGER;",
+        )?;
+    }
+    if !route_cols.contains("hand_ordered") {
+        conn.execute("ALTER TABLE routes ADD COLUMN hand_ordered INTEGER NOT NULL DEFAULT 0", [])?;
     }
     let cache_cols: HashSet<String> = conn
         .prepare("PRAGMA table_info(geocode_cache)")?
@@ -1903,7 +1942,7 @@ async fn nominatim_search_one(
     // fuller query, then the district centroid) instead of pinning a stop in
     // the wrong federal state.
     if !is_plausible_latlon(lat, lon) {
-        tracing::warn!(lat, lon, query, "nominatim hit outside the Vienna area, ignoring");
+        tracing::warn!(lat, lon, query, "nominatim hit outside Austria, ignoring");
         return Ok(None);
     }
     let precision = match &top.address {
@@ -1922,12 +1961,14 @@ async fn nominatim_search_one(
 /// flagged to the driver instead of silently passed off as exact. Only a
 /// genuine no-match falls through to the frontend's manual pin-drop.
 async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(f64, f64, String, Precision), AppError> {
-    let original_query = format!("{}, {} Wien, Österreich", strasse.trim(), plz);
+    let place = place_suffix(plz);
+    let in_vienna = is_valid_vienna_plz(plz);
+    let original_query = format!("{}, {place}", strasse.trim());
     // Cache on the *normalized* form, not the raw input: "Hauptstr. 5",
     // "Hauptstrasse 5" and "Hauptstraße  5" are one address written three
     // ways and all resolve identically, so keying on the raw text would pay
     // a throttled round-trip again for each spelling.
-    let key = format!("{}, {} wien, österreich", normalize_strasse_text(strasse).to_lowercase(), plz);
+    let key = format!("{}, {}", normalize_strasse_text(strasse).to_lowercase(), place.to_lowercase());
     let cached = {
         let conn = state.db()?;
         cache_lookup(&conn, &key)?
@@ -1940,7 +1981,7 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
         // vague pin (and the mystery behind it) alive for the whole TTL.
         // Exact and street-level hits are served straight from the cache as
         // before; this costs nothing on the common path.
-        if hit.3 == Precision::District {
+        if hit.3 == Precision::District && in_vienna {
             if let Some(actual_plz) = wien_ogd_district_hint(state, &normalize_strasse_text(strasse), plz).await {
                 return Err(geocode_error_wrong_district(strasse.trim(), &actual_plz));
             }
@@ -1958,7 +1999,10 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
         }
     }
 
-    if let Some(hit) = wien_ogd_geocode(state, strasse, plz).await {
+    // The city's register is only asked about Vienna postcodes; anywhere
+    // else in Austria is Nominatim alone.
+    let ogd_hit = if in_vienna { wien_ogd_geocode(state, strasse, plz).await } else { None };
+    if let Some(hit) = ogd_hit {
         let conn = state.db()?;
         cache_store(&conn, &key, hit.0, hit.1, &hit.2, hit.3)?;
         miss_clear(&conn, &key)?;
@@ -1973,7 +2017,8 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
     // register the same question without the district, because by far the
     // likeliest reason it just said no is that the district dropdown is
     // wrong. Naming the right one turns a vague pin into a one-tap fix.
-    if let Some(actual_plz) = wien_ogd_district_hint(state, &normalized, plz).await {
+    let district_hint = if in_vienna { wien_ogd_district_hint(state, &normalized, plz).await } else { None };
+    if let Some(actual_plz) = district_hint {
         tracing::info!(strasse = %normalized, given = plz, actual = %actual_plz, "address exists in a different district");
         return Err(geocode_error_wrong_district(strasse.trim(), &actual_plz));
     }
@@ -1991,10 +2036,10 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
     // the answer against, so a fuzzy match onto a different street (or the
     // same street in another district) is refused rather than pinned.
     let wanted_street = text::address_match_key(&text::street_name_only(&normalized));
-    let query = format!("{}, {} Wien, Österreich", simplified, plz);
+    let query = format!("{simplified}, {place}");
     let mut result = nominatim_search_one(state, &query, &wanted_street, plz).await?;
     if result.is_none() && simplified != normalized {
-        let fallback_query = format!("{}, {} Wien, Österreich", normalized, plz);
+        let fallback_query = format!("{normalized}, {place}");
         result = nominatim_search_one(state, &fallback_query, &wanted_street, plz).await?;
     }
 
@@ -2012,12 +2057,12 @@ async fn geocode_address(state: &AppState, strasse: &str, plz: &str) -> Result<(
     // Nominatim's own structured `postcode` to equal what we asked for is
     // what actually tells a real Vienna PLZ apart from that.
     if result.is_none() {
-        let district_query = format!("{plz} Wien, Österreich");
+        let district_query = place.clone();
         if let Some(hit) = nominatim_raw_search(state, &district_query).await? {
             let postcode_matches = hit.address.as_ref().and_then(|a| a.postcode.as_deref()) == Some(plz);
             if let (true, Ok(lat), Ok(lon)) = (postcode_matches, hit.lat.parse::<f64>(), hit.lon.parse::<f64>()) {
                 if is_plausible_latlon(lat, lon) {
-                    result = Some((lat, lon, format!("{plz} Wien (nur Bezirk, Adresse unbekannt)"), Precision::District));
+                    result = Some((lat, lon, format!("{plz} (nur Ortsmitte, Adresse unbekannt)"), Precision::District));
                 }
             }
         }
@@ -2338,6 +2383,7 @@ struct RouteRow {
     completed_at: Option<String>,
     geometry: Option<String>,
     needs_optimize: bool,
+    hand_ordered: bool,
 }
 
 impl RouteRow {
@@ -2350,6 +2396,7 @@ impl RouteRow {
             completed_at: r.get("completed_at")?,
             geometry: r.get("geometry")?,
             needs_optimize: r.get::<_, i64>("needs_optimize")? != 0,
+            hand_ordered: r.get::<_, i64>("hand_ordered")? != 0,
         })
     }
 }
@@ -2551,6 +2598,8 @@ struct RouteDetail {
     stops: Vec<StopOut>,
     geometry: Vec<[f64; 2]>,
     needs_optimize: bool,
+    /// The driver has put the stops in an order of their own.
+    hand_ordered: bool,
     delivered_count: i64,
     customer_count: i64,
     total_km: f64,
@@ -2664,6 +2713,7 @@ fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, App
         created_at: route.created_at,
         completed_at: route.completed_at,
         needs_optimize: route.needs_optimize,
+        hand_ordered: route.hand_ordered,
         delivered_count: customer_stops.iter().filter(|s| s.delivered).count() as i64,
         customer_count: customer_stops.len() as i64,
         total_km: strip_negative_zero((total_km * 10.0).round() / 10.0),
@@ -2672,6 +2722,9 @@ fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, App
         geometry,
     })
 }
+
+/// How old a position may be and still be "where I am": ten minutes.
+const HERE_MAX_AGE_SECS: i64 = 10 * 60;
 
 #[derive(Clone, Copy)]
 struct StopCoord {
@@ -2718,6 +2771,12 @@ struct RouteNodes {
     /// for last at the end: where the van is now. Empty until the first door
     /// of the day, which leaves a fresh tour planned exactly as it always was.
     driven: Vec<StopCoord>,
+    /// Where the driver is, from a recent fix -- set only before the first
+    /// door, and only consulted when Start is switched off: a driver who
+    /// disables the depot is not skipping a start, they are saying "start
+    /// from where I am". It carries the Start row's id, so the drive from
+    /// here lands on that row and is counted in the kilometres.
+    current_location: Option<StopCoord>,
 }
 
 impl RouteNodes {
@@ -2726,7 +2785,11 @@ impl RouteNodes {
     /// handed to the trip optimizer: driving to the warehouse before the
     /// depot isn't a cheaper tour, it's a different one.
     fn head(&self) -> Vec<StopCoord> {
-        [FixedStop::active(self.start), FixedStop::active(self.via)].into_iter().flatten().collect()
+        let start = match self.start {
+            Some(f) if f.excluded => self.current_location,
+            other => FixedStop::active(other),
+        };
+        [start, FixedStop::active(self.via)].into_iter().flatten().collect()
     }
 }
 
@@ -2785,11 +2848,23 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
     // What this solution was planned from, checked again at write time —
     // see `planning_fingerprint`.
     let planned_from: Vec<(i64, f64, f64, bool, bool)>;
+    // The customers in the order the list shows them, on a tour the driver
+    // has sorted by hand; `None` leaves the order to OSRM.
+    let hand_order: Option<Vec<StopCoord>>;
 
     let nodes = {
         let conn = state.db()?;
         let stops = planning_rows(&conn, route_id)?;
         planned_from = planning_fingerprint(&stops);
+        let hand_ordered: bool = conn
+            .query_row("SELECT hand_ordered FROM routes WHERE id = ?1", params![route_id], |r| r.get::<_, i64>(0))
+            .optional()?
+            .is_some_and(|v| v != 0);
+        hand_order = hand_ordered.then(|| {
+            let mut listed: Vec<&PlanningRow> = stops.iter().filter(|s| s.kind == "customer").collect();
+            listed.sort_by_key(|s| (s.order_index, s.id));
+            listed.iter().map(|s| StopCoord { id: s.id, lat: s.lat, lon: s.lon }).collect()
+        });
 
         let mut nodes = RouteNodes {
             start: None,
@@ -2798,6 +2873,7 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
             customers: Vec::new(),
             skipped: Vec::new(),
             driven: driven_order(&stops),
+            current_location: None,
         };
         let mut skipped: Vec<&PlanningRow> = Vec::new();
         for s in &stops {
@@ -2817,6 +2893,24 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         }
         skipped.sort_by_key(|s| (s.order_index, s.id));
         nodes.skipped = skipped.iter().map(|s| StopCoord { id: s.id, lat: s.lat, lon: s.lon }).collect();
+        // Before the first door only: after it the trip starts at the door,
+        // and a fix used then would draw the line from wherever the van is
+        // now back to the first delivery.
+        if let (Some(start), true) = (nodes.start, nodes.driven.is_empty()) {
+            let here: Option<(f64, f64, i64)> = conn
+                .query_row(
+                    "SELECT here_lat, here_lon, here_at FROM routes WHERE id = ?1 AND here_at IS NOT NULL",
+                    params![route_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            if let Some((lat, lon, at)) = here {
+                let fresh = chrono::Utc::now().timestamp() - at <= HERE_MAX_AGE_SECS;
+                if start.excluded && fresh && is_plausible_latlon(lat, lon) {
+                    nodes.current_location = Some(StopCoord { id: start.coord.id, lat, lon });
+                }
+            }
+        }
         nodes
     };
 
@@ -2835,6 +2929,21 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
     let mut legs: Vec<(f64, f64)> = Vec::new();
     let mut geometry: Vec<[f64; 2]> = Vec::new();
 
+    if let Some(listed) = &hand_order {
+        // Sorted by hand: the fixed head, the customers exactly as listed,
+        // then the destination -- one call for the line on the map and the
+        // distance on each row, and nothing for OSRM to choose.
+        let skipped: HashSet<i64> = nodes.skipped.iter().map(|n| n.id).collect();
+        routed = head.clone();
+        routed.extend(listed.iter().copied().filter(|n| !skipped.contains(&n.id)));
+        routed.extend(end);
+        if routed.len() >= 2 {
+            let coords: Vec<(f64, f64)> = routed.iter().map(|n| (n.lat, n.lon)).collect();
+            let (path_legs, path_geom) = osrm_route_through(state, &coords).await?;
+            legs.extend(path_legs);
+            append_geometry(&mut geometry, path_geom);
+        }
+    } else {
     if routed.len() >= 2 {
         let coords: Vec<(f64, f64)> = routed.iter().map(|n| (n.lat, n.lon)).collect();
         let (path_legs, path_geom) = osrm_route_through(state, &coords).await?;
@@ -2884,6 +2993,8 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         // At most one point after the head — nothing to optimize, but it
         // still belongs in the driving order.
         routed.extend(trip_nodes.into_iter().skip(anchor.is_some() as usize));
+    }
+
     }
 
     // `[f64; 2]` pairs can't fail to serialize once finite, but OSRM is an
@@ -2942,7 +3053,20 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         );
     }
 
-    for (pos, node) in display_order(&nodes, &routed).iter().enumerate() {
+    // A hand-sorted tour keeps its own order in the list, the doors that
+    // are not driven included, each where the driver left it.
+    let shown: Vec<StopCoord> = match &hand_order {
+        Some(listed) => nodes
+            .start
+            .map(|f| f.coord)
+            .into_iter()
+            .chain(nodes.via.map(|f| f.coord))
+            .chain(listed.iter().copied())
+            .chain(nodes.end.map(|f| f.coord))
+            .collect(),
+        None => display_order(&nodes, &routed),
+    };
+    for (pos, node) in shown.iter().enumerate() {
         let (leg_km, leg_min) = match leg_for.get(&node.id) {
             Some(&(dist, dur)) => (Some(dist / 1000.0), Some(dur / 60.0)),
             None => (None, None),
@@ -3264,6 +3388,9 @@ async fn optimize_route(State(state): State<Arc<AppState>>, AxPath(route_id): Ax
     {
         let conn = state.db()?;
         require_route_exists(&conn, route_id)?;
+        // Asking for the order is asking for a new one: the tour stops
+        // being hand-sorted.
+        conn.execute("UPDATE routes SET hand_ordered = 0 WHERE id = ?1", params![route_id])?;
     }
     reoptimize_route(&state, route_id).await?;
     let conn = state.db()?;
@@ -3418,6 +3545,81 @@ async fn pace_history(State(state): State<Arc<AppState>>) -> Result<Json<PaceHis
         tours.last_mut().expect("pushed above").push(stop);
     }
     Ok(Json(learn_pace(&tours)))
+}
+
+#[derive(Deserialize)]
+struct StopOrder {
+    stop_ids: Vec<i64>,
+}
+
+/// `PUT /api/routes/:id/order`: the customers in the driver's own order.
+/// Every customer of the route, once each -- a list that has fallen behind
+/// the route (a stop added or removed since it was drawn) is refused rather
+/// than applied to the stops it happens to still name.
+async fn set_stop_order(
+    State(state): State<Arc<AppState>>,
+    AxPath(route_id): AxPath<i64>,
+    Json(payload): Json<StopOrder>,
+) -> Result<Json<RouteDetail>, AppError> {
+    // Behind any optimization already running, so its answer cannot land on
+    // top of this order a moment later.
+    let lock = state.route_lock(route_id).await;
+    {
+        let _guard = lock.lock().await;
+        let mut conn = state.db()?;
+        require_route_exists(&conn, route_id)?;
+        let tx = conn.transaction()?;
+        let mut existing: Vec<i64> = {
+            let mut stmt = tx.prepare("SELECT id FROM stops WHERE route_id = ?1 AND kind = 'customer'")?;
+            let ids = stmt.query_map(params![route_id], |r| r.get(0))?.collect::<Result<_, _>>()?;
+            ids
+        };
+        let mut wanted = payload.stop_ids.clone();
+        existing.sort_unstable();
+        wanted.sort_unstable();
+        if existing != wanted {
+            return Err(AppError::BadRequest(
+                "Die Tour hat sich inzwischen geändert. Bitte die Reihenfolge noch einmal öffnen.".into(),
+            ));
+        }
+        // Start and Lager keep 0 and 1; Ziel goes behind the last customer.
+        for (pos, id) in payload.stop_ids.iter().enumerate() {
+            tx.execute("UPDATE stops SET order_index = ?1 WHERE id = ?2", params![pos as i64 + 2, id])?;
+        }
+        tx.execute(
+            "UPDATE stops SET order_index = ?1 WHERE route_id = ?2 AND kind = 'end'",
+            params![payload.stop_ids.len() as i64 + 2, route_id],
+        )?;
+        tx.execute("UPDATE routes SET hand_ordered = 1, needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        tx.commit()?;
+    }
+    reoptimize_best_effort(&state, route_id).await;
+    let conn = state.db()?;
+    Ok(Json(get_route_detail(&conn, route_id)?))
+}
+
+#[derive(Deserialize)]
+struct Position {
+    lat: f64,
+    lon: f64,
+}
+
+/// `POST /api/routes/:id/position`: where the driver is right now. Kept
+/// for a tour that starts from there rather than from the depot; nothing is
+/// planned by this call itself.
+async fn set_position(
+    State(state): State<Arc<AppState>>,
+    AxPath(route_id): AxPath<i64>,
+    Json(payload): Json<Position>,
+) -> Result<Json<Value>, AppError> {
+    check_latlon(payload.lat, payload.lon)?;
+    let conn = state.db()?;
+    require_route_exists(&conn, route_id)?;
+    conn.execute(
+        "UPDATE routes SET here_lat = ?1, here_lon = ?2, here_at = ?3 WHERE id = ?4",
+        params![payload.lat, payload.lon, chrono::Utc::now().timestamp(), route_id],
+    )?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// What a re-check did, so the app can tell the driver rather than silently
@@ -3936,9 +4138,60 @@ async fn update_stop(
             tx.commit()?;
             return Ok(Json(get_route_detail(&conn, route_id)?));
         }
+        // Where a fixed point is can be changed -- a tour that loads
+        // somewhere else, or ends at another depot. What it is cannot: no
+        // name, no parcel, no note.
+        let moves = payload.strasse.is_some() || payload.plz.is_some() || payload.lat.is_some() || payload.lon.is_some();
+        if moves && payload.excluded.is_none() {
+            let plain = payload.kunde.is_none()
+                && payload.telefon.is_none()
+                && payload.paket.is_none()
+                && payload.notiz.is_none()
+                && new_outcome.is_none();
+            if !plain {
+                return Err(AppError::Forbidden("An fixen Stopps kann nur die Adresse geändert werden".into()));
+            }
+            let strasse = payload.strasse.as_deref().map(str::trim).unwrap_or(&cur_strasse).to_string();
+            let plz = payload.plz.as_deref().map(str::trim).unwrap_or(&cur_plz).to_string();
+            if strasse.is_empty() {
+                return Err(AppError::BadRequest("Straße darf nicht leer sein.".into()));
+            }
+            check_len(&strasse, "Straße", MAX_STRASSE_LEN)?;
+            check_no_control_chars(&strasse, "Straße", false)?;
+            check_plz(&plz)?;
+            let manual_pin = payload.lat.is_some() && payload.lon.is_some();
+            let (lat, lon, precision) = if let (Some(lat), Some(lon)) = (payload.lat, payload.lon) {
+                check_latlon(lat, lon)?;
+                (lat, lon, None)
+            } else {
+                let (lat, lon, _, precision) = geocode_address(&state, &strasse, &plz).await?;
+                (lat, lon, precision.tag())
+            };
+            {
+                let mut conn = state.db()?;
+                let tx = conn.transaction()?;
+                tx.execute(
+                    "UPDATE stops SET strasse = ?1, plz = ?2, lat = ?3, lon = ?4, location_precision = ?5, pinned = ?6 WHERE id = ?7",
+                    params![strasse, plz, lat, lon, precision, manual_pin as i64, stop_id],
+                )?;
+                tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+                tx.commit()?;
+            }
+            reoptimize_best_effort(&state, route_id).await;
+            let conn = state.db()?;
+            return Ok(Json(get_route_detail(&conn, route_id)?));
+        }
         let Some(excluded) = payload.excluded else {
             return Err(AppError::Forbidden("Fixe Stopps können nicht bearbeitet werden".into()));
         };
+        // Ziel stays on every tour: without it the tour ends wherever the
+        // optimizer finds cheapest. Its address is changed instead. One
+        // switched off before this rule can still be switched back on.
+        if kind == "end" && excluded && !cur_excluded {
+            return Err(AppError::BadRequest(
+                "Das Ziel bleibt in jeder Tour. Stattdessen kann seine Adresse geändert werden.".into(),
+            ));
+        }
         let only_exclusion = payload.kunde.is_none()
             && payload.telefon.is_none()
             && payload.strasse.is_none()
@@ -4147,7 +4400,7 @@ async fn delete_stop(State(state): State<Arc<AppState>>, AxPath(stop_id): AxPath
     Ok(Json(get_route_detail(&conn, route_id)?))
 }
 
-/// Bulk-edit endpoint backing the "Route als JSON" editor. Customer-facing
+/// What every list of stops is loaded through -- today, the portal import. Customer-facing
 /// fields only, stops matched by normalized (strasse, plz) and then by
 /// customer name, unmatched
 /// existing stops deleted (unless something failed to geocode this round
@@ -4210,14 +4463,6 @@ struct BulkJsonResult {
     /// genuine removal apart from an edited/malformed entry that just
     /// failed to resolve.
     deletions_skipped: bool,
-}
-
-async fn update_route_from_json(
-    State(state): State<Arc<AppState>>,
-    AxPath(route_id): AxPath<i64>,
-    Json(payload): Json<Value>,
-) -> Result<Json<BulkJsonResult>, AppError> {
-    import_entries(&state, route_id, &payload, false).await.map(Json)
 }
 
 /// Brings a route's customers in line with a list of entries.
@@ -4495,7 +4740,7 @@ async fn import_entries(
     // geocoder.
     let mut to_geocode: Vec<(usize, SubmittedStop, Option<i64>)> = Vec::new();
     for (idx, (entry, existing_id)) in unresolved.into_iter().enumerate() {
-        if !is_valid_vienna_plz(&entry.2) {
+        if !is_valid_plz(&entry.2) {
             failures.push(GeocodeFailure { kunde: entry.0, strasse: entry.1, plz: entry.2 });
             continue;
         }
@@ -5368,7 +5613,7 @@ async fn icon_png(
 /// `with_graceful_shutdown` —
 /// without that, killing the process (a redeploy, a driver's own Ctrl+C)
 /// drops every in-flight connection immediately, including one mid-way
-/// through a multi-step handler like `update_route_from_json`. Graceful
+/// through a multi-step handler like `import_entries`. Graceful
 /// shutdown lets axum stop accepting new connections but finish the ones
 /// already in progress first.
 async fn shutdown_signal() {
@@ -5422,7 +5667,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/routes", get(list_routes).post(create_route))
         .route("/api/routes/:id", get(get_route).patch(update_route).delete(delete_route))
         .route("/api/routes/:id/optimize", post(optimize_route))
-        .route("/api/routes/:id/json", put(update_route_from_json))
+        .route("/api/routes/:id/position", post(set_position))
+        .route("/api/routes/:id/order", put(set_stop_order))
         .route("/api/routes/:id/reset-delivered", post(reset_delivered))
         .route("/api/routes/:id/recheck-addresses", post(recheck_addresses))
         .route("/api/routes/:id/stops", post(add_stop))
@@ -5659,6 +5905,13 @@ mod tests {
         assert!(is_valid_vienna_plz("1230"));
         assert!(!is_valid_vienna_plz("1240")); // no 24th district
         assert!(!is_valid_vienna_plz("8010")); // Graz
+        assert!(is_valid_plz("8010"));
+        assert!(is_valid_plz("2201"));
+        assert!(!is_valid_plz("0123"));
+        assert!(!is_valid_plz("12345"));
+        assert!(!is_valid_plz("12a4"));
+        assert_eq!(place_suffix("1180"), "1180 Wien, Österreich");
+        assert_eq!(place_suffix("2201"), "2201, Österreich");
         assert!(!is_valid_vienna_plz(""));
         assert!(!is_valid_vienna_plz("1010 "));
     }
@@ -5668,7 +5921,8 @@ mod tests {
         assert!(is_plausible_latlon(48.2082, 16.3738)); // Stephansplatz
         assert!(!is_plausible_latlon(0.0, 0.0));
         assert!(!is_plausible_latlon(16.3738, 48.2082)); // swapped lat/lon
-        assert!(!is_plausible_latlon(47.0707, 15.4395)); // Graz
+        assert!(is_plausible_latlon(47.0707, 15.4395)); // Graz: any Austrian address is a stop
+        assert!(!is_plausible_latlon(47.4979, 19.0402)); // Budapest
         assert!(!is_plausible_latlon(f64::NAN, 16.3738));
         assert!(!is_plausible_latlon(48.2082, f64::INFINITY));
     }

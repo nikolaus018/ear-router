@@ -84,10 +84,27 @@ So: develop with `EarRouter`, and reinstall the van's phone with
 
 ## legacy-web
 
-The Rust (Axum + SQLite) backend and the single-file PWA it served. Superseded
-by `ios/`, which does the same work without a server: the phone calls the
-geocoders and OSRM directly and keeps its own data. It stopped at 03.09.2026
-and has none of what the app learned after that.
+The web version: a Rust (Axum + SQLite) server and the single-file PWA it
+serves. It is the foolproof one — for a driver who should not have to learn
+anything. Stops come from the Zusteller-Portal or are typed in one at a time,
+and nothing in it is more technical than a postcode.
+
+| | |
+|---|---|
+| Touren | "+" asks where the stops come from: *Von Gourmet laden* (sign in once, pick the day's tour, untick anybody not driven) or *Leere Tour* |
+| A tour | The stops in driving order with their arrival times; tap one for *Nicht angetroffen*, *Ins Lager mitnehmen*, *Bearbeiten*, *Aus der Tour entfernen*. *Tour vorbereiten* checks it over before the yard is left |
+| Jetzt | The stop the driver is at: Navigation, Geliefert, Anrufen, and a banner that takes the last answer back |
+| Karte | The tour on the map |
+| Closing a tour | The Tagesabschluss, ready to send to the office |
+
+The server keeps the portal login (table `settings`) and does the talking to
+`odoo.gourmet.at`, because a browser cannot. Anybody who can reach the server
+can use the app, so it belongs behind something that asks who is there.
+
+Not in the web version, on purpose: the JSON editor, Erays Planer, Globale
+Infos, the other driver's stops, the toilets, backups, splitting a tour on
+the map. Not possible in a browser: Siri, the lock-screen card, CarPlay,
+saving a contact.
 
 ```bash
 cd legacy-web
@@ -95,4 +112,4 @@ cargo run --release
 ```
 
 Serves on port 8000 (`EAR_PORT`). The database, `rerouter.db`, is created next
-to the binary.
+to the binary. `cargo test` covers the rules the server decides.

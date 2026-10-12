@@ -288,6 +288,12 @@
   .now-follow { display: flex; align-items: flex-start; gap: .5rem; text-align: left; font-size: 15px; margin-top: .5rem; }
   .now-follow > span:first-child { flex: none; display: flex; margin-top: .2em; color: #FF9500; }
   .tab-grid { display: grid; }
+  .preflight-action { margin-top: .5rem; padding: .4375rem .875rem; border-radius: 999px; background: #ED1639; color: #fff; font-size: 14px; font-weight: 600; }
+  .reorder-row { display: flex; align-items: center; gap: .625rem; padding: .5rem .625rem .5rem 1rem; }
+  .reorder-num { flex: none; width: 1.625rem; height: 1.625rem; border-radius: 50%; background: rgba(120,120,128,.16); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .reorder-btn { flex: none; width: 2.75rem; height: 2.75rem; border-radius: 50%; background: rgba(120,120,128,.12); color: #ED1639; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+  .reorder-btn:disabled { opacity: .25; }
+  .reorder-btn:active { transform: scale(.94); }
   .sheet-title { font-size: 22px; font-weight: 700; margin-bottom: .25rem; overflow-wrap: anywhere; }
   .sheet-lead { font-size: 15px; line-height: 1.4; color: rgba(0,0,0,.6); margin-bottom: 1rem; }
   .sheet-foot { font-size: 12px; line-height: 1.4; color: rgba(0,0,0,.5); text-align: center; margin: 1rem .5rem .5rem; }
@@ -2316,6 +2322,9 @@ const ICONS = {
   people: icon('<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6"/><path d="M17.5 14.3A6 6 0 0 1 21 20"/>'),
   phone: icon('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2Z"/>'),
   gauge: icon('<path d="M4.5 18a9 9 0 1 1 15 0"/><path d="M12 13l4-5"/><circle cx="12" cy="13" r="1.4" fill="currentColor" stroke="none"/>'),
+  arrowUp: icon('<path d="M12 19V5"/><polyline points="6 11 12 5 18 11"/>', 'stroke-width="2"'),
+  arrowDown: icon('<path d="M12 5v14"/><polyline points="6 13 12 19 18 13"/>', 'stroke-width="2"'),
+  sort: icon('<path d="M7 5v14"/><polyline points="3.5 8.5 7 5 10.5 8.5"/><path d="M17 19V5"/><polyline points="13.5 15.5 17 19 20.5 15.5"/>'),
   download: icon('<path d="M12 4v11"/><polyline points="7.5 11 12 15.5 16.5 11"/><path d="M5 19.5h14"/>', 'stroke-width="2"'),
   tabMap: icon('<path d="M12 21s-7-7.4-7-12.2A7 7 0 0 1 19 8.8C19 13.6 12 21 12 21Z"/><circle cx="12" cy="9" r="2.3"/>'),
   tabMore: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>',
@@ -2989,14 +2998,22 @@ function navUrl(stop) {
   if (exact) {
     return provider.point(stop.lat.toFixed(NAV_COORD_DECIMALS), stop.lon.toFixed(NAV_COORD_DECIMALS));
   }
-  return provider.address(stopAddress(stop));
+  return provider.address(navAddress(stop));
 }
 
 // The one place the human-readable form of a stop's address is assembled,
 // so the maps deep-link, the copy button and any future consumer can never
 // drift apart. Vienna-only app, hence the constant city.
+/// What a navigation app is handed when there is no exact point: the city
+/// with it, "Wien" only where the postcode says Vienna, and the country so
+/// the search cannot wander off to a 2201 somewhere else.
+function navAddress(s) {
+  const vienna = !!DISTRICT_BY_PLZ[s.plz];
+  return `${s.strasse}, ${s.plz}${vienna ? ' Wien' : ''}, Österreich`;
+}
+
 function stopAddress(s) {
-  return `${s.strasse}, ${s.plz} Wien`;
+  return `${s.strasse}, ${s.plz}`;
 }
 
 // ---------------------------------------------------------------------
@@ -3263,7 +3280,7 @@ async function loadRouteIntoFocus(id, computeDetailOrigin) {
     state.detailOrigin = computeDetailOrigin();
     render();
   } catch (err) {
-    if (latestRouteRequestId === id) toast(err.message || 'Route konnte nicht geladen werden.', 'error');
+    if (latestRouteRequestId === id) toast(err.message || 'Tour konnte nicht geladen werden.', 'error');
   } finally {
     hideProgress();
   }
@@ -3318,7 +3335,7 @@ async function loadRoutes() {
     lastRefreshAt = Date.now();
     render();
   } catch (err) {
-    toast(err.message || 'Routen konnten nicht geladen werden.', 'error');
+    toast(err.message || 'Touren konnten nicht geladen werden.', 'error');
     const app = document.getElementById('app');
     app.innerHTML = `
       <div class="px-6 pt-28 text-center text-black/55">
@@ -3418,7 +3435,7 @@ async function refreshCurrentRoute(makeRequest, label) {
 // Actions
 // ---------------------------------------------------------------------
 async function createRoute() {
-  const name = await promptSheet({ title: 'Neue Route', message: 'Name (z. B. Kundenname, Bezirk, Tour):', placeholder: `Route ${new Date().toLocaleDateString('de-AT')}` });
+  const name = await promptSheet({ title: 'Leere Tour', message: 'Wie soll die Tour heißen?', placeholder: `Tour ${new Date().toLocaleDateString('de-AT')}` });
   if (name === null) return;
   showProgress();
   try {
@@ -3479,7 +3496,8 @@ async function submitStop(form, stopId) {
   const paket = form.paket.value.trim();
   const notiz = form.notiz.value.trim();
   const telefon = form.telefon.value.trim();
-  if (!kunde || !strasse || !plz) { toast('Bitte Kunde, Straße und Bezirk ausfüllen.', 'error'); return; }
+  if (!kunde || !strasse || !plz) { toast('Bitte Kunde, Straße und Postleitzahl ausfüllen.', 'error'); return; }
+  if (!/^[1-9]\d{3}$/.test(plz)) { toast('Die Postleitzahl hat vier Ziffern, z.B. 1100.', 'error'); return; }
 
   lastUsedPlz = plz;
   const data = { kunde, strasse, plz, paket, notiz, telefon, stopId };
@@ -3497,8 +3515,8 @@ async function submitStop(form, stopId) {
   );
   if (duplicate) {
     const ok = await confirmSheet({
-      title: 'Adresse schon in der Route',
-      message: `„${duplicate.kunde}" steht bereits unter ${strasse}, ${plz} Wien. Trotzdem hinzufügen?`,
+      title: 'Adresse schon in der Tour',
+      message: `„${duplicate.kunde}" steht bereits unter ${strasse}, ${plz}. Trotzdem hinzufügen?`,
       confirmLabel: 'Trotzdem',
     });
     if (!ok) { openAddSheet(stopId ? { ...data, id: stopId } : data); return; }
@@ -3516,7 +3534,7 @@ async function sendStop(data, coords) {
   // The pin-drop sheet can outlive the route it was opened for (the driver
   // is free to close it and navigate away, then come back and confirm the
   // pin), so this genuinely can run with no route in focus.
-  if (!state.currentRoute) { toast('Keine Route ausgewählt.', 'error'); return; }
+  if (!state.currentRoute) { toast('Keine Tour ausgewählt.', 'error'); return; }
   const routeId = state.currentRoute.id;
   const payload = { kunde: data.kunde, strasse: data.strasse, plz: data.plz, paket: data.paket, notiz: data.notiz };
   // Only when the form carried one: the pin-drop retry path passes plain
@@ -3747,7 +3765,7 @@ async function setOutcome(stopId, outcome) {
   // puts it in again — the server plans the route afresh for either, which
   // takes as long as OSRM does.
   const replans = skipsDoor(stop) !== (stop.kind === 'customer' && (prevOutcome === 'toLager' || prevOutcome === 'cancelled'));
-  if (replans) showProgress('Route wird neu geplant …');
+  if (replans) showProgress('Tour wird neu geplant …');
 
   const seq = nextSeq();
   const before = outcomeSignature(route, stopId);
@@ -3804,7 +3822,7 @@ async function setOutcome(stopId, outcome) {
 // out of the DOM the moment it appears — the promise then never settles
 // and the stop is never deleted.
 async function deleteStop(stopId) {
-  const ok = await confirmSheet({ title: 'Stopp löschen?', message: 'Dieser Kundenstopp wird endgültig entfernt.', confirmLabel: 'Löschen', danger: true });
+  const ok = await confirmSheet({ title: 'Stopp entfernen?', message: 'Der Stopp wird aus dieser Tour gelöscht.', confirmLabel: 'Entfernen', danger: true });
   if (!ok) return;
   await refreshCurrentRoute(() => api(`/stops/${stopId}`, { method: 'DELETE' }), 'Stopp wird entfernt …');
 }
@@ -3818,7 +3836,7 @@ async function deleteStop(stopId) {
 async function renameRoute() {
   const routeId = state.currentRoute?.id;
   if (routeId == null) return;
-  const name = await promptSheet({ title: 'Route umbenennen', initial: state.currentRoute.name });
+  const name = await promptSheet({ title: 'Tour umbenennen', initial: state.currentRoute.name });
   if (name === null) return;
   if (!name.trim()) { toast('Name darf nicht leer sein.', 'error'); return; }
   const seq = nextSeq();
@@ -3907,9 +3925,9 @@ async function toggleRouteStatus() {
 async function deleteRoute() {
   const routeId = state.currentRoute?.id;
   if (routeId == null) return;
-  const ok = await confirmSheet({ title: 'Route löschen?', message: `„${state.currentRoute.name}" wird mit allen Stopps endgültig gelöscht. Das kann nicht rückgängig gemacht werden.`, confirmLabel: 'Löschen', danger: true });
+  const ok = await confirmSheet({ title: 'Tour löschen?', message: `„${state.currentRoute.name}" wird mit allen Stopps endgültig gelöscht. Das kann nicht rückgängig gemacht werden.`, confirmLabel: 'Löschen', danger: true });
   if (!ok) return;
-  showProgress('Route wird gelöscht …');
+  showProgress('Tour wird gelöscht …');
   try {
     await api(`/routes/${routeId}`, { method: 'DELETE' });
     // Ladeliste ticks for a route that no longer exists describe a van
@@ -3926,7 +3944,7 @@ async function deleteRoute() {
     // the entry any earlier and the very next render puts it straight back.
     forgetScrollMemory(`detail:${routeId}`);
     await loadRoutes();
-    toast('Route gelöscht ✓', 'success');
+    toast('Tour gelöscht ✓', 'success');
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -3979,7 +3997,11 @@ async function recheckAddresses() {
 }
 
 async function manualOptimize() {
-  await refreshCurrentRoute(() => api(`/routes/${state.currentRoute.id}/optimize`, { method: 'POST' }), 'Route wird optimiert …');
+  const route = state.currentRoute;
+  if (!route) return;
+  // A tour that starts where the driver is has to be told where that is.
+  await sendPositionIfStartingHere(route, route.stops.some((s) => s.kind === 'start' && s.excluded));
+  await refreshCurrentRoute(() => api(`/routes/${route.id}/optimize`, { method: 'POST' }), 'Reihenfolge wird berechnet …');
 }
 
 async function clearOfflineCache() {
@@ -4106,11 +4128,15 @@ function openStopMenu(stop) {
     <div class="${GROUP} mb-3">
       ${o ? item(`setOutcome(${stop.id}, null)`, ICONS.refresh, 'Wieder öffnen') : ''}
       ${o !== 'delivered' && o ? item(`setOutcome(${stop.id}, 'delivered')`, ICONS.checkCircle, 'Geliefert') : ''}
-      ${o !== 'notHome' ? item(`setOutcome(${stop.id}, 'notHome')`, ICONS.bellOff, 'Nicht angetroffen', 'Angefahren, niemand da. Bleibt in der Route.') : ''}
+      ${o !== 'notHome' ? item(`setOutcome(${stop.id}, 'notHome')`, ICONS.bellOff, 'Nicht angetroffen', 'Angefahren, niemand da. Bleibt in der Tour.') : ''}
       ${o !== 'toLager' ? item(`setOutcome(${stop.id}, 'toLager')`, ICONS.box, 'Ins Lager mitnehmen', 'Wird nicht angefahren und nicht mitgezählt.') : ''}
     </div>
     <div class="${GROUP} mb-4">
-      ${item(`openAddSheet(getStop(${stop.id}))`, ICONS.pencil, 'Bearbeiten')}
+      ${item(`openAddSheet(getStop(${stop.id}))`, ICONS.pencil, 'Bearbeiten', 'Name, Adresse, Paket, Notiz, Telefon')}
+      <button type="button" onclick="closeSheet(); deleteStop(${stop.id})" class="w-full flex items-center gap-3 text-left px-4 py-3.5 text-red-600 active:bg-black/5">
+        <span class="w-5 flex shrink-0 text-lg">${ICONS.trash}</span>
+        <span class="text-[15px] font-medium">Aus der Tour entfernen</span>
+      </button>
     </div>
     <div class="pb-2">
       <button type="button" onclick="closeSheet()" class="press-98 w-full py-3 rounded-xl bg-white text-black/70 font-semibold">Abbrechen</button>
@@ -4139,15 +4165,9 @@ function openStopMenu(stop) {
 // ---------------------------------------------------------------------
 let stopPressTimer = null;
 let stopPressEl = null;
+let stopPressFired = false;
 let stopPressStart = null;
 let lastTouchTime = 0;
-let editHintShown = false;
-
-function hintLongPressToEdit() {
-  if (editHintShown) return;
-  editHintShown = true;
-  toast('Für mehr den Stopp gedrückt halten.', 'info', 3000);
-}
 
 function getStop(stopOrId) {
   if (typeof stopOrId === 'object' && stopOrId !== null) return stopOrId;
@@ -4166,12 +4186,14 @@ function stopLongPressStart(e, stopOrId) {
   const stop = getStop(stopOrId);
   if (!stop) return;
   stopPressEl = e.currentTarget;
+  stopPressFired = false;
   const t = e.touches ? e.touches[0] : e;
   stopPressStart = { x: t.clientX, y: t.clientY };
   stopPressEl.classList.add('opacity-60');
   stopPressTimer = setTimeout(() => {
     stopPressEl?.classList.remove('opacity-60');
     stopPressTimer = null;
+    stopPressFired = true;
     if (navigator.vibrate) navigator.vibrate(10);
     openStopSheet(stop);
   }, 450);
@@ -4186,16 +4208,28 @@ function stopLongPressMove(e) {
 }
 
 function stopLongPressEnd() {
-  // A pending timer at release time means the press ended before the hold
-  // fired — i.e. this was a tap, not a hold, and not a scroll (which
-  // clears the timer via stopLongPressMove).
-  const wasTap = stopPressTimer !== null;
   clearTimeout(stopPressTimer);
   stopPressEl?.classList.remove('opacity-60');
   stopPressTimer = null;
   stopPressEl = null;
   stopPressStart = null;
-  if (wasTap) hintLongPressToEdit();
+}
+
+// A tap opens the same sheet a hold does. It used to do nothing but say
+// "hold to edit", from when the sheet behind it was the edit form and a
+// stray tap could change a stop; what opens now is a list of things to
+// choose from, and a row that looks tappable and is not is the harder thing
+// to explain to somebody on their first day.
+//
+// On the click itself, not on the release that precedes it: a sheet opened
+// on touchend is already under the finger when the browser delivers the
+// click that follows, and that click lands on the sheet's backdrop and
+// closes it again. A scroll produces no click, and a hold that has already
+// opened the sheet swallows the one its release makes.
+function stopRowClick(e, stopOrId) {
+  if (stopPressFired) { stopPressFired = false; return; }
+  const stop = getStop(stopOrId);
+  if (stop) openStopSheet(stop);
 }
 
 function stopLongPressContext(e, stopOrId) {
@@ -4236,47 +4270,112 @@ function openFixedStopSheet(stop) {
   const meta = stopKindMeta(stop);
   if (!meta) return;
   const excluded = !!stop.excluded;
+  // What each fixed point can be asked to do. Start can be swapped for
+  // "where I am"; the Lager can be left out; Ziel stays — without it the
+  // tour would end wherever happens to be cheapest — and only moves.
+  const toggle = stop.kind === 'start'
+    ? { title: 'Von meinem Standort starten', sub: 'Die Tour beginnt dort, wo du gerade bist, statt an dieser Adresse.' }
+    : stop.kind === 'via'
+    ? { title: 'In dieser Tour überspringen', sub: 'Das Lager wird nicht angefahren und nicht in Strecke und Fahrzeit eingerechnet.' }
+    : excluded
+    ? { title: 'In dieser Tour überspringen', sub: 'Ausschalten, damit die Tour wieder hier endet.' }
+    : null;
   renderSheetShell(`
-    <h2 class="text-[22px] font-bold mb-1">${meta.title}</h2>
-    <p class="text-[13px] text-black/55 mb-4 leading-snug">${escapeHtml(meta.subtitle)}</p>
+    <h2 class="sheet-title">${meta.title}</h2>
+    <p class="sheet-lead">${stop.kind === 'start' ? 'Wo die Tour beginnt.' : stop.kind === 'via' ? 'Wo das Essen geladen wird.' : 'Wo die Tour endet.'} Gilt nur für diese Tour.</p>
 
-    <div class="${GROUP} mb-3">
+    ${toggle ? `
+    <div class="${GROUP} mb-4">
       <label class="flex items-start gap-3 px-4 py-3.5 cursor-pointer">
-        <input type="checkbox" id="fixed-stop-exclude" ${excluded ? 'checked' : ''}
+        <input type="checkbox" id="fixed-stop-exclude" ${excluded ? 'checked' : ''} onchange="document.getElementById('fixed-address').style.opacity = this.checked ? .4 : 1"
           class="mt-0.5 w-6 h-6 shrink-0 accent-brand-600" />
         <span class="flex-1 min-w-0">
-          <span class="block text-[15px] font-medium">In dieser Tour überspringen</span>
-          <span class="block text-[13px] text-black/55 leading-snug mt-0.5">Wird nicht angefahren und nicht in Strecke und Fahrzeit eingerechnet.</span>
+          <span class="block text-[15px] font-medium">${toggle.title}</span>
+          <span class="block text-[13px] text-black/55 leading-snug mt-0.5">${toggle.sub}</span>
         </span>
       </label>
+    </div>` : ''}
+
+    <div id="fixed-address" class="space-y-3" style="opacity:${excluded ? .4 : 1}">
+      <div>
+        <label class="${LABEL}" for="fixed-strasse">Straße &amp; Hausnummer</label>
+        <input id="fixed-strasse" autocomplete="off" maxlength="${LIMITS.strasse}" value="${escapeAttr(stop.strasse || '')}" class="${FIELD}" />
+      </div>
+      <div>
+        <label class="${LABEL}" for="fixed-plz">Postleitzahl</label>
+        <input id="fixed-plz" inputmode="numeric" maxlength="4" autocomplete="off" value="${escapeAttr(stop.plz || '')}" class="${FIELD}" />
+      </div>
     </div>
 
-    <p class="text-[12px] text-black/55 leading-snug mb-4 px-1">Gilt nur für diese Route. Adresse und Position von „${escapeHtml(meta.title)}" sind fix und können nicht geändert werden.</p>
-
-    <div class="flex gap-3 pb-2">
-      <button type="button" onclick="closeSheet()" class="press-98 px-4 py-3 rounded-xl bg-white text-black/70 font-semibold">Abbrechen</button>
-      <button type="button" onclick="saveFixedStopExclusion(${stop.id})" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">Speichern &amp; Optimieren</button>
+    <div class="pb-2" style="margin-top:1.25rem">
+      <button type="button" onclick="saveFixedStop(${stop.id})" class="press-98 wide-btn accent">Speichern</button>
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
     </div>
-  `, { label: `${meta.title}: Stopp überspringen` });
+  `, { label: meta.title });
 }
 
-async function saveFixedStopExclusion(stopId) {
-  const checkbox = document.getElementById('fixed-stop-exclude');
-  if (!checkbox) return;
-  const excluded = checkbox.checked;
-  // Read before `closeSheet()` tears the sheet (and its checkbox) out of
-  // the DOM — after that there is nothing left to read the choice from.
+/// The driver's position, or `null` when the phone will not say within a
+/// few seconds. Never an error: a tour that cannot start from "here" starts
+/// from its first stop, as it did before, and says so.
+function currentPosition(timeoutMs = 6000) {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) { resolve(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => resolve(null),
+      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 60000 },
+    );
+  });
+}
+
+/// Tells the server where the van is, for a tour that starts from there.
+/// Only when it matters: Start switched off (`startOff` says what it is
+/// about to be) and no door answered for yet.
+async function sendPositionIfStartingHere(route, startOff) {
+  if (!route || !startOff || route.stops.some((s) => s.kind === 'customer' && s.outcome && !skipsDoor(s))) return true;
+  const here = await currentPosition();
+  if (!here) return false;
+  try { await api(`/routes/${route.id}/position`, { method: 'POST', retry: true, body: JSON.stringify(here) }); return true; }
+  catch (_) { return false; }
+}
+
+async function saveFixedStop(stopId) {
   const stop = getStop(stopId);
+  const checkbox = document.getElementById('fixed-stop-exclude');
+  const strasse = document.getElementById('fixed-strasse')?.value.trim() ?? '';
+  const plz = document.getElementById('fixed-plz')?.value.trim() ?? '';
+  // Read before `closeSheet()` tears the sheet (and its fields) out of the
+  // DOM — after that there is nothing left to read the choice from.
+  const excluded = checkbox ? checkbox.checked : !!stop?.excluded;
+  if (!stop) { closeSheet(); return; }
+  const moved = !excluded && (strasse !== (stop.strasse || '') || plz !== (stop.plz || ''));
+  if (moved && (!strasse || !/^[1-9]\d{3}$/.test(plz))) { toast('Bitte Straße und eine vierstellige Postleitzahl eintragen.', 'error'); return; }
   closeSheet();
-  // Saving "no change" would still cost a full re-optimization round trip
-  // to arrive back at exactly the current route, so a cancel-by-Speichern
-  // is treated as the cancel it is.
-  if (!stop || !!stop.excluded === excluded) return;
-  await refreshCurrentRoute(
-    // Idempotent field set, same as the delivered toggle — see there.
-    () => api(`/stops/${stopId}`, { method: 'PATCH', retry: true, body: JSON.stringify({ excluded }) }),
-    excluded ? 'Stopp wird übersprungen …' : 'Stopp wird wieder eingeplant …',
-  );
+  const route = state.currentRoute;
+  const toggled = !!stop.excluded !== excluded;
+  // Saving "no change" would still cost a full re-plan to arrive back at
+  // exactly the current tour, so it is treated as the cancel it is.
+  if (!toggled && !moved) return;
+
+  if (toggled) {
+    if (stop.kind === 'start' && excluded) {
+      showProgress('Standort wird bestimmt …');
+      const located = await sendPositionIfStartingHere(route, true);
+      hideProgress();
+      if (!located) toast('Standort nicht verfügbar — die Tour beginnt beim ersten Stopp. Standortfreigabe im Browser erlauben und „Reihenfolge neu berechnen“ wählen.', 'warning', 9000);
+    }
+    await refreshCurrentRoute(
+      // Idempotent field set, same as the delivered toggle — see there.
+      () => api(`/stops/${stopId}`, { method: 'PATCH', retry: true, body: JSON.stringify({ excluded }) }),
+      'Tour wird neu geplant …',
+    );
+  }
+  if (moved) {
+    await refreshCurrentRoute(
+      () => api(`/stops/${stopId}`, { method: 'PATCH', body: JSON.stringify({ strasse, plz }) }),
+      'Adresse wird gesucht …',
+    );
+  }
 }
 
 const FIELD = 'mt-1 w-full bg-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-600';
@@ -4304,11 +4403,8 @@ function renderManualForm(stop) {
         <input id="${uid('strasse')}" name="strasse" required autocomplete="off" maxlength="${LIMITS.strasse}" enterkeyhint="next" value="${escapeAttr(stop?.strasse || '')}" placeholder="z.B. Favoritenstraße 45 (Adresse einfügen geht auch)" class="${FIELD}" />
       </div>
       <div>
-        <label class="${LABEL}" for="${uid('plz')}">Bezirk</label>
-        <select id="${uid('plz')}" name="plz" required class="${FIELD}">
-          <option value="" disabled ${!defaultPlz ? 'selected' : ''}>Bezirk wählen …</option>
-          ${VIENNA_DISTRICTS.map(d => `<option value="${d.plz}" ${defaultPlz === d.plz ? 'selected' : ''}>${d.bezirk}. Bezirk – ${d.name} (${d.plz})</option>`).join('')}
-        </select>
+        <label class="${LABEL}" for="${uid('plz')}">Postleitzahl</label>
+        <input id="${uid('plz')}" name="plz" required inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" enterkeyhint="next" value="${escapeAttr(defaultPlz)}" placeholder="z.B. 1100" class="${FIELD}" />
       </div>
       <div>
         <label class="${LABEL}" for="${uid('paket')}">Paket</label>
@@ -4340,7 +4436,7 @@ function renderManualForm(stop) {
       ` : ''}
       <div class="flex gap-3 pt-2">
         ${isEdit ? `<button type="button" onclick="closeSheet(); deleteStop(${stop.id});" class="press-98 px-4 py-3 rounded-xl bg-red-50 text-red-600 font-semibold">Löschen</button>` : ''}
-        <button type="submit" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">${isEdit ? 'Speichern' : 'Hinzufügen & Optimieren'}</button>
+        <button type="submit" class="press-98 flex-1 py-3 rounded-xl bg-brand-600 font-semibold text-white">${isEdit ? 'Speichern' : 'Hinzufügen'}</button>
       </div>
     </form>
   `, { label: isEdit ? 'Stopp bearbeiten' : 'Neuer Stopp' });
@@ -4560,6 +4656,24 @@ function showGourmetLogin(message = '') {
   setTimeout(() => document.getElementById('gourmet-user')?.focus(), 80);
 }
 
+/// Mehr → Gourmet-Anmeldung: who is signed in, and the way out.
+async function openGourmetAccount() {
+  showProgress();
+  let status;
+  try { status = await api('/portal/status'); }
+  catch (err) { toast(err.message, 'error'); return; }
+  finally { hideProgress(); }
+  if (!status.logged_in) { gourmet.routeId = null; gourmet.date = isoDay(new Date()); showGourmetLogin(); return; }
+  renderSheetShell(`
+    <h2 class="sheet-title">Gourmet-Anmeldung</h2>
+    <div class="sheet-note" style="background:rgba(52,199,89,.14);color:#1B6B32"><span style="color:#248A3D">${ICONS.checkCircle}</span><span>Angemeldet als <b>${escapeHtml(status.username || '')}</b>. Touren können geladen werden.</span></div>
+    <div class="pb-2">
+      <button type="button" onclick="closeSheet(); gourmetLogout()" class="press-98 wide-btn quiet" style="color:#D70015">Abmelden</button>
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Schließen</button>
+    </div>
+  `, { label: 'Gourmet-Anmeldung' });
+}
+
 async function gourmetLogout() {
   const ok = await confirmSheet({ title: 'Von Gourmet abmelden?', message: 'Zum Laden einer Tour ist dann wieder eine Anmeldung nötig.', confirmLabel: 'Abmelden' });
   if (!ok) return;
@@ -4721,7 +4835,7 @@ function showImportResult(result, asked) {
       <p class="sheet-lead"><b>${missing.length === 1 ? 'Eine Adresse wurde' : `${missing.length} Adressen wurden`} nicht gefunden</b> und ${missing.length === 1 ? 'fehlt' : 'fehlen'} in der Tour. Bitte mit dem <span class="text-brand-600 font-semibold">+</span> oben von Hand hinzufügen.</p>
       <div class="${GROUP} mb-4">${missing.map(row).join('')}</div>` : ''}
     ${rough.length ? `
-      <p class="sheet-lead"><b>${rough.length === 1 ? 'Bei einem Stopp' : `Bei ${rough.length} Stopps`} ist die Position nur ungefähr.</b> Sie sind in der Liste orange markiert — gedrückt halten, „Bearbeiten“, dann den Pin auf das richtige Haus setzen.</p>
+      <p class="sheet-lead"><b>${rough.length === 1 ? 'Bei einem Stopp' : `Bei ${rough.length} Stopps`} ist die Position nur ungefähr.</b> Sie sind in der Liste orange markiert — Stopp antippen, „Bearbeiten“, dann den Pin auf das richtige Haus setzen.</p>
       <div class="${GROUP} mb-4">${rough.map(row).join('')}</div>` : ''}
     <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn accent">Verstanden</button></div>
   `, { label: 'Ergebnis' });
@@ -4858,7 +4972,25 @@ function paketQty(paket) {
 // grouping and the tick state; `label` is the first spelling that appeared,
 // so the list reads back in the driver's own words rather than a normalized
 // one nobody wrote.
+/// A TK tour — frozen meals, named for it — is loaded by household, not by
+/// menu: every parcel is near enough unique and has the customer's name on
+/// its label. So such a tour shows how many parcels a door gets rather than
+/// what is in them, and its Ladeliste goes customer by customer, last door
+/// first, which is the order the van is packed in.
+const isTkTour = (r) => !!r && r.name.trim().toLowerCase().startsWith('tk');
+function displayPaket(s, r = state.currentRoute) {
+  if (!isTkTour(r)) return s.paket || '';
+  if (s.paket_count == null) return '';
+  return s.paket_count === 1 ? '1 Paket' : `${s.paket_count} Pakete`;
+}
+
 function ladelisteItems(route) {
+  if (isTkTour(route)) {
+    return route.stops
+      .filter((s) => s.kind === 'customer' && !skipsDoor(s))
+      .map((s) => ({ key: `tk:${s.id}`, label: s.kunde, qty: s.paket_count || 1 }))
+      .reverse();
+  }
   const byKey = new Map();
   for (const s of route.stops) {
     // A meal that goes to the Lager with the van is not loaded for a door.
@@ -4898,7 +5030,8 @@ function renderLadeliste() {
   const items = ladelisteItems(r);
   ladelisteRenderedItems = items;
   const checked = ladelisteChecked.get(r.id) || new Set();
-  const withoutPaket = r.stops.filter((s) => s.kind === 'customer' && !s.paket).length;
+  const tk = isTkTour(r);
+  const withoutPaket = tk ? 0 : r.stops.filter((s) => s.kind === 'customer' && !skipsDoor(s) && !s.paket).length;
 
   // The row index, not the label, is what goes into `onclick`: the label is
   // the driver's own free text and has no business being interpolated into
@@ -4922,7 +5055,7 @@ function renderLadeliste() {
 
   renderSheetShell(`
     <h2 class="text-[22px] font-bold mb-1">Ladeliste</h2>
-    <p class="text-[13px] text-black/55 mb-4 leading-snug">Alle Pakete dieser Route zusammengezählt. Vor der Abfahrt abhaken, was tatsächlich im Auto liegt.</p>
+    <p class="text-[13px] text-black/55 mb-4 leading-snug">${tk ? 'Kunde für Kunde, der letzte Stopp zuerst — so wird das Auto beladen. Abhaken, was drin liegt.' : 'Alle Pakete dieser Tour zusammengezählt. Vor der Abfahrt abhaken, was tatsächlich im Auto liegt.'}</p>
     ${items.length ? `
       <p id="lade-progress" aria-live="polite" class="text-[13px] font-medium text-black/55 px-1 pb-1.5">${ladelisteProgress(items, checked)}</p>
       <div class="${GROUP}">${items.map(row).join('')}</div>
@@ -4934,7 +5067,7 @@ function renderLadeliste() {
     ` : `
       <div class="${CARD} px-4 py-6 text-center">
         <p class="text-[15px] font-medium text-black/70">Keine Paketangaben</p>
-        <p class="text-[13px] text-black/55 mt-1 leading-snug">Kein Stopp dieser Route hat etwas im Feld „Paket" stehen. Trag es beim Stopp ein (z.B. „2x TGM7"), dann wird hier automatisch zusammengezählt.</p>
+        <p class="text-[13px] text-black/55 mt-1 leading-snug">Kein Stopp dieser Tour hat etwas im Feld „Paket" stehen. Trag es beim Stopp ein (z.B. „2x TGM7"), dann wird hier automatisch zusammengezählt.</p>
       </div>
       <div class="mt-4 pb-2">
         <button type="button" onclick="closeSheet()" class="press-98 w-full py-3 rounded-xl bg-brand-600 font-semibold text-white">Schließen</button>
@@ -5013,8 +5146,8 @@ function openPinDropSheet(data, current = null) {
   const zoom = correcting ? 18 : 15;
   const heading = correcting ? 'Standort auf der Karte setzen' : 'Adresse nicht automatisch gefunden';
   const explainer = correcting
-    ? `Tippe auf das richtige Haus für „${escapeHtml(data.strasse)}, ${escapeHtml(data.plz)} Wien" — oder ziehe den Pin dorthin. Mit „Luftbild" siehst du die Dächer.`
-    : `„${escapeHtml(data.strasse)}, ${escapeHtml(data.plz)} Wien" – tippe auf die Karte, um den Standort selbst zu markieren. Der Stopp wird trotzdem hinzugefügt.`;
+    ? `Tippe auf das richtige Haus für „${escapeHtml(data.strasse)}, ${escapeHtml(data.plz)}" — oder ziehe den Pin dorthin. Mit „Luftbild" siehst du die Dächer.`
+    : `„${escapeHtml(data.strasse)}, ${escapeHtml(data.plz)}" – tippe auf die Karte, um den Standort selbst zu markieren. Der Stopp wird trotzdem hinzugefügt.`;
 
   renderSheetShell(`
     <h2 class="text-[19px] font-bold mb-1">${heading}</h2>
@@ -5176,7 +5309,7 @@ function fmtDate(iso) {
 // ---------------------------------------------------------------------
 function renderTabBar() {
   const tabs = [
-    { id: 'routes', label: 'Routen', icon: ICONS.tabRoutes },
+    { id: 'routes', label: 'Touren', icon: ICONS.tabRoutes },
     { id: 'now', label: 'Jetzt', icon: ICONS.tabNow },
     { id: 'map', label: 'Karte', icon: ICONS.tabMap },
     { id: 'verlauf', label: 'Verlauf', icon: ICONS.archive },
@@ -5391,7 +5524,7 @@ function renderRoutesTab() {
       <div class="flex-1 min-w-0">
         <p class="font-medium truncate flex items-center gap-1.5">
           ${escapeHtml(r.name)}
-          ${r.needs_optimize ? `<span class="w-1.5 h-1.5 rounded-full bg-warn shrink-0" title="Route nicht aktuell"></span>` : ''}
+          ${r.needs_optimize ? `<span class="w-1.5 h-1.5 rounded-full bg-warn shrink-0" title="Reihenfolge nicht aktuell"></span>` : ''}
         </p>
         <p class="text-[13px] text-black/55 mt-0.5">${fmtDate(r.created_at)} · ${r.delivered_count}/${r.customer_count} geliefert</p>
         ${r.customer_count ? `<div class="h-1 bg-black/10 rounded-full overflow-hidden mt-1.5"><div class="h-full bg-success" style="width:${progress}%"></div></div>` : ''}
@@ -5406,13 +5539,13 @@ function renderRoutesTab() {
       <div class="sticky top-0 z-20 bg-[#F2F2F7]/85 backdrop-blur-xl border-b border-black/10" style="padding-top: calc(env(safe-area-inset-top) + 0.5rem)">
         <div class="flex items-center justify-between px-4 pb-2.5">
           <span class="w-8"></span>
-          <p data-compact-title class="compact-title text-[17px] font-semibold" style="opacity:0">Routen</p>
+          <p data-compact-title class="compact-title text-[17px] font-semibold" style="opacity:0">Touren</p>
           <button onclick="openNewTourSheet()" aria-label="Neue Tour" title="Neue Tour" class="tap-target press-fade w-8 h-8 flex items-center justify-center text-brand-600 text-lg">${ICONS.plus}</button>
         </div>
       </div>
 
       <div class="px-4">
-        <h1 data-large-title class="large-title text-[34px] font-bold tracking-tight pt-3 pb-4">Routen</h1>
+        <h1 data-large-title class="large-title text-[34px] font-bold tracking-tight pt-3 pb-4">Touren</h1>
 
         ${active.length ? `<div class="${GROUP}">${active.map(routeRow).join('')}</div>` : `
           <div class="text-center text-black/55" style="padding: 3.5rem .5rem 1rem">
@@ -5488,7 +5621,7 @@ function renderMapTab() {
     return `
       <div role="main" class="flex-1 min-h-0 flex flex-col items-center justify-center px-8 text-center text-black/55">
         <span class="text-4xl flex justify-center mb-3 opacity-40">${ICONS.tabMap}</span>
-        <p class="text-[15px]">Noch keine aktive Route.<br/>Lege zuerst eine Route an.</p>
+        <p class="text-[15px]">Noch keine aktive Tour.<br/>Lade zuerst eine unter „Touren“.</p>
       </div>
     `;
   }
@@ -5968,6 +6101,145 @@ function saveKilometer() {
 }
 
 // ---------------------------------------------------------------------
+// Reihenfolge — the stops in the driver's own order.
+//
+// The computed order is the shortest drive, which is not always the right
+// one: a customer who has to eat at eleven, a street that is closed. Here
+// the stops are moved up and down with two buttons a row — no dragging,
+// which on a phone in a van is how a stop ends up three places from where
+// it was meant to go. The tour is then driven as listed until "Reihenfolge
+// neu berechnen" is asked for again.
+// ---------------------------------------------------------------------
+let reorderIds = [];
+
+function openReorderSheet() {
+  const r = state.currentRoute;
+  if (!r) return;
+  reorderIds = r.stops.filter((s) => s.kind === 'customer').map((s) => s.id);
+  if (reorderIds.length < 2) { toast('Dafür braucht die Tour mindestens zwei Stopps.', 'info'); return; }
+  renderSheetShell(`
+    <h2 class="sheet-title">Reihenfolge</h2>
+    <p class="sheet-lead">Mit den Pfeilen einen Stopp nach oben oder unten schieben. Die Tour wird dann genau so gefahren.</p>
+    <div class="${GROUP}" data-reorder-list></div>
+    <div class="sheet-actions">
+      <button type="button" onclick="saveReorder()" class="press-98 wide-btn accent">Reihenfolge speichern</button>
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
+    </div>
+  `, { label: 'Reihenfolge' });
+  paintReorder();
+}
+
+function paintReorder() {
+  const list = document.querySelector('[data-reorder-list]');
+  if (!list) return;
+  const last = reorderIds.length - 1;
+  list.innerHTML = reorderIds.map((id, i) => {
+    const s = getStop(id);
+    if (!s) return '';
+    return `
+      <div class="reorder-row" data-reorder-row="${id}">
+        <span class="reorder-num">${i + 1}</span>
+        <span class="flex-1 min-w-0"><span class="block font-medium truncate">${escapeHtml(s.kunde)}</span><span class="block text-[13px] text-black/55 truncate">${escapeHtml(stopAddress(s))}</span></span>
+        <button type="button" onclick="moveReorder(${id}, -1)" ${i === 0 ? 'disabled' : ''} aria-label="${escapeAttr(`${s.kunde} nach oben`)}" class="reorder-btn">${ICONS.arrowUp}</button>
+        <button type="button" onclick="moveReorder(${id}, 1)" ${i === last ? 'disabled' : ''} aria-label="${escapeAttr(`${s.kunde} nach unten`)}" class="reorder-btn">${ICONS.arrowDown}</button>
+      </div>`;
+  }).join('');
+}
+
+function moveReorder(id, by) {
+  const i = reorderIds.indexOf(id);
+  const j = i + by;
+  if (i < 0 || j < 0 || j >= reorderIds.length) return;
+  [reorderIds[i], reorderIds[j]] = [reorderIds[j], reorderIds[i]];
+  paintReorder();
+  // The row just moved, flashed, so the eye follows it to where it went.
+  document.querySelector(`[data-reorder-row="${id}"]`)?.animate(
+    [{ backgroundColor: 'rgba(237,22,57,0.16)' }, { backgroundColor: 'rgba(237,22,57,0)' }],
+    { duration: 700, easing: 'ease-out' });
+  if (navigator.vibrate) navigator.vibrate(8);
+}
+
+async function saveReorder() {
+  const ids = [...reorderIds];
+  const r = state.currentRoute;
+  closeSheet();
+  if (!r) return;
+  const before = r.stops.filter((s) => s.kind === 'customer').map((s) => s.id);
+  if (before.join() === ids.join()) return;
+  await refreshCurrentRoute(
+    () => api(`/routes/${r.id}/order`, { method: 'PUT', retry: true, body: JSON.stringify({ stop_ids: ids }) }),
+    'Reihenfolge wird gespeichert …',
+  );
+}
+
+// ---------------------------------------------------------------------
+// Tour vorbereiten — the checklist that runs while the van is still in the
+// yard, where every problem this app can have is still cheap to fix: an
+// order that was never computed, an address the map only guessed at, ticks
+// left over from the last time the tour was driven. Each line that needs
+// something has the button that does it right on it.
+// ---------------------------------------------------------------------
+function preflightFindings(r) {
+  const snap = routeSnapshot(r);
+  const customers = r.stops.filter((s) => s.kind === 'customer');
+  const owed = customers.filter((s) => !skipsDoor(s));
+  if (!owed.length) {
+    return [{ level: 'problem', icon: ICONS.box, title: 'Keine Stopps', detail: 'Lade die Tour von Gourmet oder füg Stopps mit dem + dazu.', action: `openGourmetSheet(${r.id})`, actionLabel: 'Von Gourmet laden' }];
+  }
+  const out = [];
+  if (r.needs_optimize || !r.geometry?.length) {
+    out.push({ level: 'problem', icon: ICONS.refresh, title: 'Reihenfolge nicht aktuell', detail: 'Die Reihenfolge und die Kilometer stimmen noch nicht.', action: 'manualOptimize()', actionLabel: 'Jetzt berechnen' });
+  } else {
+    out.push({ level: 'ok', icon: ICONS.checkCircle, title: r.hand_ordered ? 'Eigene Reihenfolge' : 'Reihenfolge ist berechnet', detail: `${fmtKm(snap.totalKm)} · ${Math.round(snap.totalMinutes)} min Fahrzeit` });
+  }
+  const rough = owed.filter((s) => s.location_precision && !s.pinned);
+  if (rough.length) {
+    out.push({ level: 'problem', icon: ICONS.warning, title: `${rough.length} ungenaue ${rough.length === 1 ? 'Adresse' : 'Adressen'}`, detail: `${rough.slice(0, 3).map((s) => s.kunde).join(', ')}${rough.length > 3 ? ' …' : ''} — Stopp antippen, „Bearbeiten“, Pin auf das Haus setzen.` });
+  } else {
+    out.push({ level: 'ok', icon: ICONS.mapPin, title: 'Alle Adressen gefunden' });
+  }
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const stale = customers.filter((s) => s.outcome && !skipsDoor(s) && !(Date.parse(s.settled_at) >= today.getTime())).length;
+  if (stale) {
+    out.push({ level: 'problem', icon: ICONS.checkCircle, title: `${stale} ${stale === 1 ? 'Stopp ist' : 'Stopps sind'} noch von einem früheren Tag abgehakt`, detail: 'Setz den Lieferstatus zurück, bevor du losfährst.', action: 'resetDelivered()', actionLabel: 'Zurücksetzen' });
+  }
+  const pieces = ladelisteItems(r).reduce((a, x) => a + x.qty, 0);
+  if (pieces) out.push({ level: 'note', icon: ICONS.box, title: `${pieces} ${pieces === 1 ? 'Position' : 'Positionen'} einladen`, detail: 'Die Ladeliste zählt sie zusammen.', action: 'renderLadeliste()', actionLabel: 'Ladeliste' });
+  const notes = owed.filter((s) => (s.notiz || '').trim()).length;
+  if (notes) out.push({ level: 'note', icon: ICONS.note, title: `${notes} ${notes === 1 ? 'Notiz' : 'Notizen'} auf der Tour`, detail: 'Stehen bei den Stopps — vor dem Läuten lesen.' });
+  const finish = snap.etaFinish();
+  if (finish && !out.some((f) => f.level === 'problem')) out.push({ level: 'note', icon: ICONS.flag, title: `Fertig gegen ${fmtClock(finish)}`, detail: 'Wenn du jetzt losfährst.' });
+  return out;
+}
+
+function openPreflightSheet() {
+  const r = state.currentRoute;
+  if (!r) return;
+  const findings = preflightFindings(r);
+  const ready = !findings.some((f) => f.level === 'problem');
+  const tone = { ok: '#248A3D', note: 'rgba(0,0,0,.45)', problem: '#B26A00' };
+  renderSheetShell(`
+    <h2 class="sheet-title">Tour vorbereiten</h2>
+    <p class="sheet-lead">${ready ? 'Alles bereit — gute Fahrt.' : 'Vor der Abfahrt ist noch etwas zu tun.'}</p>
+    <div class="${GROUP} mb-4">
+      ${findings.map((f) => `
+        <div class="flex items-start gap-3 px-4 py-3.5">
+          <span class="flex shrink-0 text-xl" style="margin-top:.1rem;color:${tone[f.level]}">${f.icon}</span>
+          <span class="flex-1 min-w-0">
+            <span class="block text-[15px] font-medium">${escapeHtml(f.title)}</span>
+            ${f.detail ? `<span class="block text-[13px] text-black/55 leading-snug mt-0.5">${escapeHtml(f.detail)}</span>` : ''}
+            ${f.action ? `<button type="button" onclick="closeSheet(); ${f.action}" class="press-98 preflight-action">${f.actionLabel}</button>` : ''}
+          </span>
+        </div>`).join('')}
+    </div>
+    <div class="pb-2">
+      ${ready ? `<button type="button" onclick="closeSheet(); switchTab('now')" class="press-98 wide-btn accent">Losfahren</button>` : ''}
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Schließen</button>
+    </div>
+  `, { label: 'Tour vorbereiten' });
+}
+
+// ---------------------------------------------------------------------
 // Phone numbers. A stop can carry the customer's own number (`telefon`), and
 // the office's lists routinely put another one in the note — a daughter, a
 // Heimhilfe. Both are offered on Jetzt, the note's only when it is not the
@@ -6020,7 +6292,7 @@ function nowStopCard(r, stop) {
         </div>
         ${meta ? '' : `<button onclick="openStopMenu(getStop(${stop.id}))" aria-label="Mehr" title="Mehr" class="tap-target press-fade w-9 h-9 shrink-0 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>`}
       </div>
-      ${stop.paket && !meta ? `<p class="now-fact"><span>${ICONS.box}</span><span style="font-weight:600">${escapeHtml(stop.paket)}</span></p>` : ''}
+      ${displayPaket(stop, r) && !meta ? `<p class="now-fact"><span>${ICONS.box}</span><span style="font-weight:600">${escapeHtml(displayPaket(stop, r))}</span></p>` : ''}
       ${stop.notiz && !meta ? `<p class="now-fact"><span>${ICONS.note}</span><span>${escapeHtml(stop.notiz)}</span></p>` : ''}
       ${precision ? `<p class="now-fact warn"><span>${ICONS.warning}</span><span>${precision}</span></p>` : ''}
       <div style="margin-top: 1.25rem">
@@ -6146,7 +6418,7 @@ function renderVerlaufTab() {
         ${done.length ? `<div class="${GROUP}">${done.map(routeRow).join('')}</div>` : `
           <div class="text-center py-20 text-black/55">
             <span class="text-4xl flex justify-center mb-3 opacity-40">${ICONS.archive}</span>
-            <p class="text-[15px]">Noch keine abgeschlossene Route.</p>
+            <p class="text-[15px]">Noch keine abgeschlossene Tour.</p>
           </div>
         `}
       </div>
@@ -6185,15 +6457,23 @@ function renderMoreTab() {
           </div>
           <button onclick="clearOfflineCache()" class="${ROW}">
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.refresh}</span>
-            <p class="flex-1 text-[15px]">Offline-Daten leeren</p>
+            <div class="flex-1 min-w-0"><p class="text-[15px]">App neu laden</p><p class="text-[13px] text-black/55">Hilft, wenn etwas hängt. Touren bleiben erhalten.</p></div>
           </button>
         </div>
 
         <p class="${SECTION_LABEL}">Zusteller-Tools</p>
         <div class="${GROUP}">
+          <button onclick="openGourmetAccount()" class="${ROW}">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.person}</span>
+            <div class="flex-1 min-w-0">
+              <p class="text-[15px]">Gourmet-Anmeldung</p>
+              <p class="text-[13px] text-black/55">Zugang zum Zusteller-Portal</p>
+            </div>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>
           <a href="https://zusteller.gourmet-daheim.at/#/customers" target="_blank" rel="noopener" class="${ROW}">
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.external}</span>
-            <p class="flex-1 text-[15px]">Gourmet</p>
+            <p class="flex-1 text-[15px]">Gourmet-Kundenliste öffnen</p>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </a>
           <button onclick="renderTurcodeSheet()" class="${ROW}">
@@ -6255,9 +6535,9 @@ function legLabel(stop, extraClass = 'mt-1') {
 }
 
 function stopKindMeta(stop) {
-  if (stop.kind === 'start') return { icon: ICONS.house, title: 'Start', subtitle: `${stop.strasse}, ${stop.plz} Wien` };
-  if (stop.kind === 'via') return { icon: ICONS.box, title: 'Lager', subtitle: `${stop.strasse}, ${stop.plz} Wien` };
-  if (stop.kind === 'end') return { icon: ICONS.flag, title: 'Ziel', subtitle: `${stop.strasse}, ${stop.plz} Wien` };
+  if (stop.kind === 'start') return { icon: ICONS.house, title: 'Start', subtitle: `${stop.strasse}, ${stop.plz}` };
+  if (stop.kind === 'via') return { icon: ICONS.box, title: 'Lager', subtitle: `${stop.strasse}, ${stop.plz}` };
+  if (stop.kind === 'end') return { icon: ICONS.flag, title: 'Ziel', subtitle: `${stop.strasse}, ${stop.plz}` };
   return null;
 }
 
@@ -6387,7 +6667,8 @@ function renderFixedRow(s, meta, animIndex = null, isNext = false) {
       <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 flex items-center justify-center text-base ${skipped ? 'text-black/25' : 'text-black/60'}">${meta.icon}</span>
       <div class="flex-1 min-w-0 pt-0.5 select-none cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
         role="button" tabindex="0"
-        aria-label="${escapeAttr(`${meta.title}, ${meta.subtitle} — ${skipped ? 'übersprungen, wieder einplanen' : 'überspringen'}`)}"
+        aria-label="${escapeAttr(`${meta.title}, ${meta.subtitle} — ändern`)}"
+        onclick="stopRowClick(event, ${s.id})"
         ontouchstart="stopLongPressStart(event, ${s.id})"
         ontouchend="stopLongPressEnd(event)"
         ontouchcancel="stopLongPressEnd(event)"
@@ -6401,7 +6682,7 @@ function renderFixedRow(s, meta, animIndex = null, isNext = false) {
         <div class="flex items-center gap-1.5 flex-wrap">
           <p class="font-medium ${skipped ? 'text-black/40 line-through' : done ? 'text-black/55 line-through' : ''}">${meta.title}</p>
           ${isNext ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded">Nächster Stopp</span>` : ''}
-          ${skipped ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-black/55 bg-black/[0.07] px-1.5 py-0.5 rounded">Übersprungen</span>` : ''}
+          ${skipped ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-black/55 bg-black/[0.07] px-1.5 py-0.5 rounded">${s.kind === 'start' ? 'Ab Standort' : 'Übersprungen'}</span>` : ''}
         </div>
         <p class="text-[13px] ${skipped ? 'text-black/35' : 'text-black/55'}">${escapeHtml(meta.subtitle)}</p>
         ${skipped ? '' : legLabel(s)}
@@ -6466,7 +6747,8 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
     <div data-stop-row="${s.id}" ${isNext && !delivered ? 'data-next-stop' : ''} class="${animClass}flex items-start gap-2 px-4 py-3.5 ${isNext && !delivered ? 'bg-brand-50/60' : ''}"${animStyle}>
       <div class="flex-1 min-w-0 select-none cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
         role="button" tabindex="0"
-        aria-label="${escapeAttr(`${s.kunde}, ${s.strasse}, ${s.plz} Wien${s.outcome ? `, ${OUTCOMES[s.outcome]?.short || ''}` : ''} — Aktionen`)}"
+        aria-label="${escapeAttr(`${s.kunde}, ${s.strasse}, ${s.plz}${s.outcome ? `, ${OUTCOMES[s.outcome]?.short || ''}` : ''} — Aktionen`)}"
+        onclick="stopRowClick(event, ${s.id})"
         ontouchstart="stopLongPressStart(event, ${s.id})"
         ontouchend="stopLongPressEnd(event)"
         ontouchcancel="stopLongPressEnd(event)"
@@ -6484,9 +6766,9 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
           ${precisionBadge}
         </div>
         <p class="font-medium ${delivered ? 'text-black/55' : ''} ${struck ? 'line-through' : ''}">${escapeHtml(s.kunde)}</p>
-        <p class="text-[13px] ${delivered ? 'text-black/55' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien</p>
-        ${s.paket ? (() => {
-          const qty = paketQty(s.paket);
+        <p class="text-[13px] ${delivered ? 'text-black/55' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)}</p>
+        ${displayPaket(s) ? (() => {
+          const qty = isTkTour(state.currentRoute) ? (s.paket_count || 1) : paketQty(s.paket);
           const multi = qty > 1 && !delivered;
           return `<p class="inline-flex items-center gap-1 max-w-full text-[12px] ${multi ? 'font-bold' : 'font-medium'} mt-1.5 px-1.5 py-0.5 rounded ${
             delivered ? 'text-black/55 bg-black/5' : multi ? 'text-white bg-brand-600 shadow-sm' : 'text-brand-700 bg-brand-50'
@@ -6494,7 +6776,7 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
             multi
               ? `<span class="shrink-0 w-4 h-4 rounded-full bg-white/25 flex items-center justify-center text-[10px] font-bold">${qty}</span>`
               : `<span class="flex shrink-0">${ICONS.box}</span>`
-          }<span class="truncate">${escapeHtml(s.paket)}</span></p>`;
+          }<span class="truncate">${escapeHtml(displayPaket(s))}</span></p>`;
         })() : ''}
         ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
         ${skipsDoor(s) ? '' : legLabel(s, 'mt-1.5')}
@@ -7245,7 +7527,7 @@ function newMap(container, opts) {
   // MapLibre labels its canvas "Map" in English. This app is German
   // throughout, and a screen reader switching language mid-screen for one
   // word is exactly the seam that gives a web app away.
-  try { map.getCanvas().setAttribute('aria-label', 'Karte der Route'); } catch (_) { /* no canvas yet */ }
+  try { map.getCanvas().setAttribute('aria-label', 'Karte der Tour'); } catch (_) { /* no canvas yet */ }
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
   map.addControl(basemapControl(), 'top-right');
   // No heading indicator, deliberately, and this is the note that stops it
@@ -7546,7 +7828,7 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
       // Position in the tour, who it is, and its state — the three things
       // the marker's colour and number convey to someone who can see it.
       const status = s.outcome ? OUTCOMES[s.outcome]?.short || 'erledigt' : isNext ? 'nächster Stopp' : 'offen';
-      label = `${skipped ? 'Stopp' : `Stopp ${customerNum}`}: ${s.kunde}, ${s.strasse}, ${s.plz} Wien — ${status}`;
+      label = `${skipped ? 'Stopp' : `Stopp ${customerNum}`}: ${s.kunde}, ${s.strasse}, ${s.plz} — ${status}`;
     }
     el.classList.add('ear-route-marker');
     const precisionNote = s.location_precision === 'street' ? '<br><i>≈ nächstgelegene bekannte Hausnummer</i>'
@@ -7568,7 +7850,7 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
     }
 
     const popup = new maplibregl.Popup({ offset: [0, -36], closeButton: false }).setHTML(
-      `<b>${escapeHtml(meta ? meta.title : s.kunde)}</b><br>${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)} Wien${precisionNote}`
+      `<b>${escapeHtml(meta ? meta.title : s.kunde)}</b><br>${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)}${precisionNote}`
     );
 
     const marker = new maplibregl.Marker({ element: el, anchor: 'center', offset: [0, -22] })
@@ -7804,6 +8086,7 @@ function renderRouteDetail() {
         <p data-route-summary class="text-[13px] text-black/55 pb-3">${escapeHtml(routeSummaryText(r))}</p>
 
         <div data-optimize-slot>${optimizeBannerHtml()}</div>
+        ${r.hand_ordered && r.status === 'active' ? `<p class="now-caption" style="padding:0 .25rem .75rem">Eigene Reihenfolge — die Tour wird so gefahren, wie sie hier steht.</p>` : ''}
 
         <button onclick="switchTab('map')" class="${CARD} w-full text-left px-4 py-3.5 flex items-center gap-3 mb-4">
           <div class="flex-1 min-w-0">
@@ -7818,6 +8101,12 @@ function renderRouteDetail() {
           <span class="text-brand-600 shrink-0 flex items-center gap-1 text-[13px] font-medium">${ICONS.mapPin} Karte<span class="flex">${ICONS.chevron}</span></span>
         </button>
 
+        ${r.status === 'active' && r.customer_count > 0 && !r.stops.some((s) => s.outcome) ? `
+          <button onclick="openPreflightSheet()" class="${CARD} press-98 w-full text-left px-4 py-3.5 flex items-center gap-3 mb-4">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-lg">${ICONS.checkCircle}</span>
+            <span class="flex-1 min-w-0"><span class="block font-semibold">Tour vorbereiten</span><span class="block text-[13px] text-black/55">Kurz prüfen, ob vor der Abfahrt alles passt.</span></span>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>` : ''}
         <div data-next-stop-bar-slot>${nextStopBarHtml()}</div>
 
         ${stopSearchBar()}
@@ -7846,7 +8135,7 @@ function nextStopBar(stops, firstOpenIdx) {
       <span class="flex-1 min-w-0">
         <span class="block text-[11px] font-semibold uppercase tracking-wide text-white">Nächster Stopp</span>
         <span class="block text-[15px] font-semibold truncate">${escapeHtml(stopKindMeta(next)?.title || next.kunde)}</span>
-        <span class="block text-[12px] text-white truncate">${escapeHtml(next.strasse)}, ${escapeHtml(next.plz)} Wien</span>
+        <span class="block text-[12px] text-white truncate">${escapeHtml(next.strasse)}, ${escapeHtml(next.plz)}</span>
       </span>
       <span class="shrink-0 text-white/70 flex">${ICONS.chevron}</span>
     </button>
@@ -7962,7 +8251,7 @@ function resetStopFilter() {
 function stopSearchBar() {
   return `
     <div role="search" class="pb-2">
-      <label for="stop-search" class="sr-only">Kunde oder Adresse in dieser Route suchen</label>
+      <label for="stop-search" class="sr-only">Kunde oder Adresse in dieser Tour suchen</label>
       <div class="relative">
         <span class="absolute left-3 top-1/2 -translate-y-1/2 text-black/55 text-[17px] flex pointer-events-none">${ICONS.search}</span>
         <input id="stop-search" type="search" value="${escapeAttr(stopFilter.query)}"
@@ -8026,7 +8315,7 @@ function stopListHtml({ animate = false } = {}) {
       <div class="${CARD} px-4 py-7 text-center">
         <span class="text-3xl flex justify-center mb-2 opacity-40">${ICONS.search}</span>
         <p class="text-[15px] font-medium text-black/70">Kein Stopp gefunden</p>
-        <p class="text-[13px] text-black/55 mt-1 leading-snug">In dieser Route passt kein Kundenstopp zu „${escapeHtml(stopFilter.query.trim())}".</p>
+        <p class="text-[13px] text-black/55 mt-1 leading-snug">In dieser Tour passt kein Stopp zu „${escapeHtml(stopFilter.query.trim())}".</p>
       </div>`;
   }
   return `<div class="${GROUP}">${matches.map(row).join('')}</div>`;
@@ -8073,8 +8362,8 @@ function optimizeBannerHtml() {
   if (!state.currentRoute?.needs_optimize) return '';
   return `
     <button onclick="manualOptimize()" class="press-98 w-full flex items-center justify-between gap-2 bg-warn/10 text-warnText text-[13px] font-semibold px-4 py-2.5 rounded-xl mb-3">
-      <span class="flex items-center gap-1.5"><span class="flex">${ICONS.warning}</span>Route nicht aktuell</span>
-      <span class="underline">Jetzt optimieren</span>
+      <span class="flex items-center gap-1.5"><span class="flex">${ICONS.warning}</span>Reihenfolge nicht aktuell</span>
+      <span class="underline">Jetzt berechnen</span>
     </button>`;
 }
 
@@ -8186,9 +8475,11 @@ function renderRouteMenu() {
   </button>`;
   return `
     <div id="route-menu" role="menu" aria-label="Weitere Aktionen" style="width: 17rem" class="hidden absolute right-0 top-10 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden z-30 divide-y divide-black/10">
+      ${r.status === 'active' ? item("openPreflightSheet()", ICONS.checkCircle, "Tour vorbereiten") : ''}
       ${item("renderLadeliste()", ICONS.box, "Ladeliste")}
       ${item(`openGourmetSheet(${r.id})`, ICONS.download, "Stopps von Gourmet laden")}
-      ${item("manualOptimize()", ICONS.compass, "Reihenfolge neu berechnen")}
+      ${item("openReorderSheet()", ICONS.sort, "Reihenfolge ändern")}
+      ${item("manualOptimize()", ICONS.compass, r.hand_ordered ? "Kürzeste Reihenfolge berechnen" : "Reihenfolge neu berechnen")}
       ${item("openReportSheet()", ICONS.doc, "Tagesabschluss")}
       ${item("renameRoute()", ICONS.pencil, "Umbenennen")}
       ${item("toggleRouteStatus()", ICONS.checkCircle, r.status === 'completed' ? 'Wieder aktivieren' : 'Tour abschließen')}
