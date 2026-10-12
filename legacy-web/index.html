@@ -4118,9 +4118,9 @@ function renderSheetShell(bodyHtml, { scrollable = true, label = '' } = {}) {
   // it; this covers a sheet replaced directly by another sheet.
   if (pinDropMap) { try { pinDropMap.remove(); } catch (_) { /* already gone */ } pinDropMap = null; pinDropMarker = null; }
   root.innerHTML = `
-    <div class="fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true" ${label ? `aria-label="${escapeAttr(label)}"` : ''}>
+    <div class="fixed inset-0 z-50 flex items-end justify-center" style="bottom: var(--kb, 0px)" role="dialog" aria-modal="true" ${label ? `aria-label="${escapeAttr(label)}"` : ''}>
       <div id="sheet-backdrop" class="sheet-backdrop absolute inset-0 bg-black/30" onclick="closeSheet()"></div>
-      <div class="sheet-panel relative w-full max-w-md bg-[#F2F2F7] rounded-t-3xl flex flex-col ${scrollable ? 'max-h-[92vh]' : ''} shadow-sheet" style="padding-bottom: calc(env(safe-area-inset-bottom) + 1.25rem)">
+      <div class="sheet-panel relative w-full max-w-md bg-[#F2F2F7] rounded-t-3xl flex flex-col ${scrollable ? 'max-h-[92vh]' : ''} shadow-sheet" style="padding-bottom: calc(env(safe-area-inset-bottom) * var(--kb-off, 1) + 1.25rem); ${scrollable ? 'max-height: calc(var(--vvh, 100vh) * .92)' : ''}">
         <div class="w-9 h-1.5 bg-black/15 rounded-full mx-auto mt-3 mb-1 shrink-0"></div>
         <div class="${scrollable ? 'overflow-y-auto momentum' : ''} px-5 pt-3">${bodyHtml}</div>
       </div>
@@ -4132,6 +4132,24 @@ function renderSheetShell(bodyHtml, { scrollable = true, label = '' } = {}) {
   // parked at the bottom would put it straight over the sheet's buttons.
   positionToasts();
 }
+
+// The on-screen keyboard shrinks only the visual viewport, so a sheet pinned
+// to the layout viewport would sit half behind it and its list would run
+// under the keys. Track the visible area and let the sheet end above them.
+(function trackKeyboard() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const update = () => {
+    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    const root = document.documentElement.style;
+    root.setProperty('--kb', `${kb > 80 ? kb : 0}px`);
+    root.setProperty('--kb-off', kb > 80 ? '0' : '1');
+    root.setProperty('--vvh', `${vv.height}px`);
+  };
+  vv.addEventListener('resize', update);
+  vv.addEventListener('scroll', update);
+  update();
+})();
 
 function closeSheet() {
   // A load from Gourmet in flight has deliberately locked the sheet (see
