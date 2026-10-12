@@ -157,6 +157,7 @@ enum RouteStore {
         LadelisteState.forget(id)
         PortalTourLink.forget(id)
         ManualOtherStops.forget(id)
+        TourDeparture.forget(id)
     }
 
     /// Deletes by id rather than by object, because the caller is a list's
@@ -175,6 +176,7 @@ enum RouteStore {
             LadelisteState.forget(id)
             PortalTourLink.forget(id)
             ManualOtherStops.forget(id)
+            TourDeparture.forget(id)
         }
     }
 
@@ -223,6 +225,8 @@ enum RouteStore {
         // the reset, so a tour driven again opened with yesterday's boxes
         // already marked as loaded.
         LadelisteState.clearChecked(for: route.id)
+        // And with the day's departure: a tour driven again leaves again.
+        TourDeparture.forget(route.id)
         if wasDriven && reroute { rerouteBehind(route, in: context) }
     }
 

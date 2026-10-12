@@ -1109,7 +1109,10 @@ CREATE TABLE IF NOT EXISTS routes (
     -- 'vm' or 'tk', once the driver has picked one in the Ladeliste. NULL
     -- until then, on purpose: a tour nobody has switched by hand keeps
     -- following its name, including after a rename.
-    ladeliste_mode TEXT
+    ladeliste_mode TEXT,
+    -- When the van left for the Lager today (RFC 3339): the moment the
+    -- driver started navigation there. See `mark_departed`.
+    departed_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS stops (
@@ -1281,6 +1284,9 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     }
     if !route_cols.contains("ladeliste_mode") {
         conn.execute("ALTER TABLE routes ADD COLUMN ladeliste_mode TEXT", [])?;
+    }
+    if !route_cols.contains("departed_at") {
+        conn.execute("ALTER TABLE routes ADD COLUMN departed_at TEXT", [])?;
     }
     if !route_cols.contains("user_id") {
         conn.execute("ALTER TABLE routes ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE", [])?;
@@ -2514,6 +2520,7 @@ struct RouteRow {
     needs_optimize: bool,
     hand_ordered: bool,
     ladeliste_mode: Option<String>,
+    departed_at: Option<String>,
 }
 
 impl RouteRow {
@@ -2528,6 +2535,7 @@ impl RouteRow {
             needs_optimize: r.get::<_, i64>("needs_optimize")? != 0,
             hand_ordered: r.get::<_, i64>("hand_ordered")? != 0,
             ladeliste_mode: r.get("ladeliste_mode")?,
+            departed_at: r.get("departed_at")?,
         })
     }
 }
@@ -2742,6 +2750,9 @@ struct RouteDetail {
     hand_ordered: bool,
     /// The driver's own pick of VM or TK for this tour, if they made one.
     ladeliste_mode: Option<String>,
+    /// When the van left for the Lager today, if the driver started
+    /// navigation there.
+    departed_at: Option<String>,
     delivered_count: i64,
     customer_count: i64,
     total_km: f64,
@@ -2857,6 +2868,7 @@ fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, App
         needs_optimize: route.needs_optimize,
         hand_ordered: route.hand_ordered,
         ladeliste_mode: route.ladeliste_mode,
+        departed_at: route.departed_at,
         delivered_count: customer_stops.iter().filter(|s| s.delivered).count() as i64,
         customer_count: customer_stops.len() as i64,
         total_km: strip_negative_zero((total_km * 10.0).round() / 10.0),
@@ -4265,6 +4277,31 @@ struct PaceHistory {
     /// tour's own doors, pulled towards the figure for all of them. A round
     /// is the same customers every week, and the rounds are not alike.
     door_by_tour: HashMap<String, f64>,
+    /// Minutes from leaving for the Lager to ticking it: the drive there and
+    /// whatever the morning holds before the tick. Absent until two finished
+    /// tours carry a departure.
+    lead_minutes: Option<f64>,
+}
+
+/// One finished tour, as the pace is read from it.
+struct PaceTour {
+    name: String,
+    departed_at: Option<chrono::DateTime<chrono::Utc>>,
+    stops: Vec<PaceStop>,
+}
+
+/// Minutes from the departure to the Lager's tick. Nothing where the Lager
+/// was ticked by the first door rather than by hand, and nothing where the
+/// two are further apart than a morning: a stamp from another day.
+fn pace_lead(tour: &PaceTour) -> Option<f64> {
+    let departed = tour.departed_at?;
+    let loaded_at = tour.stops.iter().find(|s| s.kind == "via" && !s.excluded)?.settled_at?;
+    let first_door = tour.stops.iter().filter(|s| s.is_driven_door()).filter_map(|s| s.settled_at).min();
+    if first_door.is_some_and(|at| at <= loaded_at) {
+        return None;
+    }
+    let minutes = (loaded_at - departed).num_milliseconds() as f64 / 60_000.0;
+    (1.0..=180.0).contains(&minutes).then_some(minutes)
 }
 
 /// How many doors' worth the figure for all tours weighs against one tour's
@@ -4351,15 +4388,17 @@ fn pace_samples(ordered: &[PaceStop]) -> (Vec<f64>, Option<f64>) {
     (doors, wait)
 }
 
-fn learn_pace(tours: &[(String, Vec<PaceStop>)]) -> PaceHistory {
+fn learn_pace(tours: &[PaceTour]) -> PaceHistory {
     let mut doors: Vec<f64> = Vec::new();
     let mut waits: Vec<f64> = Vec::new();
+    let mut leads: Vec<f64> = Vec::new();
     let mut by_tour: HashMap<String, Vec<f64>> = HashMap::new();
-    for (name, tour) in tours {
-        let (d, w) = pace_samples(tour);
-        by_tour.entry(pace_tour_key(name)).or_default().extend(&d);
+    for tour in tours {
+        let (d, w) = pace_samples(&tour.stops);
+        by_tour.entry(pace_tour_key(&tour.name)).or_default().extend(&d);
         doors.extend(d);
         waits.extend(w);
+        leads.extend(pace_lead(tour));
     }
     if doors.len() < PACE_FEWEST_SAMPLES {
         return PaceHistory::default();
@@ -4384,6 +4423,11 @@ fn learn_pace(tours: &[(String, Vec<PaceStop>)]) -> PaceHistory {
         door_minutes: Some(door.clamp(2.0, PACE_CAP_MIN)),
         lager_minutes: (loading.len() >= 2).then(|| loading[loading.len() / 2]),
         door_by_tour,
+        // The median again: one morning in a traffic jam is not the next.
+        lead_minutes: {
+            leads.sort_by(|a, b| a.total_cmp(b));
+            (leads.len() >= 2).then(|| leads[leads.len() / 2])
+        },
     }
 }
 
@@ -4395,16 +4439,20 @@ async fn pace_history(
 ) -> Result<Json<PaceHistory>, AppError> {
     let conn = state.db()?;
     let mut stmt = conn.prepare(
-        "SELECT s.route_id, s.kind, s.excluded, s.outcome, s.delivered, s.settled_at, s.next_leg_min, r.name \
-         FROM stops s JOIN (SELECT id, created_at, name FROM routes WHERE status = 'completed' AND user_id = ?2 \
+        "SELECT s.route_id, s.kind, s.excluded, s.outcome, s.delivered, s.settled_at, s.next_leg_min, r.name, r.departed_at \
+         FROM stops s JOIN (SELECT id, created_at, name, departed_at FROM routes WHERE status = 'completed' AND user_id = ?2 \
                             ORDER BY created_at DESC LIMIT ?1) r ON r.id = s.route_id \
          ORDER BY s.route_id, s.order_index, s.id",
     )?;
-    let rows: Vec<(i64, String, PaceStop)> = stmt
+    let parse = |t: Option<String>| {
+        t.and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok()).map(|t| t.with_timezone(&chrono::Utc))
+    };
+    let rows: Vec<(i64, String, Option<chrono::DateTime<chrono::Utc>>, PaceStop)> = stmt
         .query_map(params![PACE_TOURS, user.id], |r| {
             Ok((
                 r.get(0)?,
                 r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                parse(r.get(8)?),
                 PaceStop {
                     kind: r.get(1)?,
                     excluded: r.get::<_, i64>(2)? != 0,
@@ -4418,14 +4466,14 @@ async fn pace_history(
             ))
         })?
         .collect::<Result<_, _>>()?;
-    let mut tours: Vec<(String, Vec<PaceStop>)> = Vec::new();
+    let mut tours: Vec<PaceTour> = Vec::new();
     let mut last_route = None;
-    for (route_id, name, stop) in rows {
+    for (route_id, name, departed_at, stop) in rows {
         if last_route != Some(route_id) {
-            tours.push((name, Vec::new()));
+            tours.push(PaceTour { name, departed_at, stops: Vec::new() });
             last_route = Some(route_id);
         }
-        tours.last_mut().expect("pushed above").1.push(stop);
+        tours.last_mut().expect("pushed above").stops.push(stop);
     }
     Ok(Json(learn_pace(&tours)))
 }
@@ -4503,6 +4551,60 @@ async fn set_position(
         params![payload.lat, payload.lon, chrono::Utc::now().timestamp(), route_id],
     )?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// A departure older than this is another day's: the tour was not reset, or
+/// the tap was made the evening before.
+const DEPARTURE_STALE_SECS: i64 = 4 * 3600;
+
+/// `POST /api/routes/:id/departed`: the driver has started navigation to the
+/// Lager, which is when the van leaves. The one moment of the day no tick
+/// marks -- and so the one stretch nothing could be learned about: what the
+/// morning takes before the Lager is ticked (see `learn_pace`).
+///
+/// Only on a tour that has not begun, with the Lager still open. The first
+/// tap stands: a second one on the way is not when the van left.
+async fn mark_departed(State(state): State<Arc<AppState>>, AxPath(route_id): AxPath<i64>) -> Result<Json<Value>, AppError> {
+    let conn = state.db()?;
+    require_route_exists(&conn, route_id)?;
+    let now = chrono::Utc::now();
+    let (status, stamped): (String, Option<String>) =
+        conn.query_row("SELECT status, departed_at FROM routes WHERE id = ?1", params![route_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let lager_open: bool = conn
+        .query_row(
+            "SELECT 1 FROM stops WHERE route_id = ?1 AND kind = 'via' AND excluded = 0 \
+             AND outcome IS NULL AND delivered = 0 LIMIT 1",
+            params![route_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    let under_way: bool = conn
+        .query_row(
+            &format!(
+                "SELECT 1 FROM stops s WHERE s.route_id = ?1 AND s.kind IN ('customer', 'via', 'end') \
+                 AND (s.outcome IS NOT NULL OR s.delivered = 1) AND NOT {SQL_SKIPS_DOOR} LIMIT 1"
+            ),
+            params![route_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    let fresh = stamped
+        .as_deref()
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .is_some_and(|t| {
+            let age = (now - t.with_timezone(&chrono::Utc)).num_seconds();
+            (0..DEPARTURE_STALE_SECS).contains(&age)
+        });
+    let departed_at = if status == "active" && lager_open && !under_way && !fresh {
+        let at = now.to_rfc3339();
+        conn.execute("UPDATE routes SET departed_at = ?1 WHERE id = ?2", params![at, route_id])?;
+        Some(at)
+    } else {
+        stamped
+    };
+    Ok(Json(json!({ "departed_at": departed_at })))
 }
 
 /// What a re-check did, so the app can tell the driver rather than silently
@@ -4760,6 +4862,8 @@ async fn reset_delivered(State(state): State<Arc<AppState>>, AxPath(route_id): A
             "UPDATE routes SET status = 'active', completed_at = NULL WHERE id = ?1 AND status = 'completed'",
             params![route_id],
         )?;
+        // A tour driven again leaves again.
+        tx.execute("UPDATE routes SET departed_at = NULL WHERE id = ?1", params![route_id])?;
         if was_driven {
             tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
         }
@@ -6652,6 +6756,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/routes/:id", get(get_route).patch(update_route).delete(delete_route))
         .route("/api/routes/:id/optimize", post(optimize_route))
         .route("/api/routes/:id/position", post(set_position))
+        .route("/api/routes/:id/departed", post(mark_departed))
         .route("/api/routes/:id/order", put(set_stop_order))
         .route("/api/routes/:id/reset-delivered", post(reset_delivered))
         .route("/api/routes/:id/recheck-addresses", post(recheck_addresses))
@@ -7157,6 +7262,29 @@ mod tests {
         }
     }
 
+    fn named(name: &str, stops: Vec<PaceStop>) -> PaceTour {
+        PaceTour { name: name.into(), departed_at: None, stops }
+    }
+
+    #[test]
+    fn finished_tours_teach_the_morning_before_the_lager() {
+        // Left at 08:00 on the test clock; the Lager ticked so many minutes
+        // later, the doors from an hour in.
+        let tour = |lager_at: i64| -> PaceTour {
+            let mut stops = vec![pace_stop("via", Some("delivered"), Some(lager_at), 10.0)];
+            stops.extend((0..12).map(|i| pace_stop("customer", Some("delivered"), Some(60 + i * 9), 3.0)));
+            let departed_at = stops[0].settled_at.map(|t| t - chrono::Duration::minutes(lager_at));
+            PaceTour { name: "A".into(), departed_at, stops }
+        };
+        assert_eq!(learn_pace(&[tour(30), tour(50), tour(40)]).lead_minutes, Some(40.0));
+        // One morning is not a history, and neither is a tour nobody stamped.
+        assert_eq!(learn_pace(&[tour(30)]).lead_minutes, None);
+        let unstamped = |t: PaceTour| PaceTour { departed_at: None, ..t };
+        assert_eq!(learn_pace(&[unstamped(tour(30)), unstamped(tour(50))]).lead_minutes, None);
+        // A Lager ticked by the first door measures nothing.
+        assert_eq!(learn_pace(&[tour(60), tour(60)]).lead_minutes, None);
+    }
+
     #[test]
     fn a_door_takes_the_gap_between_ticks_less_the_drive() {
         // Lager ticked at 0, ten minutes' drive, doors at 25 and 37 with a
@@ -7180,8 +7308,8 @@ mod tests {
         let tour = |n: i64| -> Vec<PaceStop> {
             (0..n).map(|i| pace_stop("customer", Some("delivered"), Some(i * 9), 3.0)).collect()
         };
-        assert_eq!(learn_pace(&[("A".into(), tour(5))]), PaceHistory::default());
-        let learned = learn_pace(&[("A".into(), tour(12))]);
+        assert_eq!(learn_pace(&[named("A", tour(5))]), PaceHistory::default());
+        let learned = learn_pace(&[named("A", tour(12))]);
         assert_eq!(learned.door_minutes, Some(6.0));
         assert_eq!(learned.lager_minutes, None);
     }
@@ -7194,7 +7322,7 @@ mod tests {
         let tour = |every: i64| -> Vec<PaceStop> {
             (0..12).map(|i| pace_stop("customer", Some("delivered"), Some(i * every), 3.0)).collect()
         };
-        let learned = learn_pace(&[("VM 5  FR".into(), tour(9)), ("TK 1 MO".into(), tour(15))]);
+        let learned = learn_pace(&[named("VM 5  FR", tour(9)), named("TK 1 MO", tour(15))]);
         assert_eq!(learned.door_minutes, Some(9.0));
         let quick = learned.door_by_tour["vm 5 fr"];
         let slow = learned.door_by_tour["tk 1 mo"];

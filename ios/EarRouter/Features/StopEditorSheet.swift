@@ -192,7 +192,10 @@ struct StopEditorSheet: View {
                             "Navigation starten",
                             systemImage: "arrow.trianglehead.turn.up.right"
                         ) {
-                            if let url = NavigationHandoff.url(for: stop) { openURL(url) }
+                            if let url = NavigationHandoff.url(for: stop) {
+                                TourDeparture.noteNavigation(to: stop)
+                                openURL(url)
+                            }
                         }
                         // Off the field being typed here, not off the stored
                         // value — so a number just corrected can be called

@@ -274,6 +274,104 @@ struct ArrivalEstimateTests {
         #expect(minutesAfterNoon(snap(route).eta(for: b, from: at(30))) == 40)
     }
 
+    // MARK: - Before the Lager's tick
+
+    /// What the morning takes before the Lager is ticked is learned from the
+    /// tours before this one, not read off the drive there: the Lager is still
+    /// reached when the drive says, and left when those tours left it.
+    @Test func theLagerIsLeftWhenTheToursBeforeLeftIt() throws {
+        let depot = fixed(.start), lager = fixed(.via)
+        let a = customer("A"), b = customer("B")
+        let route = try route([depot, lager, a, b])
+        let loading = RouteSnapshot.Pace.lagerMinutes
+        let learned = PaceHistory(doorMinutes: nil, lagerMinutes: nil, leadMinutes: 45)
+
+        #expect(minutesAfterNoon(snap(route, history: learned).eta(for: lager, from: noon)) == 10)
+        #expect(minutesAfterNoon(snap(route, history: learned).eta(for: a, from: noon)) == 45 + loading + 10)
+        #expect(
+            snap(route, history: learned).etaFinish(from: noon)
+                == snap(route).etaFinish(from: noon)?.addingTimeInterval(35 * 60))
+
+        // The same from a departure planned for tomorrow.
+        let planned = RouteSnapshot(route, history: learned, plannedStart: at(600), departedAt: at(-20))
+        #expect(minutesAfterNoon(planned.eta(for: a, from: noon)) == 600 + 45 + loading + 10)
+
+        // A figure shorter than the drive is no figure.
+        let short = PaceHistory(doorMinutes: nil, lagerMinutes: nil, leadMinutes: 4)
+        #expect(minutesAfterNoon(snap(route, history: short).eta(for: a, from: noon)) == 20 + loading)
+
+        // Ticked, the Lager is behind the van and the tick is what counts.
+        lager.record(.delivered, at: noon)
+        #expect(minutesAfterNoon(snap(route, history: learned).eta(for: a, from: at(5))) == loading + 10)
+    }
+
+    /// Navigation to the Lager is when the van left. Until the Lager is
+    /// ticked the estimate counts from there, not from whenever it is read —
+    /// and no further back than the clock, once the morning runs longer.
+    @Test func theDepartureIsWhereTheMorningIsCountedFrom() throws {
+        let depot = fixed(.start), lager = fixed(.via)
+        let a = customer("A")
+        let route = try route([depot, lager, a])
+        let loading = RouteSnapshot.Pace.lagerMinutes
+        let learned = PaceHistory(doorMinutes: nil, lagerMinutes: nil, leadMinutes: 45)
+        let left = RouteSnapshot(route, history: learned, departedAt: noon)
+
+        #expect(minutesAfterNoon(left.eta(for: lager, from: at(5))) == 10)
+        #expect(minutesAfterNoon(left.eta(for: a, from: at(5))) == 45 + loading + 10)
+        #expect(minutesAfterNoon(left.eta(for: a, from: at(60))) == 60 + loading + 10)
+
+        // Yesterday's tap says nothing about today.
+        let stale = RouteSnapshot(route, history: learned, departedAt: at(-600))
+        #expect(minutesAfterNoon(stale.eta(for: a, from: noon)) == 45 + loading + 10)
+    }
+
+    /// The tap is the stamp: navigation to the Lager before anything is
+    /// ticked, the first time only. Not navigation to a door, and not once
+    /// the tour is under way.
+    @Test func startingNavigationToTheLagerStampsTheDeparture() throws {
+        let depot = fixed(.start), lager = fixed(.via)
+        let a = customer("A")
+        let route = try route([depot, lager, a])
+        defer { TourDeparture.forget(route.id) }
+
+        TourDeparture.noteNavigation(to: a, at: noon)
+        #expect(TourDeparture.load(for: route.id) == nil)
+
+        TourDeparture.noteNavigation(to: lager, at: noon)
+        TourDeparture.noteNavigation(to: lager, at: at(12))
+        #expect(TourDeparture.load(for: route.id) == noon)
+        #expect(RouteSnapshot(route, history: .none).departedAt == noon)
+
+        // Another day's stamp gives way.
+        TourDeparture.noteNavigation(to: lager, at: at(24 * 60))
+        #expect(TourDeparture.load(for: route.id) == at(24 * 60))
+
+        TourDeparture.forget(route.id)
+        a.record(.delivered, at: noon)
+        TourDeparture.noteNavigation(to: lager, at: at(5))
+        #expect(TourDeparture.load(for: route.id) == nil)
+    }
+
+    /// Finished tours teach it: the middle one of the mornings they took. A
+    /// Lager ticked by the first door measures nothing here either.
+    @Test func finishedToursTeachTheMorningBeforeTheLager() throws {
+        func tour(lagerAt: Double) throws -> Route {
+            let lager = fixed(.via)
+            let stops = (0..<12).map { customer("K\($0)") }
+            let route = try route([lager] + stops, finished: true)
+            for (i, stop) in stops.enumerated() { stop.record(.delivered, at: at(60 + Double(i) * 14)) }
+            lager.record(.delivered, at: at(lagerAt))
+            return route
+        }
+        let tours = [try tour(lagerAt: 30), try tour(lagerAt: 50), try tour(lagerAt: 40)]
+        #expect(PaceHistory.learn(from: tours, departure: { _ in self.noon }).leadMinutes == 40)
+        #expect(PaceHistory.learn(from: tours, departure: { _ in nil }).leadMinutes == nil)
+        #expect(PaceHistory.learn(from: [tours[0]], departure: { _ in self.noon }).leadMinutes == nil)
+
+        let auto = [try tour(lagerAt: 60), try tour(lagerAt: 60)]
+        #expect(PaceHistory.learn(from: auto, departure: { _ in self.noon }).leadMinutes == nil)
+    }
+
     // MARK: - Pace
 
     /// Before the first tick the figure is the assumption — or what the tours

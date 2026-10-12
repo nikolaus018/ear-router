@@ -21,6 +21,10 @@ struct PaceHistory: Equatable, Sendable {
     var doorMinutes: Double?
     /// Minutes between ticking the Lager and driving off from it.
     var lagerMinutes: Double?
+    /// Minutes from leaving for the Lager to ticking it: the drive there and
+    /// whatever the morning holds before the tick. `nil` until two finished
+    /// tours carry a departure — see `TourDeparture`.
+    var leadMinutes: Double?
     /// The same figure for each tour driven before, by `tourKey`: that tour's
     /// own doors, pulled towards `doorMinutes` by `tourWeight`.
     ///
@@ -81,10 +85,16 @@ struct PaceHistory: Equatable, Sendable {
 
     /// Only finished tours: one still being driven is its own measurement —
     /// see `RouteSnapshot.measurePace` — and must not be counted twice.
+    ///
+    /// `departure` is where each tour's departure is read from; the tests
+    /// hand in their own.
     @MainActor
-    static func learn(from routes: [Route]) -> PaceHistory {
+    static func learn(
+        from routes: [Route], departure: (UUID) -> Date? = TourDeparture.load
+    ) -> PaceHistory {
         var doors: [Double] = []
         var waits: [Double] = []
+        var leads: [Double] = []
         var byTour: [String: [Double]] = [:]
 
         for route in routes where route.status == .completed {
@@ -92,6 +102,7 @@ struct PaceHistory: Equatable, Sendable {
             doors.append(contentsOf: snapshot.doorSamples)
             byTour[tourKey(route.name), default: []].append(contentsOf: snapshot.doorSamples)
             if let wait = lagerWait(in: snapshot) { waits.append(wait) }
+            if let lead = lead(in: snapshot, departedAt: departure(route.id)) { leads.append(lead) }
         }
 
         var learned = PaceHistory()
@@ -110,7 +121,27 @@ struct PaceHistory: Equatable, Sendable {
         let loading = waits.map { $0 - door }.filter { (-5...90).contains($0) }
             .map { max(0, $0) }.sorted()
         if loading.count >= 2 { learned.lagerMinutes = loading[loading.count / 2] }
+        // The median again: one morning in a traffic jam is not the next.
+        leads.sort()
+        if leads.count >= 2 { learned.leadMinutes = leads[leads.count / 2] }
         return learned
+    }
+
+    /// Minutes from the departure to the Lager's tick. `nil` where the Lager
+    /// was ticked by the first door rather than by hand — that is no
+    /// measurement of when the van got there — and where the two are further
+    /// apart than a morning: a stamp from another day.
+    @MainActor
+    private static func lead(in snapshot: RouteSnapshot, departedAt: Date?) -> Double? {
+        guard let departedAt,
+              let lager = snapshot.ordered.first(where: { $0.kind == .via && $0.isCheckpoint }),
+              let loadedAt = lager.settledAt
+        else { return nil }
+        let firstDoor = snapshot.ordered
+            .filter { $0.passesLager }.compactMap(\.settledAt).min()
+        if let firstDoor, firstDoor <= loadedAt { return nil }
+        let minutes = loadedAt.timeIntervalSince(departedAt) / 60
+        return (1...180).contains(minutes) ? minutes : nil
     }
 
     /// Minutes from the Lager's tick to the first door's, less the drive

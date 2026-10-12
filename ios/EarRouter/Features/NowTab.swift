@@ -297,6 +297,7 @@ struct NowTab: View {
 
     private func navigate(to stop: Stop) {
         guard let url = NavigationHandoff.url(for: stop) else { return }
+        TourDeparture.noteNavigation(to: stop)
         openURL(url)
     }
 

@@ -86,6 +86,12 @@ struct RouteSnapshot {
     /// the Lager or Ziel ticked. Not an abbestellt customer, who is ticked off
     /// the evening before when the office rings.
     let underWay: Bool
+    /// When the van left for the Lager today, if the driver started
+    /// navigation there — see `TourDeparture`.
+    let departedAt: Date?
+    /// The Lager, while its tick is still ahead of everything else: the
+    /// stretch of the morning nothing but `PaceHistory.leadMinutes` knows.
+    private let lagerAhead: Stop?
     /// What was learned from the tours already driven — see `PaceHistory`.
     private let history: PaceHistory
     /// Today's own door times, one per pair of doors ticked one after the
@@ -170,12 +176,13 @@ struct RouteSnapshot {
 
     init(
         _ route: Route, now: Date = Date(), history: PaceHistory = .current,
-        plannedStart: Date? = nil
+        plannedStart: Date? = nil, departedAt: Date? = nil
     ) {
         let ordered = route.orderedStops
         self.ordered = ordered
         self.history = history
         self.plannedStart = plannedStart
+        self.departedAt = departedAt ?? TourDeparture.load(for: route.id)
         self.underWay = ordered.contains {
             $0.countsAsStop && $0.isSettled && $0.outcome?.skipsDoor != true
         }
@@ -314,6 +321,7 @@ struct RouteSnapshot {
         self.ownDoor = ownDoor
         self.openDoorUnits = doorsSoFar
         self.loadingBefore = loadingBefore
+        self.lagerAhead = underWay ? nil : next.flatMap { $0.kind == .via ? $0 : nil }
         // Only a tick nothing was ticked after: with doors answered for out of
         // order, the last one in the list is not where the van is.
         let latest = ordered.lazy
@@ -419,8 +427,28 @@ extension RouteSnapshot {
     /// But never an arrival in the past. A driver who is later than the plan
     /// — a break, a queue at the Lager — is taken to be arriving now, so a
     /// morning that ran late still moves every remaining estimate with it.
-    private func nextStopTimes(from now: Date) -> (stop: Stop, arrival: Date, departure: Date)? {
+    ///
+    /// Before the Lager's tick there is no tick to count from. There the
+    /// clock starts at the departure, when the driver's tap gave one, and the
+    /// Lager is left — which is to say ticked — however long after leaving
+    /// the tours before this one took, rather than the moment the drive there
+    /// would end. `planning` is an estimate for a departure still to come,
+    /// which today's own stamp has no part in.
+    private func nextStopTimes(
+        from now: Date, planning: Bool = false
+    ) -> (stop: Stop, arrival: Date, departure: Date)? {
         guard let next = nextOpen else { return nil }
+        if let lager = lagerAhead, lager.id == next.id {
+            let left = planning ? nil : departedAt.flatMap { stamp in
+                stamp <= now && now.timeIntervalSince(stamp) <= TourDeparture.staleAfter ? stamp : nil
+            }
+            let since = left ?? now
+            let drive = minutesAhead(to: lager)
+            let lead = max(history.leadMinutes ?? drive, drive)
+            return (
+                lager, max(since.addingTimeInterval(drive * 60), now),
+                max(since.addingTimeInterval(lead * 60), now))
+        }
         let since = anchorTime.flatMap { tick in
             tick <= now && now.timeIntervalSince(tick) <= Pace.anchorMaxAge ? tick : nil
         } ?? now
@@ -461,9 +489,10 @@ extension RouteSnapshot {
     /// optimized, where every leg is zero and this would confidently promise
     /// all thirty customers their meal at the same minute.
     func eta(for stop: Stop, from now: Date = Date()) -> Date? {
-        let now = pendingStart(from: now) ?? now
+        let start = pendingStart(from: now)
+        let now = start ?? now
         guard totalMinutes > 0, !stop.isSettled, let arrival = arrivalMinutes[stop.id],
-              let next = nextStopTimes(from: now)
+              let next = nextStopTimes(from: now, planning: start != nil)
         else { return nil }
         if stop.id == next.stop.id { return next.arrival }
         // Only for a point the van has not reached. Start carries no outcome
@@ -481,8 +510,10 @@ extension RouteSnapshot {
     /// When the shift is expected to end: the last point the tour actually
     /// drives to, doors and all.
     func etaFinish(from now: Date = Date()) -> Date? {
-        let now = pendingStart(from: now) ?? now
-        guard totalMinutes > 0, openCount > 0, let next = nextStopTimes(from: now)
+        let start = pendingStart(from: now)
+        let now = start ?? now
+        guard totalMinutes > 0, openCount > 0,
+              let next = nextStopTimes(from: now, planning: start != nil)
         else { return nil }
         // The loading too, while it is still ahead of any door.
         let loading = !loadingBefore.isEmpty && openDoorUnits > 0

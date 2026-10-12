@@ -111,7 +111,9 @@ struct NavigateNextStopIntent: AppIntent {
         guard let container = try? AppSchema.container() else {
             throw CarPlayNavigation.Failure.noStore
         }
-        let (_, url) = try CarPlayNavigation.destination(in: ModelContext(container))
+        let (stop, url) = try CarPlayNavigation.destination(in: ModelContext(container))
+        // Plugging the phone in at the depot is leaving for the Lager, too.
+        TourDeparture.noteNavigation(to: stop)
         return .result(opensIntent: OpenURLIntent(url))
     }
 }

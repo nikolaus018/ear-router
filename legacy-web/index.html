@@ -6167,7 +6167,9 @@ function renderNowTab() {
 // towards today's own ticks as they come in.
 // ---------------------------------------------------------------------
 const PACE = { assumed: 7, cap: 15, priorWeight: 8, sharedDoor: 0.55, lager: 10, anchorMaxAgeMs: 90 * 60 * 1000 };
-let paceHistory = { door_minutes: null, lager_minutes: null, door_by_tour: {} };
+let paceHistory = { door_minutes: null, lager_minutes: null, door_by_tour: {}, lead_minutes: null };
+// A departure older than this is another day's.
+const DEPARTURE_STALE_MS = 4 * 3600 * 1000;
 // What a tour is recognised by from one week to the next — `pace_tour_key`
 // on the server is the same rule.
 const tourKey = (name) => String(name || '').trim().split(/\s+/).join(' ').toLowerCase();
@@ -6178,6 +6180,24 @@ async function loadPaceHistory() {
     if (h && typeof h === 'object') paceHistory = h;
     paintEtas();
   } catch (_) { /* the assumed pace is a fine place to start from */ }
+}
+
+/// Navigation to the Lager is when the van leaves — the one moment of the day
+/// no tick marks. Told to the server, which keeps the first such tap of a tour
+/// that has not begun, and learns from the finished ones what the morning
+/// takes before the Lager is ticked. On the link itself, so the map app still
+/// opens whatever becomes of this.
+function noteDeparture(stopId) {
+  const r = state.currentRoute;
+  const stop = r?.stops.find((s) => s.id === stopId);
+  if (!r || r.status !== 'active' || !stop || stop.kind !== 'via' || !isCheckpoint(stop) || stop.outcome) return;
+  api(`/routes/${r.id}/departed`, { method: 'POST' })
+    .then((res) => {
+      if (state.currentRoute?.id !== r.id || !res) return;
+      state.currentRoute.departed_at = res.departed_at ?? null;
+      paintEtas();
+    })
+    .catch(() => { /* the estimate counts from now, as it did */ });
 }
 
 /// `plannedStart` is a departure to count from instead of now — a timestamp,
@@ -6294,9 +6314,26 @@ function routeSnapshot(r, plannedStart = null) {
   snap.pendingStart = (now = Date.now()) =>
     !underWay && Number.isFinite(plannedStart) && plannedStart > now ? plannedStart : null;
 
-  const nextStopTimes = (now) => {
+  // The Lager, while its tick is still ahead of everything else: the stretch
+  // of the morning no tick measures. There the clock starts at the departure,
+  // when the driver's tap on navigation gave one, and the Lager is left —
+  // which is to say ticked — however long after leaving the tours before
+  // this one took (`lead_minutes`), rather than when the drive there would
+  // end. `planning` is an estimate for a departure still to come, which
+  // today's own stamp has no part in.
+  const lagerAhead = !underWay && next && next.kind === 'via' ? next : null;
+  const departedAt = r.departed_at ? Date.parse(r.departed_at) : NaN;
+
+  const nextStopTimes = (now, planning = false) => {
     const nextStop = snap.nextOpen;
     if (!nextStop) return null;
+    if (lagerAhead && lagerAhead.id === nextStop.id) {
+      const left = !planning && Number.isFinite(departedAt) && departedAt <= now && now - departedAt <= DEPARTURE_STALE_MS;
+      const since = left ? departedAt : now;
+      const drive = minutesAhead(nextStop);
+      const lead = Math.max(paceHistory.lead_minutes ?? drive, drive);
+      return { stop: nextStop, arrival: Math.max(since + drive * 60000, now), departure: Math.max(since + lead * 60000, now) };
+    }
     const since = Number.isFinite(anchorAt) && anchorAt === latest && anchorAt <= now && now - anchorAt <= PACE.anchorMaxAgeMs ? anchorAt : now;
     const planned = since + minutesAhead(nextStop) * 60000;
     const door = (ownDoor.get(nextStop.id) || 0) * minutesPerStop;
@@ -6309,9 +6346,10 @@ function routeSnapshot(r, plannedStart = null) {
   /// When the van reaches `stop`, as a timestamp — or `null` for a stop
   /// that is settled, behind the van, or on a tour with no legs yet.
   snap.eta = (stop, now = Date.now()) => {
-    now = snap.pendingStart(now) ?? now;
+    const start = snap.pendingStart(now);
+    now = start ?? now;
     if (!(minutes > 0) || stop.outcome || !arrivals.has(stop.id)) return null;
-    const n = nextStopTimes(now);
+    const n = nextStopTimes(now, start != null);
     if (!n) return null;
     if (stop.id === n.stop.id) return n.arrival;
     // Only for a point the van has not reached: Start can never be
@@ -6323,9 +6361,10 @@ function routeSnapshot(r, plannedStart = null) {
 
   /// When the whole tour is done, back at Ziel.
   snap.etaFinish = (now = Date.now()) => {
-    now = snap.pendingStart(now) ?? now;
+    const start = snap.pendingStart(now);
+    now = start ?? now;
     if (!(minutes > 0) || snap.openCount <= 0) return null;
-    const n = nextStopTimes(now);
+    const n = nextStopTimes(now, start != null);
     if (!n) return null;
     const loading = loadingBefore.size && doorsSoFar > 0 ? lagerMinutes : 0;
     const whole = snap.remainingMinutes + doorsSoFar * minutesPerStop + loading;
@@ -6824,7 +6863,7 @@ function signedOut() {
   adminUsers = null;
   importController = null;
   // What the last driver's tours taught about door times is theirs.
-  paceHistory = { door_minutes: null, lager_minutes: null, door_by_tour: {} };
+  paceHistory = { door_minutes: null, lager_minutes: null, door_by_tour: {}, lead_minutes: null };
   render();
 }
 
@@ -7084,7 +7123,7 @@ function nowStopCard(r, stop) {
       ${stop.notiz && !meta ? `<p class="now-fact"><span>${ICONS.note}</span><span>${escapeHtml(stop.notiz)}</span></p>` : ''}
       ${precision ? `<p class="now-fact warn"><span>${ICONS.warning}</span><span>${precision}</span></p>` : ''}
       <div style="margin-top: 1.25rem">
-        <a href="${navUrl(stop)}" target="_blank" rel="noopener" class="press-98 wide-btn quiet">${ICONS.arrowTurn} Navigation</a>
+        <a href="${navUrl(stop)}" target="_blank" rel="noopener" onclick="noteDeparture(${stop.id})" class="press-98 wide-btn quiet">${ICONS.arrowTurn} Navigation</a>
         <button onclick="settleFromNow(${stop.id})" class="press-98 wide-btn primary">${ICONS.check} ${meta ? 'Erledigt' : 'Geliefert'}</button>
         ${!meta && dialOf(stop.telefon) ? `<a href="tel:${dialOf(stop.telefon)}" class="press-98 wide-btn quiet">${ICONS.phone} Anrufen</a>` : ''}
         ${meta ? '' : phonesInNote(stop.notiz, stop.telefon).map((ph) => `<a href="tel:${ph.dial}" class="press-98 wide-btn quiet">${ICONS.phone} ${escapeHtml(ph.display)} anrufen</a>`).join('')}
@@ -7452,7 +7491,7 @@ function renderFixedRow(s, meta, animIndex = null, isNext = false) {
         ${skipped ? '' : legLabel(s)}
         ${s.kind === 'start' ? '' : `<p class="eta-line" data-eta="${s.id}"></p>`}
       </div>
-      <a href="${url}" target="_blank" rel="noopener" aria-label="In Maps öffnen" title="In Maps öffnen" class="tap-target press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/55'}">${ICONS.mapPin}</a>
+      <a href="${url}" target="_blank" rel="noopener" onclick="noteDeparture(${s.id})" aria-label="In Maps öffnen" title="In Maps öffnen" class="tap-target press-fade shrink-0 w-9 h-9 rounded-full bg-black/5 flex items-center justify-center ${skipped ? 'text-black/25' : 'text-black/55'}">${ICONS.mapPin}</a>
       ${tick}
     </div>
   `;
