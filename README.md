@@ -1,5 +1,11 @@
 # EAR Router
 
+![iOS 26](https://img.shields.io/badge/iOS-26-blue) ![Swift 6](https://img.shields.io/badge/Swift-6-orange) ![SwiftData](https://img.shields.io/badge/SwiftData-MapKit-green)
+
+**Offline-first route planner for a real delivery service**, built for and used by the drivers of Essen auf Rädern in Vienna.
+Native SwiftUI, no third-party dependencies, with CarPlay, Siri, Live Activities, on-device geocoding caches and a
+Rust + PWA predecessor kept in `legacy-web/`.
+
 Delivery route planner for *Essen auf Rädern* (Meals on Wheels) in Vienna,
 for the Arbeiter-Samariter-Bund Österreichs.
 
