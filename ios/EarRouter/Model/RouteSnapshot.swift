@@ -331,7 +331,7 @@ struct RouteSnapshot {
         self.doorCounts = SameDoor.counts(for: ordered.filter { $0.outcome?.skipsDoor != true })
         let samples = Self.doorSamples(ordered, arrivals: arrivals)
         self.doorSamples = samples
-        self.pace = Self.measurePace(samples, learned: history.doorMinutes)
+        self.pace = Self.measurePace(samples, learned: history.doorMinutes(forTour: route.name))
     }
 }
 

@@ -6167,7 +6167,10 @@ function renderNowTab() {
 // towards today's own ticks as they come in.
 // ---------------------------------------------------------------------
 const PACE = { assumed: 7, cap: 15, priorWeight: 8, sharedDoor: 0.55, lager: 10, anchorMaxAgeMs: 90 * 60 * 1000 };
-let paceHistory = { door_minutes: null, lager_minutes: null };
+let paceHistory = { door_minutes: null, lager_minutes: null, door_by_tour: {} };
+// What a tour is recognised by from one week to the next — `pace_tour_key`
+// on the server is the same rule.
+const tourKey = (name) => String(name || '').trim().split(/\s+/).join(' ').toLowerCase();
 
 async function loadPaceHistory() {
   try {
@@ -6252,7 +6255,9 @@ function routeSnapshot(r, plannedStart = null) {
     const drive = stamped[i].driving - stamped[i - 1].driving;
     if (gap >= 0.5 && gap <= 45 && drive >= 0.3) samples.push(Math.max(0.5, gap - drive));
   }
-  const prior = paceHistory.door_minutes ?? PACE.assumed;
+  // This tour's own doors where it has been driven before: a round is the
+  // same customers every week, and the rounds are not alike.
+  const prior = paceHistory.door_by_tour?.[tourKey(r.name)] ?? paceHistory.door_minutes ?? PACE.assumed;
   const minutesPerStop = samples.length
     ? (samples.reduce((a, x) => a + Math.min(x, PACE.cap), 0) + PACE.priorWeight * prior) / (samples.length + PACE.priorWeight)
     : prior;
@@ -6819,7 +6824,7 @@ function signedOut() {
   adminUsers = null;
   importController = null;
   // What the last driver's tours taught about door times is theirs.
-  paceHistory = { door_minutes: null, lager_minutes: null };
+  paceHistory = { door_minutes: null, lager_minutes: null, door_by_tour: {} };
   render();
 }
 

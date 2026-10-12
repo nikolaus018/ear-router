@@ -21,6 +21,30 @@ struct PaceHistory: Equatable, Sendable {
     var doorMinutes: Double?
     /// Minutes between ticking the Lager and driving off from it.
     var lagerMinutes: Double?
+    /// The same figure for each tour driven before, by `tourKey`: that tour's
+    /// own doors, pulled towards `doorMinutes` by `tourWeight`.
+    ///
+    /// A round is the same customers every week, and the rounds are not
+    /// alike: across fifteen tours of autumn 2026 the Monday frozen round
+    /// took nine minutes a door where the Friday one took under six. Counted
+    /// at the average of all of them, the Monday round was promised finished
+    /// forty minutes before it was.
+    var doorByTour: [String: Double] = [:]
+
+    /// How many doors' worth the figure for all tours weighs against one
+    /// tour's own: a round driven once has said little yet.
+    static let tourWeight = 8.0
+
+    /// What a tour is recognised by from one week to the next: its name,
+    /// whatever the capitals and the spacing.
+    static func tourKey(_ name: String) -> String {
+        name.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// The door time to start a tour of this name from.
+    func doorMinutes(forTour name: String) -> Double? {
+        doorByTour[Self.tourKey(name)] ?? doorMinutes
+    }
 
     static let none = PaceHistory()
 
@@ -61,10 +85,12 @@ struct PaceHistory: Equatable, Sendable {
     static func learn(from routes: [Route]) -> PaceHistory {
         var doors: [Double] = []
         var waits: [Double] = []
+        var byTour: [String: [Double]] = [:]
 
         for route in routes where route.status == .completed {
             let snapshot = RouteSnapshot(route, history: .none)
             doors.append(contentsOf: snapshot.doorSamples)
+            byTour[tourKey(route.name), default: []].append(contentsOf: snapshot.doorSamples)
             if let wait = lagerWait(in: snapshot) { waits.append(wait) }
         }
 
@@ -72,6 +98,11 @@ struct PaceHistory: Equatable, Sendable {
         guard doors.count >= fewestSamples else { return learned }
         let door = doors.reduce(0) { $0 + min($1, RouteSnapshot.Pace.cap) } / Double(doors.count)
         learned.doorMinutes = min(max(door, 2), RouteSnapshot.Pace.cap)
+        for (key, samples) in byTour where !samples.isEmpty {
+            let own = samples.reduce(0) { $0 + min($1, RouteSnapshot.Pace.cap) }
+            let blended = (own + tourWeight * door) / (Double(samples.count) + tourWeight)
+            learned.doorByTour[key] = min(max(blended, 2), RouteSnapshot.Pace.cap)
+        }
 
         // What is left of the wait once the first door's own time is taken
         // off it. The median, because one morning spent waiting for the

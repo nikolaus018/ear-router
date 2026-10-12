@@ -4261,6 +4261,21 @@ async fn optimize_route(State(state): State<Arc<AppState>>, AxPath(route_id): Ax
 struct PaceHistory {
     door_minutes: Option<f64>,
     lager_minutes: Option<f64>,
+    /// `door_minutes` for each tour driven before, by `pace_tour_key`: that
+    /// tour's own doors, pulled towards the figure for all of them. A round
+    /// is the same customers every week, and the rounds are not alike.
+    door_by_tour: HashMap<String, f64>,
+}
+
+/// How many doors' worth the figure for all tours weighs against one tour's
+/// own: a round driven once has said little yet.
+const PACE_TOUR_WEIGHT: f64 = 8.0;
+
+/// What a tour is recognised by from one week to the next: its name,
+/// whatever the capitals and the spacing. `tourKey` in index.html is the
+/// same rule.
+fn pace_tour_key(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
 /// The tours learned from: the most recent, so a change of round or of
@@ -4336,11 +4351,13 @@ fn pace_samples(ordered: &[PaceStop]) -> (Vec<f64>, Option<f64>) {
     (doors, wait)
 }
 
-fn learn_pace(tours: &[Vec<PaceStop>]) -> PaceHistory {
+fn learn_pace(tours: &[(String, Vec<PaceStop>)]) -> PaceHistory {
     let mut doors: Vec<f64> = Vec::new();
     let mut waits: Vec<f64> = Vec::new();
-    for tour in tours {
+    let mut by_tour: HashMap<String, Vec<f64>> = HashMap::new();
+    for (name, tour) in tours {
         let (d, w) = pace_samples(tour);
+        by_tour.entry(pace_tour_key(name)).or_default().extend(&d);
         doors.extend(d);
         waits.extend(w);
     }
@@ -4354,9 +4371,19 @@ fn learn_pace(tours: &[Vec<PaceStop>]) -> PaceHistory {
     let mut loading: Vec<f64> =
         waits.iter().map(|w| w - door).filter(|l| (-5.0..=90.0).contains(l)).map(|l| l.max(0.0)).collect();
     loading.sort_by(|a, b| a.total_cmp(b));
+    let door_by_tour = by_tour
+        .into_iter()
+        .filter(|(_, own)| !own.is_empty())
+        .map(|(key, own)| {
+            let sum: f64 = own.iter().map(|d| d.min(PACE_CAP_MIN)).sum();
+            let blended = (sum + PACE_TOUR_WEIGHT * door) / (own.len() as f64 + PACE_TOUR_WEIGHT);
+            (key, blended.clamp(2.0, PACE_CAP_MIN))
+        })
+        .collect();
     PaceHistory {
         door_minutes: Some(door.clamp(2.0, PACE_CAP_MIN)),
         lager_minutes: (loading.len() >= 2).then(|| loading[loading.len() / 2]),
+        door_by_tour,
     }
 }
 
@@ -4368,15 +4395,16 @@ async fn pace_history(
 ) -> Result<Json<PaceHistory>, AppError> {
     let conn = state.db()?;
     let mut stmt = conn.prepare(
-        "SELECT s.route_id, s.kind, s.excluded, s.outcome, s.delivered, s.settled_at, s.next_leg_min \
-         FROM stops s JOIN (SELECT id, created_at FROM routes WHERE status = 'completed' AND user_id = ?2 \
+        "SELECT s.route_id, s.kind, s.excluded, s.outcome, s.delivered, s.settled_at, s.next_leg_min, r.name \
+         FROM stops s JOIN (SELECT id, created_at, name FROM routes WHERE status = 'completed' AND user_id = ?2 \
                             ORDER BY created_at DESC LIMIT ?1) r ON r.id = s.route_id \
          ORDER BY s.route_id, s.order_index, s.id",
     )?;
-    let rows: Vec<(i64, PaceStop)> = stmt
+    let rows: Vec<(i64, String, PaceStop)> = stmt
         .query_map(params![PACE_TOURS, user.id], |r| {
             Ok((
                 r.get(0)?,
+                r.get::<_, Option<String>>(7)?.unwrap_or_default(),
                 PaceStop {
                     kind: r.get(1)?,
                     excluded: r.get::<_, i64>(2)? != 0,
@@ -4390,14 +4418,14 @@ async fn pace_history(
             ))
         })?
         .collect::<Result<_, _>>()?;
-    let mut tours: Vec<Vec<PaceStop>> = Vec::new();
+    let mut tours: Vec<(String, Vec<PaceStop>)> = Vec::new();
     let mut last_route = None;
-    for (route_id, stop) in rows {
+    for (route_id, name, stop) in rows {
         if last_route != Some(route_id) {
-            tours.push(Vec::new());
+            tours.push((name, Vec::new()));
             last_route = Some(route_id);
         }
-        tours.last_mut().expect("pushed above").push(stop);
+        tours.last_mut().expect("pushed above").1.push(stop);
     }
     Ok(Json(learn_pace(&tours)))
 }
@@ -7152,10 +7180,26 @@ mod tests {
         let tour = |n: i64| -> Vec<PaceStop> {
             (0..n).map(|i| pace_stop("customer", Some("delivered"), Some(i * 9), 3.0)).collect()
         };
-        assert_eq!(learn_pace(&[tour(5)]), PaceHistory::default());
-        let learned = learn_pace(&[tour(12)]);
+        assert_eq!(learn_pace(&[("A".into(), tour(5))]), PaceHistory::default());
+        let learned = learn_pace(&[("A".into(), tour(12))]);
         assert_eq!(learned.door_minutes, Some(6.0));
         assert_eq!(learned.lager_minutes, None);
+    }
+
+    #[test]
+    fn a_tour_driven_before_starts_from_its_own_doors() {
+        // Eleven doors each: six minutes on one round, twelve on the other,
+        // nine across both. Each round's own figure sits between its doors
+        // and that nine, and nearer its doors.
+        let tour = |every: i64| -> Vec<PaceStop> {
+            (0..12).map(|i| pace_stop("customer", Some("delivered"), Some(i * every), 3.0)).collect()
+        };
+        let learned = learn_pace(&[("VM 5  FR".into(), tour(9)), ("TK 1 MO".into(), tour(15))]);
+        assert_eq!(learned.door_minutes, Some(9.0));
+        let quick = learned.door_by_tour["vm 5 fr"];
+        let slow = learned.door_by_tour["tk 1 mo"];
+        assert!((quick - (11.0 * 6.0 + 8.0 * 9.0) / 19.0).abs() < 1e-9);
+        assert!((slow - (11.0 * 12.0 + 8.0 * 9.0) / 19.0).abs() < 1e-9);
     }
 
     #[test]

@@ -392,6 +392,33 @@ struct ArrivalEstimateTests {
         #expect(learned.doorMinutes == 4)
     }
 
+    /// A round is the same customers every week, and the rounds are not
+    /// alike: a tour driven before starts from its own doors, pulled towards
+    /// the figure for all tours, and is known by its name whatever the
+    /// spacing. A tour never driven starts from the figure for all of them.
+    @Test func aTourDrivenBeforeStartsFromItsOwnDoors() throws {
+        func tour(_ name: String, every minutes: Double) throws -> Route {
+            let stops = (0..<12).map { customer("K\($0)") }
+            let route = try route(stops, finished: true)
+            route.name = name
+            for (i, stop) in stops.enumerated() { stop.record(.delivered, at: at(Double(i) * minutes)) }
+            return route
+        }
+        // Ten minutes' drive between doors: four minutes a door on one round,
+        // ten on the other, seven across both.
+        let learned = PaceHistory.learn(from: [
+            try tour("VM 5 FR", every: 14), try tour("TK 1 MO", every: 20),
+        ])
+        #expect(learned.doorMinutes == 7)
+        let slow = (11.0 * 10 + PaceHistory.tourWeight * 7) / (11 + PaceHistory.tourWeight)
+        #expect(abs((learned.doorMinutes(forTour: " tk 1  mo") ?? 0) - slow) < 1e-9)
+        #expect(learned.doorMinutes(forTour: "VM 1 DO") == 7)
+
+        let next = try route([customer("A"), customer("B")])
+        next.name = "TK 1 MO"
+        #expect(abs(snap(next, history: learned).pace.minutesPerStop - slow) < 1e-9)
+    }
+
     /// Too few ticks is no history, and a tour still being driven is its own
     /// measurement, not history.
     @Test func aThinOrUnfinishedTourTeachesNothing() throws {
