@@ -5333,11 +5333,34 @@ struct BulkJsonResult {
     deletions_skipped: bool,
 }
 
+/// Which of the stops still unclaimed at one address a submitted entry is,
+/// taken out of `bucket` (stop id, name key) if it is one of them.
+///
+/// The same name at the same address is the same stop, whatever order either
+/// side lists them in. Failing that, the first unclaimed one: a customer
+/// renamed in place at an address that did not change, which is an edit of
+/// that stop and not a new one.
+///
+/// `exact_only` leaves that second claim out, for a list that is added to
+/// the tour rather than replacing it. It leans on the unclaimed stop being
+/// dropped otherwise; with nothing dropped, a second household at a door
+/// already on the tour overwrote the first one's name and Paket.
+fn claim_at_address(bucket: &mut Vec<(i64, String)>, wanted: &str, exact_only: bool) -> Option<i64> {
+    let pos = match bucket.iter().position(|(_, name)| name == wanted) {
+        Some(pos) => pos,
+        None if exact_only || bucket.is_empty() => return None,
+        None => 0,
+    };
+    Some(bucket.remove(pos).0)
+}
+
 /// Brings a route's customers in line with a list of entries.
 ///
 /// `keep_unmatched` leaves alone the stops the list does not mention. That
 /// is what a list loaded from the portal wants: a stop the driver added by
-/// hand is theirs, and a second load must not take it away.
+/// hand is theirs, and a second load must not take it away. The list is
+/// then an addition, and an entry is a stop already on the tour only by the
+/// same name at the same address -- see `claim_at_address`.
 async fn import_entries(
     state: &Arc<AppState>,
     route_id: i64,
@@ -5538,20 +5561,9 @@ async fn import_entries(
 
     for entry in normalized {
         let key = addr_key(&entry.1, &entry.2);
-        let existing_id = by_key.get_mut(&key).and_then(|v| {
-            if v.is_empty() {
-                return None;
-            }
-            // The same name at the same address is the same stop, whatever
-            // order either side lists them in. Falling back to the first
-            // unclaimed one when no name matches keeps the previous
-            // behaviour for the case it was right about — a customer
-            // renamed in place at an address that did not change, which is
-            // an edit of that stop and not a new one.
-            let wanted = name_key(&entry.0);
-            let pos = v.iter().position(|(_, name)| *name == wanted).unwrap_or(0);
-            Some(v.remove(pos).0)
-        });
+        let existing_id = by_key
+            .get_mut(&key)
+            .and_then(|v| claim_at_address(v, &name_key(&entry.0), keep_unmatched));
         match existing_id {
             Some(id) => {
                 matched_ids.insert(id);
@@ -5576,7 +5588,11 @@ async fn import_entries(
     // and exactly one unclaimed submitted entry — or the pass declines and
     // the old delete/insert behavior stands. Guessing between two customers
     // called "Fam. Gruber" would be worse than not guessing at all.
-    {
+    //
+    // Not for a list that is added to the tour: with nothing dropped, a
+    // namesake is somebody else, and matching them moved a customer already
+    // on the tour to the newcomer's address.
+    if !keep_unmatched {
         let mut submitted_name_counts: HashMap<String, usize> = HashMap::new();
         for (entry, _) in &unresolved {
             *submitted_name_counts.entry(name_key(&entry.0)).or_insert(0) += 1;
@@ -5700,7 +5716,7 @@ async fn import_entries(
     // rejected) would have zero geocode failures, so nothing would skip
     // deletion, and every existing customer stop on the route would be
     // deleted as "no longer present" instead of the import safely no-op'ing.
-    let deletions_skipped = !failures.is_empty() || !validation_failures.is_empty();
+    let deletions_skipped = !keep_unmatched && (!failures.is_empty() || !validation_failures.is_empty());
     let to_delete: Vec<i64> = if deletions_skipped || keep_unmatched {
         Vec::new()
     } else {
@@ -7451,6 +7467,28 @@ mod tests {
         // a nonsense "0. Bezirk" -- it falls back to naming the code itself.
         let (_, body) = error_body(geocode_error_wrong_district("Irgendwo 1", "AT")).await;
         assert!(body["detail"]["message"].as_str().unwrap().contains("AT"));
+    }
+
+    #[test]
+    fn an_added_list_takes_a_stop_only_by_its_own_name() {
+        let door = || vec![(1, "fam. gruber".to_string()), (2, "fam. novak".to_string())];
+
+        // The same name at the same address is that stop, wherever it sits.
+        let mut bucket = door();
+        assert_eq!(claim_at_address(&mut bucket, "fam. novak", true), Some(2));
+        assert_eq!(bucket, vec![(1, "fam. gruber".to_string())]);
+
+        // A third household at the door is a stop of its own when the list
+        // is added to the tour...
+        let mut bucket = door();
+        assert_eq!(claim_at_address(&mut bucket, "fr. berger", true), None);
+        assert_eq!(bucket.len(), 2);
+
+        // ...and a rename of the first unclaimed one when it replaces it.
+        let mut bucket = door();
+        assert_eq!(claim_at_address(&mut bucket, "fr. berger", false), Some(1));
+
+        assert_eq!(claim_at_address(&mut Vec::new(), "fr. berger", false), None);
     }
 
     #[test]
