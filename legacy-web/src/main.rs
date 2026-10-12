@@ -2772,7 +2772,7 @@ fn require_route_exists(conn: &Connection, route_id: i64) -> Result<(), AppError
         .optional()?
         .is_some();
     if !exists {
-        return Err(AppError::NotFound("Route nicht gefunden".into()));
+        return Err(AppError::NotFound("Tour nicht gefunden".into()));
     }
     Ok(())
 }
@@ -2815,7 +2815,7 @@ fn get_route_detail(conn: &Connection, route_id: i64) -> Result<RouteDetail, App
     let route = conn
         .query_row("SELECT * FROM routes WHERE id = ?1", params![route_id], RouteRow::from_row)
         .optional()?
-        .ok_or_else(|| AppError::NotFound("Route nicht gefunden".into()))?;
+        .ok_or_else(|| AppError::NotFound("Tour nicht gefunden".into()))?;
 
     let mut stmt = conn.prepare("SELECT * FROM stops WHERE route_id = ?1 ORDER BY order_index")?;
     let stops: Vec<StopRow> = stmt
@@ -3583,29 +3583,32 @@ async fn fill_entrances(state: &Arc<AppState>, route_id: i64) {
         return;
     }
     let semaphore = Arc::new(Semaphore::new(6));
-    let mut jobs: JoinSet<Option<(i64, f64, f64)>> = JoinSet::new();
+    let mut jobs: JoinSet<Option<(i64, String, String, f64, f64)>> = JoinSet::new();
     for (id, strasse, plz) in wanted {
         let state = Arc::clone(state);
         let semaphore = Arc::clone(&semaphore);
         jobs.spawn(async move {
             let _permit = semaphore.acquire().await.ok()?;
             let (lat, lon) = wien_entrance(&state, &strasse, &plz).await?;
-            Some((id, lat, lon))
+            Some((id, strasse, plz, lat, lon))
         });
     }
-    let mut found: Vec<(i64, f64, f64)> = Vec::new();
+    let mut found: Vec<(i64, String, String, f64, f64)> = Vec::new();
     while let Some(joined) = jobs.join_next().await {
         if let Ok(Some(hit)) = joined {
             found.push(hit);
         }
     }
     let Ok(conn) = state.db() else { return };
-    for (id, lat, lon) in found {
-        // Only onto the address it was looked up for: `pinned = 0` and still
-        // without one, in case the stop was edited while this was out.
+    for (id, strasse, plz, lat, lon) in found {
+        // Only onto the address it was looked up for. Opening a tour starts
+        // one of these in the background, and a stop whose address is
+        // corrected while it is out would otherwise be handed the entrance
+        // of the address it used to have.
         let _ = conn.execute(
-            "UPDATE stops SET entrance_lat = ?1, entrance_lon = ?2 WHERE id = ?3 AND pinned = 0 AND entrance_lat IS NULL",
-            params![lat, lon, id],
+            "UPDATE stops SET entrance_lat = ?1, entrance_lon = ?2 \
+             WHERE id = ?3 AND pinned = 0 AND entrance_lat IS NULL AND strasse = ?4 AND plz = ?5",
+            params![lat, lon, id, strasse, plz],
         );
     }
 }
@@ -3782,8 +3785,45 @@ fn user_json(user: &AuthUser) -> Value {
 
 /// `POST /api/login`. One answer for a wrong name and a wrong password, so
 /// the form cannot be used to find out which names exist.
+/// A hash of nothing anybody knows, checked against when the name asked for
+/// does not exist.
+static DUMMY_HASH: once_cell::sync::Lazy<String> =
+    once_cell::sync::Lazy::new(|| hash_password(&new_session_token()).unwrap_or_default());
+
+/// Failed sign-ins per address: ten inside ten minutes and that address
+/// waits until the oldest of them is ten minutes old. Per address rather
+/// than per account, so nobody can lock a driver out of their own tours by
+/// guessing at their name.
+const LOGIN_MAX_FAILURES: usize = 10;
+const LOGIN_FAILURE_WINDOW: Duration = Duration::from_secs(10 * 60);
+static LOGIN_FAILURES: once_cell::sync::Lazy<StdMutex<HashMap<IpAddr, Vec<Instant>>>> =
+    once_cell::sync::Lazy::new(|| StdMutex::new(HashMap::new()));
+
+fn login_locked(ip: IpAddr) -> bool {
+    let Ok(mut map) = LOGIN_FAILURES.lock() else { return false };
+    let now = Instant::now();
+    map.retain(|_, times| {
+        times.retain(|t| now.duration_since(*t) < LOGIN_FAILURE_WINDOW);
+        !times.is_empty()
+    });
+    map.get(&ip).is_some_and(|times| times.len() >= LOGIN_MAX_FAILURES)
+}
+
+fn login_failed(ip: IpAddr) {
+    if let Ok(mut map) = LOGIN_FAILURES.lock() {
+        map.entry(ip).or_default().push(Instant::now());
+    }
+}
+
+fn login_succeeded(ip: IpAddr) {
+    if let Ok(mut map) = LOGIN_FAILURES.lock() {
+        map.remove(&ip);
+    }
+}
+
 async fn login(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Response, AppError> {
@@ -3802,17 +3842,25 @@ async fn login(
         )
         .optional()?
     };
+    let ip = client_ip(&headers, peer, state.trust_proxy);
+    if login_locked(ip) {
+        return Err(AppError::BadRequest(
+            "Zu viele Fehlversuche. Bitte ein paar Minuten warten und dann noch einmal anmelden.".into(),
+        ));
+    }
     let password = payload.password;
-    let hash = found.as_ref().map(|(_, h)| h.clone());
+    // The same work whether the name exists or not, so the answer's timing
+    // says nothing about which names do.
+    let hash = found.as_ref().map(|(_, h)| h.clone()).unwrap_or_else(|| DUMMY_HASH.clone());
     // Hashing is slow on purpose; kept off the threads that serve requests.
-    let ok = tokio::task::spawn_blocking(move || hash.is_some_and(|h| verify_password(&password, &h)))
-        .await
-        .unwrap_or(false);
+    let ok = tokio::task::spawn_blocking(move || verify_password(&password, &hash)).await.unwrap_or(false);
     let Some((user, _)) = found.filter(|_| ok) else {
+        login_failed(ip);
         // A guess costs a second, whichever half of it was wrong.
         tokio::time::sleep(Duration::from_millis(900)).await;
         return Err(AppError::BadRequest("Benutzername oder Passwort stimmt nicht.".into()));
     };
+    login_succeeded(ip);
     let token = new_session_token();
     {
         let conn = state.db()?;
@@ -4109,7 +4157,7 @@ async fn create_route(
         .map(str::trim)
         .filter(|n| !n.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("Route {}", chrono::Local::now().format("%d.%m.%Y")));
+        .unwrap_or_else(|| format!("Tour {}", chrono::Local::now().format("%d.%m.%Y")));
     check_len(&name, "Name", MAX_ROUTE_NAME_LEN)?;
     check_no_control_chars(&name, "Name", false)?;
 
@@ -4713,7 +4761,7 @@ async fn add_stop(
     let paket = payload.paket.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     let notiz = payload.notiz.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     if kunde.is_empty() || strasse.is_empty() || plz.is_empty() {
-        return Err(AppError::BadRequest("Kunde, Straße und Bezirk dürfen nicht leer sein.".into()));
+        return Err(AppError::BadRequest("Kunde, Straße und Postleitzahl dürfen nicht leer sein.".into()));
     }
     validate_customer_fields(&kunde, &strasse, paket.as_deref(), notiz.as_deref())?;
     let telefon = clean_telefon(payload.telefon.as_deref())?;
@@ -5059,7 +5107,7 @@ async fn update_stop(
     }
     if let Some(plz) = payload.plz.as_deref() {
         if plz.trim().is_empty() {
-            return Err(AppError::BadRequest("Bezirk darf nicht leer sein.".into()));
+            return Err(AppError::BadRequest("Postleitzahl darf nicht leer sein.".into()));
         }
     }
     let kunde = match payload.kunde.as_deref() {
@@ -5154,7 +5202,8 @@ async fn update_stop(
             )?;
         }
         if let Some(outcome) = new_outcome {
-            replan = record_outcome(&tx, route_id, stop_id, &kind, outcome)?;
+            // `|=`: an address moved in the same request has already asked.
+            replan |= record_outcome(&tx, route_id, stop_id, &kind, outcome)?;
         }
         if let Some((lat, lon, precision)) = new_coords {
             // `pinned` tracks where these coordinates came from, so a later
@@ -5403,7 +5452,7 @@ async fn import_entries(
         if kunde.is_empty() || strasse.is_empty() || plz.is_empty() {
             validation_failures.push(ValidationFailure {
                 label,
-                reason: "Kunde, Straße und Bezirk sind Pflichtfelder.".into(),
+                reason: "Kunde, Straße und Postleitzahl sind Pflichtfelder.".into(),
             });
             continue;
         }
@@ -5953,13 +6002,25 @@ async fn portal_logout(
     Ok(Json(json!({ "logged_in": false })))
 }
 
+/// `null` where a list or an object was expected reads as "none". The
+/// portal is somebody else's system: a field it leaves empty one day must
+/// cost that field, not the whole tour.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Deserialize)]
 struct PortalTour {
     id: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
     name: String,
     catalogue_type: Option<String>,
     weekday: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     weekdays: Vec<String>,
 }
 
@@ -6031,34 +6092,46 @@ struct PortalTourRef {
     id: i64,
 }
 
+fn one() -> f64 {
+    1.0
+}
+
 #[derive(Deserialize)]
 struct PortalLine {
+    #[serde(default, deserialize_with = "null_as_default")]
     name: String,
+    #[serde(default = "one")]
     quantity: f64,
 }
 
 #[derive(Deserialize)]
 struct PortalBundle {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     delivery_lines: Vec<PortalLine>,
 }
 
 #[derive(Deserialize)]
 struct PortalDelivery {
     id: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     customer: PortalCustomer,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     delivery_address: PortalAddress,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     tours: Vec<PortalTourRef>,
     delivery_bundles: Option<Vec<PortalBundle>>,
 }
 
 #[derive(Deserialize)]
 struct PortalDeliveryPage {
+    #[serde(default, deserialize_with = "null_as_default")]
     items: Vec<PortalDelivery>,
+    #[serde(default = "one_page")]
     total_pages: i64,
+}
+
+fn one_page() -> i64 {
+    1
 }
 
 fn non_empty(s: &Option<String>) -> Option<&str> {
@@ -6229,8 +6302,12 @@ async fn portal_entries(
     let token = portal_token(&state, &user).await?;
     let mut deliveries = portal_deliveries_of(&state, &token, payload.tour_id, date).await?;
     if let Some(ids) = &payload.delivery_ids {
-        let wanted: HashSet<i64> = ids.iter().copied().collect();
-        deliveries.retain(|d| wanted.contains(&d.id));
+        // In the order they were picked, not the portal's: the driver ticks
+        // them off in the order of the printed list, and Prüfen is read
+        // against that list.
+        let position: HashMap<i64, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        deliveries.retain(|d| position.contains_key(&d.id));
+        deliveries.sort_by_key(|d| position[&d.id]);
     }
     if deliveries.is_empty() {
         return Err(AppError::BadRequest("Für diese Tour gibt es an diesem Tag keine offenen Lieferungen.".into()));
@@ -6289,7 +6366,7 @@ async fn portal_import(
             let owner: Option<Option<i64>> =
                 conn.query_row("SELECT user_id FROM routes WHERE id = ?1", params![id], |r| r.get(0)).optional()?;
             if owner != Some(Some(user.id)) {
-                return Err(AppError::NotFound("Route nicht gefunden".into()));
+                return Err(AppError::NotFound("Tour nicht gefunden".into()));
             }
             // Never past what a route can be planned with.
             let have: i64 = conn.query_row(
@@ -7100,6 +7177,34 @@ mod tests {
         // A pin the driver placed is a place, whatever the lookup once said.
         conn.execute("UPDATE stops SET pinned = 1 WHERE id = 10", []).unwrap();
         assert!(unplaced_stops(&conn, 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_portal_answer_with_nulls_and_gaps_still_reads() {
+        let tours: Vec<PortalTour> = serde_json::from_str(
+            r#"[{"id":1,"name":"TGM 3","catalogue_type":"day","weekday":null,"weekdays":["montag"]},
+                {"id":2,"name":"Tk1","weekday":"montag","weekdays":null}]"#,
+        )
+        .unwrap();
+        assert!(tours[0].runs_on("montag") && !tours[0].runs_on("dienstag"));
+        assert!(tours[1].runs_on("montag"));
+
+        let d: PortalDelivery = serde_json::from_str(
+            r#"{"id":7,"state":"confirmed",
+                "customer":{"firstname":"Maria","lastname":" Gruber ","comment":null,"phone":"0664 1"},
+                "delivery_address":{"street":"Gentzgasse 129","street2":null,"staircase":"1","flat_number":"23","zip":"1180","comment":"2x läuten"},
+                "tours":null,
+                "delivery_bundles":[{"delivery_lines":[{"name":"Vitalmenü EP TGM5","quantity":2.0},{"name":"Suppe","quantity":1}]},{"delivery_lines":null}]}"#,
+        )
+        .unwrap();
+        let e = d.entry();
+        assert_eq!(e["kunde"], "Maria Gruber");
+        assert_eq!(e["strasse"], "Gentzgasse 129/1/23");
+        assert_eq!(e["plz"], "1180");
+        assert_eq!(e["paket"], "2x Vitalmenü EP TGM5, Suppe");
+        assert_eq!(e["notiz"], "2x läuten");
+        assert_eq!(e["telefon"], "0664 1");
+        assert_eq!(e["paket_count"], 2);
     }
 
     fn nominatim_hit(road: Option<&str>, postcode: Option<&str>, house_number: Option<&str>) -> NominatimHit {

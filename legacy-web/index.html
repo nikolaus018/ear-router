@@ -336,8 +336,8 @@
   .pick-bar button { font-weight: 600; color: #ED1639; padding: .25rem .5rem; }
   .pick-row { width: 100%; display: flex; align-items: center; gap: .75rem; text-align: left; padding: .75rem 1rem; opacity: .45; }
   .pick-row.on { opacity: 1; }
-  .pick-mark { flex: none; display: flex; font-size: 24px; color: rgba(0,0,0,.3); }
-  .pick-row.on .pick-mark { color: #34C759; }
+  .pick-num { flex: none; width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid rgba(0,0,0,.3); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: #fff; }
+  .pick-num.on { border-color: #34C759; background: #34C759; }
   .eta-line { font-size: 12px; color: rgba(0,0,0,.55); margin-top: .25rem; font-variant-numeric: tabular-nums; }
   .eta-line:empty { display: none; }
   #undo-banner { position: fixed; left: 0; right: 0; z-index: 45; display: flex; justify-content: center; padding: 0 1rem; bottom: calc(env(safe-area-inset-bottom, 0px) + 4.25rem); pointer-events: none; }
@@ -4787,6 +4787,7 @@ async function showGourmetDeliveries(tourId) {
     if (gourmet.tour?.id !== tourId) return;
     gourmet.deliveries = deliveries;
     gourmet.picked = new Set(deliveries.map((d) => d.id));
+    gourmet.pickQuery = '';
     if (!deliveries.length) {
       gourmetBody(`<div class="sheet-note"><span>${ICONS.box}</span><span>Für diese Tour gibt es ${dayLabel(gourmet.date).toLowerCase()} keine offenen Lieferungen.</span></div>${back}`, escapeHtml(tour.name));
       return;
@@ -4797,28 +4798,64 @@ async function showGourmetDeliveries(tourId) {
   }
 }
 
+// The picked stops are a `Set`, which keeps the order things were added in —
+// and that order is the point. Tapping a stop off and on again moves it to
+// the back, so a driver can tick the whole list in the order of the printed
+// one; the numbers on the rows show it, and Prüfen arrives in that order.
+// It is the checking order and nothing more: the tour itself is put in
+// driving order once it is saved.
 function paintGourmetDeliveries() {
-  const { deliveries, picked, tour } = gourmet;
-  const n = picked.size;
-  const all = n === deliveries.length;
+  const { deliveries, tour } = gourmet;
+  gourmet.pickQuery = gourmet.pickQuery || '';
   gourmetBody(`
     <p class="sheet-lead">${dayLabel(gourmet.date)} · ${deliveries.length === 1 ? '1 Stopp' : `${deliveries.length} Stopps`}. Alle sind ausgewählt — tippe einen an, den du nicht fährst.</p>
+    <div class="relative mb-3">
+      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-black/55 text-[17px] flex pointer-events-none">${ICONS.search}</span>
+      <input id="pick-search" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" autocorrect="off" spellcheck="false"
+        placeholder="Name oder Adresse suchen" aria-label="Stopps durchsuchen" value="${escapeAttr(gourmet.pickQuery)}"
+        oninput="gourmet.pickQuery = this.value; paintPickList()"
+        class="w-full bg-white rounded-xl pl-10 py-2.5 text-base placeholder:text-black/55 focus:outline-none focus:ring-2 focus:ring-brand-600" />
+    </div>
+    <div data-pick-list></div>
+    <div class="sheet-actions" data-pick-actions></div>
+  `, escapeHtml(tour.name));
+  paintPickList();
+}
+
+/// The rows and the buttons under them — everything a tap or a keystroke
+/// changes, repainted without touching the search field above.
+function paintPickList() {
+  const { deliveries, picked } = gourmet;
+  const list = document.querySelector('[data-pick-list]');
+  const actions = document.querySelector('[data-pick-actions]');
+  if (!list || !actions) return;
+  const n = picked.size;
+  const all = n === deliveries.length;
+  const position = new Map([...picked].map((id, i) => [id, i + 1]));
+  // Tokenised the way the tour's own search is, so "gruber gentz" finds
+  // Fam. Gruber in the Gentzgasse.
+  const tokens = normalizeMatchText(gourmet.pickQuery || '').split(' ').filter(Boolean);
+  const shown = tokens.length
+    ? deliveries.filter((d) => { const hay = normalizeMatchText(`${d.kunde} ${d.strasse} ${d.plz}`); return tokens.every((t) => hay.includes(t)); })
+    : deliveries;
+  list.innerHTML = `
     <div class="pick-bar">
       <span>${all ? 'Alle ausgewählt' : `${n} von ${deliveries.length} ausgewählt`}</span>
-      <button type="button" onclick="gourmetPickAll(${!all})">${all ? 'Keine' : 'Alle'}</button>
+      <button type="button" onclick="gourmetPickAll(${!all})">${all ? 'Keine auswählen' : 'Alle auswählen'}</button>
     </div>
-    <div class="${GROUP} pick-list">
-      ${deliveries.map((d) => `
-        <button type="button" role="checkbox" aria-checked="${picked.has(d.id)}" onclick="gourmetTogglePick(${d.id})" class="pick-row ${picked.has(d.id) ? 'on' : ''}">
-          <span class="pick-mark">${picked.has(d.id) ? ICONS.checkCircle : ICONS.circle}</span>
-          <span class="flex-1 min-w-0"><span class="block font-medium truncate">${escapeHtml(d.kunde || 'Ohne Namen')}</span><span class="block text-[13px] text-black/55 truncate">${escapeHtml([d.strasse, d.plz].filter(Boolean).join(', '))}</span></span>
-        </button>`).join('')}
-    </div>
-    <div class="sheet-actions">
-      <button type="button" onclick="loadGourmetEntries()" ${n ? '' : 'disabled'} class="press-98 wide-btn accent">Weiter mit ${n === 1 ? '1 Stopp' : `${n} Stopps`}</button>
-      <button type="button" onclick="showGourmetTours()" class="press-98 wide-btn quiet">Zurück</button>
-    </div>
-  `, escapeHtml(tour.name));
+    ${shown.length ? `<div class="${GROUP} pick-list">
+      ${shown.map((d) => {
+        const pos = position.get(d.id);
+        return `
+        <button type="button" role="checkbox" aria-checked="${!!pos}" onclick="gourmetTogglePick(${d.id})" class="pick-row ${pos ? 'on' : ''}">
+          <span class="pick-num ${pos ? 'on' : ''}">${pos || ''}</span>
+          <span class="flex-1 min-w-0"><span class="block font-medium truncate">${escapeHtml(d.kunde || 'Ohne Namen')}</span><span class="block text-[13px] text-black/55 truncate">${escapeHtml([d.strasse, d.plz].filter(Boolean).join(', ') || 'Keine Adresse')}</span></span>
+        </button>`;
+      }).join('')}
+    </div>` : `<p class="now-caption" style="text-align:center; padding:1.5rem 0">Keine Treffer.</p>`}`;
+  actions.innerHTML = `
+    <button type="button" onclick="loadGourmetEntries()" ${n ? '' : 'disabled'} class="press-98 wide-btn accent">Weiter mit ${n === 1 ? '1 Stopp' : `${n} Stopps`}</button>
+    <button type="button" onclick="showGourmetTours()" class="press-98 wide-btn quiet">Zurück</button>`;
 }
 
 function gourmetTogglePick(id) {
@@ -4826,14 +4863,18 @@ function gourmetTogglePick(id) {
   const sheetScroller = () => document.querySelector('.sheet-panel > .overflow-y-auto');
   const top = sheetScroller()?.scrollTop;
   if (gourmet.picked.has(id)) gourmet.picked.delete(id); else gourmet.picked.add(id);
-  paintGourmetDeliveries();
+  paintPickList();
   const scroller = sheetScroller();
   if (scroller && top != null) scroller.scrollTop = top;
+  if (navigator.vibrate) navigator.vibrate(8);
 }
 
 function gourmetPickAll(on) {
-  gourmet.picked = new Set(on ? gourmet.deliveries.map((d) => d.id) : []);
-  paintGourmetDeliveries();
+  // "Alle" puts the rest behind what is already picked, in the portal's
+  // order — it must not throw away an order somebody has just tapped out.
+  if (on) for (const d of gourmet.deliveries) gourmet.picked.add(d.id);
+  else gourmet.picked = new Set();
+  paintPickList();
 }
 
 /// Step three and a half: fetch what the picked deliveries actually are —
@@ -4845,8 +4886,9 @@ async function loadGourmetEntries() {
   const n = picked.size;
   gourmetBody(sheetBusy(`${n === 1 ? '1 Stopp wird' : `${n} Stopps werden`} geholt …`), escapeHtml(tour.name));
   try {
-    const body = { tour_id: tour.id, date };
-    if (n !== deliveries.length) body.delivery_ids = [...picked];
+    // Always the ids, even when everything is picked: their order is the
+    // order Prüfen is read in.
+    const body = { tour_id: tour.id, date, delivery_ids: [...picked] };
     const { entries } = await api('/portal/entries', { method: 'POST', body: JSON.stringify(body), timeoutMs: 3 * 60 * 1000 });
     if (gourmet.tour?.id !== tour.id) return;
     gourmet.entries = entries.map((e) => ({
@@ -6352,10 +6394,11 @@ async function shareReport() {
 // numbers, typed in the yard: before setting off and after getting back.
 // Kept on this device per day; the difference goes on the Tagesabschluss.
 // ---------------------------------------------------------------------
-const KM_KEY = 'ear.kilometer.v1';
+// Per account: two drivers who share a phone do not share a van.
+const kmKey = () => `ear.kilometer.v1.${state.user?.id ?? 0}`;
 function loadKilometer() {
   try {
-    const v = JSON.parse(localStorage.getItem(KM_KEY) || 'null');
+    const v = JSON.parse(localStorage.getItem(kmKey()) || 'null');
     if (v && typeof v === 'object' && v.day === isoDay(new Date())) return v;
   } catch (_) { /* unreadable — start clean */ }
   return { day: isoDay(new Date()), start: '', end: '' };
@@ -6389,7 +6432,7 @@ function openKilometerSheet() {
 }
 function saveKilometer() {
   const v = { day: isoDay(new Date()), start: document.getElementById('km-start')?.value.trim() || '', end: document.getElementById('km-end')?.value.trim() || '' };
-  try { localStorage.setItem(KM_KEY, JSON.stringify(v)); } catch (_) { /* private mode — the sum still shows */ }
+  try { localStorage.setItem(kmKey(), JSON.stringify(v)); } catch (_) { /* private mode — the sum still shows */ }
   const out = document.getElementById('km-result');
   const driven = kmDriven(v);
   if (out) out.textContent = driven != null ? `${String(driven).replace('.', ',')} km` : '–';
@@ -6626,6 +6669,8 @@ function signedOut() {
   pendingDeliveredGen.clear();
   adminUsers = null;
   importController = null;
+  // What the last driver's tours taught about door times is theirs.
+  paceHistory = { door_minutes: null, lager_minutes: null };
   render();
 }
 
