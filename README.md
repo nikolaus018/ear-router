@@ -13,6 +13,14 @@
   <img src="https://img.shields.io/badge/SwiftData-MapKit-green" alt="SwiftData, MapKit">
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/tour.png" alt="Tour with arrival times" width="23%">
+  <img src="docs/screenshots/now.png" alt="Next stop" width="23%">
+  <img src="docs/screenshots/map.png" alt="Route map" width="23%">
+  <img src="docs/screenshots/import.png" alt="Import review" width="23%">
+</p>
+<p align="center"><sub>Demo data. Tour with arrival estimates, the stop to drive to now, the optimised route, and the import review.</sub></p>
+
 Delivery route planner for *Essen auf Rädern* (Meals on Wheels) in Vienna,
 for the Arbeiter-Samariter-Bund Österreichs.
 
