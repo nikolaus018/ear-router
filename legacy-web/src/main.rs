@@ -411,7 +411,12 @@ fn check_no_control_chars(value: &str, field: &str, allow_newlines: bool) -> Res
 
 const MAX_KUNDE_LEN: usize = 120;
 const MAX_STRASSE_LEN: usize = 200;
-const MAX_PAKET_LEN: usize = 200;
+/// As long as the portal makes it. A delivery's Paket is every line of every
+/// parcel joined up, and a household with a week of frozen dishes runs to
+/// well over a thousand characters; at the 200 this used to be, the text was
+/// cut mid-dish and the Ladeliste then counted what was left. The same
+/// figure as the iOS app's.
+const MAX_PAKET_LEN: usize = 10_000;
 const MAX_NOTIZ_LEN: usize = 1000;
 const MAX_TELEFON_LEN: usize = 40;
 
@@ -6534,6 +6539,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         // Behind the limiter with everything else: a password guess is a
         // request like any other, and costs a second on top (see `login`).
         .route("/api/login", post(login))
+        // Here for the body limit: a full tour's entries, each with a Paket
+        // as long as the portal makes it, is more than the default allows.
+        .route("/api/portal/import", post(portal_import))
         // Ordering matters here, and it reads bottom-up: the rate limiter
         // is outermost so a flood is rejected before a body is buffered,
         // then the body limit. Error shaping and cache suppression are
@@ -6558,7 +6566,6 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/portal/tours", get(portal_tours))
         .route("/api/portal/deliveries", get(portal_deliveries))
         .route("/api/portal/entries", post(portal_entries))
-        .route("/api/portal/import", post(portal_import))
         .route("/api/health", get(health))
         .route("/", get(index))
         .route("/sw.js", get(sw_js))

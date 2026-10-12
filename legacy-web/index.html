@@ -2309,7 +2309,7 @@ const MAX_BULK_STOPS = 98;
 // here as `maxlength` purely so the input stops accepting characters that
 // the server is going to reject anyway — losing a long note to a 400 after
 // the round trip is a worse way to learn about the limit.
-const LIMITS = { kunde: 120, strasse: 200, paket: 200, notiz: 1000, routeName: 200 };
+const LIMITS = { kunde: 120, strasse: 200, paket: 10000, notiz: 1000, routeName: 200 };
 
 // Thin-stroke, geometry-only line icons (no emoji) — the app's whole visual
 // vocabulary for status/actions, styled after SF Symbols' "regular" weight.
