@@ -2,6 +2,9 @@
 name = "ear_routing"
 version = "0.1.0"
 edition = "2021"
+# What the server builds with. Keeps `cargo update` from picking dependencies
+# it cannot compile.
+rust-version = "1.85"
 default-run = "ear_routing"
 
 [dependencies]

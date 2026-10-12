@@ -294,6 +294,8 @@
   .review-fact > span:first-child { flex: none; display: flex; margin-top: .15em; color: rgba(0,0,0,.45); }
   .review-fact.warn, .review-fact.warn > span:first-child { color: #B26A00; font-weight: 600; }
   .review-x { flex: none; width: 2.75rem; height: 2.75rem; margin: .375rem .25rem 0 0; display: flex; align-items: center; justify-content: center; font-size: 18px; color: rgba(0,0,0,.4); }
+  .lade-parcels { flex: none; padding: .25rem .5rem; border-radius: .5rem; background: rgba(237,22,57,.1); color: #C4102E; font-size: 13px; font-weight: 700; white-space: nowrap; }
+  .lade-parcels.many { background: #ED1639; color: #fff; }
   .seg { display: flex; background: rgba(120,120,128,.16); border-radius: .625rem; padding: 2px; margin: .5rem 0 .75rem; }
   .seg-btn { flex: 1; padding: .4375rem 0; border-radius: .5rem; font-size: 14px; font-weight: 600; color: rgba(0,0,0,.6); }
   .seg-btn.on { background: #fff; color: #000; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
@@ -4858,7 +4860,8 @@ function paintReview() {
   const tk = tour.name.trim().toLowerCase().startsWith('tk');
   const row = (e, i) => {
     const problem = reviewProblem(e);
-    const paket = tk ? (e.paket_count == null ? '' : e.paket_count === 1 ? '1 Paket' : `${e.paket_count} Pakete`) : e.paket;
+    const n = tk ? parcelCount(e) : null;
+    const paket = tk ? (n == null ? '' : n === 1 ? '1 Paket' : `${n} Pakete`) : e.paket;
     return `
       <div class="review-row">
         <button type="button" onclick="editReviewEntry(${i})" class="review-main">
@@ -5160,8 +5163,16 @@ const isTkTour = (r) => ladelisteMode(r) === 'tk';
 /// summed for the VM list.
 function displayPaket(s, r = state.currentRoute) {
   if (!isTkTour(r)) return s.paket || '';
-  if (s.paket_count == null) return '';
-  return s.paket_count === 1 ? '1 Paket' : `${s.paket_count} Pakete`;
+  const n = parcelCount(s);
+  return n == null ? '' : (n === 1 ? '1 Paket' : `${n} Pakete`);
+}
+
+/// How many parcels a TK door gets: the portal's own count, and for a stop
+/// typed in by hand whatever its Paket field adds up to ("2 Pakete" is 2,
+/// "1x Suppe, 2x Menü" is 3). `null` only when nothing is known at all.
+function parcelCount(s) {
+  if (s.paket_count != null) return s.paket_count;
+  return (s.paket || '').trim() ? paketQty(s.paket) : null;
 }
 
 /// What loads the van, for the mode given.
@@ -5174,12 +5185,16 @@ function ladelisteItems(route, mode = ladelisteMode(route)) {
   const owed = route.stops.filter((s) => s.kind === 'customer' && !skipsDoor(s));
   if (mode === 'tk') {
     return owed.slice().reverse().map((s, i) => {
-      const parcels = s.paket_count == null ? '' : (s.paket_count === 1 ? '1 Paket' : `${s.paket_count} Pakete`);
+      const n = parcelCount(s);
       return {
         key: `stop:${s.id}`,
         qty: i + 1,
         label: (s.kunde || '').trim() || 'Stopp',
-        sub: [stopAddress(s), parcels].filter(Boolean).join(' · '),
+        sub: stopAddress(s),
+        // What to carry out to the van for this customer — the one number
+        // the list is read for, so it gets a place of its own on the row.
+        parcels: n == null ? '' : (n === 1 ? '1 Paket' : `${n} Pakete`),
+        parcelCount: n,
       };
     });
   }
@@ -5206,7 +5221,11 @@ const ladeMarkClass = (on) => `shrink-0 w-9 h-9 rounded-full flex items-center j
 
 function ladelisteProgress(items, checked, mode = ladelisteMode(state.currentRoute)) {
   const done = items.filter((it) => checked.has(it.key)).length;
-  if (mode === 'tk') return done >= items.length ? 'Alles geladen' : `${done} von ${items.length} geladen`;
+  if (mode === 'tk') {
+    const parcels = items.reduce((n, it) => n + (it.parcelCount || 0), 0);
+    const total = parcels > 0 ? ` · ${parcels === 1 ? '1 Paket' : `${parcels} Pakete`}` : '';
+    return done >= items.length ? `Alles geladen${total}` : `${done} von ${items.length} geladen${total}`;
+  }
   const pieces = items.reduce((n, it) => n + it.qty, 0);
   const total = pieces > 0 ? ` · ${pieces} Stück` : '';
   return done >= items.length ? `Alles abgehakt${total}` : `${done} von ${items.length} abgehakt${total}`;
@@ -5224,7 +5243,7 @@ function renderLadeliste() {
     const on = checked.has(it.key);
     return `
       <button type="button" id="lade-row-${i}" role="checkbox" aria-checked="${on}"
-        aria-label="${escapeAttr(mode === 'tk' ? `${it.qty}. ${it.label}${it.sub ? `, ${it.sub}` : ''}` : `${it.qty} mal ${it.label}`)}"
+        aria-label="${escapeAttr(mode === 'tk' ? `${it.qty}. ${it.label}${it.parcels ? `, ${it.parcels}` : ''}${it.sub ? `, ${it.sub}` : ''}` : `${it.qty} mal ${it.label}`)}"
         onclick="toggleLadelisteItem(${i})"
         class="w-full flex items-center gap-3 px-4 py-3.5 text-left press-fade">
         <span data-lade-qty class="${ladeQtyClass(on)}">${it.qty}${mode === 'tk' ? '' : '×'}</span>
@@ -5232,6 +5251,7 @@ function renderLadeliste() {
           <span data-lade-label class="${ladeLabelClass(on)}">${escapeHtml(it.label)}</span>
           ${it.sub ? `<span class="block text-[13px] text-black/55 truncate">${escapeHtml(it.sub)}</span>` : ''}
         </span>
+        ${it.parcels ? `<span class="lade-parcels ${it.parcelCount > 1 ? 'many' : ''}">${escapeHtml(it.parcels)}</span>` : ''}
         <span data-lade-mark class="${ladeMarkClass(on)}">${on ? ICONS.checkCircleFill : ICONS.circle}</span>
       </button>`;
   };
@@ -7290,7 +7310,7 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1) {
         <p class="font-medium ${delivered ? 'text-black/55' : ''} ${struck ? 'line-through' : ''}">${escapeHtml(s.kunde)}</p>
         <p class="text-[13px] ${delivered ? 'text-black/55' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)}</p>
         ${displayPaket(s) ? (() => {
-          const qty = isTkTour(state.currentRoute) ? (s.paket_count || 1) : paketQty(s.paket);
+          const qty = isTkTour(state.currentRoute) ? (parcelCount(s) || 1) : paketQty(s.paket);
           // (TK: the parcels to carry up. VM: the pieces in the Paket.)
           const multi = qty > 1 && !delivered;
           return `<p class="inline-flex items-center gap-1 max-w-full text-[12px] ${multi ? 'font-bold' : 'font-medium'} mt-1.5 px-1.5 py-0.5 rounded ${

@@ -247,6 +247,7 @@ def restart(v: Venvy, app: dict) -> dict:
     action = "restart" if app["status"] in ("running", "starting") else "start"
     print(f"• {action} …")
     v.call("POST", f"/api/apps/{app['id']}/control?action={action}")
+    started = time.time()
     end = time.time() + 1200                    # der erste Build auf dem Server dauert Minuten
     while time.time() < end:
         time.sleep(4)
@@ -256,7 +257,8 @@ def restart(v: Venvy, app: dict) -> dict:
             app = find_app(v)
             if app["status"] == "running":
                 return app
-        if app["status"] == "error":
+        # Ein Build, der scheitert, lässt die App nach dem Start wieder auf „stopped“ fallen.
+        if app["status"] == "error" or (app["status"] == "stopped" and time.time() > started + 30):
             break
     logs = v.call("GET", f"/api/apps/{app['id']}/logs?lines=40")["content"]
     sys.exit(f"✗ App läuft nicht (Status: {app['status']}). Letzte Log-Zeilen:\n{logs}")
