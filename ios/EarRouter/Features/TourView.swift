@@ -31,6 +31,7 @@ struct TourView: View {
     @State private var showingGourmetImport = false
     @State private var showingErayImport = false
     @State private var showingLadeliste = false
+    @State private var showingPDF = false
     @State private var renaming = false
     @State private var newName = ""
     @State private var busy: String?
@@ -189,6 +190,9 @@ struct TourView: View {
         }
         .sheet(isPresented: $showingLadeliste) {
             LadelisteView(route: route)
+        }
+        .sheet(isPresented: $showingPDF) {
+            TourPDFSheet(route: route)
         }
         .sheet(isPresented: $reordering) {
             ReorderSheet(route: route)
@@ -413,6 +417,8 @@ struct TourView: View {
                 // same menu as two near-identical glyphs. What this list is
                 // about is what goes in the van, which is the box.
                 Button("Ladeliste", systemImage: "shippingbox") { showingLadeliste = true }
+                Button("Als PDF exportieren", systemImage: "printer") { showingPDF = true }
+                    .disabled(route.customerCount == 0)
                 // One entry for the three ways a day's list arrives. Side by
                 // side they made this menu thirteen rows long, and the last
                 // two — the reset and filing the tour — scrolled out of it.
