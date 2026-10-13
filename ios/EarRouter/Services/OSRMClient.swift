@@ -166,8 +166,53 @@ actor OSRMClient {
 
         try Self.checkLegCount(trip.legs.count, waypoints: coords.count)
 
+        // A second look at the order — see `TourPolish`. Best effort: if the
+        // table or the route behind it cannot be had, OSRM's own answer is a
+        // complete one and is what every tour got until now.
+        if let better = try? await polished(
+            order, coords: coords, fixFirst: fixFirst, fixLast: fixLast)
+        {
+            return better
+        }
+
         return (order, trip.legs.map { ($0.distance, $0.duration) },
                 Self.toPolyline(trip.geometry))
+    }
+
+    /// The shorter order `TourPolish` finds, routed — or `nil` when OSRM's
+    /// order is already as good as it gets.
+    private func polished(
+        _ order: [Int], coords: [(lat: Double, lon: Double)], fixFirst: Bool, fixLast: Bool
+    ) async throws -> (order: [Int], legs: [(Double, Double)], geometry: [[Double]])? {
+        let durations = try await durations(between: coords)
+        // Off the actor: a hundred doors take a few dozen milliseconds, and
+        // nothing else waiting on OSRM should wait on that too.
+        let better = await Task.detached(priority: .userInitiated) {
+            TourPolish.improve(
+                order: order, durations: durations, fixFirst: fixFirst, fixLast: fixLast)
+        }.value
+        guard better != order else { return nil }
+        let through = try await routeThrough(better.map { coords[$0] })
+        return (better, through.legs, through.geometry)
+    }
+
+    /// The driving time from every point to every other, in seconds:
+    /// `[from][to]`, in the order of `coords`.
+    func durations(between coords: [(lat: Double, lon: Double)]) async throws -> [[Double]] {
+        let path = "/table/v1/driving/\(Self.coordString(coords))?annotations=duration"
+        let resp: TableResponse = try await get(path, waypoints: coords.count)
+        guard resp.code == "Ok", let rows = resp.durations, rows.count == coords.count else {
+            throw Self.failure(code: resp.code)
+        }
+        // OSRM writes `null` for a pair it cannot connect. A table with a
+        // hole in it cannot rank orders, so it is no table.
+        return try rows.map { row in
+            guard row.count == coords.count else { throw AppError.routerUnavailable }
+            return try row.map {
+                guard let seconds = $0 else { throw AppError.routerUnavailable }
+                return seconds
+            }
+        }
     }
 
     /// Inverts OSRM's waypoint mapping into the visiting order, and refuses
@@ -501,6 +546,10 @@ actor OSRMClient {
     private struct TripEntry: Decodable {
         let geometry: Geometry
         let legs: [Leg]
+    }
+    private struct TableResponse: Decodable {
+        let code: String
+        let durations: [[Double?]]?
     }
     private struct NearestResponse: Decodable {
         let code: String
