@@ -2769,8 +2769,21 @@ async fn osrm_get<T: DeserializeOwned>(state: &AppState, path_and_query: &str) -
 /// tour nothing is allowed to reorder -- depot, warehouse, and the doors
 /// already driven to. Returns per-leg (distance_m, duration_s) and the
 /// geometry of the whole path.
-async fn osrm_route_through(state: &AppState, coords: &[(f64, f64)]) -> Result<(Vec<(f64, f64)>, Vec<[f64; 2]>), AppError> {
-    let path = format!("/route/v1/driving/{}?overview=full&geometries=geojson", osrm_coord_string(coords));
+///
+/// `turn_at_stops` lets the van leave a stop the way it came, as `/trip`
+/// does. Without it OSRM drives on past every stop in the direction it
+/// arrived, round the block if need be -- a different route from the one
+/// `/trip` plans, and several minutes longer over a tour.
+async fn osrm_route_through(
+    state: &AppState,
+    coords: &[(f64, f64)],
+    turn_at_stops: bool,
+) -> Result<(Vec<(f64, f64)>, Vec<[f64; 2]>), AppError> {
+    let path = format!(
+        "/route/v1/driving/{}?overview=full&geometries=geojson{}",
+        osrm_coord_string(coords),
+        if turn_at_stops { "&continue_straight=false" } else { "" },
+    );
     let resp: OsrmRouteResp = osrm_get(state, &path).await?;
     if resp.code != "Ok" {
         return Err(AppError::Internal(format!("OSRM route: {}", resp.code)));
@@ -2827,7 +2840,11 @@ async fn osrm_trip(
         if fix_first { "first" } else { "any" },
         if fix_last { "last" } else { "any" },
     );
-    let resp: OsrmTripResp = osrm_get(state, &path).await?;
+    // The table is asked for alongside the trip, not after it: the second
+    // look below needs both, and one after the other was half a second of
+    // the driver's wait.
+    let (resp, table) = tokio::join!(osrm_get::<OsrmTripResp>(state, &path), osrm_table(state, coords));
+    let resp = resp?;
     if resp.code != "Ok" {
         return Err(AppError::Internal(format!("OSRM trip: {}", resp.code)));
     }
@@ -2875,7 +2892,248 @@ async fn osrm_trip(
     }
 
     let legs: Vec<(f64, f64)> = trip.legs.iter().map(|l| (l.distance, l.duration)).collect();
+
+    // A second look at the order -- see `tour_polish`. Best effort: if the
+    // table or the route behind it cannot be had, OSRM's own answer is a
+    // complete one and is what every tour got until now.
+    if let Ok(durations) = table {
+        let better = tour_polish::improve(&order, &durations, fix_first, fix_last);
+        if better != order {
+            // Routed the way `/trip` routes, so the legs are the ones the
+            // table promised and not a longer drive round every block.
+            let through: Vec<(f64, f64)> = better.iter().map(|&i| coords[i]).collect();
+            if let Ok((better_legs, better_geom)) = osrm_route_through(state, &through, true).await {
+                // Shorter on the road, not only in the table.
+                let seconds = |l: &[(f64, f64)]| l.iter().map(|x| x.1).sum::<f64>();
+                if seconds(&better_legs) < seconds(&legs) {
+                    return Ok((better, better_legs, better_geom));
+                }
+            }
+        }
+    }
+
     Ok((order, legs, geojson_to_polyline(trip.geometry)))
+}
+
+#[derive(Deserialize)]
+struct OsrmTableResp {
+    code: String,
+    #[serde(default)]
+    durations: Option<Vec<Vec<Option<f64>>>>,
+}
+
+/// The driving time from every point to every other, in seconds:
+/// `[from][to]`, in the order of `coords`.
+async fn osrm_table(state: &AppState, coords: &[(f64, f64)]) -> Result<Vec<Vec<f64>>, AppError> {
+    let path = format!("/table/v1/driving/{}?annotations=duration", osrm_coord_string(coords));
+    let resp: OsrmTableResp = osrm_get(state, &path).await?;
+    let rows = match resp.durations {
+        Some(rows) if resp.code == "Ok" && rows.len() == coords.len() => rows,
+        _ => return Err(AppError::Internal(format!("OSRM table: {}", resp.code))),
+    };
+    // OSRM writes `null` for a pair it cannot connect. A table with a hole
+    // in it cannot rank orders, so it is no table.
+    rows.into_iter()
+        .map(|row| {
+            if row.len() != coords.len() {
+                return None;
+            }
+            row.into_iter().collect::<Option<Vec<f64>>>()
+        })
+        .collect::<Option<Vec<Vec<f64>>>>()
+        .ok_or_else(|| AppError::Internal("OSRM table: unvollständig".into()))
+}
+
+/// Tightens the stop order OSRM's `/trip` hands back. The same search, move
+/// for move, as the iOS app's `TourPolish`, so one tour comes back in one
+/// order on both.
+///
+/// `/trip` is a quick heuristic: it builds one tour by inserting the farthest
+/// point next and stops there. Measured on 23 real tours (13.10.2026) that
+/// left 2.7 % of the driving time on the table -- three minutes on an
+/// ordinary tour, twelve on the worst -- because of doors visited on the way
+/// out that are passed again on the way back.
+///
+/// This starts from OSRM's order and only ever moves to one that is shorter
+/// by the server's own driving times, so the result is never worse than what
+/// was driven before. The moves are the two a person would make looking at
+/// the map: pick up one to three neighbouring doors and drop them somewhere
+/// else in the tour (either way round), and turn a stretch of the tour
+/// around. When neither helps any more, a few doors are thrown somewhere
+/// random and the same is tried again from there, keeping whichever tour is
+/// shortest.
+///
+/// Pure and deterministic: the same tour always comes back in the same
+/// order, and nothing here touches the network or the database.
+mod tour_polish {
+    /// A shorter order has to save at least this much to be taken. Below it
+    /// the difference is noise in the server's times, and rows trading
+    /// places for nothing is its own cost.
+    pub const WORTHWHILE: f64 = 30.0;
+
+    /// The total driving time of `order`.
+    pub fn cost(order: &[usize], m: &[Vec<f64>]) -> f64 {
+        order.windows(2).map(|w| m[w[0]][w[1]]).sum()
+    }
+
+    /// The best order found, or `order` itself when nothing is `WORTHWHILE`.
+    ///
+    /// `order` holds indices into `m`, where `m[a][b]` is the drive from `a`
+    /// to `b` -- not the same as from `b` to `a`, in a city of one-way
+    /// streets. `fix_first` and `fix_last` keep the ends where they are, as
+    /// they do for `/trip`.
+    pub fn improve(order: &[usize], m: &[Vec<f64>], fix_first: bool, fix_last: bool) -> Vec<usize> {
+        let n = order.len();
+        let lo = usize::from(fix_first);
+        let hi = if fix_last { n.saturating_sub(1) } else { n };
+        // Fewer than three movable doors and at least one fixed end: OSRM
+        // has already tried every order there is.
+        let mut seen = vec![false; n];
+        let fits = hi >= lo + 3
+            && m.len() >= n
+            && m.iter().all(|row| row.len() >= n)
+            && order.iter().all(|&i| i < n && !std::mem::replace(&mut seen[i], true));
+        if !fits {
+            return order.to_vec();
+        }
+
+        let given = cost(order, m);
+        let mut best = order.to_vec();
+        let mut best_cost = settle(&mut best, m, lo, hi);
+
+        // Kicks grow with the tour, capped so a hundred doors still answer
+        // in well under a second.
+        let mut random = SplitMix(0x45_41_52);
+        let kicks = (4_000 / n).clamp(20, 60);
+        for _ in 0..kicks {
+            let mut trial = best.clone();
+            for _ in 0..3 {
+                let len = (random.next() % 3) as usize + 1;
+                if hi - lo <= len {
+                    break;
+                }
+                let from = lo + (random.next() % (hi - lo - len + 1) as u64) as usize;
+                let segment: Vec<usize> = trial.drain(from..from + len).collect();
+                let to = lo + (random.next() % (hi - len - lo + 1) as u64) as usize;
+                trial.splice(to..to, segment);
+            }
+            let trial_cost = settle(&mut trial, m, lo, hi);
+            if trial_cost < best_cost - 1e-6 {
+                best = trial;
+                best_cost = trial_cost;
+            }
+        }
+
+        if given - best_cost >= WORTHWHILE { best } else { order.to_vec() }
+    }
+
+    /// The drive between two neighbours, where an end of the tour has no
+    /// neighbour and costs nothing.
+    fn e(m: &[Vec<f64>], a: Option<usize>, b: Option<usize>) -> f64 {
+        match (a, b) {
+            (Some(a), Some(b)) => m[a][b],
+            _ => 0.0,
+        }
+    }
+
+    /// Makes improving moves on `o[lo..hi]` until there are none, and
+    /// returns what the tour then costs.
+    fn settle(o: &mut Vec<usize>, m: &[Vec<f64>], lo: usize, hi: usize) -> f64 {
+        let n = o.len();
+        let at = |o: &[usize], i: isize| -> Option<usize> { (i >= 0 && (i as usize) < n).then(|| o[i as usize]) };
+
+        let mut improved = true;
+        while improved {
+            improved = false;
+
+            // Move one to three neighbouring doors somewhere else.
+            'relocate: for len in 1..=3usize {
+                if hi - lo <= len {
+                    continue;
+                }
+                for i in lo..=(hi - len) {
+                    let (first, last) = (o[i], o[i + len - 1]);
+                    let (mut inside, mut inside_back) = (0.0, 0.0);
+                    for k in i..(i + len - 1) {
+                        inside += m[o[k]][o[k + 1]];
+                        inside_back += m[o[k + 1]][o[k]];
+                    }
+                    let before = at(o, i as isize - 1);
+                    let after = at(o, (i + len) as isize);
+                    let freed = e(m, before, Some(first)) + inside + e(m, Some(last), after) - e(m, before, after);
+                    if freed <= 1e-6 {
+                        continue;
+                    }
+                    // `j` is the gap in the tour without the segment:
+                    // between its `j - 1` and its `j`.
+                    let without = |o: &[usize], k: isize| -> Option<usize> {
+                        let index = if k < i as isize { k } else { k + len as isize };
+                        at(o, index)
+                    };
+                    for j in lo..=(hi - len) {
+                        if j == i {
+                            continue;
+                        }
+                        let p = without(o, j as isize - 1);
+                        let q = without(o, j as isize);
+                        let gap = e(m, p, q);
+                        let forward = e(m, p, Some(first)) + inside + e(m, Some(last), q) - gap;
+                        let backward = e(m, p, Some(last)) + inside_back + e(m, Some(first), q) - gap;
+                        if forward.min(backward) >= freed - 1e-6 {
+                            continue;
+                        }
+                        let mut segment: Vec<usize> = o.drain(i..i + len).collect();
+                        if backward < forward {
+                            segment.reverse();
+                        }
+                        o.splice(j..j, segment);
+                        improved = true;
+                        break 'relocate;
+                    }
+                }
+            }
+            if improved {
+                continue;
+            }
+
+            // Turn a stretch of the tour around. Driving times are per
+            // direction, so the stretch itself costs something else
+            // backwards: running sums both ways make that one subtraction.
+            let mut forward = vec![0.0; n];
+            let mut backward = vec![0.0; n];
+            for k in 1..n {
+                forward[k] = forward[k - 1] + m[o[k - 1]][o[k]];
+                backward[k] = backward[k - 1] + m[o[k]][o[k - 1]];
+            }
+            'turn: for i in lo..hi.saturating_sub(1) {
+                for j in (i + 1)..hi {
+                    let before = at(o, i as isize - 1);
+                    let after = at(o, j as isize + 1);
+                    let now = e(m, before, Some(o[i])) + (forward[j] - forward[i]) + e(m, Some(o[j]), after);
+                    let then = e(m, before, Some(o[j])) + (backward[j] - backward[i]) + e(m, Some(o[i]), after);
+                    if then >= now - 1e-6 {
+                        continue;
+                    }
+                    o[i..=j].reverse();
+                    improved = true;
+                    break 'turn;
+                }
+            }
+        }
+        cost(o, m)
+    }
+
+    /// A fixed-seed generator, so one tour never comes back in two orders.
+    struct SplitMix(u64);
+    impl SplitMix {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -3480,62 +3738,76 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         routed.extend(end);
         if routed.len() >= 2 {
             let coords: Vec<(f64, f64)> = routed.iter().map(|n| (n.lat, n.lon)).collect();
-            let (path_legs, path_geom) = osrm_route_through(state, &coords).await?;
+            let (path_legs, path_geom) = osrm_route_through(state, &coords, false).await?;
             legs.extend(path_legs);
             append_geometry(&mut geometry, path_geom);
         }
     } else {
-    if routed.len() >= 2 {
-        let coords: Vec<(f64, f64)> = routed.iter().map(|n| (n.lat, n.lon)).collect();
-        let (path_legs, path_geom) = osrm_route_through(state, &coords).await?;
-        legs.extend(path_legs);
-        append_geometry(&mut geometry, path_geom);
-    }
+        // The optimized section runs from the last point already driven
+        // through every open customer to the destination. That point is the
+        // anchor: it is already in `routed` and goes into the trip only to
+        // be routed *from*, never to be added a second time.
+        //
+        // Mid-tour it is the last door answered for, not the warehouse.
+        // Planned from the depot every time, one stop added after the
+        // fifteenth delivery could land between the third and fourth --
+        // become "next", and send the driver back across town.
+        let anchor = routed.last().copied();
+        let driven_ids: HashSet<i64> = nodes.driven.iter().map(|n| n.id).collect();
+        let mut trip_nodes: Vec<StopCoord> = Vec::new();
+        trip_nodes.extend(anchor);
+        trip_nodes.extend(nodes.customers.iter().copied().filter(|c| !driven_ids.contains(&c.id)));
+        trip_nodes.extend(end);
 
-    // The optimized section runs from the last point already driven through
-    // every open customer to the destination. That point is the anchor: it
-    // is already in `routed` and goes into this call only to be routed
-    // *from*, never to be added a second time.
-    //
-    // Mid-tour it is the last door answered for, not the warehouse. Planned
-    // from the depot every time, one stop added after the fifteenth delivery
-    // could land between the third and fourth -- become "next", and send the
-    // driver back across town.
-    let anchor = routed.last().copied();
-    let driven_ids: HashSet<i64> = nodes.driven.iter().map(|n| n.id).collect();
-    let mut trip_nodes: Vec<StopCoord> = Vec::new();
-    trip_nodes.extend(anchor);
-    trip_nodes.extend(nodes.customers.iter().copied().filter(|c| !driven_ids.contains(&c.id)));
-    trip_nodes.extend(end);
-
-    if trip_nodes.len() >= 2 {
         // OSRM cannot solve a `roundtrip=false` trip with both ends open
         // (see `osrm_trip`). A tour with depot, warehouse *and* destination
         // all switched off has no fixed point left to anchor to, so the
-        // first customer — first by stop id, i.e. the order they were
-        // entered — is pinned as the starting point and the tour is left
+        // first customer -- first by stop id, i.e. the order they were
+        // entered -- is pinned as the starting point and the tour is left
         // free to end wherever is cheapest. That is a real choice made on
         // the driver's behalf, but it is the only one on offer, and "start
         // where the list starts" is what a hand-entered list already implies.
         let fix_first = anchor.is_some() || end.is_none();
         let fix_last = end.is_some();
-        let coords: Vec<(f64, f64)> = trip_nodes.iter().map(|n| (n.lat, n.lon)).collect();
-        let (order, trip_legs, trip_geom) = osrm_trip(state, &coords, fix_first, fix_last).await?;
+        let fixed_coords: Vec<(f64, f64)> = routed.iter().map(|n| (n.lat, n.lon)).collect();
+        let trip_coords: Vec<(f64, f64)> = trip_nodes.iter().map(|n| (n.lat, n.lon)).collect();
 
-        for &idx in &order {
-            if anchor.is_some() && idx == 0 {
-                continue; // the anchor, already the last entry of `routed`
+        // Both halves are asked for at once. Neither needs the other's
+        // answer, and the driver is watching a spinner for the sum of them.
+        let fixed = async {
+            if fixed_coords.len() >= 2 {
+                osrm_route_through(state, &fixed_coords, false).await.map(Some)
+            } else {
+                Ok(None)
             }
-            routed.push(trip_nodes[idx]);
-        }
-        legs.extend(trip_legs);
-        append_geometry(&mut geometry, trip_geom);
-    } else {
-        // At most one point after the head — nothing to optimize, but it
-        // still belongs in the driving order.
-        routed.extend(trip_nodes.into_iter().skip(anchor.is_some() as usize));
-    }
+        };
+        let trip = async {
+            if trip_coords.len() >= 2 {
+                osrm_trip(state, &trip_coords, fix_first, fix_last).await.map(Some)
+            } else {
+                Ok(None)
+            }
+        };
+        let (fixed, trip) = tokio::join!(fixed, trip);
 
+        if let Some((path_legs, path_geom)) = fixed? {
+            legs.extend(path_legs);
+            append_geometry(&mut geometry, path_geom);
+        }
+        if let Some((order, trip_legs, trip_geom)) = trip? {
+            for &idx in &order {
+                if anchor.is_some() && idx == 0 {
+                    continue; // the anchor, already the last entry of `routed`
+                }
+                routed.push(trip_nodes[idx]);
+            }
+            legs.extend(trip_legs);
+            append_geometry(&mut geometry, trip_geom);
+        } else {
+            // At most one point after the head -- nothing to optimize, but
+            // it still belongs in the driving order.
+            routed.extend(trip_nodes.into_iter().skip(anchor.is_some() as usize));
+        }
     }
 
     // `[f64; 2]` pairs can't fail to serialize once finite, but OSRM is an
@@ -7402,6 +7674,110 @@ async fn main() {
 mod tests {
     use super::text::{normalize_strasse_text, simplify_housenumber, street_name_only};
     use super::*;
+
+    /// Driving times that differ by direction, like a city of one-way
+    /// streets -- the generator the iOS app's `TourPolishTests` uses.
+    fn polish_city(n: usize, seed: u64) -> Vec<Vec<f64>> {
+        let mut state = seed;
+        let mut next = move || {
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) as f64 / (1u64 << 31) as f64
+        };
+        let points: Vec<(f64, f64)> = (0..n).map(|_| (next(), next())).collect();
+        points
+            .iter()
+            .map(|a| points.iter().map(|b| ((a.0 - b.0).abs() + (a.1 - b.1).abs()) * 1_800.0 * (0.8 + 0.4 * next())).collect())
+            .collect()
+    }
+
+    /// Every order of the doors between two fixed ends, the slow way.
+    fn polish_cheapest(n: usize, m: &[Vec<f64>]) -> f64 {
+        fn walk(order: &mut Vec<usize>, left: &mut Vec<usize>, n: usize, m: &[Vec<f64>], best: &mut f64) {
+            if left.is_empty() {
+                order.push(n - 1);
+                *best = best.min(tour_polish::cost(order, m));
+                order.pop();
+                return;
+            }
+            for i in 0..left.len() {
+                let door = left.remove(i);
+                order.push(door);
+                walk(order, left, n, m, best);
+                order.pop();
+                left.insert(i, door);
+            }
+        }
+        let mut best = f64::INFINITY;
+        walk(&mut vec![0], &mut (1..n - 1).collect(), n, m, &mut best);
+        best
+    }
+
+    #[test]
+    fn the_second_look_finds_the_best_order_of_a_small_tour() {
+        for seed in 1..=12u64 {
+            let n = 9;
+            let m = polish_city(n, seed);
+            let given: Vec<usize> = (0..n).collect();
+            let out = tour_polish::improve(&given, &m, true, true);
+            // Within the gain it declines to reorder for.
+            assert!(tour_polish::cost(&out, &m) - polish_cheapest(n, &m) < tour_polish::WORTHWHILE + 0.001, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn the_second_look_keeps_every_door_and_both_ends() {
+        let n = 40;
+        let m = polish_city(n, 7);
+        let given: Vec<usize> = (0..n).collect();
+        let out = tour_polish::improve(&given, &m, true, true);
+        let mut sorted = out.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, given);
+        assert_eq!((out[0], out[n - 1]), (0, n - 1));
+        assert!(tour_polish::cost(&out, &m) < tour_polish::cost(&given, &m));
+        // The same every time.
+        assert_eq!(out, tour_polish::improve(&given, &m, true, true));
+    }
+
+    #[test]
+    fn the_second_look_orders_a_tour_as_the_ios_app_does() {
+        // What the iOS app's `TourPolish` gives for the same tables, run
+        // there on 13.10.2026.
+        let ios: [(usize, u64, &[usize]); 2] = [
+            (12, 7, &[0, 9, 6, 7, 2, 3, 5, 4, 10, 1, 8, 11]),
+            (
+                100,
+                11,
+                &[
+                    0, 18, 20, 58, 82, 84, 97, 65, 85, 21, 70, 28, 14, 37, 75, 93, 32, 2, 76, 81, 90, 67, 86, 69, 34, 98, 66, 27, 11,
+                    44, 22, 38, 30, 71, 59, 89, 56, 41, 78, 88, 6, 49, 31, 15, 17, 51, 61, 79, 25, 43, 1, 23, 19, 47, 68, 48, 91, 72,
+                    3, 12, 83, 62, 50, 53, 73, 39, 9, 96, 29, 5, 16, 36, 33, 60, 94, 80, 42, 55, 10, 63, 13, 54, 7, 92, 74, 24, 8, 52,
+                    4, 64, 95, 77, 46, 40, 87, 35, 26, 57, 45, 99,
+                ],
+            ),
+        ];
+        for (n, seed, expected) in ios {
+            let given: Vec<usize> = (0..n).collect();
+            assert_eq!(tour_polish::improve(&given, &polish_city(n, seed), true, true), expected, "{n} doors");
+        }
+    }
+
+    #[test]
+    fn an_open_end_may_move_and_seconds_are_left_alone() {
+        // Four doors on a line, listed so the tour doubles back.
+        let at = [0.0, 3.0, 1.0, 2.0];
+        let m: Vec<Vec<f64>> = at.iter().map(|a: &f64| at.iter().map(|b| (a - b).abs() * 600.0).collect()).collect();
+        assert_eq!(tour_polish::improve(&[0, 1, 2, 3], &m, true, false), vec![0, 2, 3, 1]);
+
+        // Doors seconds apart: putting the middle two the other way round
+        // would save twenty.
+        let at = [0.0, 20.0, 10.0, 30.0, 40.0];
+        let m: Vec<Vec<f64>> = at.iter().map(|a: &f64| at.iter().map(|b| (a - b).abs()).collect()).collect();
+        assert_eq!(tour_polish::improve(&[0, 1, 2, 3, 4], &m, true, true), vec![0, 1, 2, 3, 4]);
+
+        // A table that does not fit the tour is no table.
+        assert_eq!(tour_polish::improve(&[0, 1, 2, 3, 4], &polish_city(4, 1), true, true), vec![0, 1, 2, 3, 4]);
+    }
 
     #[test]
     fn normalizes_strasse_spellings() {
