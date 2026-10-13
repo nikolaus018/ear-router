@@ -154,6 +154,10 @@ actor OSRMClient {
                     + "max. \(osrmMaxTripCoords)). Bitte die Route auf mehrere Touren aufteilen.")
         }
 
+        // Asked for alongside the trip, not after it: `polished` needs both,
+        // and one after the other was half a second of the driver's wait.
+        async let table = polish ? try? await durations(between: coords) : nil
+
         let path = "/trip/v1/driving/\(Self.coordString(coords))"
             + "?source=\(fixFirst ? "first" : "any")"
             + "&destination=\(fixLast ? "last" : "any")"
@@ -177,8 +181,8 @@ actor OSRMClient {
         // table or the route behind it cannot be had, OSRM's own answer is a
         // complete one and is what every tour got until now.
         let seconds = trip.legs.reduce(0) { $0 + $1.duration }
-        if polish, let better = try? await polished(
-            order, coords: coords, fixFirst: fixFirst, fixLast: fixLast),
+        if let durations = await table, let better = try? await polished(
+            order, coords: coords, durations: durations, fixFirst: fixFirst, fixLast: fixLast),
             // Shorter on the road, not only in the table.
             better.legs.reduce(0, { $0 + $1.1 }) < seconds
         {
@@ -192,9 +196,9 @@ actor OSRMClient {
     /// The shorter order `TourPolish` finds, routed — or `nil` when OSRM's
     /// order is already as good as it gets.
     private func polished(
-        _ order: [Int], coords: [(lat: Double, lon: Double)], fixFirst: Bool, fixLast: Bool
+        _ order: [Int], coords: [(lat: Double, lon: Double)], durations: [[Double]],
+        fixFirst: Bool, fixLast: Bool
     ) async throws -> (order: [Int], legs: [(Double, Double)], geometry: [[Double]])? {
-        let durations = try await durations(between: coords)
         // Off the actor: a hundred doors take a few dozen milliseconds, and
         // nothing else waiting on OSRM should wait on that too.
         let better = await Task.detached(priority: .userInitiated) {

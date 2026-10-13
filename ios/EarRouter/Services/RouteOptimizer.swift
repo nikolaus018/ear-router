@@ -203,19 +203,26 @@ enum RouteOptimizer {
         // the trip optimizer. The head is 0, 1 or 2 points depending on what
         // this tour skips — with nothing driven and either of them off there
         // is no leg at all.
-        let fixedPath = plan.head + plan.driven
-        if fixedPath.count >= 2 {
-            let through = try await OSRMClient.shared.routeThrough(
-                fixedPath.map { (lat: $0.lat, lon: $0.lon) })
+        //
+        // Both halves are asked for at once. Neither needs the other's
+        // answer, and the driver is watching a spinner for the sum of them.
+        let fixedPath = (plan.head + plan.driven).map { (lat: $0.lat, lon: $0.lon) }
+        let tripCoords = plan.tripNodes.map { (lat: $0.lat, lon: $0.lon) }
+        let (fixFirst, fixLast, needsTrip) = (plan.fixFirst, plan.fixLast, plan.needsTrip)
+        async let fixed = fixedPath.count >= 2
+            ? try await OSRMClient.shared.routeThrough(fixedPath) : nil
+        async let trip = needsTrip
+            ? try await OSRMClient.shared.trip(
+                coords: tripCoords, fixFirst: fixFirst, fixLast: fixLast)
+            : nil
+
+        if let through = try await fixed {
             legs.append(contentsOf: through.legs)
             append(&geometry, through.geometry)
         }
 
         var solvedOrder: [Int]?
-        if plan.needsTrip {
-            let coords = plan.tripNodes.map { (lat: $0.lat, lon: $0.lon) }
-            let solved = try await OSRMClient.shared.trip(
-                coords: coords, fixFirst: plan.fixFirst, fixLast: plan.fixLast)
+        if let solved = try await trip {
             solvedOrder = solved.order
             legs.append(contentsOf: solved.legs)
             append(&geometry, solved.geometry)

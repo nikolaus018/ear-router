@@ -898,6 +898,12 @@ enum RouteStore {
         // relationship for the next one to see it. A counter needs neither.
         var nextIndex = nextOrderIndex(in: route)
 
+        // Looked up six at a time first, so the loop below finds each answer
+        // waiting. One after another, a tour of new customers was a second of
+        // waiting per address.
+        await warmGeocodes(
+            needsGeocode.map { (strasse: $0.0.strasse, plz: $0.0.plz) }, onProgress: onProgress)
+
         var moved = false
         for (index, (entry, existingStop)) in needsGeocode.enumerated() {
             // Checked here as well as by the lookup below: an address already
@@ -1424,4 +1430,44 @@ enum RouteStore {
 
 extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+extension RouteStore {
+    /// Asks the geocoder about every address, six at a time, and throws the
+    /// answers away: what it found — and what it could not — is in its cache
+    /// for whoever asks next. The same width `fillEntrances` uses against the
+    /// same register; the Nominatim fallback keeps its own one-a-second
+    /// queue inside the geocoder whatever is asked of it here.
+    static func warmGeocodes(
+        _ addresses: [(strasse: String, plz: String)], onProgress: ((Int, Int) -> Void)? = nil
+    ) async {
+        struct Job: Sendable, Hashable { let strasse: String; let plz: String }
+        // Two customers at one address are one question.
+        var seen: Set<Job> = []
+        let unique = addresses.map { Job(strasse: $0.strasse, plz: $0.plz) }
+            .filter { seen.insert($0).inserted }
+        guard unique.count > 1 else { return }
+        var jobs = unique.makeIterator()
+        var done = 0
+
+        await withTaskGroup(of: Void.self) { group in
+            func start(_ job: Job) {
+                group.addTask {
+                    _ = try? await Geocoder.shared.geocode(strasse: job.strasse, plz: job.plz)
+                }
+            }
+            for _ in 0..<6 {
+                guard let job = jobs.next() else { break }
+                start(job)
+            }
+            for await _ in group {
+                done += 1
+                // "Stoppen": nothing new is started, and what is under way
+                // was cancelled with this task.
+                if Task.isCancelled { continue }
+                onProgress?(done, unique.count)
+                if let job = jobs.next() { start(job) }
+            }
+        }
+    }
 }
