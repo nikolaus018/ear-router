@@ -283,6 +283,24 @@
   .wide-btn.primary { background: #34C759; color: #fff; }
   .wide-btn.accent { background: #ED1639; color: #fff; }
   .wide-btn.quiet { background: rgba(120,120,128,.14); color: #000; }
+  /* Geliefert on Jetzt and on the map's card: green by hue, not by weight,
+     beside the filled Navigation -- the pairing the iOS app uses. */
+  .wide-btn.done { background: rgba(52,199,89,.18); color: #1B7A35; }
+  .now-carry { margin-top: .875rem; }
+  .now-carry-title { display: flex; align-items: center; gap: .375rem; font-size: 15px; font-weight: 600; color: #ED1639; }
+  .now-carry p { font-size: 15px; line-height: 1.35; margin-top: .25rem; overflow-wrap: anywhere; }
+  .now-carry p b { font-weight: 500; }
+  .now-carry p span { color: rgba(0,0,0,.55); }
+  .copy-btn { flex: none; width: 2.75rem; height: 2.75rem; margin: -.5rem -.5rem -.5rem 0; display: flex; align-items: center; justify-content: center; font-size: 19px; color: #ED1639; }
+  .copy-btn.copied { color: #34C759; }
+  /* A house's street door, where that is not where its pin is. Only from
+     close in: over a whole tour it is the same dot as the pin. */
+  .marker-door { display: none; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: #fff; color: #1c1c1e; font-size: 13px; border: 1px solid #8E8E93; pointer-events: none; }
+  .map-close-in .marker-door { display: flex; }
+  .map-card { background: rgba(255,255,255,.96); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-radius: 1.25rem; box-shadow: 0 8px 30px rgba(0,0,0,.22); padding: 1rem 1rem 1.125rem; max-height: 60vh; overflow-y: auto; }
+  .map-card .wide-btn { padding: .75rem .5rem; font-size: 15px; }
+  .map-card .wide-btn + .wide-btn { margin-top: 0; }
+  .map-fit { width: 2.75rem; height: 2.75rem; border-radius: 50%; background: rgba(255,255,255,.92); box-shadow: 0 2px 10px rgba(0,0,0,.2); display: flex; align-items: center; justify-content: center; font-size: 18px; color: #1c1c1e; }
   .wide-btn + .wide-btn { margin-top: .625rem; }
   .now-caption { font-size: 13px; font-weight: 500; color: rgba(0,0,0,.55); }
   .now-follow { display: flex; align-items: flex-start; gap: .5rem; text-align: left; font-size: 15px; margin-top: .5rem; }
@@ -2385,6 +2403,11 @@ const ICONS = {
   external: icon('<path d="M14 5h5v5"/><path d="M19 5 10 14"/><path d="M18 13v6H5V6h6"/>'),
   search: icon('<circle cx="11" cy="11" r="6.5"/><line x1="15.8" y1="15.8" x2="20.5" y2="20.5"/>'),
   close: icon('<line x1="6.5" y1="6.5" x2="17.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="6.5" y2="17.5"/>', 'stroke-width="2"'),
+  walk: icon('<circle cx="13" cy="4.5" r="1.8"/><path d="M9.5 21l2-5.5-2.5-2.5 1-5 3.5 3 3 1"/><path d="M10 8l-3 2v3"/><path d="M12.5 15.5l3 2.5.5 3"/>'),
+  copy: icon('<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/>'),
+  door: icon('<path d="M13 4h3a2 2 0 0 1 2 2v14"/><path d="M2 20h3"/><path d="M13 20h9"/><path d="M10 12v.01"/><path d="M13 4.562v16.157a1 1 0 0 1-1.242.97L5 20V5.562a2 2 0 0 1 1.515-1.94l4-1A2 2 0 0 1 13 4.561Z"/>', 'stroke-width="2"'),
+  list: icon('<circle cx="4" cy="6" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="6" x2="20" y2="6"/><circle cx="4" cy="12" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="12" x2="20" y2="12"/><circle cx="4" cy="18" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="18" x2="20" y2="18"/>'),
+  expand: icon('<polyline points="14 4 20 4 20 10"/><line x1="20" y1="4" x2="13.5" y2="10.5"/><polyline points="10 20 4 20 4 14"/><line x1="4" y1="20" x2="10.5" y2="13.5"/>', 'stroke-width="2"'),
 };
 
 // A stalled mobile connection never rejects a `fetch` on its own — the
@@ -3234,6 +3257,18 @@ function recountRoute(r) {
   r.delivered_count = owed.filter((s) => s.delivered).length;
 }
 const deliveredCountText = (r) => `${r.delivered_count} / ${r.customer_count} geliefert`;
+/// "12 von 26 geliefert · 1 nicht angetroffen · 1 ins Lager" -- the line over
+/// Jetzt and over the stop list, the iOS app's `deliveryLine`.
+function deliveryLine(r) {
+  const customers = r.stops.filter((s) => s.kind === 'customer');
+  const count = (o) => customers.filter((s) => s.outcome === o).length;
+  return [
+    `${r.delivered_count} von ${r.customer_count} geliefert`,
+    count('notHome') ? `${count('notHome')} nicht angetroffen` : '',
+    count('cancelled') ? `${count('cancelled')} abbestellt` : '',
+    count('toLager') ? `${count('toLager')} ins Lager` : '',
+  ].filter(Boolean).join(' · ');
+}
 // Per-stop generation counter backing `toggleDelivered`'s own race guard —
 // see the comment there. Not the same thing `nextSeq()`/`lastAppliedSeq`
 // guard: those order which *route* snapshot wins app-wide, this orders
@@ -3364,6 +3399,7 @@ function closeDetail() {
 }
 
 async function selectMapRoute(id) {
+  if (state.currentRoute?.id !== id) mapCard = null;
   await loadRouteIntoFocus(id, () => null);
 }
 
@@ -6018,17 +6054,21 @@ function renderMapTab() {
     }, 0);
   }
 
-  if (!pickable.length) {
+  const r = state.currentRoute;
+  // The last few finished tours too, as on the iOS app's map: where a
+  // customer lives is looked up on yesterday's tour as often as on today's.
+  const recent = state.routes.filter((x) => x.status === 'completed').slice(0, 5);
+  if (r && r.status === 'completed' && !recent.some((x) => x.id === r.id)) recent.push(r);
+  const chips = [...pickable, ...recent];
+
+  if (!chips.length) {
     return `
       <div role="main" class="flex-1 min-h-0 flex flex-col items-center justify-center px-8 text-center text-black/55">
         <span class="text-4xl flex justify-center mb-3 opacity-40">${ICONS.tabMap}</span>
-        <p class="text-[15px]">Noch keine aktive Tour.<br/>Lade zuerst eine unter „Touren“.</p>
+        <p class="text-[15px]">Keine Tour ausgewählt.<br/>Leg unter „Touren“ eine Tour an.</p>
       </div>
     `;
   }
-
-  const r = state.currentRoute;
-  const progress = r && r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
 
   return `
     <div role="main" class="flex-1 min-h-0 relative">
@@ -6036,21 +6076,17 @@ function renderMapTab() {
       ${mapTabReady ? '' : mapLoadingOverlay()}
 
       <div class="absolute top-0 inset-x-0 z-10 momentum overflow-x-auto flex gap-2 px-4" style="padding-top: calc(env(safe-area-inset-top) + 0.75rem); padding-bottom: 0.75rem;">
-        ${pickable.map(p => `
-          <button onclick="selectMapRoute(${p.id})" ${r && r.id === p.id ? 'data-route-chip-active aria-current="true"' : ''} class="press-98 shrink-0 px-3.5 py-2 rounded-full text-[13px] font-semibold shadow-lg backdrop-blur-xl ${r && r.id === p.id ? 'bg-brand-600 text-white' : 'bg-white/90 text-black/70'}">${escapeHtml(p.name)}</button>
+        ${chips.map(p => `
+          <button onclick="selectMapRoute(${p.id})" ${r && r.id === p.id ? 'data-route-chip-active aria-current="true"' : ''} class="press-98 shrink-0 px-3.5 py-2 rounded-full text-[13px] font-semibold shadow-lg backdrop-blur-xl ${r && r.id === p.id ? 'bg-brand-600 text-white' : 'bg-white/90 text-black/70'}" ${p.status === 'completed' && !(r && r.id === p.id) ? 'style="opacity:.75"' : ''}>${p.status === 'completed' ? '✓ ' : ''}${escapeHtml(p.name)}</button>
         `).join('')}
       </div>
 
       ${r ? `
-        <div class="absolute bottom-0 inset-x-0 z-10 px-4" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
-          <button data-bottom-dock onclick="openCurrentRouteDetail()" class="press-98 w-full text-left bg-white/90 backdrop-blur-xl rounded-2xl p-4 shadow-lg flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <p class="font-semibold truncate">${escapeHtml(r.name)}</p>
-              <p class="text-[13px] text-black/55 mt-0.5">${r.delivered_count}/${r.customer_count} geliefert · ≈ ${fmtKm(r.total_km)} · ${r.total_min} min</p>
-              <div class="h-1 bg-black/10 rounded-full overflow-hidden mt-1.5"><div class="h-full bg-success" style="width:${progress}%"></div></div>
-            </div>
-            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
-          </button>
+        <div class="absolute bottom-0 inset-x-0 z-10 px-4" style="pointer-events:none; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
+          <div class="flex" style="justify-content:flex-end; margin-bottom:.625rem">
+            <button type="button" onclick="fitMapToRoute()" aria-label="Ganze Route zeigen" title="Ganze Route zeigen" class="map-fit press-95" style="pointer-events:auto">${ICONS.expand}</button>
+          </div>
+          <div data-map-card style="pointer-events:auto">${mapCardHtml() || mapDockHtml()}</div>
         </div>
       ` : ''}
     </div>
@@ -6087,7 +6123,7 @@ function renderNowTab() {
         <div class="flex items-center justify-between px-4 pb-2.5">
           <span class="w-8"></span>
           <p data-compact-title class="compact-title flex-1 min-w-0 text-center truncate font-semibold px-1" style="opacity:0">${escapeHtml(title)}</p>
-          ${r ? `<button onclick="switchTab('map')" aria-label="Auf der Karte zeigen" title="Auf der Karte zeigen" class="tap-target press-fade w-8 h-8 flex items-center justify-center text-brand-600 text-lg">${ICONS.tabMap}</button>` : '<span class="w-8"></span>'}
+          ${r ? `<button onclick="showNowOnMap()" aria-label="Auf der Karte zeigen" title="Auf der Karte zeigen" class="tap-target press-fade w-8 h-8 flex items-center justify-center text-brand-600 text-lg">${ICONS.tabMap}</button>` : '<span class="w-8"></span>'}
         </div>
       </div>
       <div class="px-4">
@@ -6122,11 +6158,8 @@ function renderNowTab() {
   const settled = customers.filter((s) => s.outcome).length;
   const notHome = customers.filter((s) => s.outcome === 'notHome');
   const toLagerCount = stops.filter((s) => s.kind === 'customer' && s.outcome === 'toLager').length;
-  const caption = [
-    `${r.delivered_count} von ${r.customer_count} geliefert`,
-    notHome.length ? `${notHome.length} nicht angetroffen` : '',
-    toLagerCount ? `${toLagerCount} ins Lager` : '',
-  ].filter(Boolean).join(' · ');
+  const cancelledCount = stops.filter((s) => s.kind === 'customer' && s.outcome === 'cancelled').length;
+  const caption = deliveryLine(r);
   const progress = `
     <p class="now-caption" style="padding: .25rem .25rem .5rem">${caption}</p>
     <div class="h-1.5 bg-black/10 rounded-full overflow-hidden mb-4">
@@ -6153,7 +6186,13 @@ function renderNowTab() {
   const handed = r.delivered_count === count
     ? (count === 1 ? '1 Stopp geliefert' : `${count} Stopps geliefert`)
     : `${r.delivered_count} von ${count} geliefert`;
-  const detail = [handed, toLager ? `${toLager} ins Lager` : ''].filter(Boolean).join(' · ');
+  const homeKm = routeSnapshot(r).remainingKm;
+  const detail = [
+    handed,
+    cancelledCount ? `${cancelledCount} abbestellt` : '',
+    toLager ? `${toLager} ins Lager` : '',
+    homeKm >= 0.05 ? `Rückfahrt ${fmtKm(homeKm)}` : '',
+  ].filter(Boolean).join(' · ');
   return frame(r.name, chips + progress + `
     <div class="text-center" style="padding: 1.5rem .5rem">
       <span class="flex justify-center mb-3" style="font-size: 3rem; color: ${allDelivered ? '#34C759' : '#FF9500'}">${allDelivered ? ICONS.checkCircle : ICONS.bellOff}</span>
@@ -7370,6 +7409,108 @@ function phonesInNote(notiz, besides) {
   return out;
 }
 
+// ---------------------------------------------------------------------
+// "Gleich mitnehmen" -- the doors after this one that are a short walk away,
+// carried along in one go instead of found out about from the navigation app
+// once the driver is back in the van and it says "30 m". The iOS app's
+// `WalkOn`, rule for rule.
+//
+// Jetzt shows one stop and nothing else, on purpose. This is the one thing
+// about what comes next that changes what the driver does *now*: how many
+// parcels leave the van.
+// ---------------------------------------------------------------------
+/// As the crow flies, so the real walk is somewhat more. Far enough for the
+/// next Stiege across a Hof and the house two doors down; not so far that it
+/// would have been quicker to drive.
+const WALK_ON_REACH_M = 100;
+
+const metresBetween = (aLat, aLon, bLat, bLon) =>
+  Math.hypot((aLat - bLat) * 111000, (aLon - bLon) * 111000 * Math.cos(aLat * Math.PI / 180));
+
+/// The box a point has to be in for the postcode it is filed under -- the
+/// server's `is_plausible_for_plz`.
+const plausibleForPlz = (lat, lon, plz) => Number.isFinite(lat) && Number.isFinite(lon)
+  && (DISTRICT_BY_PLZ[plz]
+    ? lat >= 47.7 && lat <= 48.6 && lon >= 15.8 && lon <= 16.8
+    : lat >= 46.3 && lat <= 49.1 && lon >= 9.4 && lon <= 17.2);
+
+/// A stop's street door from the register, or `null`.
+const entranceOf = (s) => (Number.isFinite(s.entrance_lat) && Number.isFinite(s.entrance_lon) ? [s.entrance_lat, s.entrance_lon] : null);
+
+/// Where a stop is: its pin on the map, and the street door when that is
+/// somewhere else. Two houses are as close as their closest pair.
+function walkPoints(s) {
+  // Only approximately placed: the pin is the middle of a street or of a
+  // district, not a house. Two addresses nobody could find are not next door
+  // to each other.
+  if (s.location_precision && !s.pinned) return [];
+  const out = [];
+  if (plausibleForPlz(s.lat, s.lon, s.plz || '')) out.push([s.lat, s.lon]);
+  const entrance = entranceOf(s);
+  if (!s.pinned && entrance) out.push(entrance);
+  return out;
+}
+
+/// The open customers that follow `current` in driving order, for as long as
+/// each is within reach of it. Stops at the first that is not: a door further
+/// down the list means driving somewhere else in between.
+function walkOnDoors(r, current) {
+  if (current.kind !== 'customer') return [];
+  const at = r.stops.findIndex((s) => s.id === current.id);
+  if (at < 0) return [];
+  const here = walkPoints(current);
+  const out = [];
+  for (const stop of r.stops.slice(at + 1)) {
+    // Not driven to at all, or already answered for: neither is in the way,
+    // and neither is carried.
+    if (stop.excluded || stop.outcome) continue;
+    if (stop.kind !== 'customer') break;
+    let metres = null;
+    for (const p of here) for (const q of walkPoints(stop)) {
+      const d = metresBetween(p[0], p[1], q[0], q[1]);
+      if (metres == null || d < metres) metres = d;
+    }
+    if (metres == null || metres > WALK_ON_REACH_M) break;
+    out.push({
+      name: stop.kunde || 'Stopp',
+      paket: (displayPaket(stop, r) || '').trim(),
+      // "60 m", or "hier" for the same house.
+      distance: metres < 15 ? 'hier' : `${Math.round(metres / 10) * 10} m`,
+    });
+  }
+  return out;
+}
+
+/// Puts a stop's street on the clipboard -- street and number only, which is
+/// what gets pasted into a navigation app or a message to the office.
+async function copyAddress(stopId, button) {
+  const text = String(getStop(stopId)?.strasse || '').trim();
+  if (!text) return;
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {
+    // No clipboard API here (an old browser, or a page not served securely).
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+    document.body.appendChild(area);
+    area.select();
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    area.remove();
+  }
+  if (!ok) { toast('Die Adresse konnte nicht kopiert werden.', 'error'); return; }
+  if (!button || !button.isConnected) { toast('Adresse kopiert ✓', 'success'); return; }
+  button.classList.add('copied');
+  button.innerHTML = ICONS.check;
+  button.setAttribute('aria-label', 'Adresse kopiert');
+  setTimeout(() => {
+    if (!button.isConnected) return;
+    button.classList.remove('copied');
+    button.innerHTML = ICONS.copy;
+    button.setAttribute('aria-label', 'Adresse kopieren');
+  }, 1500);
+}
+
 /// The card for the stop the driver is at.
 function nowStopCard(r, stop) {
   const meta = stopKindMeta(stop);
@@ -7378,23 +7519,44 @@ function nowStopCard(r, stop) {
   const sameDoor = meta ? 1 : (sameDoorGroups(r.stops).get(stop.id)?.length || 1);
   const precision = stop.location_precision === 'street' ? 'Genaue Hausnummer nicht gefunden — Position ist nur ungefähr.'
     : stop.location_precision === 'district' ? 'Straße nicht gefunden — nur Bezirksmitte. Position bitte prüfen.' : '';
+  const walkOn = walkOnDoors(r, stop);
+  // Four, then a count: past that it is a list to read, and the list is one
+  // tab to the left.
+  const carry = walkOn.length ? `
+      <div class="now-carry">
+        <p class="now-carry-title"><span class="flex">${ICONS.walk}</span>Gleich mitnehmen</p>
+        ${walkOn.slice(0, 4).map((d) => `<p><b>${escapeHtml(d.name)}</b>&nbsp; <span>${escapeHtml([d.distance, d.paket].filter(Boolean).join(' · '))}</span></p>`).join('')}
+        ${walkOn.length > 4 ? `<p><span>und ${walkOn.length - 4} weitere</span></p>` : ''}
+      </div>` : '';
+  // The ellipsis: the two answers that are not the plain tick and the way
+  // into the editor for a customer, the editor for Ziel. The Lager has
+  // nothing to edit.
+  const more = !meta
+    ? `<button onclick="openStopMenu(getStop(${stop.id}))" aria-label="Mehr" title="Mehr" class="tap-target press-fade w-9 h-9 shrink-0 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>`
+    : stop.kind === 'end'
+    ? `<button onclick="openFixedStopSheet(getStop(${stop.id}))" aria-label="Bearbeiten" title="Bearbeiten" class="tap-target press-fade w-9 h-9 shrink-0 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>`
+    : '';
   return `
     <div class="now-card" data-now-stop="${stop.id}">
       <div class="flex items-start gap-3">
         <span class="now-badge" aria-hidden="true">${meta ? meta.icon : number}</span>
         <div class="flex-1 min-w-0">
           <h2 class="now-name">${escapeHtml(meta ? meta.title : stop.kunde)}</h2>
-          <p class="now-address">${escapeHtml(stopAddress(stop))}</p>
+          <div class="flex items-center gap-2">
+            <p class="now-address flex-1 min-w-0">${escapeHtml(stopAddress(stop))}</p>
+            ${(stop.strasse || '').trim() ? `<button type="button" onclick="copyAddress(${stop.id}, this)" aria-label="Adresse kopieren" title="Adresse kopieren" class="copy-btn press-fade">${ICONS.copy}</button>` : ''}
+          </div>
           ${sameDoor > 1 ? `<p class="now-fact warn"><span>${ICONS.people}</span><span>${sameDoor} an dieser Tür</span></p>` : ''}
         </div>
-        ${meta ? '' : `<button onclick="openStopMenu(getStop(${stop.id}))" aria-label="Mehr" title="Mehr" class="tap-target press-fade w-9 h-9 shrink-0 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>`}
+        ${more}
       </div>
       ${displayPaket(stop, r) && !meta ? `<p class="now-fact"><span>${ICONS.box}</span><span style="font-weight:600">${escapeHtml(displayPaket(stop, r))}</span></p>` : ''}
       ${stop.notiz && !meta ? `<p class="now-fact"><span>${ICONS.note}</span><span>${escapeHtml(stop.notiz)}</span></p>` : ''}
       ${precision ? `<p class="now-fact warn"><span>${ICONS.warning}</span><span>${precision}</span></p>` : ''}
+      ${carry}
       <div style="margin-top: 1.25rem">
-        <a href="${navUrl(stop)}" target="_blank" rel="noopener" onclick="noteDeparture(${stop.id})" class="press-98 wide-btn quiet">${ICONS.arrowTurn} Navigation</a>
-        <button onclick="settleFromNow(${stop.id})" class="press-98 wide-btn primary">${ICONS.check} ${meta ? 'Erledigt' : 'Geliefert'}</button>
+        <a href="${navUrl(stop)}" target="_blank" rel="noopener" onclick="noteDeparture(${stop.id})" class="press-98 wide-btn accent">${ICONS.arrowTurn} Navigation</a>
+        <button onclick="settleFromNow(${stop.id})" class="press-98 wide-btn done">${ICONS.check} ${meta ? 'Erledigt' : 'Geliefert'}</button>
         ${!meta && dialOf(stop.telefon) ? `<a href="tel:${dialOf(stop.telefon)}" class="press-98 wide-btn quiet">${ICONS.phone} Anrufen</a>` : ''}
         ${meta ? '' : phonesInNote(stop.notiz, stop.telefon).map((ph) => `<a href="tel:${ph.dial}" class="press-98 wide-btn quiet">${ICONS.phone} ${escapeHtml(ph.display)} anrufen</a>`).join('')}
       </div>
@@ -8123,7 +8285,7 @@ const AERIAL_LAYER_IDS = ['at-ortho', 'wien-lb', 'wien-labels'];
 // The route's own layers, in draw order (casing under line). Everything the
 // app adds to the style that is neither basemap nor imagery — so switching
 // basemaps has to leave both alone. See `mountAerialLayers`.
-const ROUTE_LAYER_IDS = ['route-line-casing', 'route-line'];
+const ROUTE_LAYER_IDS = ['entrance-links', 'route-line-casing', 'route-line'];
 
 // Where the nationwide overview imagery hands over to Vienna's own
 // high-resolution imagery. Street level: below this the driver is looking at
@@ -8620,6 +8782,9 @@ function newMap(container, opts) {
   // whenever it changes. `zoomend` rather than `zoom`: this walks every
   // marker, and doing that on each frame of a pinch is work nobody sees.
   map.on('zoomend', () => relayoutStopMarkers(map));
+  const closeIn = () => map.getContainer().classList.toggle('map-close-in', map.getZoom() >= MAP_CLOSE_IN_ZOOM);
+  map.on('zoom', closeIn);
+  map.once('load', closeIn);
   map.touchZoomRotate.disableRotation();
   // MapLibre labels its canvas "Map" in English. This app is German
   // throughout, and a screen reader switching language mid-screen for one
@@ -8692,7 +8857,7 @@ function routeMarkerSignature(r) {
   // function is called) rather than the coordinate array, which would cost
   // more to compare on every sync than the redraw it's trying to avoid.
   const stopsSig = r.stops
-    .map(s => `${s.id}:${s.lat}:${s.lon}:${s.outcome || ''}:${s.excluded ? 1 : 0}:${s.location_precision || ''}:${s.kunde}:${s.strasse}:${s.plz}`)
+    .map(s => `${s.id}:${s.lat}:${s.lon}:${s.outcome || ''}:${s.excluded ? 1 : 0}:${s.location_precision || ''}:${s.kunde}:${s.strasse}:${s.plz}:${s.pinned ? 1 : 0}:${s.entrance_lat ?? ''}:${s.entrance_lon ?? ''}`)
     .join('|');
   return `${r.id}|${r.total_km}|${r.total_min}|${stopsSig}`;
 }
@@ -8779,10 +8944,6 @@ function relayoutStopMarkers(map) {
       // resample it.
       const off = [Math.round(cx - q.x + fx), Math.round(cy - q.y + fy)];
       q.b.marker.setOffset(off);
-      // The popup follows its badge — anchored to the bare coordinate it
-      // would point at the dot, which for a fanned group is not the badge
-      // the driver just tapped.
-      q.b.popup.setOffset([off[0], off[1] + (off[1] < 0 ? -14 : 14)]);
     });
   }
 }
@@ -8826,6 +8987,31 @@ function routeLineGeoJson(r) {
 // redraw is one buffer swap on a source that never stops existing, which is
 // also markedly cheaper — no layer re-validation, no style re-index — on
 // exactly the redraws that happen most (a stop ticked off mid-route).
+/// From here in, a house's street door is drawn apart from its pin. About
+/// the height the iOS app's map switches at.
+const MAP_CLOSE_IN_ZOOM = 15;
+
+/// One mark per street door that is not where its pin is, with the pins it
+/// is the way in to -- the iOS app's `MapTab.entranceMarks`.
+///
+/// The pin sits on the Stiege, which in a Gemeindebau can be a courtyard
+/// away from the only door on the street. A door within ten metres of its
+/// pin would be drawn underneath it, and says nothing the pin does not.
+/// Several Stiegen behind one door share its mark.
+function entranceMarks(doors) {
+  const key = (c) => `${Math.round(c[0] * 100000)},${Math.round(c[1] * 100000)}`;
+  const marks = new Map();
+  for (const door of doors) {
+    if (metresBetween(door.pin[0], door.pin[1], door.entrance[0], door.entrance[1]) < 10) continue;
+    const id = key(door.entrance);
+    if (!marks.has(id)) marks.set(id, { lat: door.entrance[0], lon: door.entrance[1], pins: [], seen: new Set() });
+    const mark = marks.get(id);
+    const pin = key(door.pin);
+    if (!mark.seen.has(pin)) { mark.seen.add(pin); mark.pins.push(door.pin); }
+  }
+  return [...marks.values()];
+}
+
 function ensureRouteLayers(map) {
   if (!map.getSource('route-line')) {
     map.addSource('route-line', { type: 'geojson', data: EMPTY_LINE });
@@ -8841,6 +9027,20 @@ function ensureRouteLayers(map) {
       source: 'route-line',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: { 'line-color': '#fff', 'line-width': 8, 'line-opacity': 0.75 },
+    });
+  }
+  // Under the route line, and only from close in -- see `.marker-door`.
+  if (!map.getSource('entrance-links')) {
+    map.addSource('entrance-links', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  }
+  if (!map.getLayer('entrance-links')) {
+    map.addLayer({
+      id: 'entrance-links',
+      type: 'line',
+      source: 'entrance-links',
+      minzoom: MAP_CLOSE_IN_ZOOM,
+      layout: { 'line-cap': 'round' },
+      paint: { 'line-color': '#8E8E93', 'line-width': 2, 'line-dasharray': [1, 2.5] },
     });
   }
   if (!map.getLayer('route-line')) {
@@ -8928,8 +9128,6 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
       label = `${skipped ? 'Stopp' : `Stopp ${customerNum}`}: ${s.kunde}, ${s.strasse}, ${s.plz} — ${status}`;
     }
     el.classList.add('ear-route-marker');
-    const precisionNote = s.location_precision === 'street' ? '<br><i>≈ nächstgelegene bekannte Hausnummer</i>'
-      : s.location_precision === 'district' ? '<br><i>≈ nur Bezirksmitte, Adresse unbekannt</i>' : '';
     // One dot per address, drawn once for the whole group and marking the
     // registered position of the door itself. The badge is 26px wide and
     // would otherwise sit *on* the building it's pointing at, hiding the
@@ -8946,14 +9144,13 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
       map._earMarkers.push(dot);
     }
 
-    const popup = new maplibregl.Popup({ offset: [0, -36], closeButton: false }).setHTML(
-      `<b>${escapeHtml(meta ? meta.title : s.kunde)}</b><br>${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)}${precisionNote}`
-    );
-
     const marker = new maplibregl.Marker({ element: el, anchor: 'center', offset: [0, -22] })
       .setLngLat([s.lon, s.lat])
-      .setPopup(popup)
       .addTo(map);
+    // A tap opens the stop's card. Stopped here, so the map underneath does
+    // not take the same tap as "somewhere else" and close it again.
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', (e) => { e.stopPropagation(); selectMapStop(s.id); });
     // After the Marker is constructed, not before: MapLibre stamps its own
     // `aria-label` of "Map marker" onto the element it is handed, so a
     // label set on `el` earlier is silently overwritten — every pin on the
@@ -8961,9 +9158,34 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
     el.setAttribute('role', 'button');
     el.setAttribute('aria-label', label);
     map._earMarkers.push(marker);
-    map._earBadges.push({ marker, popup, lngLat: [s.lon, s.lat] });
+    map._earBadges.push({ marker, lngLat: [s.lon, s.lat] });
     bounds.extend([s.lon, s.lat]);
   });
+
+  // The street doors that are not where their pin is. Not for a pin the
+  // driver placed, which is the door already; and not once the meal is handed
+  // over, when nobody is looking for the way in any more.
+  const marks = entranceMarks(r.stops
+    .filter((s) => s.kind === 'customer' && !s.excluded && !s.pinned && !handedOver(s.outcome)
+      && Number.isFinite(s.lat) && Number.isFinite(s.lon) && entranceOf(s))
+    .map((s) => ({ pin: [s.lat, s.lon], entrance: entranceOf(s) })));
+  map.getSource('entrance-links').setData({
+    type: 'FeatureCollection',
+    // The thread back to the pin: in a courtyard of Stiegen it is what says
+    // whose door this is.
+    features: marks.flatMap((m) => m.pins.map((pin) => ({
+      type: 'Feature', properties: {},
+      geometry: { type: 'LineString', coordinates: [[m.lon, m.lat], [pin[1], pin[0]]] },
+    }))),
+  });
+  for (const m of marks) {
+    // Not something to tap: the pin is the stop, this only says where to
+    // walk in.
+    const door = new maplibregl.Marker({ element: elFromHtml(`<div class="marker-door" role="img" aria-label="Eingang">${ICONS.door}</div>`), anchor: 'center' })
+      .setLngLat([m.lon, m.lat])
+      .addTo(map);
+    map._earMarkers.push(door);
+  }
 
   // Only frame the route when it's a route the map wasn't already showing.
   // Redrawing after a stop is ticked off (or after any other in-place
@@ -9050,6 +9272,7 @@ function initMapTabMap() {
   if (!mapTabMap) {
     const map = newMap(mapTabEl, {});
     mapTabMap = map;
+    map.on('click', () => closeMapCard());
     // The element's real size is still settling the tick it's inserted
     // (safe-area values resolve, layout lands) — and it's detached and re-attached on
     // every tab switch from then on. A ResizeObserver keeps the canvas in
@@ -9113,12 +9336,13 @@ function syncMapTabRoute() {
   // lookup is a cheap hash lookup, not a style clone, so paying it on every
   // sync costs nothing and makes a missing line self-heal on the very next
   // render instead of needing a reload.
-  if (map._earLastSignature === signature && map.getLayer('route-line')) return;
+  if (map._earLastSignature === signature && map.getLayer('route-line')) { applyMapFocus(); return; }
   // Recorded only after the draw actually completes, and cleared if it
   // throws, so a failed draw is retried rather than remembered as done.
   map._earLastSignature = null;
   try {
-    drawRouteOnMap(map, r, { fit: mapTabRouteId !== r.id });
+    // Asked to show one stop: that is where the camera goes, not the tour.
+    drawRouteOnMap(map, r, { fit: mapTabRouteId !== r.id && mapFocusRequest == null });
   } catch (err) {
     // The map keeps its basemap and whatever was already drawn; only this
     // redraw is lost, and the next render (or the `styledata` handler)
@@ -9129,6 +9353,220 @@ function syncMapTabRoute() {
   map._earLastSignature = signature;
   map._earRouteDrawn = true;
   mapTabRouteId = r.id;
+  applyMapFocus();
+}
+
+// ---------------------------------------------------------------------
+// The card of the pin that was tapped: who, where, what to hand over, the
+// tick, navigation, and the way to its row in the list -- the iOS app's pin
+// card. It takes the place of the tour's own card at the bottom of the map
+// and gives it back when it is closed.
+// ---------------------------------------------------------------------
+/// `{ id }` for one stop's card, `{ id, shared: true }` for the list of the
+/// stops drawn on one spot, `{ id, fromShared: true }` for a stop picked
+/// from that list.
+let mapCard = null;
+/// A stop the map has been asked to go to, until it has.
+let mapFocusRequest = null;
+
+/// The customers drawn where `stop` is: one house, several households.
+function sharedPinMembers(r, stop) {
+  if (stop.kind !== 'customer') return [stop];
+  return r.stops.filter((s) => s.kind === 'customer' && !s.excluded
+    && Number.isFinite(s.lat) && Number.isFinite(s.lon)
+    && metresBetween(s.lat, s.lon, stop.lat, stop.lon) < 10);
+}
+
+function selectMapStop(stopId) {
+  const r = state.currentRoute;
+  const stop = r?.stops.find((s) => s.id === stopId);
+  if (!stop) return;
+  // From far out the badges of one house lie on top of each other and a tap
+  // can only ever reach the top one: say who else is there. Closer in they
+  // fan out, and each is its own tap.
+  const stacked = mapTabMap && mapTabMap.getZoom() < FAN_MIN_ZOOM && sharedPinMembers(r, stop).length > 1;
+  mapCard = stacked ? { id: stopId, shared: true } : { id: stopId };
+  paintMapCard();
+}
+
+function pickMapStop(stopId) {
+  mapCard = { id: stopId, fromShared: true };
+  paintMapCard();
+}
+
+function backToSharedPin() {
+  if (!mapCard) return;
+  mapCard = { id: mapCard.id, shared: true };
+  paintMapCard();
+}
+
+function closeMapCard() {
+  if (!mapCard) return;
+  mapCard = null;
+  paintMapCard();
+}
+
+function paintMapCard() {
+  const slot = document.querySelector('[data-map-card]');
+  if (slot) slot.innerHTML = mapCardHtml() || mapDockHtml();
+}
+
+/// The tour's own card at the bottom of the map: tap for its stop list.
+function mapDockHtml() {
+  const r = state.currentRoute;
+  if (!r) return '';
+  const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
+  return `
+    <button data-bottom-dock onclick="openCurrentRouteDetail()" class="press-98 w-full text-left bg-white/90 backdrop-blur-xl rounded-2xl p-4 shadow-lg flex items-center gap-3">
+      <div class="flex-1 min-w-0">
+        <p class="font-semibold truncate">${escapeHtml(r.name)}</p>
+        <p class="text-[13px] text-black/55 mt-0.5">${r.delivered_count}/${r.customer_count} geliefert · ≈ ${fmtKm(r.total_km)} · ${r.total_min} min</p>
+        <div class="h-1 bg-black/10 rounded-full overflow-hidden mt-1.5"><div class="h-full bg-success" style="width:${progress}%"></div></div>
+      </div>
+      <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+    </button>`;
+}
+
+function mapCardHtml() {
+  const r = state.currentRoute;
+  const stop = mapCard && r?.stops.find((s) => s.id === mapCard.id);
+  if (!stop) return '';
+  const close = `<button type="button" onclick="closeMapCard()" aria-label="Schließen" title="Schließen" class="tap-target press-fade w-9 h-9 shrink-0 flex items-center justify-center text-black/55 text-lg" style="margin:-.375rem -.375rem 0 0">${ICONS.close}</button>`;
+  const badge = (s) => {
+    const n = stopNumber(s, r);
+    return n == null ? '' : `<span class="row-num ${s.outcome ? 'done' : ''}" aria-hidden="true" style="margin-right:0">${n}</span>`;
+  };
+
+  if (mapCard.shared) {
+    const members = sharedPinMembers(r, stop);
+    return `
+      <div class="map-card" data-bottom-dock>
+        <div class="flex items-start gap-3">
+          <div class="flex-1 min-w-0">
+            <p class="text-[19px] font-bold" style="line-height:1.25">${members.length} Stopps an dieser Adresse</p>
+            <p class="text-[15px] text-black/55 mt-0.5">${escapeHtml(stopAddress(stop))}</p>
+          </div>
+          ${close}
+        </div>
+        <div class="divide-y divide-black/10" style="margin-top:.5rem">
+          ${members.map((s) => `
+            <button type="button" onclick="pickMapStop(${s.id})" class="w-full flex items-center gap-3 text-left active:bg-black/5" style="padding:.625rem 0; min-height:44px">
+              ${badge(s)}
+              <span class="flex-1 min-w-0">
+                <span class="block ${s.outcome ? 'text-black/55' : ''} ${s.delivered ? 'line-through' : ''}">${escapeHtml(s.kunde || 'Stopp')}</span>
+                ${s.outcome ? `<span class="block text-[13px] text-black/55">${escapeHtml(OUTCOMES[s.outcome]?.label || '')}</span>` : ''}
+              </span>
+              <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+            </button>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  const meta = stopKindMeta(stop);
+  const settled = !!stop.outcome;
+  const ticks = stop.kind === 'customer' || isCheckpoint(stop);
+  const tickLabel = settled ? 'Stopp wieder öffnen' : meta ? 'Als erledigt markieren' : 'Als geliefert markieren';
+  const tickClass = !settled ? 'bg-white border-2 border-black/45 text-black/40'
+    : stop.delivered || meta ? 'bg-success text-white'
+    : stop.outcome === 'notHome' ? 'bg-warn text-white' : 'bg-black/10 text-black/55';
+  const tickIcon = !settled ? ICONS.circle : stop.delivered || meta ? ICONS.checkCircleFill : stop.outcome === 'notHome' ? ICONS.bellOff : ICONS.box;
+  const paket = meta ? '' : displayPaket(stop, r);
+  const precision = stop.location_precision === 'street' ? 'Nur Straße — Hausnummer nicht gefunden'
+    : stop.location_precision === 'district' ? 'Nur Bezirk — Adresse nicht gefunden' : '';
+  const outcome = !meta && stop.outcome && stop.outcome !== 'delivered' ? OUTCOMES[stop.outcome]?.label || '' : '';
+  return `
+    <div class="map-card" data-bottom-dock>
+      ${mapCard.fromShared ? `<button type="button" onclick="backToSharedPin()" class="press-fade flex items-center gap-1 text-[15px] font-medium text-brand-600" style="min-height:36px; margin-top:-.375rem"><span class="flex">${ICONS.back}</span>Alle an dieser Adresse</button>` : ''}
+      <div class="flex items-start gap-3">
+        ${badge(stop) ? `<span style="margin-top:.2rem">${badge(stop)}</span>` : ''}
+        <div class="flex-1 min-w-0">
+          <p class="text-[19px] font-bold" style="line-height:1.25; overflow-wrap:anywhere">${escapeHtml(meta ? meta.title : stop.kunde || 'Stopp')}</p>
+          <p class="text-[15px] text-black/55 mt-0.5" style="overflow-wrap:anywhere">${escapeHtml(stopAddress(stop))}</p>
+        </div>
+        ${ticks ? `<button type="button" onclick="toggleDelivered(${stop.id}, ${!settled})" aria-pressed="${settled}" aria-label="${tickLabel}" title="${tickLabel}" class="tap-target press-95 shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${tickClass}">${tickIcon}</button>` : ''}
+        ${close}
+      </div>
+      ${outcome ? `<p class="now-fact warn"><span>${stop.outcome === 'notHome' ? ICONS.bellOff : ICONS.box}</span><span>${escapeHtml(outcome)}</span></p>` : ''}
+      ${paket ? `<p class="now-fact"><span>${ICONS.box}</span><span style="font-weight:600">${escapeHtml(paket)}</span></p>` : ''}
+      ${stop.notiz && !meta ? `<p class="now-fact"><span>${ICONS.note}</span><span>${escapeHtml(stop.notiz)}</span></p>` : ''}
+      ${precision ? `<p class="now-fact warn"><span>${ICONS.warning}</span><span>${precision}</span></p>` : ''}
+      <div class="flex gap-2" style="margin-top:1rem">
+        <a href="${navUrl(stop)}" target="_blank" rel="noopener" onclick="noteDeparture(${stop.id})" class="press-98 wide-btn accent">${ICONS.arrowTurn} Navigation</a>
+        <button type="button" onclick="showStopInList(${stop.id})" class="press-98 wide-btn quiet">${ICONS.list} In der Liste</button>
+      </div>
+    </div>`;
+}
+
+/// "In der Liste": the tour's stop list, on this stop's row.
+function showStopInList(stopId) {
+  if (!state.currentRoute) return;
+  resetStopFilter();
+  openCurrentRouteDetail();
+  requestAnimationFrame(() => {
+    const row = document.querySelector(`[data-stop-row="${stopId}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: 'center', behavior: 'auto' });
+    row.animate(
+      [{ backgroundColor: 'rgba(237,22,57,0.22)' }, { backgroundColor: 'rgba(237,22,57,0)' }],
+      { duration: 1600, easing: 'ease-out' }
+    );
+  });
+}
+
+/// "Auf der Karte zeigen": the map, on this stop, with its card up.
+function showStopOnMap(stopId) {
+  const stop = state.currentRoute?.stops.find((s) => s.id === stopId);
+  if (stop && !stop.excluded && Number.isFinite(stop.lat) && Number.isFinite(stop.lon)) {
+    mapCard = { id: stopId };
+    mapFocusRequest = stopId;
+  }
+  if (state.tab === 'map' && !isDetailShowing()) { paintMapCard(); applyMapFocus(); }
+  else { dismissUndo(); state.tab = 'map'; render(); }
+}
+
+/// Jetzt's map button: the stop the driver is at.
+function showNowOnMap() {
+  const stops = state.currentRoute?.stops || [];
+  const idx = firstOpenIndex(stops);
+  if (idx >= 0) showStopOnMap(stops[idx].id);
+  else switchTab('map');
+}
+
+function applyMapFocus() {
+  const map = mapTabMap;
+  const r = state.currentRoute;
+  if (!map || !r || mapFocusRequest == null || !map._earRouteDrawn) return;
+  const stop = r.stops.find((s) => s.id === mapFocusRequest);
+  mapFocusRequest = null;
+  if (!stop) return;
+  // A little above the middle, so the card coming up from below does not
+  // cover the pin it is about.
+  map.easeTo({
+    center: [stop.lon, stop.lat], zoom: Math.max(map.getZoom(), 16.5),
+    offset: [0, -90], duration: prefersReducedMotion() ? 0 : 450,
+  });
+}
+
+/// Every point the tour draws, as the box the map frames.
+function routeBounds(r) {
+  const bounds = new maplibregl.LngLatBounds();
+  for (const point of Array.isArray(r.geometry) ? r.geometry : []) {
+    if (Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1])) bounds.extend([point[1], point[0]]);
+  }
+  for (const s of r.stops) {
+    if (!s.excluded && Number.isFinite(s.lat) && Number.isFinite(s.lon)) bounds.extend([s.lon, s.lat]);
+  }
+  return bounds;
+}
+
+/// "Ganze Route zeigen".
+function fitMapToRoute() {
+  const map = mapTabMap;
+  const r = state.currentRoute;
+  if (!map || !r) return;
+  const bounds = routeBounds(r);
+  if (bounds.isEmpty()) return;
+  map.fitBounds(bounds, { padding: 48, maxZoom: 16, duration: prefersReducedMotion() ? 0 : 450 });
 }
 
 // Keeps the selected route's chip visible in the horizontally scrolling
