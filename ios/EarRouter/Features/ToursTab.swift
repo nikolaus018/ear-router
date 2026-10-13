@@ -381,6 +381,9 @@ extension View {
             Button("Löschen", role: .destructive) {
                 do {
                     try RouteStore.delete(ids: pending.wrappedValue.ids, in: context)
+                    // What a deleted tour taught goes with it — now, not at
+                    // the next launch.
+                    PaceHistory.refresh(in: context)
                 } catch {
                     // Swallowed, a failed delete looked exactly like a delete
                     // the driver had cancelled: the row simply stayed.
