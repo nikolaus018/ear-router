@@ -3162,6 +3162,10 @@ function syncRouteSummary() {
     id: r.id, name: r.name, status: r.status, created_at: r.created_at,
     completed_at: r.completed_at, customer_count: r.customer_count,
     delivered_count: r.delivered_count, needs_optimize: r.needs_optimize,
+    // What the tour list's row says besides: the server's `list_routes`.
+    settled_count: r.stops.filter((s) => s.kind === 'customer' && s.outcome && !skipsDoor(s)).length,
+    not_home_count: r.stops.filter((s) => s.kind === 'customer' && s.outcome === 'notHome').length,
+    total_km: r.total_km,
   };
   const idx = state.routes.findIndex(x => x.id === r.id);
   if (idx === -1) state.routes.unshift(summary); else state.routes[idx] = summary;
@@ -3256,7 +3260,6 @@ function recountRoute(r) {
   r.customer_count = owed.length;
   r.delivered_count = owed.filter((s) => s.delivered).length;
 }
-const deliveredCountText = (r) => `${r.delivered_count} / ${r.customer_count} geliefert`;
 /// "12 von 26 geliefert · 1 nicht angetroffen · 1 ins Lager" -- the line over
 /// Jetzt and over the stop list, the iOS app's `deliveryLine`.
 function deliveryLine(r) {
@@ -3533,7 +3536,7 @@ async function refreshCurrentRoute(makeRequest, label) {
 // Actions
 // ---------------------------------------------------------------------
 async function createRoute() {
-  const name = await promptSheet({ title: 'Leere Tour', message: 'Wie soll die Tour heißen?', placeholder: `Tour ${new Date().toLocaleDateString('de-AT')}` });
+  const name = await promptSheet({ title: 'Neue Tour', message: 'Start, Lager und Ziel werden automatisch gesetzt.', confirmLabel: 'Anlegen', placeholder: `Tour ${new Date().toLocaleDateString('de-AT')}` });
   if (name === null) return;
   showProgress();
   try {
@@ -3773,10 +3776,12 @@ function applyDeliveredDomPatch(stopId) {
   if (barSlot) barSlot.innerHTML = nextStopBarHtml();
 
   const countEl = document.querySelector('[data-delivered-count-text]');
-  if (countEl) countEl.textContent = deliveredCountText(r);
+  if (countEl) countEl.textContent = deliveryLine(r);
   const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
   const barEl = document.querySelector('[data-progress-bar]');
   if (barEl) barEl.style.width = `${progress}%`;
+  const foot = document.querySelector('[data-route-foot]');
+  if (foot) foot.innerHTML = routeFootHtml();
 
   paintEtas();
   return true;
@@ -3998,15 +4003,9 @@ async function resetDelivered() {
 async function toggleRouteStatus() {
   const routeId = state.currentRoute?.id;
   if (routeId == null) return;
+  // Not asked about first, as on the iOS app: finishing is followed by the
+  // Tagesabschluss, and "Wieder aktivieren" in the same menu takes it back.
   const newStatus = state.currentRoute.status === 'completed' ? 'active' : 'completed';
-  const ok = await confirmSheet({
-    title: newStatus === 'completed' ? 'Tour abschließen?' : 'Tour wieder aktivieren?',
-    message: newStatus === 'completed'
-      ? `„${state.currentRoute.name}" steht dann unter „Erledigt“. Danach kommt der Tagesabschluss für das Büro.`
-      : `„${state.currentRoute.name}" steht dann wieder bei den aktiven Touren.`,
-    confirmLabel: newStatus === 'completed' ? 'Abschließen' : 'Reaktivieren',
-  });
-  if (!ok) return;
   const seq = nextSeq();
   showProgress();
   try {
@@ -4103,7 +4102,10 @@ async function recheckAddresses() {
   }
 }
 
-async function manualOptimize() {
+/// `afresh` asks for a new order whatever the tour's own is. Without it a
+/// tour sorted by hand keeps its order and only gets its line and distances
+/// again -- "Aktualisieren", where a tour the app ordered gets "Optimieren".
+async function manualOptimize(afresh = false) {
   const route = state.currentRoute;
   if (!route) return;
   // Nothing to ask the server it would only refuse: say what is in the way.
@@ -4113,9 +4115,24 @@ async function manualOptimize() {
     document.querySelector('.blocker')?.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
     return;
   }
+  const keepOrder = route.hand_ordered && !afresh;
   // A tour that starts where the driver is has to be told where that is.
   await sendPositionIfStartingHere(route, route.stops.some((s) => s.kind === 'start' && s.excluded));
-  await refreshCurrentRoute(() => api(`/routes/${route.id}/optimize`, { method: 'POST' }), 'Reihenfolge wird berechnet …');
+  await refreshCurrentRoute(
+    () => api(`/routes/${route.id}/optimize${keepOrder ? '?keep_order=1' : ''}`, { method: 'POST' }),
+    keepOrder ? 'Route wird aktualisiert …' : 'Route wird optimiert …');
+}
+
+/// "Neu optimieren" in the tour's menu. An order the driver made by hand is
+/// not thrown away without asking.
+async function reoptimizeAfresh() {
+  const route = state.currentRoute;
+  if (!route) return;
+  if (route.hand_ordered) {
+    const ok = await confirmSheet({ title: 'Neu optimieren?', message: 'Deine eigene Reihenfolge wird durch die optimierte ersetzt.', confirmLabel: 'Neu optimieren' });
+    if (!ok) return;
+  }
+  await manualOptimize(true);
 }
 
 // "App neu laden" in Mehr: what is kept on this phone of the app itself goes
@@ -4269,21 +4286,34 @@ function openStopMenu(stop) {
         ${sub ? `<span class="block text-[13px] text-black/55 leading-snug mt-0.5">${sub}</span>` : ''}
       </span>
     </button>`;
+  // A link, so the navigation app and the dialler open on the tap itself.
+  const link = (href, extra, iconSvg, label) => `
+    <a href="${href}" ${extra} onclick="closeSheet()" class="w-full flex items-center gap-3 text-left px-4 py-3.5 active:bg-black/5">
+      <span class="w-5 flex shrink-0 text-black/55 text-lg">${iconSvg}</span>
+      <span class="flex-1 min-w-0 text-[15px] font-medium">${label}</span>
+    </a>`;
   const o = stop.outcome || null;
+  const onMap = !stop.excluded && Number.isFinite(stop.lat) && Number.isFinite(stop.lon);
   renderSheetShell(`
     <h2 class="text-[22px] font-bold mb-1 truncate">${escapeHtml(stop.kunde)}</h2>
     <p class="text-[13px] text-black/55 mb-4 leading-snug">${escapeHtml(stopAddress(stop))}${o ? ` · ${OUTCOMES[o]?.short || ''}` : ''}</p>
     <div class="${GROUP} mb-3">
-      ${o ? item(`setOutcome(${stop.id}, null)`, ICONS.refresh, 'Wieder öffnen') : ''}
-      ${o !== 'delivered' && o ? item(`setOutcome(${stop.id}, 'delivered')`, ICONS.checkCircle, 'Geliefert') : ''}
-      ${o !== 'notHome' ? item(`setOutcome(${stop.id}, 'notHome')`, ICONS.bellOff, 'Nicht angetroffen', 'Angefahren, niemand da. Bleibt in der Tour.') : ''}
-      ${o !== 'toLager' ? item(`setOutcome(${stop.id}, 'toLager')`, ICONS.box, 'Ins Lager mitnehmen', 'Wird nicht angefahren und nicht mitgezählt.') : ''}
+      ${link(navUrl(stop), 'target="_blank" rel="noopener"', ICONS.arrowTurn, 'Navigation starten')}
+      ${onMap ? item(`showStopOnMap(${stop.id})`, ICONS.tabMap, 'Auf der Karte zeigen') : ''}
+      ${(stop.strasse || '').trim() ? item(`copyAddress(${stop.id})`, ICONS.copy, 'Adresse kopieren') : ''}
+      ${dialOf(stop.telefon) ? link(`tel:${dialOf(stop.telefon)}`, '', ICONS.phone, 'Anrufen') : ''}
+      ${phonesInNote(stop.notiz, stop.telefon).map((ph) => link(`tel:${ph.dial}`, '', ICONS.phone, `${escapeHtml(ph.display)} anrufen`)).join('')}
+    </div>
+    <div class="${GROUP} mb-3">
+      ${o ? item(`setOutcome(${stop.id}, null)`, ICONS.refresh, 'Als offen markieren') : item(`setOutcome(${stop.id}, 'delivered')`, ICONS.checkCircle, 'Als geliefert markieren')}
+      ${!o ? item(`setOutcome(${stop.id}, 'notHome')`, ICONS.bellOff, 'Nicht angetroffen', 'Angefahren, niemand da. Bleibt in der Tour.') : ''}
+      ${!o ? item(`setOutcome(${stop.id}, 'toLager')`, ICONS.box, 'Ins Lager mitnehmen', 'Wird nicht angefahren und nicht mitgezählt.') : ''}
     </div>
     <div class="${GROUP} mb-4">
       ${item(`openAddSheet(getStop(${stop.id}))`, ICONS.pencil, 'Bearbeiten', 'Name, Adresse, Paket, Notiz, Telefon')}
       <button type="button" onclick="closeSheet(); deleteStop(${stop.id})" class="w-full flex items-center gap-3 text-left px-4 py-3.5 text-red-600 active:bg-black/5">
         <span class="w-5 flex shrink-0 text-lg">${ICONS.trash}</span>
-        <span class="text-[15px] font-medium">Aus der Tour entfernen</span>
+        <span class="text-[15px] font-medium">Löschen</span>
       </button>
     </div>
     <div class="pb-2">
@@ -4731,7 +4761,7 @@ function openNewTourSheet() {
     <p class="sheet-lead">Woher kommen die Stopps?</p>
     <button type="button" onclick="openGourmetSheet()" class="press-98 choice primary">
       <span class="choice-icon">${ICONS.download}</span>
-      <span><span class="choice-title">Von Gourmet laden</span><span class="choice-sub">Die Tour des Tages aus dem Zusteller-Portal. Alle Stopps kommen fertig sortiert.</span></span>
+      <span><span class="choice-title">Vom Zusteller-Portal</span><span class="choice-sub">Die Tour des Tages aus dem Zusteller-Portal. Alle Stopps kommen fertig sortiert.</span></span>
       <span class="choice-chevron">${ICONS.chevron}</span>
     </button>
     <button type="button" onclick="closeSheet(); createRoute()" class="press-98 choice">
@@ -5938,28 +5968,42 @@ function renderRoutesTab() {
   // The finished tours live under the active ones, newest first — one tab
   // for every tour there is, as in the iOS app.
   const done = state.routes.filter(r => r.status === 'completed');
+  const stopsText = (n) => (n === 1 ? '1 Stopp' : `${n} Stopps`);
+  // "26 Stopps · 12 von 26 geliefert · 1 nicht angetroffen · 41,3 km", with
+  // the day in front once the tour is finished.
+  const subtitle = (r, finished) => [
+    finished ? fmtDate(r.completed_at || r.created_at) : '',
+    stopsText(r.customer_count),
+    !finished && r.settled_count > 0 ? (r.delivered_count === r.customer_count ? 'alle geliefert' : `${r.delivered_count} von ${r.customer_count} geliefert`) : '',
+    r.not_home_count > 0 ? `${r.not_home_count} nicht angetroffen` : '',
+    r.total_km > 0 ? fmtKm(r.total_km) : '',
+  ].filter(Boolean).join(' · ');
+  // Which of several active tours Jetzt is showing: the one in focus.
+  const onNow = active.length > 1 && state.currentRoute?.status === 'active' ? state.currentRoute.id : null;
+  const stale = `<p class="text-[12px] text-black/55 mt-0.5 flex items-center gap-1"><span class="flex" style="color:#FF9500">${ICONS.warning}</span>Route nicht aktuell</p>`;
+
   const doneRow = (r) => `
     <button onclick="openRoute(${r.id})" class="${ROW}">
       <span class="w-9 h-9 shrink-0 rounded-full bg-success/10 text-success flex items-center justify-center text-lg">${ICONS.checkCircle}</span>
       <div class="flex-1 min-w-0">
         <p class="font-medium truncate">${escapeHtml(r.name)}</p>
-        <p class="text-[13px] text-black/55 mt-0.5">${fmtDate(r.completed_at || r.created_at)} · ${r.delivered_count}/${r.customer_count} geliefert</p>
+        <p class="text-[13px] text-black/55 mt-0.5">${subtitle(r, true)}</p>
+        ${r.needs_optimize ? stale : ''}
       </div>
       <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
     </button>`;
 
   const routeRow = (r) => {
-    const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
+    const progress = r.customer_count ? Math.round((r.settled_count / r.customer_count) * 100) : 0;
     return `
     <button onclick="openRoute(${r.id})" class="${ROW}">
       <span class="w-9 h-9 shrink-0 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-lg">${ICONS.box}</span>
       <div class="flex-1 min-w-0">
-        <p class="font-medium truncate flex items-center gap-1.5">
-          ${escapeHtml(r.name)}
-          ${r.needs_optimize ? `<span class="w-1.5 h-1.5 rounded-full bg-warn shrink-0" title="Reihenfolge nicht aktuell"></span>` : ''}
-        </p>
-        <p class="text-[13px] text-black/55 mt-0.5">${fmtDate(r.created_at)} · ${r.delivered_count}/${r.customer_count} geliefert</p>
-        ${r.customer_count ? `<div class="h-1 bg-black/10 rounded-full overflow-hidden mt-1.5"><div class="h-full bg-success" style="width:${progress}%"></div></div>` : ''}
+        <p class="font-medium truncate">${escapeHtml(r.name)}</p>
+        ${r.id === onNow ? `<p class="text-[12px] font-medium text-brand-600 flex items-center gap-1"><span class="flex">${ICONS.tabNow}</span>Auf Jetzt</p>` : ''}
+        <p class="text-[13px] text-black/55 mt-0.5">${subtitle(r, false)}</p>
+        ${r.needs_optimize ? stale : ''}
+        ${r.settled_count > 0 && r.settled_count < r.customer_count ? `<div class="h-1 bg-black/10 rounded-full overflow-hidden mt-1.5"><div class="h-full bg-success" style="width:${progress}%"></div></div>` : ''}
       </div>
       <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
     </button>
@@ -5983,10 +6027,10 @@ function renderRoutesTab() {
         ${active.length ? `<div class="${GROUP}">${active.map(routeRow).join('')}</div>` : `
           <div class="text-center text-black/55" style="padding: 3.5rem .5rem 1rem">
             <span class="text-4xl flex justify-center mb-3 opacity-40">${ICONS.box}</span>
-            <p class="font-semibold text-black/70">${done.length ? 'Keine aktive Tour' : 'Noch keine Tour'}</p>
-            <p class="text-[15px] mt-1 leading-snug">Lade die Tour des Tages aus dem Zusteller-Portal — die Stopps kommen fertig sortiert.</p>
-            <button onclick="openGourmetSheet()" class="press-98 wide-btn accent" style="margin-top:1.25rem">${ICONS.download} Tour von Gourmet laden</button>
-            <button onclick="createRoute()" class="press-98 wide-btn quiet">Leere Tour anlegen</button>
+            <p class="font-semibold text-black/70">${done.length ? 'Keine aktive Tour' : 'Keine Touren'}</p>
+            <p class="text-[15px] mt-1 leading-snug">Lade die Tour des Tages vom Zusteller-Portal, oder leg eine Tour an und füg die Kundenstopps hinzu.</p>
+            <button onclick="openGourmetSheet()" class="press-98 wide-btn accent" style="margin-top:1.25rem">${ICONS.download} Vom Zusteller-Portal</button>
+            <button onclick="createRoute()" class="press-98 wide-btn quiet">Neue Tour</button>
           </div>
         `}
 
@@ -9626,8 +9670,7 @@ function renderRouteDetail() {
         <button onclick="switchTab('map')" class="${CARD} w-full text-left px-4 py-3.5 flex items-center gap-3 mb-4">
           <div class="flex-1 min-w-0">
             <div class="flex justify-between items-baseline mb-1.5">
-              <p data-delivered-count-text class="text-[15px] font-semibold">${deliveredCountText(r)}</p>
-              <p data-route-totals class="text-[12px] text-black/55">${routeTotalsText()}</p>
+              <p data-delivered-count-text class="text-[15px] font-semibold">${escapeHtml(deliveryLine(r))}</p>
             </div>
             <div class="h-1.5 bg-black/10 rounded-full overflow-hidden">
               <div data-progress-bar class="h-full bg-success transition-all duration-500" style="width: ${progress}%"></div>
@@ -9649,6 +9692,7 @@ function renderRouteDetail() {
           class="${filtering ? '' : 'hidden'} text-[13px] font-medium text-black/55 px-1 pb-1.5">${escapeHtml(stopFilterStatusText())}</p>
 
         <div data-stop-list>${stopListHtml({ animate: !suppressRowAnim })}</div>
+        <div data-route-foot>${routeFootHtml()}</div>
       </div>
     </div>
   `;
@@ -9749,7 +9793,7 @@ function stopFilterActive() {
 /// "Hauptstraße 5", "gentzgasse 129 1" finds "Gentzgasse 129/1", and no
 /// match is ever decided by a slash or a full stop.
 function stopMatches(s, tokens) {
-  const hay = `${normalizeMatchText(s.kunde)} ${normalizeMatchText(s.strasse)} ${String(s.plz || '').trim()}`;
+  const hay = `${normalizeMatchText(s.kunde)} ${normalizeMatchText(s.strasse)} ${String(s.plz || '').trim()} ${normalizeMatchText(s.paket)} ${normalizeMatchText(s.notiz)}`;
   return tokens.every((t) => hay.includes(t));
 }
 
@@ -9786,11 +9830,11 @@ function resetStopFilter() {
 function stopSearchBar() {
   return `
     <div role="search" class="pb-2">
-      <label for="stop-search" class="sr-only">Kunde oder Adresse in dieser Tour suchen</label>
+      <label for="stop-search" class="sr-only">Kunde, Adresse, Paket oder Notiz in dieser Tour suchen</label>
       <div class="relative">
         <span class="absolute left-3 top-1/2 -translate-y-1/2 text-black/55 text-[17px] flex pointer-events-none">${ICONS.search}</span>
         <input id="stop-search" type="search" value="${escapeAttr(stopFilter.query)}"
-          placeholder="Kunde oder Adresse suchen"
+          placeholder="Kunde, Adresse, Paket oder Notiz"
           autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
           enterkeyhint="search" maxlength="${LIMITS.strasse}"
           oninput="onStopFilterInput(this.value)"
@@ -9873,6 +9917,8 @@ function paintStopFilter() {
   if (list) list.innerHTML = stopListHtml();
   const barSlot = document.querySelector('[data-next-stop-bar-slot]');
   if (barSlot) barSlot.innerHTML = nextStopBarHtml();
+  const foot = document.querySelector('[data-route-foot]');
+  if (foot) foot.innerHTML = routeFootHtml();
   paintEtas();
 }
 
@@ -9925,16 +9971,28 @@ function optimizeBannerHtml() {
       </div>`;
   }
   if (!r?.needs_optimize) return '';
+  // Sorted by hand, only the line and the distances are stale: the order is
+  // the driver's, and bringing the tour up to date leaves it alone.
   return `
-    <button onclick="manualOptimize()" class="press-98 w-full flex items-center justify-between gap-2 bg-warn/10 text-warnText text-[13px] font-semibold px-4 py-2.5 rounded-xl mb-3">
-      <span class="flex items-center gap-1.5"><span class="flex">${ICONS.warning}</span>Reihenfolge nicht aktuell</span>
-      <span class="underline">Jetzt berechnen</span>
+    <button onclick="manualOptimize()" class="press-98 w-full flex items-center gap-3 text-left bg-warn/10 text-warnText px-4 py-2.5 rounded-xl mb-3">
+      <span class="flex shrink-0 text-lg">${ICONS.warning}</span>
+      <span class="flex-1 min-w-0">
+        <span class="block text-[14px] font-semibold">Route nicht aktuell</span>
+        <span class="block text-[12px]">${r.hand_ordered ? 'Linie und Distanzen stimmen nicht mehr.' : 'Reihenfolge und Distanzen stimmen nicht mehr.'}</span>
+      </span>
+      <span class="shrink-0 text-[14px] font-semibold underline">${r.hand_ordered ? 'Aktualisieren' : 'Optimieren'}</span>
     </button>`;
 }
 
-function routeTotalsText() {
+/// Under the stop list: what the whole tour comes to, and -- once every door
+/// is answered for -- the button that closes it.
+function routeFootHtml() {
   const r = state.currentRoute;
-  return r ? `≈ ${fmtKm(r.total_km)} · ${r.total_min} min` : '';
+  if (!r || stopFilterActive()) return '';
+  const complete = r.status === 'active' && r.customer_count > 0 && !r.stops.some(isOpenStop);
+  return `
+    ${r.total_km > 0 ? `<p class="now-caption" style="padding:.625rem .25rem 0">Gesamt ${fmtKm(r.total_km)} · ${fmtDuration(r.total_min)}</p>` : ''}
+    ${complete ? `<button onclick="toggleRouteStatus()" class="press-98 wide-btn accent" style="margin-top:1rem">${ICONS.checkCircle} Tour abschließen</button>` : ''}`;
 }
 
 /// Repaints the route-detail screen in place — the stop list and every
@@ -9981,9 +10039,9 @@ function patchRouteDetail({ animate = false } = {}) {
   if (optimizeSlot) optimizeSlot.innerHTML = optimizeBannerHtml();
 
   const countEl = document.querySelector('[data-delivered-count-text]');
-  if (countEl) countEl.textContent = deliveredCountText(r);
-  const totalsEl = document.querySelector('[data-route-totals]');
-  if (totalsEl) totalsEl.textContent = routeTotalsText();
+  if (countEl) countEl.textContent = deliveryLine(r);
+  const footEl = document.querySelector('[data-route-foot]');
+  if (footEl) footEl.innerHTML = routeFootHtml();
   const progress = r.customer_count ? Math.round((r.delivered_count / r.customer_count) * 100) : 0;
   const barEl = document.querySelector('[data-progress-bar]');
   if (barEl) barEl.style.width = `${progress}%`;
@@ -10038,19 +10096,30 @@ function renderRouteMenu() {
   const item = (onclick, iconSvg, label, danger) => `<button onclick="closeRouteMenu(); ${onclick}" role="menuitem" class="w-full flex items-center gap-3 text-left px-4 py-3 text-[15px] ${danger ? 'text-red-600' : ''} active:bg-black/5">
     <span class="w-5 flex shrink-0 ${danger ? 'text-red-600' : 'text-black/55'}">${iconSvg}</span>${label}
   </button>`;
+  // A row that cannot do anything now is shown and greyed, so the menu is the
+  // same list every time it is opened.
+  const off = (iconSvg, label) => `<button disabled role="menuitem" aria-disabled="true" class="w-full flex items-center gap-3 text-left px-4 py-3 text-[15px]" style="opacity:.35">
+    <span class="w-5 flex shrink-0 text-black/55">${iconSvg}</span>${label}
+  </button>`;
+  const gap = `<div aria-hidden="true" style="height:6px; background:rgba(0,0,0,.06)"></div>`;
+  const settled = r.stops.some((s) => s.outcome);
   return `
-    <div id="route-menu" role="menu" aria-label="Weitere Aktionen" style="width: 17rem" class="hidden absolute right-0 top-10 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden z-30 divide-y divide-black/10">
-      ${r.status === 'active' ? item("openPreflightSheet()", ICONS.checkCircle, "Tour vorbereiten") : ''}
-      ${item("renderLadeliste()", ICONS.box, "Ladeliste")}
-      ${item(`openGourmetSheet(${r.id})`, ICONS.download, "Stopps von Gourmet laden")}
-      ${item("openReorderSheet()", ICONS.sort, "Reihenfolge ändern")}
-      ${item("manualOptimize()", ICONS.compass, r.hand_ordered ? "Kürzeste Reihenfolge berechnen" : "Reihenfolge neu berechnen")}
-      ${item("recheckAddresses()", ICONS.mapPin, "Adressen neu prüfen")}
+    <div id="route-menu" role="menu" aria-label="Weitere Aktionen" style="width: 17rem; max-height: 75vh; overflow-y: auto" class="hidden absolute right-0 top-10 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl z-30 divide-y divide-black/10">
+      ${item("openPreflightSheet()", ICONS.checkCircle, "Tour vorbereiten")}
       ${item("openReportSheet()", ICONS.doc, "Tagesabschluss")}
+      ${gap}
+      ${item("renderLadeliste()", ICONS.box, "Ladeliste")}
+      ${item(`openGourmetSheet(${r.id})`, ICONS.download, "Stopps vom Zusteller-Portal laden")}
+      ${gap}
+      ${item("reoptimizeAfresh()", ICONS.refresh, "Neu optimieren")}
+      ${r.customer_count < 2 && r.stops.filter((s) => s.kind === 'customer').length < 2 ? off(ICONS.sort, "Reihenfolge ändern") : item("openReorderSheet()", ICONS.sort, "Reihenfolge ändern")}
+      ${item("recheckAddresses()", ICONS.mapPin, "Adressen prüfen")}
+      ${gap}
       ${item("renameRoute()", ICONS.pencil, "Umbenennen")}
-      ${item("toggleRouteStatus()", ICONS.checkCircle, r.status === 'completed' ? 'Wieder aktivieren' : 'Tour abschließen')}
-      ${item("resetDelivered()", ICONS.refresh, "Lieferstatus zurücksetzen", true)}
-      ${item("deleteRoute()", ICONS.trash, "Löschen", true)}
+      ${settled ? item("resetDelivered()", ICONS.refresh, "Lieferstatus zurücksetzen", true) : off(ICONS.refresh, "Lieferstatus zurücksetzen")}
+      ${item("toggleRouteStatus()", r.status === 'completed' ? ICONS.back : ICONS.checkCircle, r.status === 'completed' ? 'Wieder aktivieren' : 'Tour abschließen')}
+      ${gap}
+      ${item("deleteRoute()", ICONS.trash, "Tour löschen", true)}
     </div>
   `;
 }

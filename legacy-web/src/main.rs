@@ -3398,6 +3398,10 @@ struct RouteSummary {
     completed_at: Option<String>,
     customer_count: i64,
     delivered_count: i64,
+    /// Customers answered for in any way, for the row's progress bar.
+    settled_count: i64,
+    not_home_count: i64,
+    total_km: f64,
     needs_optimize: bool,
 }
 
@@ -4732,7 +4736,10 @@ async fn list_routes(
     let mut stmt = conn.prepare(&format!(
         "SELECT r.id, r.name, r.status, r.created_at, r.completed_at, r.needs_optimize,
                 COUNT(CASE WHEN s.kind = 'customer' AND NOT COALESCE({SQL_SKIPS_DOOR}, 0) THEN 1 END) AS customer_count,
-                SUM(CASE WHEN s.kind = 'customer' AND s.delivered = 1 AND NOT COALESCE({SQL_SKIPS_DOOR}, 0) THEN 1 ELSE 0 END) AS delivered_count
+                SUM(CASE WHEN s.kind = 'customer' AND s.delivered = 1 AND NOT COALESCE({SQL_SKIPS_DOOR}, 0) THEN 1 ELSE 0 END) AS delivered_count,
+                SUM(CASE WHEN s.kind = 'customer' AND s.outcome IS NOT NULL AND NOT COALESCE({SQL_SKIPS_DOOR}, 0) THEN 1 ELSE 0 END) AS settled_count,
+                SUM(CASE WHEN s.kind = 'customer' AND s.outcome = 'notHome' THEN 1 ELSE 0 END) AS not_home_count,
+                SUM(s.next_leg_km) AS total_km
          FROM routes r LEFT JOIN stops s ON s.route_id = r.id
          WHERE r.user_id = ?1
          GROUP BY r.id ORDER BY r.created_at DESC",
@@ -4748,6 +4755,9 @@ async fn list_routes(
                 needs_optimize: r.get::<_, i64>(5)? != 0,
                 customer_count: r.get::<_, i64>(6)?,
                 delivered_count: r.get::<_, Option<i64>>(7)?.unwrap_or(0),
+                settled_count: r.get::<_, Option<i64>>(8)?.unwrap_or(0),
+                not_home_count: r.get::<_, Option<i64>>(9)?.unwrap_or(0),
+                total_km: finite_or_none(r.get::<_, Option<f64>>(10)?).unwrap_or(0.0),
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -4888,13 +4898,28 @@ async fn delete_route(State(state): State<Arc<AppState>>, AxPath(route_id): AxPa
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn optimize_route(State(state): State<Arc<AppState>>, AxPath(route_id): AxPath<i64>) -> Result<Json<RouteDetail>, AppError> {
+#[derive(Deserialize)]
+struct OptimizeQuery {
+    /// "Aktualisieren" on a tour sorted by hand: the line and the distances
+    /// again, the order as it stands.
+    #[serde(default)]
+    keep_order: Option<String>,
+}
+
+async fn optimize_route(
+    State(state): State<Arc<AppState>>,
+    AxPath(route_id): AxPath<i64>,
+    axum::extract::Query(query): axum::extract::Query<OptimizeQuery>,
+) -> Result<Json<RouteDetail>, AppError> {
     {
         let conn = state.db()?;
         require_route_exists(&conn, route_id)?;
         // Asking for the order is asking for a new one: the tour stops
-        // being hand-sorted.
-        conn.execute("UPDATE routes SET hand_ordered = 0 WHERE id = ?1", params![route_id])?;
+        // being hand-sorted -- unless it was only asked to be brought up to
+        // date.
+        if query.keep_order.as_deref() != Some("1") {
+            conn.execute("UPDATE routes SET hand_ordered = 0 WHERE id = ?1", params![route_id])?;
+        }
     }
     reoptimize_route(&state, route_id).await?;
     let conn = state.db()?;
