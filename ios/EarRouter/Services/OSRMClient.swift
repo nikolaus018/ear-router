@@ -80,8 +80,13 @@ actor OSRMClient {
     /// given — for a tour the driver has put in order by hand, where nothing
     /// may be moved. Legs are in that order: `legs[i]` runs from `coords[i]`
     /// to `coords[i + 1]`.
+    ///
+    /// `turnAtStops` lets the van leave a stop the way it came, as `/trip`
+    /// does. Without it OSRM drives on past every stop in the direction it
+    /// arrived, round the block if need be — a different route from the one
+    /// `/trip` plans, and several minutes longer over a tour.
     func routeThrough(
-        _ coords: [(lat: Double, lon: Double)]
+        _ coords: [(lat: Double, lon: Double)], turnAtStops: Bool = false
     ) async throws -> (legs: [(Double, Double)], geometry: [[Double]]) {
         guard coords.count >= 2 else {
             throw AppError.message("OSRM: Routenabschnitt mit weniger als zwei Punkten")
@@ -93,6 +98,7 @@ actor OSRMClient {
         }
         let path = "/route/v1/driving/\(Self.coordString(coords))"
             + "?overview=full&geometries=geojson"
+            + (turnAtStops ? "&continue_straight=false" : "")
         let resp: RouteResponse = try await get(path, waypoints: coords.count)
         guard resp.code == "Ok" else {
             throw Self.failure(code: resp.code)
@@ -132,7 +138,8 @@ actor OSRMClient {
     func trip(
         coords: [(lat: Double, lon: Double)],
         fixFirst: Bool,
-        fixLast: Bool
+        fixLast: Bool,
+        polish: Bool = true
     ) async throws -> (order: [Int], legs: [(Double, Double)], geometry: [[Double]]) {
         assert(fixFirst || fixLast, "trip needs at least one pinned end")
 
@@ -169,8 +176,11 @@ actor OSRMClient {
         // A second look at the order — see `TourPolish`. Best effort: if the
         // table or the route behind it cannot be had, OSRM's own answer is a
         // complete one and is what every tour got until now.
-        if let better = try? await polished(
-            order, coords: coords, fixFirst: fixFirst, fixLast: fixLast)
+        let seconds = trip.legs.reduce(0) { $0 + $1.duration }
+        if polish, let better = try? await polished(
+            order, coords: coords, fixFirst: fixFirst, fixLast: fixLast),
+            // Shorter on the road, not only in the table.
+            better.legs.reduce(0, { $0 + $1.1 }) < seconds
         {
             return better
         }
@@ -192,7 +202,9 @@ actor OSRMClient {
                 order: order, durations: durations, fixFirst: fixFirst, fixLast: fixLast)
         }.value
         guard better != order else { return nil }
-        let through = try await routeThrough(better.map { coords[$0] })
+        // Routed the way `/trip` routes, so the legs are the ones the table
+        // promised and not a longer drive round every block.
+        let through = try await routeThrough(better.map { coords[$0] }, turnAtStops: true)
         return (better, through.legs, through.geometry)
     }
 
