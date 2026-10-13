@@ -1907,8 +1907,21 @@ fn pick_among<'f>(
     segments: &[String],
     numbers: &[String],
 ) -> Option<&'f OgdFeature> {
-    if let Some(hit) = pick_exact_sub(features, require_sub, segments) {
-        return Some(hit);
+    // The number asked for, before a neighbour the register ranks above it.
+    // Asked for "Rabengasse 3" it puts "3A" first, at 0.00000001, and the
+    // Rabenhof itself -- "3-9" -- second. Taken as the best answer overall,
+    // the pin went on the house next door and was then marked "≈" for
+    // carrying the wrong number, with the right house in the same answer.
+    // Only when no answer carries the number is the best of the rest taken
+    // -- and `is_uncertain_door` says so.
+    let own: Vec<&OgdFeature> = if numbers.is_empty() {
+        Vec::new()
+    } else {
+        features.iter().copied().filter(|f| ogd_number(f).is_some_and(|n| numbers.contains(&n))).collect()
+    };
+    let hit = pick_exact_sub(&own, require_sub, segments).or_else(|| pick_exact_sub(features, require_sub, segments));
+    if hit.is_some() {
+        return hit;
     }
     require_sub?;
     let placed: Vec<&OgdFeature> = features
@@ -1991,12 +2004,20 @@ fn pick_exact_sub<'f>(
 /// neither. A number the register does not split into buildings stays exact:
 /// the Stiegen of one Gemeindebau stand a few dozen metres from the number's
 /// own point, and "129/5/12" with its Stock and Tür is still that house.
+///
+/// And a third, since the number asked for is taken ahead of a neighbour the
+/// register ranks first (see `pick_among`): the driver named no door
+/// (`no_door_named`), and what was taken in the neighbour's place is one
+/// building of several far apart -- "Doningasse 8", answered "8B" first, where
+/// number 8 is an "Obj. 1" and a Stiege 3 sixty metres from it. That stays
+/// "≈", as it was when the neighbour was taken.
 fn is_uncertain_door(
     chosen: &OgdFeature,
     features: &[OgdFeature],
     street_key: &str,
     numbers: &[String],
     sub_asked: bool,
+    no_door_named: bool,
 ) -> bool {
     if numbers.is_empty() {
         return false;
@@ -2004,7 +2025,15 @@ fn is_uncertain_door(
     if ogd_number(chosen).is_some_and(|theirs| !numbers.contains(&theirs)) {
         return true;
     }
-    if !sub_asked || ogd_tail(chosen).is_some() {
+    let outranked = || {
+        features.iter().any(|f| {
+            ogd_street_key(f) == street_key
+                && ogd_number(f).is_some_and(|n| !numbers.contains(&n))
+                && ogd_ranking(f) < ogd_ranking(chosen)
+        })
+    };
+    let in_doubt = if ogd_tail(chosen).is_some() { no_door_named && outranked() } else { sub_asked };
+    if !in_doubt {
         return false;
     }
     features.iter().any(|f| {
@@ -2138,8 +2167,8 @@ async fn wien_ogd_search_one(
     let street_key = text::address_match_key(&text::street_name_only(query));
     let best = pick_ogd_feature(&features, plz, &street_key, sub.required(), segments, numbers)?;
     let hit = ogd_result(best, query, plz, sub)?;
-    let sub_asked = matches!(sub, SubCheck::Downgrade(_));
-    if hit.3 == Precision::Exact && is_uncertain_door(best, &features, &street_key, numbers, sub_asked) {
+    let (sub_asked, no_door_named) = (matches!(sub, SubCheck::Downgrade(_)), sub == SubCheck::Absent);
+    if hit.3 == Precision::Exact && is_uncertain_door(best, &features, &street_key, numbers, sub_asked, no_door_named) {
         tracing::debug!(query, "wien ogd answer is not provably the door asked for, downgrading to street precision");
         return Some((hit.0, hit.1, hit.2, Precision::Street));
     }
@@ -7564,6 +7593,38 @@ mod tests {
     }
 
     #[test]
+    fn the_number_asked_for_comes_before_a_neighbour_ranked_above_it() {
+        let key = street_key("Rabengasse");
+        let numbers = vec!["3".to_string()];
+        let features = vec![
+            ogd("Rabengasse 3A", "Rabengasse", "3A", Some("1030"), 1e-8, DOWN_THE_LANE),
+            ogd("Rabengasse 3-9", "Rabengasse", "3-9", Some("1030"), 0.0009, HERE),
+        ];
+        let picked = pick_ogd_feature(&features, "1030", &key, None, &[], &numbers).expect("the Rabenhof");
+        assert_eq!(picked.properties.adresse.as_deref(), Some("Rabengasse 3-9"));
+        // With only the neighbour on offer it is still taken, and then shown as "≈".
+        let picked = pick_ogd_feature(&features[..1], "1030", &key, None, &[], &numbers).expect("the neighbour");
+        assert!(is_uncertain_door(picked, &features[..1], &key, &numbers, false, true));
+
+        // "Doningasse 8": "8B" first, and number 8 itself an Obj. 1 with a
+        // Stiege 3 sixty metres away. Nobody said which, so it stays "≈".
+        let key = street_key("Doningasse");
+        let numbers = vec!["8".to_string()];
+        let features = vec![
+            ogd("Doningasse 8B", "Doningasse", "8B", Some("1220"), 1e-8, (48.25116, 16.44276)),
+            ogd("Doningasse 8 Obj. 1", "Doningasse", "8 Obj. 1", Some("1220"), 0.0001, (48.25066, 16.44225)),
+            ogd("Doningasse 8/3", "Doningasse", "8/3", Some("1220"), 0.0003, (48.25121, 16.44257)),
+        ];
+        let picked = pick_ogd_feature(&features, "1220", &key, None, &[], &numbers).expect("number 8");
+        assert_eq!(picked.properties.adresse.as_deref(), Some("Doningasse 8 Obj. 1"));
+        assert!(is_uncertain_door(picked, &features, &key, &numbers, false, true));
+        // One building of the number, and it is the house.
+        assert!(!is_uncertain_door(picked, &features[..2], &key, &numbers, false, true));
+        // A door the driver did name is the door, whatever ranks above it.
+        assert!(!is_uncertain_door(&features[2], &features, &key, &numbers, false, false));
+    }
+
+    #[test]
     fn a_letter_typed_apart_from_the_number_may_belong_to_it() {
         let seg = segments;
         assert_eq!(asked_numbers(Some("26"), &seg(&["A"])), vec!["26", "26a"]);
@@ -7579,19 +7640,19 @@ mod tests {
         let key = street_key("Doningasse");
         // A neighbouring number, ranked as a match.
         let neighbour = ogd("Doningasse 8B", "Doningasse", "8B", Some("1220"), 0.00000001, HERE);
-        assert!(is_uncertain_door(&neighbour, &[], &key, &["8".to_string()], false));
+        assert!(is_uncertain_door(&neighbour, &[], &key, &["8".to_string()], false, true));
         let own = ogd("Doningasse 8", "Doningasse", "8", Some("1220"), 0.0, HERE);
-        assert!(!is_uncertain_door(&own, &[], &key, &["8".to_string()], false));
+        assert!(!is_uncertain_door(&own, &[], &key, &["8".to_string()], false, true));
 
         // The bare number, where the door asked for is one of several
         // buildings far apart -- and where it is a Stiege of the one house.
         let key = street_key("Wolkersbergenstraße");
         let bare = ogd("Wolkersbergenstraße 1", "Wolkersbergenstraße", "1", Some("1130"), 0.0, HERE);
         let far = vec![ogd("Wolkersbergenstraße 1 Pav. 1", "Wolkersbergenstraße", "1 Pav. 1", Some("1130"), 0.0, DOWN_THE_LANE)];
-        assert!(is_uncertain_door(&bare, &far, &key, &["1".to_string()], true));
-        assert!(!is_uncertain_door(&bare, &far, &key, &["1".to_string()], false));
+        assert!(is_uncertain_door(&bare, &far, &key, &["1".to_string()], true, false));
+        assert!(!is_uncertain_door(&bare, &far, &key, &["1".to_string()], false, true));
         let near = vec![ogd("Wolkersbergenstraße 1/2", "Wolkersbergenstraße", "1/2", Some("1130"), 0.0, (48.20835, 16.3738))];
-        assert!(!is_uncertain_door(&bare, &near, &key, &["1".to_string()], true));
+        assert!(!is_uncertain_door(&bare, &near, &key, &["1".to_string()], true, false));
     }
 
     #[test]

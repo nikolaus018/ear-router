@@ -492,7 +492,8 @@ actor Geocoder {
         guard hit.precision == .exact,
               Self.isUncertainDoor(
                 best, among: features, streetKey: ourStreet, numbers: numbers,
-                subAsked: { if case .downgrade = subCheck { return true }; return false }())
+                subAsked: { if case .downgrade = subCheck { return true }; return false }(),
+                noDoorNamed: { if case .absent = subCheck { return true }; return false }())
         else { return hit }
         log.debug("OGD answer is not provably the door asked for, downgrading to street precision")
         return GeocodeResult(
@@ -511,26 +512,42 @@ actor Geocoder {
     /// that is neither. A number the register does not split into buildings
     /// stays exact: "Pappenheimgasse 66-68/2/4/24" is one house, and the "/2"
     /// on it is a Stiege inside it that no register knows.
+    ///
+    /// And a third, since the number asked for is taken ahead of a neighbour
+    /// the register ranks first (see `pick`): the driver named no door
+    /// (`noDoorNamed`), and what was taken in the neighbour's place is one
+    /// building of several far apart — "Doningasse 8", answered "8B" first,
+    /// where number 8 is an "Obj. 1" and a Stiege 3 sixty metres from it.
+    /// That stays "≈", as it was when the neighbour was taken.
     static func isUncertainDoor(
         _ chosen: OGDFeature, among features: [OGDFeature], streetKey: String,
-        numbers: Set<String>, subAsked: Bool
+        numbers: Set<String>, subAsked: Bool, noDoorNamed: Bool = false
     ) -> Bool {
         guard !numbers.isEmpty else { return false }
         func numberOf(_ f: OGDFeature) -> String? {
             f.properties.streetNumber.flatMap(entranceNumber)
         }
+        func ranking(_ f: OGDFeature) -> Double {
+            f.properties.ranking ?? .greatestFiniteMagnitude
+        }
+        func onStreet(_ f: OGDFeature) -> Bool {
+            AddressText.matchKey(f.properties.streetName ?? "") == streetKey
+        }
         if let theirs = numberOf(chosen), !numbers.contains(theirs) { return true }
-        guard subAsked,
-              chosen.properties.adresse.flatMap(AddressText.subAddressTail) == nil
-        else { return false }
+        let named = chosen.properties.adresse.flatMap(AddressText.subAddressTail) != nil
+        let outranked = features.contains {
+            onStreet($0) && numberOf($0).map(numbers.contains) == false
+                && ranking($0) < ranking(chosen)
+        }
+        guard named ? noDoorNamed && outranked : subAsked else { return false }
         // Only a building far enough away to be somewhere else. The Stiegen of
         // one Gemeindebau number — "Gentzgasse 129/1", "129/2" — stand a few
         // dozen metres from the number's own point, and "129/5/12" with its
         // Stock and Tür is still that house.
         return features.contains {
             numberOf($0).map(numbers.contains) == true
-                && AddressText.matchKey($0.properties.streetName ?? "") == streetKey
-                && ($0.properties.ranking ?? .greatestFiniteMagnitude) < 1.0
+                && onStreet($0)
+                && ranking($0) < 1.0
                 && $0.properties.adresse.flatMap(AddressText.subAddressTail) != nil
                 && (metres(chosen, $0) ?? 0) > 40
         }
@@ -674,7 +691,19 @@ actor Geocoder {
     private static func pick(
         _ features: [OGDFeature], requireSub: String?, segments: [String], numbers: Set<String>
     ) -> OGDFeature? {
-        if let hit = pickExactSub(features, requireSub: requireSub, segments: segments) {
+        // The number asked for, before a neighbour the register ranks above
+        // it. Asked for "Rabengasse 3" it puts "3A" first, at 0.00000001, and
+        // the Rabenhof itself — "3-9" — second; for "Serravagasse 2" it is
+        // "2E" before "2/1". Taken as the best answer overall, the pin went
+        // on the house next door and was then marked "≈" for carrying the
+        // wrong number, with the right house in the same answer. Only when
+        // no answer carries the number is the best of the rest taken — and
+        // `isUncertainDoor` says so.
+        let own = numbers.isEmpty ? [] : features.filter {
+            $0.properties.streetNumber.flatMap(entranceNumber).map(numbers.contains) == true
+        }
+        if let hit = pickExactSub(own, requireSub: requireSub, segments: segments)
+            ?? pickExactSub(features, requireSub: requireSub, segments: segments) {
             return hit
         }
         guard requireSub != nil else { return nil }

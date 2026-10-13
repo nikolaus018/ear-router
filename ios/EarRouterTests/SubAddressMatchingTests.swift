@@ -121,6 +121,40 @@ struct SubAddressMatchingTests {
         #expect(pick(features, "Doningasse 8/1", plz: "1220") == "Doningasse 8 Obj. 1")
     }
 
+    /// The register ranks "3A" above the Rabenhof, "3-9", for "Rabengasse 3".
+    @Test func theNumberAskedForComesBeforeANeighbourRankedAboveIt() {
+        let features = [
+            f("Rabengasse 3A", number: "3A", plz: "1030", ranking: 1e-08, at: [16.4015, 48.1964]),
+            f("Rabengasse 3-9", number: "3-9", plz: "1030", ranking: 0.0009, at: [16.4007, 48.1960])]
+        #expect(pick(features, "Rabengasse 3", plz: "1030") == "Rabengasse 3-9")
+        // With only the neighbour on offer it is still taken, and then shown
+        // as "≈" — see `isUncertainDoor`.
+        #expect(pick([features[0]], "Rabengasse 3", plz: "1030") == "Rabengasse 3A")
+    }
+
+    /// "Doningasse 8": the register puts "8B" first, and number 8 itself is
+    /// an Obj. 1 with a Stiege 3 sixty metres away. Nobody said which.
+    @Test func aNumberTakenAheadOfANeighbourStaysApproximateWhenItIsSeveralBuildings() {
+        let features = [
+            f("Doningasse 8B", number: "8B", plz: "1220", ranking: 1e-08, at: [16.44276, 48.25116]),
+            f("Doningasse 8 Obj. 1", number: "8 Obj. 1", plz: "1220", ranking: 0.0001,
+              at: [16.44225, 48.25066]),
+            f("Doningasse 8/3", number: "8/3", plz: "1220", ranking: 0.0003,
+              at: [16.44257, 48.25121])]
+        #expect(pick(features, "Doningasse 8", plz: "1220") == "Doningasse 8 Obj. 1")
+        let key = AddressText.matchKey("Doningasse")
+        #expect(Geocoder.isUncertainDoor(
+            features[1], among: features, streetKey: key, numbers: ["8"],
+            subAsked: false, noDoorNamed: true))
+        // One building of the number, and it is the house: "Serravagasse 2/1".
+        #expect(!Geocoder.isUncertainDoor(
+            features[1], among: Array(features.prefix(2)), streetKey: key, numbers: ["8"],
+            subAsked: false, noDoorNamed: true))
+        // A door the driver did name is the door, whatever ranks above it.
+        #expect(!Geocoder.isUncertainDoor(
+            features[2], among: features, streetKey: key, numbers: ["8"], subAsked: false))
+    }
+
     // MARK: - isUncertainDoor
 
     @Test func aLetterTypedApartFromItsNumberStillCounts() {
