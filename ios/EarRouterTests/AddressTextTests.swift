@@ -14,6 +14,15 @@ struct AddressTextTests {
         #expect(AddressText.normalize("Hauptstraße  5") == "Hauptstraße 5")
     }
 
+    /// A street word written on its own keeps its capital, whichever of the
+    /// three spellings it came in — this is what a navigation app is handed.
+    @Test func aStreetWordOnItsOwnKeepsItsCapital() {
+        #expect(AddressText.normalize("Währinger Straße 4") == "Währinger Straße 4")
+        #expect(AddressText.normalize("Währinger Strasse 4") == "Währinger Straße 4")
+        #expect(AddressText.normalize("Mariahilfer Str. 5") == "Mariahilfer Straße 5")
+        #expect(AddressText.normalize("mariahilfer str.5") == "mariahilfer straße5")
+    }
+
     @Test func doesNotRewriteStrInsideAWord() {
         // "Strindberggasse" must survive: the abbreviation rule only fires on
         // "str." followed by space, end, or a digit.

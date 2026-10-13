@@ -17,10 +17,17 @@ enum AddressText {
     private static let whitespace = try! NSRegularExpression(pattern: #"\s+"#)
     /// "Hauptstr. 5" / "Hauptstr." / "Hauptstr.5" → "Hauptstraße …". The
     /// lookahead is what keeps it from firing inside a word.
+    ///
+    /// The "s" is captured in both, and put back as it was written. Replaced
+    /// with a fixed "straße", a street word standing on its own lost its
+    /// capital: "Mariahilfer Str. 5" came out as "Mariahilfer straße 5" — and
+    /// so did "Währinger Straße 4", spelled right to begin with, because a
+    /// case-insensitive "strasse" also matches "Straße". That is the text a
+    /// navigation app is handed and shows in its search field.
     private static let strAbbr = try! NSRegularExpression(
-        pattern: #"str\.(?=\s|$|\d)"#, options: [.caseInsensitive])
+        pattern: #"(s)tr\.(?=\s|$|\d)"#, options: [.caseInsensitive])
     private static let strasse = try! NSRegularExpression(
-        pattern: #"strasse\b"#, options: [.caseInsensitive])
+        pattern: #"(s)trasse\b"#, options: [.caseInsensitive])
 
     /// Viennese addresses are routinely written as
     /// "{street} {housenumber or range}/{Stiege}/{Tür or Stock}[...]" —
@@ -57,8 +64,8 @@ enum AddressText {
     /// spelled ("str.", "strasse", "straße").
     static func normalize(_ strasse: String) -> String {
         var s = replacing(whitespace, in: strasse.trimmed, with: " ")
-        s = replacing(strAbbr, in: s, with: "straße")
-        return replacing(Self.strasse, in: s, with: "straße")
+        s = replacing(strAbbr, in: s, with: "$1traße")
+        return replacing(Self.strasse, in: s, with: "$1traße")
     }
 
     /// Best-effort "{street} {housenumber}" simplification for geocoding —

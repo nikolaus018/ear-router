@@ -3051,7 +3051,10 @@ function navAddress(s) {
   // Street and house number only. Stiege, Tür and Parzelle are things the
   // city's register knows and no navigation app does: "Gentzgasse 129/1/23"
   // sent whole is a search that either fails or quietly guesses.
+  // "Hauptstr. 5" goes out as "Hauptstraße 5", the "s" as it was typed.
   const street = String(s.strasse || '').trim().replace(/\s+/g, ' ')
+    .replace(/(s)tr\.(?=\s|$|\d)/gi, '$1traße')
+    .replace(/(s)trasse\b/gi, '$1traße')
     .replace(/^(.+?\s+\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?)(?:[\/\s(].*)?$/, '$1');
   return `${street}, ${s.plz}${vienna ? ' Wien' : ''}, Österreich`;
 }

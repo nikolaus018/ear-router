@@ -129,8 +129,12 @@ mod text {
     // Rust's `regex` crate has no lookahead, so "str.(?=\s|$|\d)" from the
     // original Python version is rewritten to capture-and-reinsert the
     // trailing context instead of asserting it.
-    static STR_ABBR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)str\.(\s|$|\d)").unwrap());
-    static STRASSE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)strasse\b").unwrap());
+    //
+    // The "s" is captured in both and put back as it was written: replaced
+    // with a fixed "straße", a street word standing on its own lost its
+    // capital -- "Mariahilfer Str. 5" came out as "Mariahilfer straße 5".
+    static STR_ABBR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(s)tr\.(\s|$|\d)").unwrap());
+    static STRASSE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(s)trasse\b").unwrap());
     // Viennese addresses are routinely written as "{street} {housenumber
     // or range}/{Stiege}/{Tür or Stock}[...]" — e.g. "Gentzgasse
     // 129/1/2/23" or "Dr.-Heinrich-Maier-Straße 28-34/Haus 2/12". Neither
@@ -165,8 +169,8 @@ mod text {
 
     pub fn normalize_strasse_text(strasse: &str) -> String {
         let s = WHITESPACE_RE.replace_all(strasse.trim(), " ").to_string();
-        let s = STR_ABBR_RE.replace_all(&s, "straße$1").to_string();
-        STRASSE_RE.replace_all(&s, "straße").to_string()
+        let s = STR_ABBR_RE.replace_all(&s, "${1}traße$2").to_string();
+        STRASSE_RE.replace_all(&s, "${1}traße").to_string()
     }
 
     /// Best-effort "{street} {housenumber}" simplification for geocoding —
@@ -7377,6 +7381,10 @@ mod tests {
         assert_eq!(learned.door_minutes, Some(9.0));
         let quick = learned.door_by_tour["vm 5 fr"];
         let slow = learned.door_by_tour["tk 1 mo"];
+        // A street word on its own keeps its capital.
+        assert_eq!(normalize_strasse_text("Währinger Strasse 4"), "Währinger Straße 4");
+        assert_eq!(normalize_strasse_text("Mariahilfer Str. 5"), "Mariahilfer Straße 5");
+        assert_eq!(normalize_strasse_text("Währinger Straße 4"), "Währinger Straße 4");
         assert!((quick - (11.0 * 6.0 + 8.0 * 9.0) / 19.0).abs() < 1e-9);
         assert!((slow - (11.0 * 12.0 + 8.0 * 9.0) / 19.0).abs() < 1e-9);
     }
