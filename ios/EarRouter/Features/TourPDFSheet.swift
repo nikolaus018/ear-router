@@ -1,57 +1,38 @@
+import SwiftData
 import SwiftUI
 
-/// "Als PDF exportieren": the tour as the printed list, and — when asked — cut
-/// into shares for however many people are driving it.
-///
-/// The split here is a suggestion on paper and nothing else. It changes no
-/// stop and makes no tour; "Tour aufteilen" is still where shares are drawn by
-/// hand and turned into tours.
+/// "Tour als PDF": one of the phone's tours as the printed list, handed to the
+/// share sheet — to print, or to send to whoever is driving it instead.
 struct TourPDFSheet: View {
-    let route: Route
     @Environment(\.dismiss) private var dismiss
-    @State private var split = false
-    @State private var people = 2
+
+    @Query(sort: \Route.createdAt, order: .reverse) private var routes: [Route]
+
+    @State private var selected: UUID?
     @State private var sharing: SharedFile?
     @State private var error: AppError?
 
-    private var mostPeople: Int {
-        min(SplitState.maxPeople, route.stops.count(where: \.isOwedAMeal))
+    /// The tour being worked until another is picked — see `Route.current`.
+    private var route: Route? {
+        routes.first { $0.id == selected }
+            ?? Route.current(
+                among: routes.filter { $0.status == .active },
+                working: RouteFocus.lastOpenedRouteID)
+            ?? routes.first
     }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    Toggle("Aufteilung vorschlagen", isOn: $split)
-                        .disabled(mostPeople < 2)
-                    if split, mostPeople >= 2 {
-                        Stepper("Personen: \(people)", value: $people, in: 2...mostPeople)
-                    }
-                } footer: {
-                    Text(
-                        split
-                            ? "Die Liste bleibt in der Fahrreihenfolge und wird so geteilt, "
-                                + "dass jede Person etwa gleich lang unterwegs ist — Fahrzeit "
-                                + "und Zeit an der Tür zusammen. Kunden an derselben Tür "
-                                + "bleiben beisammen. Die Tour selbst ändert sich nicht."
-                            : "Alle Stopps in der Fahrreihenfolge, als Liste zum Ausdrucken.")
-                }
-
-                Section {
-                    Button {
-                        export()
-                    } label: {
-                        WideButtonLabel("PDF teilen", systemImage: "square.and.arrow.up")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                    .listRowSeparator(.hidden)
+            Group {
+                if let route {
+                    form(route)
+                } else {
+                    ContentUnavailableView(
+                        "Keine Tour", systemImage: "doc.text",
+                        description: Text("Leg zuerst eine Tour an."))
                 }
             }
-            .navigationTitle("Als PDF exportieren")
-            .navigationSubtitle(route.name)
+            .navigationTitle("Tour als PDF")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -64,10 +45,46 @@ struct TourPDFSheet: View {
         .presentationDetents([.medium, .large])
     }
 
-    private func export() {
+    private func form(_ route: Route) -> some View {
+        Form {
+            Section {
+                Picker("Tour", selection: Binding(get: { route.id }, set: { selected = $0 })) {
+                    ForEach(routes) { route in
+                        Text(label(route)).tag(route.id)
+                    }
+                }
+            } footer: {
+                Text(
+                    "Alle Stopps in der Fahrreihenfolge, als Liste zum Ausdrucken — "
+                        + "mit dem Stockwerk aus den Globalen Infos.")
+            }
+
+            Section {
+                Button {
+                    export(route)
+                } label: {
+                    WideButtonLabel("PDF teilen", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(route.customerCount == 0)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                .listRowSeparator(.hidden)
+            }
+        }
+    }
+
+    /// A finished tour says which day it was: by then there are several of
+    /// one name.
+    private func label(_ route: Route) -> String {
+        guard route.status == .completed, let day = route.completedAt else { return route.name }
+        return "\(route.name) · \(Format.numericDate(day))"
+    }
+
+    private func export(_ route: Route) {
         do {
-            let pdf = TourPDF(route, people: split ? min(people, mostPeople) : nil)
-            sharing = SharedFile(url: try pdf.writeForSharing())
+            sharing = SharedFile(url: try TourPDF(route).writeForSharing())
         } catch {
             self.error = AppError.message(
                 "Das PDF konnte nicht erstellt werden. \(error.localizedDescription)")

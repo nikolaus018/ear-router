@@ -6562,6 +6562,270 @@ function saveKilometer() {
 }
 
 // ---------------------------------------------------------------------
+// Tour als PDF — the tour as the sheet of paper the Lager hands out: A4
+// across, the day above the table, one row a door, "Seite 1 von 4"
+// underneath. Blue header on the first page only, every other row tinted,
+// the text on the bottom line of its cell — `TourPDF` on iOS is the same
+// page. The columns are the ones this app has something to put in.
+//
+// Written out by hand rather than with a library: it is one table in two
+// fonts every PDF reader already has, and the widths below are those
+// fonts' own (Helvetica's, per 1000 units), so a line breaks where the
+// reader will draw it and not where this browser's font happens to.
+// ---------------------------------------------------------------------
+const PDF_WIDTHS = (() => {
+  const regular = [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
+  const bold = [278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,584];
+  return { regular, bold };
+})();
+// The characters outside Latin-1 that the fonts' encoding (WinAnsi) still
+// has: code, then width in the regular and the bold cut.
+const PDF_EXTRA = { '€': [0x80, 556, 556], '„': [0x84, 333, 500], '…': [0x85, 1000, 1000], '‘': [0x91, 222, 278], '’': [0x92, 222, 278], '“': [0x93, 333, 500], '”': [0x94, 333, 500], '•': [0x95, 350, 350], '–': [0x96, 556, 556], '—': [0x97, 1000, 1000] };
+
+/// One character as the PDF will hold it: its byte, and how wide it is drawn.
+function pdfGlyph(ch, bold) {
+  const extra = PDF_EXTRA[ch];
+  if (extra) return { code: extra[0], width: extra[bold ? 2 : 1] };
+  const table = bold ? PDF_WIDTHS.bold : PDF_WIDTHS.regular;
+  let code = ch.charCodeAt(0);
+  if (code === 0xA0) return { code, width: table[0] };
+  if (code >= 32 && code <= 126) return { code, width: table[code - 32] };
+  if (ch === 'ß') return { code, width: 611 };
+  if (code >= 0xC0 && code <= 0xFF) {
+    // An accented letter is as wide as the letter under the accent.
+    const base = ch.normalize('NFD').charCodeAt(0);
+    return { code, width: base >= 32 && base <= 126 ? table[base - 32] : table['n'.charCodeAt(0) - 32] };
+  }
+  if (code > 0xA0 && code < 0xC0) return { code, width: 556 };
+  // Nothing these fonts can draw: the letter without its accent, or "?".
+  const plain = ch.normalize('NFD').charCodeAt(0);
+  code = plain >= 32 && plain <= 126 ? plain : 63;
+  return { code, width: table[code - 32] };
+}
+const pdfTextWidth = (text, bold, size) => [...text].reduce((w, ch) => w + pdfGlyph(ch, bold).width, 0) * size / 1000;
+const pdfString = (text, bold) => '(' + [...text].map((ch) => {
+  const c = String.fromCharCode(pdfGlyph(ch, bold).code);
+  return c === '(' || c === ')' || c === '\\' ? '\\' + c : c;
+}).join('') + ')';
+
+/// Breaks `text` into the lines that fit `width`. A word longer than a
+/// whole line — "Schenkendorfgasse" in a narrow column — is cut where the
+/// line ends, as the printed list does.
+function pdfWrap(text, bold, size, width) {
+  const lines = [];
+  for (const paragraph of String(text).split(/\r?\n/)) {
+    let line = '';
+    for (let word of paragraph.split(/[ \t]+/).filter(Boolean)) {
+      if (line && pdfTextWidth(line + ' ' + word, bold, size) <= width) { line += ' ' + word; continue; }
+      if (line) { lines.push(line); line = ''; }
+      while (pdfTextWidth(word, bold, size) > width) {
+        let n = 1;
+        while (n < word.length && pdfTextWidth(word.slice(0, n + 1), bold, size) <= width) n++;
+        lines.push(word.slice(0, n));
+        word = word.slice(n);
+      }
+      line = word;
+    }
+    if (line) lines.push(line);
+  }
+  return lines;
+}
+
+const TOUR_PDF = {
+  page: [842, 595], left: 40, top: 62, bottom: 540, padding: 3,
+  headerHeight: 30, rowHeight: 34, size: 10, leading: 12,
+  columns: [
+    { title: 'Tour', width: 72, bold: true },
+    { title: 'Stopp', width: 40, bold: true, align: 'right' },
+    { title: 'Datum', width: 66, bold: true },
+    { title: 'KD', width: 112 },
+    { title: 'Straße', width: 132 },
+    { title: 'Plz', width: 36, align: 'right' },
+    { title: 'Paket', width: 124, bold: true },
+    { title: 'Hinweis', width: 180, bold: true },
+  ],
+};
+
+/// The customers in driving order, without the doors the van does not go
+/// to — the same list the Ladeliste loads from.
+function tourPdfRows(r) {
+  const day = fmtDate(r.completed_at || r.created_at);
+  return r.stops.filter((s) => s.kind === 'customer' && !skipsDoor(s)).map((s, i) => [
+    r.name || '', String(i + 1), day, (s.kunde || '').trim(), (s.strasse || '').trim(),
+    (s.plz || '').trim(), displayPaket(s, r).trim(), (s.notiz || '').trim(),
+  ]);
+}
+
+/// The whole file, as bytes.
+function tourPdfBytes(r) {
+  const T = TOUR_PDF;
+  const [pageW, pageH] = T.page;
+  const tableW = T.columns.reduce((w, c) => w + c.width, 0);
+  const rows = tourPdfRows(r).map((values) => {
+    const cells = values.map((v, i) => pdfWrap(v, !!T.columns[i].bold, T.size, T.columns[i].width - 2 * T.padding));
+    const lines = Math.max(...cells.map((c) => c.length));
+    return { cells, height: Math.max(T.rowHeight, lines * T.leading + 2 * T.padding) };
+  });
+
+  // A row is never split across two pages.
+  const pages = [[]];
+  let y = T.top + T.headerHeight;
+  rows.forEach((row, index) => {
+    if (y + row.height > T.bottom && pages[pages.length - 1].length) { pages.push([]); y = T.top; }
+    pages[pages.length - 1].push({ ...row, index });
+    y += row.height;
+  });
+
+  const n = (v) => String(Math.round(v * 100) / 100);
+  // PDF counts up from the bottom of the page; everything here counts down.
+  const text = (str, bold, size, x, baseline, color = '0 g') =>
+    `BT ${color} /${bold ? 'F2' : 'F1'} ${size} Tf ${n(x)} ${n(pageH - baseline)} Td ${pdfString(str, bold)} Tj ET\n`;
+  const centred = (str, bold, size, left, width, baseline, color) =>
+    text(str, bold, size, left + (width - pdfTextWidth(str, bold, size)) / 2, baseline, color);
+  const fill = (rgb, x, top, w, h) => `${rgb} rg ${n(x)} ${n(pageH - top - h)} ${n(w)} ${n(h)} re f\n`;
+
+  const weekday = new Date(r.completed_at || r.created_at).toLocaleDateString('de-AT', { weekday: 'long' });
+  const dayTitle = `${weekday}, ${fmtDate(r.completed_at || r.created_at)}`;
+
+  const streams = pages.map((lines, pageIndex) => {
+    let out = centred(dayTitle, false, 9, 0, pageW, 46) + centred(`Seite ${pageIndex + 1} von ${pages.length}`, false, 9, 0, pageW, 562);
+    const hasHeader = pageIndex === 0;
+    const edges = [T.top];
+    if (hasHeader) edges.push(T.top + T.headerHeight);
+    for (const line of lines) edges.push(edges[edges.length - 1] + line.height);
+    const first = hasHeader ? 1 : 0;
+
+    // Fills first, then one grid over all of it, then the text — so the
+    // header is exactly as wide as the table and every line as heavy as
+    // the next.
+    if (hasHeader) out += fill('0.267 0.447 0.769', T.left, T.top, tableW, T.headerHeight);
+    lines.forEach((line, i) => {
+      if (line.index % 2 === 0) out += fill('0.851 0.882 0.949', T.left, edges[first + i], tableW, line.height);
+    });
+    out += '0 G 0.75 w 2 J\n';
+    for (const edge of edges) out += `${n(T.left)} ${n(pageH - edge)} m ${n(T.left + tableW)} ${n(pageH - edge)} l\n`;
+    let x = T.left;
+    for (const column of [null, ...T.columns]) {
+      x += column?.width || 0;
+      out += `${n(x)} ${n(pageH - edges[0])} m ${n(x)} ${n(pageH - edges[edges.length - 1])} l\n`;
+    }
+    out += 'S\n';
+
+    x = T.left;
+    T.columns.forEach((column, c) => {
+      if (hasHeader) out += centred(column.title, true, T.size, x, column.width, T.top + T.headerHeight / 2 + 3.5, '1 g');
+      lines.forEach((line, i) => {
+        const cell = line.cells[c];
+        const bottom = edges[first + i] + line.height;
+        cell.forEach((str, k) => {
+          // On the bottom line of the cell, the way the printed list sets it.
+          const baseline = bottom - T.padding - 2.5 - (cell.length - 1 - k) * T.leading;
+          const left = column.align === 'right'
+            ? x + column.width - T.padding - pdfTextWidth(str, !!column.bold, T.size)
+            : x + T.padding;
+          out += text(str, !!column.bold, T.size, left, baseline);
+        });
+      });
+      x += column.width;
+    });
+    return out;
+  });
+
+  // The file itself: catalogue, page tree, the two fonts, then a page and
+  // its drawing for each page of the table. Every character is one byte.
+  const font = (name) => `<< /Type /Font /Subtype /Type1 /BaseFont /${name} /Encoding /WinAnsiEncoding >>`;
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Count ${pages.length} /Kids [${pages.map((_, i) => `${5 + i * 2} 0 R`).join(' ')}] >>`,
+    font('Helvetica'), font('Helvetica-Bold'),
+  ];
+  streams.forEach((stream, i) => {
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${6 + i * 2} 0 R >>`);
+    objects.push(`<< /Length ${stream.length} >>\nstream\n${stream}endstream`);
+  });
+  objects.push(`<< /Title ${pdfString(r.name || 'Tour', false)} >>`);
+
+  let file = '%PDF-1.4\n%\xE2\xE3\xCF\xD3\n';
+  const offsets = objects.map((body, i) => {
+    const at = file.length;
+    file += `${i + 1} 0 obj\n${body}\nendobj\n`;
+    return at;
+  });
+  const xref = file.length;
+  file += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+    + offsets.map((at) => `${String(at).padStart(10, '0')} 00000 n \n`).join('')
+    + `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Info ${objects.length} 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Uint8Array.from(file, (ch) => ch.charCodeAt(0));
+}
+
+/// "VM 5 FR Vormittag 09.10.2026.pdf".
+function tourPdfFilename(r) {
+  const day = fmtDate(r.completed_at || r.created_at);
+  const name = String(r.name || '').replace(/[\/:\\]/g, '-').trim();
+  return `${(name.includes(day) ? name : `${name} ${day}`).trim() || 'Tour'}.pdf`;
+}
+
+function openTourPdfSheet() {
+  const active = state.routes.filter((r) => r.status === 'active');
+  const done = state.routes.filter((r) => r.status === 'completed');
+  const tours = [...active, ...done];
+  if (!tours.length) {
+    renderSheetShell(`
+      <h2 class="sheet-title">Tour als PDF</h2>
+      <p class="sheet-lead">Es gibt noch keine Tour. Leg zuerst eine an.</p>
+      <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn accent">Fertig</button></div>
+    `, { label: 'Tour als PDF' });
+    return;
+  }
+  // The tour being worked, until another is picked.
+  const preset = tours.find((r) => r.id === state.currentRoute?.id)?.id ?? tours[0].id;
+  const option = (r) => `<option value="${r.id}" ${r.id === preset ? 'selected' : ''}>${escapeHtml(r.name)}${r.status === 'completed' ? ` · ${fmtDate(r.completed_at || r.created_at)}` : ''}</option>`;
+  renderSheetShell(`
+    <h2 class="sheet-title">Tour als PDF</h2>
+    <p class="sheet-lead">Alle Stopps in der Fahrreihenfolge, als Liste zum Ausdrucken.</p>
+    <div><label class="${LABEL}" for="pdf-tour">Tour</label>
+      <select id="pdf-tour" class="${FIELD}">${tours.map(option).join('')}</select>
+    </div>
+    <div class="pb-2" style="margin-top:1rem">
+      <button type="button" id="pdf-go" onclick="exportTourPdf()" class="press-98 wide-btn accent">PDF erstellen</button>
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Fertig</button>
+    </div>
+  `, { label: 'Tour als PDF' });
+}
+
+async function exportTourPdf() {
+  const id = Number(document.getElementById('pdf-tour')?.value);
+  const button = document.getElementById('pdf-go');
+  if (!id || button?.disabled) return;
+  if (button) button.disabled = true;
+  try {
+    const r = await api(`/routes/${id}`);
+    if (!r.stops.some((s) => s.kind === 'customer' && !skipsDoor(s))) {
+      toast('Diese Tour hat noch keine Stopps.', 'error');
+      return;
+    }
+    const file = new File([tourPdfBytes(r)], tourPdfFilename(r), { type: 'application/pdf' });
+    // On a phone the share sheet — print, mail, WhatsApp — and a plain
+    // download everywhere else.
+    if (matchMedia('(pointer: coarse)').matches && navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); return; } catch (err) {
+        if (err?.name === 'AbortError') return;
+      }
+    }
+    const url = URL.createObjectURL(file);
+    const link = Object.assign(document.createElement('a'), { href: url, download: file.name });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    toast(err.message || 'Das PDF konnte nicht erstellt werden.', 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------
 // Reihenfolge — the stops in the driver's own order.
 //
 // The computed order is the shortest drive, which is not always the right
@@ -7268,6 +7532,14 @@ function renderMoreTab() {
             <div class="flex-1 min-w-0">
               <p class="text-[15px]">Kilometerstand</p>
               <p class="text-[13px] text-black/55">Gefahrene Kilometer laut Tacho</p>
+            </div>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>
+          <button onclick="openTourPdfSheet()" class="${ROW}">
+            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.note}</span>
+            <div class="flex-1 min-w-0">
+              <p class="text-[15px]">Tour als PDF</p>
+              <p class="text-[13px] text-black/55">Stoppliste zum Ausdrucken</p>
             </div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </button>

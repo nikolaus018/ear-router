@@ -25,31 +25,18 @@ struct TourPDF {
         let hinweis: String
     }
 
-    /// One person's part of a suggested split.
-    struct Share: Equatable {
-        /// Into `rows`.
-        let range: Range<Int>
-        /// Doors and the driving between them — see `TourSplit`.
-        let minutes: Double
-    }
-
     let routeName: String
     let day: Date
     let rows: [Row]
-    /// Empty unless a split was asked for.
-    let shares: [Share]
 
-    /// `people` of two or more adds a suggested split: the list stays in
-    /// driving order and is cut into that many runs of about the same work.
-    ///
-    /// Without the abbestellt ones — see `Stop.isOwedAMeal`.
+    /// The customers in driving order, without the abbestellt ones — see
+    /// `Stop.isOwedAMeal`.
     @MainActor
-    init(_ route: Route, people: Int? = nil, history: PaceHistory = .current) {
+    init(_ route: Route) {
         routeName = route.name
         day = route.completedAt ?? route.createdAt
 
-        let ordered = route.orderedStops
-        let customers = ordered.filter(\.isOwedAMeal)
+        let customers = route.orderedStops.filter(\.isOwedAMeal)
         let notes = route.modelContext.flatMap { try? StockwerkStore.all(in: $0) } ?? []
         let floors = notes.floors(for: customers)
         rows = customers.enumerated().map { index, stop in
@@ -62,113 +49,6 @@ struct TourPDF {
                 paket: stop.displayPaket?.trimmed ?? "",
                 hinweis: stop.notiz?.trimmed ?? "")
         }
-
-        guard let people, people > 1, customers.count > 1 else {
-            shares = []
-            return
-        }
-
-        // The drive into each customer from the one before, summed over
-        // whatever lies between them in the list.
-        var driveInto: [UUID: Double] = [:]
-        var sinceLast: Double?
-        for stop in ordered {
-            if stop.isOwedAMeal {
-                driveInto[stop.id] = sinceLast ?? 0
-                sinceLast = 0
-            }
-            if sinceLast != nil, stop.legIsDriven { sinceLast! += stop.nextLegMin ?? 0 }
-        }
-
-        // Neighbours in the list that share a front door become one unit: the
-        // split never sends two people to the same Haustür.
-        let groups = SameDoor.groups(for: customers)
-        let doorMinutes = history.doorMinutes(forTour: route.name)
-            ?? RouteSnapshot.Pace.assumedMinutes
-        var doors: [TourSplit.Door] = []
-        var lastDoor: UUID?
-        for stop in customers {
-            let door = groups[stop.id]?.first ?? stop.id
-            if door == lastDoor, !doors.isEmpty {
-                doors[doors.count - 1].stops += 1
-                doors[doors.count - 1].minutes += doorMinutes * RouteSnapshot.Pace.sharedDoor
-            } else {
-                doors.append(TourSplit.Door(
-                    stops: 1, minutes: doorMinutes, driveMinutes: driveInto[stop.id] ?? 0))
-            }
-            lastDoor = door
-        }
-
-        var start = 0
-        shares = TourSplit.suggest(doors, people: people).map { part in
-            let count = doors[part].reduce(0) { $0 + $1.stops }
-            defer { start += count }
-            return Share(range: start..<(start + count), minutes: TourSplit.minutes(of: doors[part]))
-        }
-    }
-}
-
-// MARK: - The split
-
-/// Cutting a tour's driving order into runs of about the same work.
-///
-/// Runs, not a fresh grouping: the tour is already in the order OSRM drives it,
-/// so neighbours in the list are neighbours on the street, and a cut anywhere
-/// leaves each person one compact stretch. What is left to decide is where the
-/// cuts go — and by door count alone, the person with the Gemeindebau gets
-/// twelve doors on one staircase and the person with Stammersdorf gets twelve
-/// with a drive between each.
-enum TourSplit {
-    /// One front door: usually one customer, sometimes several households.
-    struct Door: Equatable {
-        var stops: Int
-        /// Time spent here.
-        var minutes: Double
-        /// The drive here from the door before. Not counted for the first door
-        /// of a share — nobody drives the stretch a cut runs through.
-        var driveMinutes: Double
-    }
-
-    static func minutes(of doors: ArraySlice<Door>) -> Double {
-        doors.reduce(0) { $0 + $1.minutes } + doors.dropFirst().reduce(0) { $0 + $1.driveMinutes }
-    }
-
-    /// The cuts that leave the shares closest to equal: the smallest sum of
-    /// squared minutes, which punishes one long share more than several
-    /// slightly long ones. Never more shares than doors.
-    static func suggest(_ doors: [Door], people: Int) -> [Range<Int>] {
-        let n = doors.count
-        let people = min(people, n)
-        guard people > 1 else { return n == 0 ? [] : [0..<n] }
-
-        // `best[p][j]`: the first `j` doors among `p + 1` people.
-        var best = [[Double]](repeating: [Double](repeating: .infinity, count: n + 1), count: people)
-        var cut = [[Int]](repeating: [Int](repeating: 0, count: n + 1), count: people)
-        for j in 1...n {
-            let m = minutes(of: doors[0..<j])
-            best[0][j] = m * m
-        }
-        for p in 1..<people {
-            for j in (p + 1)...n {
-                for i in p..<j {
-                    let m = minutes(of: doors[i..<j])
-                    let total = best[p - 1][i] + m * m
-                    if total < best[p][j] {
-                        best[p][j] = total
-                        cut[p][j] = i
-                    }
-                }
-            }
-        }
-
-        var parts: [Range<Int>] = []
-        var end = n
-        for p in stride(from: people - 1, through: 0, by: -1) {
-            let start = p == 0 ? 0 : cut[p][end]
-            parts.append(start..<end)
-            end = start
-        }
-        return parts.reversed()
     }
 }
 
@@ -190,7 +70,6 @@ extension TourPDF {
     private static let padding: CGFloat = 3
     private static let headerHeight: CGFloat = 30
     private static let rowHeight: CGFloat = 34
-    private static let shareHeight: CGFloat = 20
 
     private static let columns = [
         Column(title: "Tour", width: 62, bold: true),
@@ -207,7 +86,6 @@ extension TourPDF {
 
     private static let headerBlue = UIColor(red: 68 / 255, green: 114 / 255, blue: 196 / 255, alpha: 1)
     private static let band = UIColor(red: 217 / 255, green: 225 / 255, blue: 242 / 255, alpha: 1)
-    private static let shareBlue = UIColor(red: 180 / 255, green: 198 / 255, blue: 231 / 255, alpha: 1)
 
     private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -215,11 +93,6 @@ extension TourPDF {
         f.dateFormat = "EEEE, dd.MM.yyyy"
         return f
     }()
-
-    private enum Line {
-        case share(Int)
-        case row(Int)
-    }
 
     private static func text(
         _ string: String, bold: Bool = false, size: CGFloat = 10,
@@ -260,38 +133,21 @@ extension TourPDF {
         }
     }
 
-    private func shareTitle(_ index: Int) -> String {
-        let share = shares[index]
-        var parts = ["Person \(index + 1) von \(shares.count)", Format.stops(share.range.count)]
-        if let minutes = Format.minutes(share.minutes) { parts.append("ca. \(minutes)") }
-        return parts.joined(separator: " · ")
-    }
-
-    /// The table, cut into pages. A row is never split across two, and a
-    /// share's title never left alone at the foot of one.
-    private func pages() -> [[(line: Line, height: CGFloat)]] {
-        let heights = rows.map { row in
-            zip(Self.columns, cells(row)).reduce(Self.rowHeight) {
+    /// The rows of each page with their heights. A row is never split
+    /// across two.
+    private func pages() -> [[(row: Int, height: CGFloat)]] {
+        var pages: [[(row: Int, height: CGFloat)]] = [[]]
+        var y = Self.top + Self.headerHeight
+        for (index, row) in rows.enumerated() {
+            let height = zip(Self.columns, cells(row)).reduce(Self.rowHeight) {
                 max($0, Self.height($1.1, width: $1.0.width) + 2 * Self.padding)
             }
-        }
-        let shareStarts = Dictionary(
-            uniqueKeysWithValues: shares.enumerated().map { ($1.range.lowerBound, $0) })
-
-        var pages: [[(line: Line, height: CGFloat)]] = [[]]
-        var y = Self.top + Self.headerHeight
-        for (index, height) in heights.enumerated() {
-            let share = shareStarts[index]
-            let needed = height + (share == nil ? 0 : Self.shareHeight)
-            if y + needed > Self.bottom, !pages[pages.count - 1].isEmpty {
+            if y + height > Self.bottom, !pages[pages.count - 1].isEmpty {
                 pages.append([])
                 y = Self.top
             }
-            if let share {
-                pages[pages.count - 1].append((.share(share), Self.shareHeight))
-            }
-            pages[pages.count - 1].append((.row(index), height))
-            y += needed
+            pages[pages.count - 1].append((index, height))
+            y += height
         }
         return pages
     }
@@ -304,7 +160,6 @@ extension TourPDF {
 
         return UIGraphicsPDFRenderer(bounds: Self.page, format: format).pdfData { context in
             let cg = context.cgContext
-            cg.setLineWidth(0.75)
 
             for (pageIndex, lines) in pages.enumerated() {
                 context.beginPage()
@@ -312,45 +167,59 @@ extension TourPDF {
                 Self.text("Seite \(pageIndex + 1) von \(pages.count)", size: 9, alignment: .center)
                     .draw(in: CGRect(x: 0, y: 552, width: Self.page.width, height: 14))
 
-                var y = Self.top
-                if pageIndex == 0 {
+                // Fills first, then one grid over all of it, then the text.
+                // Drawn row by row, each row's tint covered half of the line
+                // above it, and the header — filled but never outlined — came
+                // out a line's width narrower than the table under it.
+                let hasHeader = pageIndex == 0
+                var edges = [Self.top]
+                if hasHeader { edges.append(Self.top + Self.headerHeight) }
+                for (_, height) in lines { edges.append(edges[edges.count - 1] + height) }
+                let first = hasHeader ? 1 : 0
+
+                if hasHeader {
                     Self.headerBlue.setFill()
-                    cg.fill(CGRect(x: Self.left, y: y, width: Self.width, height: Self.headerHeight))
-                    var x = Self.left
-                    for column in Self.columns {
-                        let title = Self.text(column.title, bold: true, color: .white, alignment: .center)
-                        let h = Self.height(title, width: column.width)
-                        title.draw(in: CGRect(
-                            x: x + Self.padding, y: y + (Self.headerHeight - h) / 2,
-                            width: column.width - 2 * Self.padding, height: h))
-                        x += column.width
-                    }
-                    y += Self.headerHeight
+                    cg.fill(CGRect(x: Self.left, y: Self.top, width: Self.width, height: Self.headerHeight))
+                }
+                Self.band.setFill()
+                for (offset, line) in lines.enumerated() where line.row.isMultiple(of: 2) {
+                    cg.fill(CGRect(
+                        x: Self.left, y: edges[first + offset],
+                        width: Self.width, height: line.height))
                 }
 
                 UIColor.black.setStroke()
-                for (line, height) in lines {
-                    let frame = CGRect(x: Self.left, y: y, width: Self.width, height: height)
-                    switch line {
-                    case .share(let index):
-                        Self.shareBlue.setFill()
-                        cg.fill(frame)
-                        cg.stroke(frame)
-                        Self.draw(Self.text(shareTitle(index), bold: true), in: frame)
-                    case .row(let index):
-                        if index.isMultiple(of: 2) {
-                            Self.band.setFill()
-                            cg.fill(frame)
-                        }
-                        var x = Self.left
-                        for (column, cell) in zip(Self.columns, cells(rows[index])) {
-                            let rect = CGRect(x: x, y: y, width: column.width, height: height)
-                            cg.stroke(rect)
-                            Self.draw(cell, in: rect)
-                            x += column.width
-                        }
+                cg.setLineWidth(0.75)
+                for y in edges {
+                    cg.move(to: CGPoint(x: Self.left, y: y))
+                    cg.addLine(to: CGPoint(x: Self.left + Self.width, y: y))
+                }
+                var x = Self.left
+                for column in [nil] + Self.columns.map(Optional.some) {
+                    x += column?.width ?? 0
+                    cg.move(to: CGPoint(x: x, y: edges[0]))
+                    cg.addLine(to: CGPoint(x: x, y: edges[edges.count - 1]))
+                }
+                cg.setLineCap(.square)
+                cg.strokePath()
+
+                x = Self.left
+                for (index, column) in Self.columns.enumerated() {
+                    if hasHeader {
+                        let title = Self.text(column.title, bold: true, color: .white, alignment: .center)
+                        let h = Self.height(title, width: column.width)
+                        title.draw(in: CGRect(
+                            x: x + Self.padding, y: Self.top + (Self.headerHeight - h) / 2,
+                            width: column.width - 2 * Self.padding, height: h))
                     }
-                    y += height
+                    for (offset, line) in lines.enumerated() {
+                        Self.draw(
+                            cells(rows[line.row])[index],
+                            in: CGRect(
+                                x: x, y: edges[first + offset],
+                                width: column.width, height: line.height))
+                    }
+                    x += column.width
                 }
             }
         }
