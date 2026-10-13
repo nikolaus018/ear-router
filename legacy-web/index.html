@@ -3539,6 +3539,9 @@ function normalizeMatchText(str) {
     .replace(/\s+/g, ' ')
     .replace(/str\.(\s|$|\d)/g, 'straße$1')
     .replace(/strasse\b/g, 'straße')
+    // ß and the umlauts spelled out, as `address_match_key` in src/main.rs
+    // does: "Doebling" finds "Döbling" on a keyboard without the dots.
+    .replace(/ß/g, 'ss').replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue')
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim();
 }
@@ -4086,10 +4089,10 @@ async function manualOptimize() {
 async function reloadApp() {
   const ok = await confirmSheet({ title: 'App neu laden?', message: 'Die App wird frisch vom Server geholt. Deine Touren bleiben erhalten.', confirmLabel: 'Neu laden' });
   if (!ok) return;
+  showProgress('App wird neu geladen …');
   try {
     const names = await caches.keys();
     await Promise.all(names.map((n) => caches.delete(n)));
-  showProgress('App wird neu geladen …');
   } catch (_) { /* no cache storage here (private mode) -- the reload still helps */ }
   window.location.reload();
 }
@@ -6118,14 +6121,14 @@ function renderNowTab() {
   const customers = stops.filter((s) => s.kind === 'customer' && !skipsDoor(s));
   const settled = customers.filter((s) => s.outcome).length;
   const notHome = customers.filter((s) => s.outcome === 'notHome');
+  const toLagerCount = stops.filter((s) => s.kind === 'customer' && s.outcome === 'toLager').length;
   const caption = [
     `${r.delivered_count} von ${r.customer_count} geliefert`,
     notHome.length ? `${notHome.length} nicht angetroffen` : '',
-  const toLagerCount = stops.filter((s) => s.kind === 'customer' && s.outcome === 'toLager').length;
+    toLagerCount ? `${toLagerCount} ins Lager` : '',
   ].filter(Boolean).join(' · ');
   const progress = `
     <p class="now-caption" style="padding: .25rem .25rem .5rem">${caption}</p>
-    toLagerCount ? `${toLagerCount} ins Lager` : '',
     <div class="h-1.5 bg-black/10 rounded-full overflow-hidden mb-4">
       <div class="h-full bg-success transition-all duration-500" style="width: ${customers.length ? Math.round((settled / customers.length) * 100) : 0}%"></div>
     </div>`;
