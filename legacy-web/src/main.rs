@@ -4587,7 +4587,7 @@ async fn mark_departed(State(state): State<Arc<AppState>>, AxPath(route_id): AxP
         .query_row(
             &format!(
                 "SELECT 1 FROM stops s WHERE s.route_id = ?1 AND s.kind IN ('customer', 'via', 'end') \
-                 AND (s.outcome IS NOT NULL OR s.delivered = 1) AND NOT {SQL_SKIPS_DOOR} LIMIT 1"
+                 AND (s.outcome IS NOT NULL OR s.delivered = 1) AND NOT COALESCE({SQL_SKIPS_DOOR}, 0) LIMIT 1"
             ),
             params![route_id],
             |_| Ok(()),
