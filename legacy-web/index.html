@@ -4079,16 +4079,19 @@ async function manualOptimize() {
   await refreshCurrentRoute(() => api(`/routes/${route.id}/optimize`, { method: 'POST' }), 'Reihenfolge wird berechnet …');
 }
 
-async function clearOfflineCache() {
-  const ok = await confirmSheet({ title: 'Offline-Daten leeren?', message: 'Zwischengespeicherte Kartenkacheln und App-Dateien werden gelöscht und beim nächsten Öffnen neu geladen.', confirmLabel: 'Leeren' });
+// "App neu laden" in Mehr: what is kept on this phone of the app itself goes
+// -- the app's files and the map tiles -- and the page is fetched again. The
+// row used to empty those and stop there, with the same app still on screen:
+// a button called "neu laden" that reloaded nothing.
+async function reloadApp() {
+  const ok = await confirmSheet({ title: 'App neu laden?', message: 'Die App wird frisch vom Server geholt. Deine Touren bleiben erhalten.', confirmLabel: 'Neu laden' });
   if (!ok) return;
   try {
     const names = await caches.keys();
     await Promise.all(names.map((n) => caches.delete(n)));
-    toast('Offline-Daten geleert ✓', 'success');
-  } catch (_) {
-    toast('Offline-Daten konnten nicht geleert werden.', 'error');
-  }
+  showProgress('App wird neu geladen …');
+  } catch (_) { /* no cache storage here (private mode) -- the reload still helps */ }
+  window.location.reload();
 }
 
 // ---------------------------------------------------------------------
@@ -7574,7 +7577,7 @@ function renderMoreTab() {
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.mapPin}</span>
             <p class="text-[14px] text-black/60 leading-snug">Kartendaten: OpenFreeMap &amp; OpenStreetMap-Mitwirkende. Geocoding: Stadt Wien &amp; Nominatim. Routing: OSRM.</p>
           </div>
-          <button onclick="clearOfflineCache()" class="${ROW}">
+          <button onclick="reloadApp()" class="${ROW}">
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.refresh}</span>
             <div class="flex-1 min-w-0"><p class="text-[15px]">App neu laden</p><p class="text-[13px] text-black/55">Hilft, wenn etwas hängt. Touren bleiben erhalten.</p></div>
           </button>
