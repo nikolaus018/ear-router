@@ -394,6 +394,37 @@ struct BackupTests {
         #expect(left == [second.lastPathComponent])
     }
 
+    // MARK: - What a tour keeps outside the store
+
+    /// A replace lets go of it for the tours that are gone, and leaves it with
+    /// a tour the file brings back under its own id.
+    @Test func replacingForgetsWhatTheGoneToursKeptOutsideTheStore() throws {
+        let context = try makeContext()
+        let kept = try RouteStore.createRoute(name: "Bleibt", in: context)
+        let archive = try roundTrip(BackupArchive.make(from: context))
+        let gone = try RouteStore.createRoute(name: "Weg", in: context)
+        let (keptID, goneID) = (kept.id, gone.id)
+        let link = PortalTourLink(tourID: 7, tourName: "VM 4", date: Date())
+        let left = Date(timeIntervalSince1970: 1_757_000_000)
+        for id in [keptID, goneID] {
+            link.save(for: id)
+            UserDefaults.standard.set(left, forKey: "tour.departure.\(id.uuidString)")
+        }
+        defer {
+            for id in [keptID, goneID] {
+                PortalTourLink.forget(id)
+                TourDeparture.forget(id)
+            }
+        }
+
+        try BackupRestore.apply(archive, mode: .replace, in: context)
+
+        #expect(PortalTourLink.load(for: goneID) == nil)
+        #expect(TourDeparture.load(for: goneID) == nil)
+        #expect(PortalTourLink.load(for: keptID) == link)
+        #expect(TourDeparture.load(for: keptID) == left)
+    }
+
     // MARK: - Settings
 
     /// A replace is "this file is now the phone", so the settings in it apply.

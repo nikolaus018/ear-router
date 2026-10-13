@@ -394,9 +394,11 @@ enum BackupRestore {
         _ archive: BackupArchive, mode: Mode, in context: ModelContext
     ) throws -> RestoreResult {
         var result = RestoreResult()
+        var replaced: [UUID] = []
 
         if mode == .replace {
             for route in try context.fetch(FetchDescriptor<Route>()) {
+                replaced.append(route.id)
                 // Stops go with the route — the relationship's delete rule is
                 // cascade — so deleting the routes empties both tables.
                 //
@@ -476,6 +478,17 @@ enum BackupRestore {
         }
 
         try context.save()
+
+        // The rest of what a tour keeps outside the store — its portal link,
+        // the other driver's stops, the day's departure — for the tours the
+        // file did not bring back. One it did bring back, under the same id,
+        // is the same tour and keeps them.
+        let restored = Set(archive.routes.map(\.id))
+        for id in replaced where !restored.contains(id) {
+            PortalTourLink.forget(id)
+            ManualOtherStops.forget(id)
+            TourDeparture.forget(id)
+        }
         return result
     }
 
