@@ -38,6 +38,9 @@ enum TourDeparture {
     /// a stop for fuel — is not when the van left.
     @MainActor
     static func noteNavigation(to stop: Stop, at now: Date = Date()) {
+        // Every start passes through here, which makes it the one place that
+        // can say where the navigation app was last sent.
+        NavigationHandoff.noteStarted(stop.id, at: now)
         guard let route = stop.route, route.status == .active,
               stop.kind == .via, stop.isCheckpoint, !stop.isSettled,
               !route.stops.contains(where: { $0.countsAsStop && $0.isSettled && $0.outcome?.skipsDoor != true })

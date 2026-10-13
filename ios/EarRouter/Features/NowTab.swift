@@ -355,7 +355,7 @@ struct NowTab: View {
         // navigation app.
         if let next = AutoContinue.destination(
             after: stop, outcome: outcome, next: RouteSnapshot(route).nextOpen,
-            replanning: route.needsOptimize, enabled: autoContinue)
+            enabled: autoContinue)
         {
             if stockwerkStop == nil { navigate(to: next) } else { continueTo = next }
         }

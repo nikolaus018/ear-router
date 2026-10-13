@@ -115,10 +115,10 @@ enum AutoContinue {
     /// a door within `WalkOn.reach`: that one is walked to.
     @MainActor
     static func destination(
-        after stop: Stop, outcome: DeliveryOutcome, next: Stop?, replanning: Bool,
+        after stop: Stop, outcome: DeliveryOutcome, next: Stop?,
         enabled: Bool = isEnabled()
     ) -> Stop? {
-        guard enabled, !outcome.skipsDoor, !replanning,
+        guard enabled, !outcome.skipsDoor,
               let next, next.id != stop.id, !WalkOn.reaches(next, from: stop)
         else { return nil }
         return next
