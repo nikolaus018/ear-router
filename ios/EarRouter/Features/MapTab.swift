@@ -90,6 +90,9 @@ struct MapTab: View {
     /// relationship, sixty times a second. That was the lag.
     @State private var line: [CLLocationCoordinate2D] = []
     @State private var pins: [MapPin] = []
+    /// The street doors of the houses whose pin is somewhere else — see
+    /// `entranceMarks`.
+    @State private var entrances: [EntranceMark] = []
 
     /// True while the driven line is being simplified off the main actor.
     @State private var buildingLine = false
@@ -205,7 +208,9 @@ struct MapTab: View {
                         delivered: $0.delivered,
                         outcomeRaw: $0.outcomeRaw,
                         excluded: $0.excluded,
-                        precisionRaw: $0.precisionRaw)
+                        precisionRaw: $0.precisionRaw,
+                        entranceLat: $0.entranceLat,
+                        entranceLon: $0.entranceLon)
                 }
                 .sorted { UUID.idOrderedBefore($0.id, $1.id) })
     }
@@ -238,6 +243,10 @@ struct MapTab: View {
             let outcomeRaw: String?
             let excluded: Bool
             let precisionRaw: String?
+            /// Looked up after the stop itself is placed, so it arrives on a
+            /// map that is already drawn — and is no reason to re-frame it.
+            let entranceLat: Double?
+            let entranceLon: Double?
         }
     }
 
@@ -801,6 +810,7 @@ struct MapTab: View {
         RouteMapCanvas(
             line: line,
             pins: pins,
+            entrances: entrances,
             restrooms: showRestrooms ? Restroom.pins : [],
             others: visibleOthers,
             style: style,
@@ -1064,8 +1074,19 @@ struct MapTab: View {
         var sharing: [UUID: [Stop]] = [:]
         var underAnother: Set<UUID> = []
         var heads: [Stop] = []
+        // Where each open door's pin is drawn, against where its house is
+        // entered from.
+        var doors: [(pin: CLLocationCoordinate2D, entrance: CLLocationCoordinate2D)] = []
         for stop in ordered where stop.kind == .customer {
-            if let head = heads.first(where: { Self.overlaps($0, stop) }) {
+            let head = heads.first(where: { Self.overlaps($0, stop) })
+            // Not for a pin the driver placed, which is the door already; and
+            // not once the meal is handed over, when nobody is looking for the
+            // way in any more.
+            if !stop.excluded, !stop.pinned, stop.outcome?.handedOver != true,
+               let entrance = stop.entrance {
+                doors.append(((head ?? stop).coordinate, entrance))
+            }
+            if let head {
                 sharing[head.id, default: [head]].append(stop)
                 underAnother.insert(stop.id)
             } else {
@@ -1120,7 +1141,49 @@ struct MapTab: View {
         }
 
         pins = built
+        entrances = Self.entranceMarks(for: doors)
         numbers = number
+    }
+
+    /// One mark per street door that is not where its pin is, with the pins it
+    /// is the way in to.
+    ///
+    /// The pin sits on the Stiege, which in a Gemeindebau can be a courtyard
+    /// away from the only door on the street. A door within ten metres of its
+    /// pin — `overlaps`' distance — would be drawn underneath it, and says
+    /// nothing the pin does not. Several Stiegen behind one door share its
+    /// mark.
+    nonisolated static func entranceMarks(
+        for doors: [(pin: CLLocationCoordinate2D, entrance: CLLocationCoordinate2D)]
+    ) -> [EntranceMark] {
+        func key(_ c: CLLocationCoordinate2D) -> String {
+            "\(Int((c.latitude * 100_000).rounded())),\(Int((c.longitude * 100_000).rounded()))"
+        }
+        var order: [String] = []
+        var at: [String: CLLocationCoordinate2D] = [:]
+        var pins: [String: [EntranceMark.Link]] = [:]
+        for door in doors {
+            let dLat = (door.pin.latitude - door.entrance.latitude) * 111_000
+            let dLon = (door.pin.longitude - door.entrance.longitude) * 111_000
+                * cos(door.pin.latitude * .pi / 180)
+            guard dLat * dLat + dLon * dLon >= 10 * 10 else { continue }
+            let id = key(door.entrance)
+            if at[id] == nil {
+                at[id] = door.entrance
+                order.append(id)
+            }
+            let link = EntranceMark.Link(
+                id: "\(id)>\(key(door.pin))",
+                latitude: door.pin.latitude, longitude: door.pin.longitude)
+            if pins[id]?.contains(where: { $0.id == link.id }) != true {
+                pins[id, default: []].append(link)
+            }
+        }
+        return order.map {
+            EntranceMark(
+                id: $0, latitude: at[$0]!.latitude, longitude: at[$0]!.longitude,
+                pins: pins[$0] ?? [])
+        }
     }
 
     /// Ramer–Douglas–Peucker. Keeps the corners that define the shape of the
@@ -1246,6 +1309,8 @@ struct MapTab: View {
 private struct RouteMapCanvas: View {
     let line: [CLLocationCoordinate2D]
     let pins: [MapPin]
+    /// The street doors that are not where their pin is.
+    let entrances: [EntranceMark]
     /// Every public toilet, when the driver has asked to see them.
     let restrooms: [RestroomPin]
     /// The other driver's stops, when the driver has asked to see them.
@@ -1288,12 +1353,14 @@ private struct RouteMapCanvas: View {
     @State private var closeIn = false
 
     init(
-        line: [CLLocationCoordinate2D], pins: [MapPin], restrooms: [RestroomPin],
+        line: [CLLocationCoordinate2D], pins: [MapPin], entrances: [EntranceMark],
+        restrooms: [RestroomPin],
         others: [OtherPin], style: MapStyleChoice, selection: Binding<UUID?>,
         routeID: UUID, fitToken: Int, othersToken: Int, pointAt: Binding<MapFocusRequest?>
     ) {
         self.line = line
         self.pins = pins
+        self.entrances = entrances
         self.restrooms = restrooms
         self.others = others
         self.style = style
@@ -1322,6 +1389,35 @@ private struct RouteMapCanvas: View {
                     .stroke(
                         Color.blue,
                         style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+            }
+
+            // Only from close in. Over a whole tour a door thirty metres from
+            // its pin is the same dot as the pin, and a second mark per house
+            // is clutter.
+            if closeIn {
+                ForEach(entrances) { mark in
+                    // The thread back to the pin: in a courtyard of Stiegen it
+                    // is what says whose door this is.
+                    ForEach(mark.pins) { pin in
+                        MapPolyline(coordinates: [mark.coordinate, pin.coordinate])
+                            .stroke(
+                                Color.secondary,
+                                style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [2, 5]))
+                    }
+                    // No tag, so it is not something to select: the pin is the
+                    // stop, this only says where to walk in.
+                    Annotation("Eingang", coordinate: mark.coordinate, anchor: .center) {
+                        Image(systemName: "door.left.hand.open")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 24, height: 24)
+                            .background(Color(.systemBackground), in: .circle)
+                            .overlay(Circle().strokeBorder(Color.secondary, lineWidth: 1))
+                            .allowsHitTesting(false)
+                            .accessibilityLabel("Eingang")
+                    }
+                    .annotationTitles(.hidden)
+                }
             }
 
             ForEach(pins, id: \.annotationID) { pin in
@@ -1820,6 +1916,30 @@ private struct RestroomPreviewSheet: View {
         let open = bad ? "Als unbrauchbar markiert"
             : isOpen ? "Geöffnet" : "Jetzt geschlossen"
         return restroom.walk >= 30 ? "\(open) · \(restroom.walk) m zu Fuß" : open
+    }
+}
+
+/// A house's street door, where that is not where its pin is — see
+/// `MapTab.entranceMarks`.
+struct EntranceMark: Identifiable, Equatable {
+    /// One pin this door is the way in to.
+    struct Link: Identifiable, Equatable {
+        let id: String
+        let latitude: Double
+        let longitude: Double
+
+        var coordinate: CLLocationCoordinate2D {
+            CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        }
+    }
+
+    let id: String
+    let latitude: Double
+    let longitude: Double
+    let pins: [Link]
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
 }
 
