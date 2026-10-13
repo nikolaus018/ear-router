@@ -29,8 +29,8 @@ struct TourPDF {
     let day: Date
     let rows: [Row]
 
-    /// A tour of the Zusteller-Portal on one day: its deliveries in the
-    /// portal's own order, as `GourmetPortal.fetchDetails` hands them over.
+    /// A tour of the Zusteller-Portal on one day: its deliveries in the order
+    /// they are handed over — the driving order, see `PortalDrivingOrder`.
     /// `notes` are the Globale Infos the floors are read from.
     init(tourName: String, day: Date, entries: [CustomerJSON], notes: [StockwerkNote] = []) {
         routeName = tourName
@@ -54,6 +54,44 @@ struct TourPDF {
                 paket: (tk ? parcels : entry.paket?.trimmed) ?? "",
                 hinweis: entry.notiz?.trimmed ?? "")
         }
+    }
+}
+
+// MARK: - Driving order
+
+/// Portal deliveries in the order a fresh tour of them would be driven: from
+/// the Lager, through every door, back to the depot — the plan
+/// `RouteOptimizer` makes for a tour with all three fixed points on. Nothing
+/// is stored; this is for the printed list, which is read in the van like the
+/// tour is.
+enum PortalDrivingOrder {
+    /// The positions of `points` in driving order. A delivery nobody could
+    /// place (`nil`) goes to the end, in the order it came, rather than
+    /// costing the whole list.
+    @MainActor
+    static func order(_ points: [(lat: Double, lon: Double)?]) async throws -> [Int] {
+        let placed = points.indices.filter { points[$0] != nil }
+        let unplaced = points.indices.filter { points[$0] == nil }
+        guard placed.count > 1 else { return placed + unplaced }
+
+        let customers = placed.map { StopCoord(id: UUID(), lat: points[$0]!.lat, lon: points[$0]!.lon) }
+        func fixed(_ point: (lat: Double, lon: Double)) -> RouteOptimizer.FixedStop {
+            RouteOptimizer.FixedStop(
+                coord: StopCoord(id: UUID(), lat: point.lat, lon: point.lon), excluded: false)
+        }
+        let plan = RouteOptimizer.plan(RouteOptimizer.Nodes(
+            start: fixed(Coordinates.start), via: fixed(Coordinates.via),
+            end: fixed(Coordinates.start), customers: customers))
+        let solved = try await OSRMClient.shared.trip(
+            coords: plan.tripNodes.map { (lat: $0.lat, lon: $0.lon) },
+            fixFirst: plan.fixFirst, fixLast: plan.fixLast)
+
+        let position = Dictionary(uniqueKeysWithValues: zip(customers.map(\.id), placed))
+        let driven = RouteOptimizer.drivingOrder(plan, solvedOrder: solved.order)
+            .compactMap { position[$0.id] }
+        // Anything the answer left out still gets printed.
+        let missing = placed.filter { !driven.contains($0) }
+        return driven + missing + unplaced
     }
 }
 

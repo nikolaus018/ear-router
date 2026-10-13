@@ -82,8 +82,9 @@ struct TourPDFSheet: View {
                 }
             } footer: {
                 Text(
-                    "Die offenen Lieferungen der Tour laut Zusteller-Portal, als Liste zum "
-                        + "Ausdrucken — mit dem Stockwerk aus den Globalen Infos.")
+                    "Die offenen Lieferungen der Tour laut Zusteller-Portal, in "
+                        + "Fahrreihenfolge, als Liste zum Ausdrucken — mit dem Stockwerk aus "
+                        + "den Globalen Infos.")
             }
 
             Section {
@@ -128,8 +129,9 @@ struct TourPDFSheet: View {
         }
     }
 
-    /// With the detail call per stop: the Paket and the note are most of what
-    /// the list is printed for.
+    /// With the detail call per stop — the Paket and the note are most of what
+    /// the list is printed for — and then put in driving order, the way a
+    /// tour of these stops would be.
     private func export() async {
         guard let selectedTourID, let tour = tours.first(where: { $0.id == selectedTourID }),
             let credentials = GourmetCredentialsStore.load()
@@ -151,8 +153,17 @@ struct TourPDFSheet: View {
                 done, total in
                 Task { @MainActor in busy = "Paket \(done) von \(total) wird geladen …" }
             }
+            let placed = try await PortalPlacement.place(deliveries) { done, total in
+                Task { @MainActor in busy = "Adresse \(done) von \(total) wird gesucht …" }
+            }
+            busy = "Fahrreihenfolge wird berechnet …"
+            let order = try await PortalDrivingOrder.order(
+                placed.map { stop in stop.coordinate.map { (lat: $0.latitude, lon: $0.longitude) } })
             let notes = (try? StockwerkStore.all(in: context)) ?? []
-            let pdf = TourPDF(tourName: tour.name, day: date, entries: entries, notes: notes)
+            let pdf = TourPDF(
+                tourName: tour.name, day: date,
+                entries: order.compactMap { entries.indices.contains($0) ? entries[$0] : nil },
+                notes: notes)
             sharing = SharedFile(url: try pdf.writeForSharing())
         } catch is CancellationError {
         } catch let e as AppError {

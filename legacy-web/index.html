@@ -6651,7 +6651,8 @@ const TOUR_PDF = {
   ],
 };
 
-/// One row a delivery, in the portal's own order. `tour` is
+/// One row a delivery, in the order they are handed in — the driving order,
+/// which the server works out the way it does for a tour. `tour` is
 /// `{ name, date, entries }` — the day as "2026-10-09".
 function tourPdfRows(tour) {
   const day = fmtDate(`${tour.date}T12:00:00`);
@@ -6780,9 +6781,9 @@ const openTourPdfSheet = () => openGourmetSheet(null, true);
 async function exportTourPdf(tour) {
   const date = gourmet.date;
   const back = `<button type="button" onclick="showGourmetTours()" class="press-98 wide-btn quiet">Zurück</button>`;
-  if (!gourmetBody(sheetBusy('Stopps werden geholt …'), escapeHtml(tour.name))) return;
+  if (!gourmetBody(sheetBusy('Stopps werden geholt und in Fahrreihenfolge gebracht …'), escapeHtml(tour.name))) return;
   try {
-    const { entries } = await api('/portal/entries', { method: 'POST', body: JSON.stringify({ tour_id: tour.id, date }), timeoutMs: 3 * 60 * 1000 });
+    const { entries } = await api('/portal/entries', { method: 'POST', body: JSON.stringify({ tour_id: tour.id, date, driving_order: true }), timeoutMs: 3 * 60 * 1000 });
     if (!gourmet.pdf || gourmet.tour?.id !== tour.id) return;
     const pdf = { name: tour.name, date, entries };
     const file = new File([tourPdfBytes(pdf)], tourPdfFilename(pdf), { type: 'application/pdf' });

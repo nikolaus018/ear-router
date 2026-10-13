@@ -14,13 +14,20 @@ struct TourPDFTests {
             notiz: "persönlich", paketCount: paketCount)
     }
 
-    @Test func rowsFollowThePortalsOrder() {
+    @Test func rowsFollowTheOrderTheyAreHandedIn() {
         let pdf = TourPDF(tourName: "VM 5 FR Vormittag", day: day, entries: [
             entry("B", strasse: "Puffergasse 1/4/8"), entry("A", strasse: "Nordmanngasse 15/6"),
         ])
         #expect(pdf.rows.map(\.kunde) == ["B", "A"])
         #expect(pdf.rows.map(\.number) == [1, 2])
         #expect(pdf.rows[0].paket == "1x Vitalmenü EP TGM5")
+    }
+
+    @MainActor
+    @Test func unplacedDeliveriesGoToTheEndWithoutARoutingCall() async throws {
+        // One point is not a trip: no network, and the unplaced ones follow.
+        let order = try await PortalDrivingOrder.order([nil, (lat: 48.25, lon: 16.4), nil])
+        #expect(order == [1, 0, 2])
     }
 
     @Test func aTKTourShowsParcelsNotDishes() {

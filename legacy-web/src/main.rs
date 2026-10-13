@@ -6424,6 +6424,10 @@ struct PortalEntriesRequest {
     date: String,
     /// The deliveries to load. Absent loads the whole tour.
     delivery_ids: Option<Vec<i64>>,
+    /// Hand the entries back in the order a tour of them is driven, rather
+    /// than the portal's -- see `in_driving_order`.
+    #[serde(default)]
+    driving_order: bool,
 }
 
 #[derive(Deserialize)]
@@ -6487,8 +6491,55 @@ async fn portal_entries(
         let (index, entry) = joined.map_err(|_| AppError::Internal("Abgebrochen.".into()))??;
         entries[index] = Some(entry);
     }
-    let entries: Vec<Value> = entries.into_iter().flatten().collect();
+    let mut entries: Vec<Value> = entries.into_iter().flatten().collect();
+    if payload.driving_order {
+        entries = in_driving_order(&state, entries).await?;
+    }
     Ok(Json(json!({ "entries": entries })))
+}
+
+/// Portal entries in the order a fresh tour of them would be driven: from the
+/// Lager, through every door, back to the depot -- the trip `reoptimize_route`
+/// asks for on a tour with all three fixed points on. Nothing is stored; this
+/// is for the printed list, which is read in the van like the tour is.
+///
+/// An address nobody can place goes to the end, in the portal's order, rather
+/// than costing the whole list.
+async fn in_driving_order(state: &Arc<AppState>, entries: Vec<Value>) -> Result<Vec<Value>, AppError> {
+    let semaphore = Arc::new(Semaphore::new(PORTAL_DETAIL_CONCURRENCY));
+    let mut jobs: JoinSet<(usize, Option<(f64, f64)>)> = JoinSet::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let strasse = entry["strasse"].as_str().unwrap_or_default().to_string();
+        let plz = entry["plz"].as_str().unwrap_or_default().to_string();
+        let state = Arc::clone(state);
+        let semaphore = Arc::clone(&semaphore);
+        jobs.spawn(async move {
+            let Ok(_permit) = semaphore.acquire().await else { return (index, None) };
+            let point = geocode_address(&state, &strasse, &plz).await.ok().map(|(lat, lon, _, _)| (lat, lon));
+            (index, point)
+        });
+    }
+    let mut points: Vec<Option<(f64, f64)>> = vec![None; entries.len()];
+    while let Some(joined) = jobs.join_next().await {
+        let (index, point) = joined.map_err(|_| AppError::Internal("Abgebrochen.".into()))?;
+        points[index] = point;
+    }
+
+    let placed: Vec<usize> = (0..entries.len()).filter(|i| points[*i].is_some()).collect();
+    let mut order: Vec<usize> = if placed.len() < 2 {
+        placed.clone()
+    } else {
+        let mut coords = vec![(VIA_LAT, VIA_LON)];
+        coords.extend(placed.iter().filter_map(|i| points[*i]));
+        coords.push((START_LAT, START_LON));
+        let (visited, _, _) = osrm_trip(state, &coords, true, true).await?;
+        // Without the two ends, which are not deliveries.
+        visited.into_iter().filter(|v| (1..=placed.len()).contains(v)).map(|v| placed[v - 1]).collect()
+    };
+    order.extend((0..entries.len()).filter(|i| points[*i].is_none()));
+
+    let mut slots: Vec<Option<Value>> = entries.into_iter().map(Some).collect();
+    Ok(order.into_iter().filter_map(|i| slots[i].take()).collect())
 }
 
 /// `POST /api/portal/import`: puts the entries the driver has looked over
