@@ -3508,7 +3508,7 @@ async fn entrance_fetch(state: &AppState, street: &str, number: &str, plz: &str)
 
 /// The answers already had, for as long as the server runs. Only answers:
 /// a failed call is not one, and is asked again next time.
-static ENTRANCES: once_cell::sync::Lazy<StdMutex<HashMap<String, Option<(f64, f64)>>>> =
+static ENTRANCES: once_cell::sync::Lazy<StdMutex<EntranceAnswers>> =
     once_cell::sync::Lazy::new(|| StdMutex::new(HashMap::new()));
 
 /// The entrance for an address, or `None` -- outside Vienna, when either
@@ -3599,7 +3599,9 @@ async fn fill_entrances(state: &Arc<AppState>, route_id: i64) {
         return;
     }
     let semaphore = Arc::new(Semaphore::new(6));
-    let mut jobs: JoinSet<Option<(i64, String, String, f64, f64)>> = JoinSet::new();
+    /// A stop's id, the address its entrance was looked up for, and the point.
+    type FoundEntrance = (i64, String, String, f64, f64);
+    let mut jobs: JoinSet<Option<FoundEntrance>> = JoinSet::new();
     for (id, strasse, plz) in wanted {
         let state = Arc::clone(state);
         let semaphore = Arc::clone(&semaphore);
@@ -3609,7 +3611,7 @@ async fn fill_entrances(state: &Arc<AppState>, route_id: i64) {
             Some((id, strasse, plz, lat, lon))
         });
     }
-    let mut found: Vec<(i64, String, String, f64, f64)> = Vec::new();
+    let mut found: Vec<FoundEntrance> = Vec::new();
     while let Some(joined) = jobs.join_next().await {
         if let Ok(Some(hit)) = joined {
             found.push(hit);
@@ -3849,6 +3851,8 @@ async fn login(
         conn.query_row(
             "SELECT id, username, is_admin, password_hash FROM users WHERE username = ?1",
             params![username],
+/// By address key: the entrance, or `None` where the register has none.
+type EntranceAnswers = HashMap<String, Option<(f64, f64)>>;
             |r| {
                 Ok((
                     AuthUser { id: r.get(0)?, username: r.get(1)?, is_admin: r.get::<_, i64>(2)? != 0 },
@@ -5786,7 +5790,7 @@ async fn import_entries(
     let geocode_semaphore = Arc::new(Semaphore::new(BULK_GEOCODE_CONCURRENCY));
     let mut geocode_tasks: JoinSet<GeocodeTaskResult> = JoinSet::new();
     for (idx, entry, existing_id) in to_geocode {
-        let task_state = Arc::clone(&state);
+        let task_state = Arc::clone(state);
         let permit = Arc::clone(&geocode_semaphore);
         geocode_tasks.spawn(async move {
             // Held for the duration of the geocode call, not just the
@@ -6215,7 +6219,7 @@ async fn portal_tours(
     let tours: Vec<PortalTour> =
         portal_json(portal_request(&state, reqwest::Method::GET, "supplier/tours", Some(&token)), "Tourenliste").await?;
     let mut today: Vec<&PortalTour> = tours.iter().filter(|t| t.runs_on(day)).collect();
-    today.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    today.sort_by_key(|t| t.name.to_lowercase());
     Ok(Json(json!({
         "tours": today.iter().map(|t| json!({ "id": t.id, "name": t.name.trim() })).collect::<Vec<_>>(),
     })))
