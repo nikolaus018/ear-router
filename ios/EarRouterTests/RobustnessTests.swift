@@ -504,6 +504,33 @@ struct StatedRuleTests {
         return ModelContext(container)
     }
 
+    // MARK: - "Oberlaaer Straße 298 is in Liesing"
+
+    /// A tour made while the Lager was filed under Favoriten gets the postcode
+    /// the register has for it — and one whose Lager the driver moved keeps
+    /// what they typed.
+    @Test func aLagerStillFiledUnderFavoritenIsMovedToLiesing() throws {
+        let context = try makeContext()
+        let old = try RouteStore.createRoute(name: "Alt", in: context)
+        let moved = try RouteStore.createRoute(name: "Verlegt", in: context)
+        let fresh = try RouteStore.createRoute(name: "Neu", in: context)
+        func lager(_ route: Route) throws -> Stop {
+            try #require(route.stops.first { $0.kind == .via })
+        }
+        #expect(try lager(fresh).plz == "1230")
+        try lager(old).plz = "1100"
+        try lager(moved).strasse = "Laxenburger Straße 365"
+        try lager(moved).plz = "1100"
+        try context.save()
+
+        RouteStore.correctLagerPostcode(in: context)
+
+        #expect(try lager(old).plz == "1230")
+        let handedToMaps = try lager(old).navigationAddress
+        #expect(handedToMaps == "Oberlaaer Straße 298, 1230 Wien, Österreich")
+        #expect(try lager(moved).plz == "1100")
+    }
+
     // MARK: - "Where a newly added stop goes: after everything already on it"
 
     @Test func aNewStopIsPlacedAfterEverythingAlreadyOnTheRoute() throws {

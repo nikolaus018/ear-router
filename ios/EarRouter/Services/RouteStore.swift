@@ -133,6 +133,28 @@ enum RouteStore {
         return route
     }
 
+    /// Puts the Lager of every tour made before October 2026 under the
+    /// postcode it has. Those were created with "1100": the address was
+    /// right, the pin was right, and the postcode beside them was Favoriten's
+    /// — on the row, and in the address a navigation app is handed, since a
+    /// fixed point has neither a hand-placed pin nor an entrance to send
+    /// instead.
+    ///
+    /// Only a Lager still at the warehouse's own address. One the driver
+    /// moved somewhere else carries the postcode they typed.
+    static func correctLagerPostcode(in context: ModelContext) {
+        let via = StopKind.via.rawValue
+        let descriptor = FetchDescriptor<Stop>(predicate: #Predicate { $0.kindRaw == via })
+        guard let stops = try? context.fetch(descriptor) else { return }
+        var changed = false
+        for stop in stops
+        where stop.plz == "1100" && stop.strasse?.trimmed == Coordinates.viaAddress {
+            stop.plz = Coordinates.viaPlz
+            changed = true
+        }
+        if changed { try? context.save() }
+    }
+
     /// Built once. This is read from a view body — it is the placeholder in the
     /// "Neue Tour" field — and a fresh `DateFormatter` per render is one of the
     /// more expensive things Foundation offers.

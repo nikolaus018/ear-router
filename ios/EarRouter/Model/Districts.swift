@@ -108,7 +108,10 @@ enum Coordinates {
     static let startAddress = "Petritschgasse 24"
     static let startPlz = "1210"
     static let viaAddress = "Oberlaaer Straße 298"
-    static let viaPlz = "1100"
+    /// Liesing, not Favoriten: the street runs through both, and the register
+    /// files number 298 under 1230. It was "1100" here until October 2026 —
+    /// see `RouteStore.correctLagerPostcode`.
+    static let viaPlz = "1230"
 
     /// Last-resort position for a stop whose stored coordinates are unusable.
     static let viennaCenter = (lat: 48.2082, lon: 16.3738)

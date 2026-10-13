@@ -47,7 +47,10 @@ struct EarRouterApp: App {
                         // What the finished tours say about the next one's
                         // door times, before the first screen asks for an
                         // arrival time.
-                        .task { PaceHistory.refresh(in: container.mainContext) }
+                        .task {
+                            RouteStore.correctLagerPostcode(in: container.mainContext)
+                            PaceHistory.refresh(in: container.mainContext)
+                        }
                 } else {
                     StoreFailureView(error: store.failure)
                 }
