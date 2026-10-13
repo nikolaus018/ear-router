@@ -12,6 +12,7 @@ struct MoreTab: View {
         NavigationHandoff.Provider.apple.rawValue
 
     @AppStorage(CarPlayNavigation.enabledKey) private var carPlayEnabled = false
+    @AppStorage(AutoContinue.enabledKey) private var autoContinue = true
 
     @Environment(\.openURL) private var openURL
 
@@ -95,8 +96,15 @@ struct MoreTab: View {
                     SettingsRow(
                         icon: "location.fill", tint: .blue, title: "Navigation")
                 }
+                Toggle(isOn: $autoContinue) {
+                    SettingsRow(
+                        icon: "arrow.turn.up.right", tint: .blue, title: "Nach „Geliefert“ weiter",
+                        detail: "Navigation zum nächsten Stopp startet von selbst")
+                }
             } footer: {
-                Text("Womit „Navigation starten“ öffnet.")
+                Text(
+                    "Womit „Navigation starten“ öffnet. Zu einem Stopp, der zu Fuß "
+                        + "erreichbar ist, startet sie nicht von selbst.")
             }
 
             // Under the navigation picker, because it is the same handover —

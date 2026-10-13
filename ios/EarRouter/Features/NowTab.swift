@@ -23,6 +23,8 @@ struct NowTab: View {
     @Environment(RouteFocus.self) private var focus
     @Environment(\.modelContext) private var context
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(AutoContinue.enabledKey) private var autoContinue = true
 
     @Query(
         filter: #Predicate<Route> { $0.statusRaw == "active" },
@@ -35,6 +37,9 @@ struct NowTab: View {
 
     @State private var editingStop: Stop?
     @State private var stockwerkStop: Stop?
+    /// Where the navigation goes once the floor question has closed — see
+    /// `settle`.
+    @State private var continueTo: Stop?
     /// The delivery that can still be taken back — see `undoBanner`.
     @State private var undo: DeliveredTick?
     @State private var undoTask: Task<Void, Never>?
@@ -80,6 +85,11 @@ struct NowTab: View {
         // last — and only now does its countdown begin. See `offerUndo`.
         .onChange(of: stockwerkStop?.id) { _, shown in
             if shown == nil, undo != nil { startUndoCountdown() }
+            if shown == nil, let next = continueTo {
+                continueTo = nil
+                // Asked about again from the menu, or ticked meanwhile.
+                if !next.isSettled, !next.isDeleted { navigate(to: next) }
+            }
         }
         .sheet(item: $editingStop) { stop in
             editor(for: stop)
@@ -141,6 +151,18 @@ struct NowTab: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { undoBanner(route) }
         .animation(.snappy, value: undo)
         .onChange(of: route.id) { undo = nil }
+        // The offer to take a tick back waits out a trip to the navigation
+        // app, which "Geliefert" now opens by itself: counted down behind it,
+        // the banner was gone before the driver ever looked at this screen
+        // again.
+        .onChange(of: scenePhase) { _, phase in
+            guard undo != nil else { return }
+            if phase == .active {
+                if stockwerkStop == nil { startUndoCountdown() }
+            } else {
+                undoTask?.cancel()
+            }
+        }
     }
 
     private func currentSection(
@@ -152,6 +174,7 @@ struct NowTab: View {
                 number: snapshot.number(stop),
                 info: stop.kind == .customer ? info[stop.id] : nil,
                 sameDoorCount: snapshot.doorCount(stop),
+                walkOn: WalkOn.doors(after: stop, in: snapshot.ordered),
                 finishesAt: snapshot.etaFinish(),
                 onNavigate: { navigate(to: stop) },
                 onDelivered: { deliver(stop, of: route) })
@@ -327,6 +350,15 @@ struct NowTab: View {
         if outcome.handedOver, StockwerkStore.shouldAsk(stop, in: context) {
             stockwerkStop = stop
         }
+        // On to the next door without a second press — after the floor
+        // question, when there is one, so it is not asked underneath the
+        // navigation app.
+        if let next = AutoContinue.destination(
+            after: stop, outcome: outcome, next: RouteSnapshot(route).nextOpen,
+            replanning: route.needsOptimize, enabled: autoContinue)
+        {
+            if stockwerkStop == nil { navigate(to: next) } else { continueTo = next }
+        }
         offerUndo(
             DeliveredTick(
                 id: stop.id, name: stop.kunde ?? "Stopp", outcome: outcome,
@@ -409,6 +441,8 @@ private struct NowStopCard: View {
     /// driver's own standing note.
     let info: StockwerkNote?
     let sameDoorCount: Int
+    /// The doors after this one that are carried along — see `WalkOn`.
+    let walkOn: [WalkOn.Door]
     /// When the shift is expected to end, shown once rather than per stop —
     /// this is the screen a driver looks at when somebody asks how long they
     /// will be.
@@ -437,6 +471,7 @@ private struct NowStopCard: View {
         VStack(alignment: .leading, spacing: 16) {
             who
             errand
+            carry
             actions
             finish
         }
@@ -569,6 +604,37 @@ private struct NowStopCard: View {
     /// Navigate, then tick off. Filled for the one pressed first, green for the
     /// one pressed last — told apart by hue rather than by weight, the same
     /// pairing the map's pin card uses.
+    /// "Gleich mitnehmen" — the next doors, when they are a walk from this
+    /// one. Above the buttons, because it is read with the Paket line: how
+    /// much to take out of the van before locking it.
+    @ViewBuilder
+    private var carry: some View {
+        if !walkOn.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                StopFacts.run("figure.walk", "Gleich mitnehmen")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                // Four, then a count: past that it is a list to read, and the
+                // list is one tab to the left.
+                ForEach(walkOn.prefix(4)) { door in
+                    let facts = [door.distance, door.paket?.trimmed.nilIfEmpty]
+                        .compactMap { $0 }.joined(separator: " · ")
+                    (Text(door.name).fontWeight(.medium)
+                        + Text("  \(facts)").foregroundStyle(.secondary))
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if walkOn.count > 4 {
+                    Text("und \(walkOn.count - 4) weitere")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.leading, indent)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
     private var actions: some View {
         VStack(spacing: 10) {
             Button(action: onNavigate) {
