@@ -1,4 +1,3 @@
-import SwiftData
 import UIKit
 
 /// The tour as the sheet of paper the Lager hands out: A4 across, the day
@@ -11,7 +10,8 @@ import UIKit
 /// Referenzbeleg, KDNr. and Parat are numbers the portal never sends here, and
 /// the floor is one the paper never had.
 ///
-/// Read off the store and stores nothing, like `TourReport`.
+/// Read off the Zusteller-Portal, not off a tour on this phone: the list is
+/// for the day's round as the office planned it, whoever ends up driving it.
 struct TourPDF {
     /// One door, as the table prints it.
     struct Row: Equatable {
@@ -29,25 +29,30 @@ struct TourPDF {
     let day: Date
     let rows: [Row]
 
-    /// The customers in driving order, without the abbestellt ones — see
-    /// `Stop.isOwedAMeal`.
-    @MainActor
-    init(_ route: Route) {
-        routeName = route.name
-        day = route.completedAt ?? route.createdAt
+    /// A tour of the Zusteller-Portal on one day: its deliveries in the
+    /// portal's own order, as `GourmetPortal.fetchDetails` hands them over.
+    /// `notes` are the Globale Infos the floors are read from.
+    init(tourName: String, day: Date, entries: [CustomerJSON], notes: [StockwerkNote] = []) {
+        routeName = tourName
+        self.day = day
 
-        let customers = route.orderedStops.filter(\.isOwedAMeal)
-        let notes = route.modelContext.flatMap { try? StockwerkStore.all(in: $0) } ?? []
-        let floors = notes.floors(for: customers)
-        rows = customers.enumerated().map { index, stop in
-            Row(
+        var floors: [String: String] = [:]
+        for note in notes {
+            if let floor = note.stockwerk?.trimmed, !floor.isEmpty { floors[note.key] = floor }
+        }
+        // What a TK round shows instead of its dishes — see `Stop.displayPaket`.
+        let tk = tourName.trimmed.lowercased().hasPrefix("tk")
+        rows = entries.enumerated().map { index, entry in
+            let key = StockwerkKey.make(kunde: entry.kunde, strasse: entry.strasse, plz: entry.plz)
+            let parcels = entry.paketCount.map { $0 == 1 ? "1 Paket" : "\($0) Pakete" }
+            return Row(
                 number: index + 1,
-                kunde: stop.kunde?.trimmed ?? "",
-                strasse: stop.strasse?.trimmed ?? "",
-                plz: stop.plz?.trimmed ?? "",
-                stockwerk: floors[stop.id].map(Format.floor) ?? "",
-                paket: stop.displayPaket?.trimmed ?? "",
-                hinweis: stop.notiz?.trimmed ?? "")
+                kunde: entry.kunde.trimmed,
+                strasse: entry.strasse.trimmed,
+                plz: entry.plz.trimmed,
+                stockwerk: key.flatMap { floors[$0] }.map(Format.floor) ?? "",
+                paket: (tk ? parcels : entry.paket?.trimmed) ?? "",
+                hinweis: entry.notiz?.trimmed ?? "")
         }
     }
 }

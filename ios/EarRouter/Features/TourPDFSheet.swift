@@ -1,73 +1,100 @@
 import SwiftData
 import SwiftUI
 
-/// "Tour als PDF": one of the phone's tours as the printed list, handed to the
-/// share sheet — to print, or to send to whoever is driving it instead.
+/// "Tour als PDF": a tour of the Zusteller-Portal as the printed list, handed
+/// to the share sheet — to print, or to send to whoever is driving it.
+///
+/// Picked the way "Tour aufteilen" picks one — a day, then that day's tours
+/// from the portal — and like it, nothing here becomes a tour on the phone.
 struct TourPDFSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var context
 
-    @Query(sort: \Route.createdAt, order: .reverse) private var routes: [Route]
+    @State private var date = Date()
+    @State private var tours: [GourmetPortal.Tour] = []
+    @State private var selectedTourID: Int?
+    @State private var loadingTours = false
 
-    @State private var selected: UUID?
+    @State private var busy: String?
+    @State private var loadTask: Task<Void, Never>?
     @State private var sharing: SharedFile?
     @State private var error: AppError?
-
-    /// The tour being worked until another is picked — see `Route.current`.
-    private var route: Route? {
-        routes.first { $0.id == selected }
-            ?? Route.current(
-                among: routes.filter { $0.status == .active },
-                working: RouteFocus.lastOpenedRouteID)
-            ?? routes.first
-    }
+    /// Read once, not in `body` — see `TourSplitSheet`.
+    @State private var signedIn = GourmetCredentialsStore.load() != nil
 
     var body: some View {
         NavigationStack {
             Group {
-                if let route {
-                    form(route)
+                if signedIn {
+                    form
                 } else {
-                    ContentUnavailableView(
-                        "Keine Tour", systemImage: "doc.text",
-                        description: Text("Leg zuerst eine Tour an."))
+                    GourmetLoginForm {
+                        signedIn = true
+                        Task { await loadTours() }
+                    }
                 }
             }
             .navigationTitle("Tour als PDF")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Fertig") { dismiss() }
+                ToolbarItem(placement: .cancellationAction) {
+                    if busy != nil {
+                        Button("Stoppen") { loadTask?.cancel() }
+                    } else {
+                        Button("Schließen") { dismiss() }
+                    }
                 }
             }
+            .floatingBanner {
+                if let busy {
+                    BusyBanner(text: busy)
+                }
+            }
+            .animation(.snappy, value: busy)
             .sheet(item: $sharing) { ShareSheet(items: [$0.url]) }
             .errorAlert($error)
+            .interactiveDismissDisabled(busy != nil)
+            .task {
+                if signedIn { await loadTours() }
+            }
+            .onChange(of: date) { _, _ in reconcileSelection() }
         }
-        .presentationDetents([.medium, .large])
     }
 
-    private func form(_ route: Route) -> some View {
+    private var form: some View {
         Form {
             Section {
-                Picker("Tour", selection: Binding(get: { route.id }, set: { selected = $0 })) {
-                    ForEach(routes) { route in
-                        Text(label(route)).tag(route.id)
+                DatePicker("Datum", selection: $date, displayedComponents: .date)
+                if loadingTours {
+                    HStack {
+                        ProgressView()
+                        Text("Touren werden geladen …").foregroundStyle(.secondary)
+                    }
+                } else if candidateTours.isEmpty {
+                    Text("Keine Tour für diesen Tag gefunden.").foregroundStyle(.secondary)
+                } else {
+                    Picker("Tour", selection: $selectedTourID) {
+                        Text("Bitte wählen").tag(Int?.none)
+                        ForEach(candidateTours) { tour in
+                            Text(tour.name).tag(Int?.some(tour.id))
+                        }
                     }
                 }
             } footer: {
                 Text(
-                    "Alle Stopps in der Fahrreihenfolge, als Liste zum Ausdrucken — "
-                        + "mit dem Stockwerk aus den Globalen Infos.")
+                    "Die offenen Lieferungen der Tour laut Zusteller-Portal, als Liste zum "
+                        + "Ausdrucken — mit dem Stockwerk aus den Globalen Infos.")
             }
 
             Section {
                 Button {
-                    export(route)
+                    loadTask = Task { await export() }
                 } label: {
                     WideButtonLabel("PDF teilen", systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(route.customerCount == 0)
+                .disabled(selectedTourID == nil || busy != nil)
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                 .listRowSeparator(.hidden)
@@ -75,16 +102,61 @@ struct TourPDFSheet: View {
         }
     }
 
-    /// A finished tour says which day it was: by then there are several of
-    /// one name.
-    private func label(_ route: Route) -> String {
-        guard route.status == .completed, let day = route.completedAt else { return route.name }
-        return "\(route.name) · \(Format.numericDate(day))"
+    private var candidateTours: [GourmetPortal.Tour] {
+        tours.filter { GourmetPortal.runs($0, on: date) }
     }
 
-    private func export(_ route: Route) {
+    private func reconcileSelection() {
+        let candidates = candidateTours
+        if let id = selectedTourID, candidates.contains(where: { $0.id == id }) { return }
+        selectedTourID = candidates.count == 1 ? candidates[0].id : nil
+    }
+
+    private func loadTours() async {
+        guard let credentials = GourmetCredentialsStore.load() else { return }
+        loadingTours = true
+        defer { loadingTours = false }
         do {
-            sharing = SharedFile(url: try TourPDF(route).writeForSharing())
+            let token = try await GourmetPortal.login(credentials)
+            tours = try await GourmetPortal.tours(token: token)
+            reconcileSelection()
+        } catch is CancellationError {
+        } catch let e as AppError {
+            error = e
+        } catch {
+            self.error = AppError.message("Tourenliste konnte nicht geladen werden.")
+        }
+    }
+
+    /// With the detail call per stop: the Paket and the note are most of what
+    /// the list is printed for.
+    private func export() async {
+        guard let selectedTourID, let tour = tours.first(where: { $0.id == selectedTourID }),
+            let credentials = GourmetCredentialsStore.load()
+        else { return }
+        busy = "Anmelden …"
+        defer { busy = nil }
+        do {
+            let (token, deliveries) = try await GourmetPortal.matchingDeliveries(
+                tour: tour, date: date, credentials: credentials
+            ) { progress in
+                Task { @MainActor in busy = progress }
+            }
+            guard !deliveries.isEmpty else {
+                error = AppError.message(
+                    "Für „\(tour.name)“ wurden an diesem Tag keine offenen Lieferungen gefunden.")
+                return
+            }
+            let entries = try await GourmetPortal.fetchDetails(for: deliveries, token: token) {
+                done, total in
+                Task { @MainActor in busy = "Paket \(done) von \(total) wird geladen …" }
+            }
+            let notes = (try? StockwerkStore.all(in: context)) ?? []
+            let pdf = TourPDF(tourName: tour.name, day: date, entries: entries, notes: notes)
+            sharing = SharedFile(url: try pdf.writeForSharing())
+        } catch is CancellationError {
+        } catch let e as AppError {
+            error = e
         } catch {
             self.error = AppError.message(
                 "Das PDF konnte nicht erstellt werden. \(error.localizedDescription)")

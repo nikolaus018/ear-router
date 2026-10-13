@@ -4663,7 +4663,7 @@ function autoFillDistrictFromText(strasseInput, plzSelect) {
 // `reloadForUpdateIfPending`): a load takes a minute, and abandoning it
 // halfway leaves nobody knowing what arrived.
 let importController = null;
-const gourmet = { routeId: null, date: null, tours: null, tour: null, deliveries: null, picked: null, entries: null, loaded: 0 };
+const gourmet = { routeId: null, pdf: false, date: null, tours: null, tour: null, deliveries: null, picked: null, entries: null, loaded: 0 };
 
 const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const dayLabel = (iso) => {
@@ -4700,20 +4700,24 @@ function openNewTourSheet() {
 
 /// Opens the Gourmet flow — for a new tour, or with `routeId` to add a
 /// tour's stops to the one that is open.
-async function openGourmetSheet(routeId = null) {
-  Object.assign(gourmet, { routeId, date: isoDay(new Date()), tours: null, tour: null, deliveries: null, picked: null, entries: null, loaded: 0 });
-  renderSheetShell(`<div data-gourmet><h2 class="sheet-title">Von Gourmet laden</h2>${sheetBusy('Einen Moment …')}</div>`, { label: 'Von Gourmet laden' });
+async function openGourmetSheet(routeId = null, pdf = false) {
+  Object.assign(gourmet, { routeId, pdf, date: isoDay(new Date()), tours: null, tour: null, deliveries: null, picked: null, entries: null, loaded: 0 });
+  renderSheetShell(`<div data-gourmet><h2 class="sheet-title">${gourmetTitle()}</h2>${sheetBusy('Einen Moment …')}</div>`, { label: gourmetTitle() });
   try {
     const status = await api('/portal/status');
     if (status.logged_in) showGourmetTours(); else showGourmetLogin();
   } catch (err) {
-    gourmetBody(sheetError(err.message, `openGourmetSheet(${routeId})`));
+    gourmetBody(sheetError(err.message, `openGourmetSheet(${routeId}, ${pdf})`));
   }
 }
 
+/// The same two steps — sign in, pick the day's tour — lead either to a
+/// tour's stops or, from Mehr, to its list as a PDF.
+const gourmetTitle = () => (gourmet.pdf ? 'Tour als PDF' : 'Von Gourmet laden');
+
 /// Replaces everything under the sheet's title, if the sheet is still the
 /// Gourmet one — the driver may have closed it while a request was out.
-function gourmetBody(html, title = 'Von Gourmet laden') {
+function gourmetBody(html, title = gourmetTitle()) {
   const body = document.querySelector('[data-gourmet]');
   if (!body) {
     if (!document.getElementById('modal-root').innerHTML) return false;
@@ -4771,7 +4775,7 @@ async function openGourmetAccount() {
   try { status = await api('/portal/status'); }
   catch (err) { toast(err.message, 'error'); return; }
   finally { hideProgress(); }
-  if (!status.logged_in) { gourmet.routeId = null; gourmet.date = isoDay(new Date()); showGourmetLogin(); return; }
+  if (!status.logged_in) { gourmet.routeId = null; gourmet.pdf = false; gourmet.date = isoDay(new Date()); showGourmetLogin(); return; }
   renderSheetShell(`
     <h2 class="sheet-title">Gourmet-Anmeldung</h2>
     <div class="sheet-note" style="background:rgba(52,199,89,.14);color:#1B6B32"><span style="color:#248A3D">${ICONS.checkCircle}</span><span>Angemeldet als <b>${escapeHtml(status.username || '')}</b>. Touren können geladen werden.</span></div>
@@ -4796,7 +4800,7 @@ async function showGourmetTours(date = gourmet.date) {
   const today = new Date();
   const days = [0, 1].map((n) => isoDay(new Date(today.getFullYear(), today.getMonth(), today.getDate() + n)));
   const head = `
-    <p class="sheet-lead">Welche Tour fährst du?</p>
+    <p class="sheet-lead">${gourmet.pdf ? 'Welche Tour soll als Liste zum Ausdrucken heraus?' : 'Welche Tour fährst du?'}</p>
     <div class="day-row">
       ${days.map((d) => `<button type="button" onclick="showGourmetTours('${d}')" class="press-98 day-chip ${d === date ? 'on' : ''}">${dayLabel(d)}</button>`).join('')}
       <label class="day-chip ${days.includes(date) ? '' : 'on'}">${days.includes(date) ? 'Anderer Tag' : dayLabel(date)}
@@ -4832,6 +4836,7 @@ async function showGourmetDeliveries(tourId) {
   if (!tour) return;
   gourmet.tour = tour;
   gourmet.deliveries = null;
+  if (gourmet.pdf) return exportTourPdf(tour);
   const back = `<button type="button" onclick="showGourmetTours()" class="press-98 wide-btn quiet">Zurück</button>`;
   if (!gourmetBody(sheetBusy('Stopps werden geladen …'), escapeHtml(tour.name))) return;
   try {
@@ -6646,13 +6651,13 @@ const TOUR_PDF = {
   ],
 };
 
-/// The customers in driving order, without the doors the van does not go
-/// to — the same list the Ladeliste loads from.
-function tourPdfRows(r) {
-  const day = fmtDate(r.completed_at || r.created_at);
-  return r.stops.filter((s) => s.kind === 'customer' && !skipsDoor(s)).map((s, i) => [
-    r.name || '', String(i + 1), day, (s.kunde || '').trim(), (s.strasse || '').trim(),
-    (s.plz || '').trim(), displayPaket(s, r).trim(), (s.notiz || '').trim(),
+/// One row a delivery, in the portal's own order. `tour` is
+/// `{ name, date, entries }` — the day as "2026-10-09".
+function tourPdfRows(tour) {
+  const day = fmtDate(`${tour.date}T12:00:00`);
+  return tour.entries.map((e, i) => [
+    tour.name || '', String(i + 1), day, (e.kunde || '').trim(), (e.strasse || '').trim(),
+    (e.plz || '').trim(), displayPaket(e, tour).trim(), (e.notiz || '').trim(),
   ]);
 }
 
@@ -6684,8 +6689,9 @@ function tourPdfBytes(r) {
     text(str, bold, size, left + (width - pdfTextWidth(str, bold, size)) / 2, baseline, color);
   const fill = (rgb, x, top, w, h) => `${rgb} rg ${n(x)} ${n(pageH - top - h)} ${n(w)} ${n(h)} re f\n`;
 
-  const weekday = new Date(r.completed_at || r.created_at).toLocaleDateString('de-AT', { weekday: 'long' });
-  const dayTitle = `${weekday}, ${fmtDate(r.completed_at || r.created_at)}`;
+  // Noon, so the day is the same day in whatever zone this browser is in.
+  const weekday = new Date(`${r.date}T12:00:00`).toLocaleDateString('de-AT', { weekday: 'long' });
+  const dayTitle = `${weekday}, ${fmtDate(`${r.date}T12:00:00`)}`;
 
   const streams = pages.map((lines, pageIndex) => {
     let out = centred(dayTitle, false, 9, 0, pageW, 46) + centred(`Seite ${pageIndex + 1} von ${pages.length}`, false, 9, 0, pageW, 562);
@@ -6760,69 +6766,57 @@ function tourPdfBytes(r) {
 
 /// "VM 5 FR Vormittag 09.10.2026.pdf".
 function tourPdfFilename(r) {
-  const day = fmtDate(r.completed_at || r.created_at);
+  const day = fmtDate(`${r.date}T12:00:00`);
   const name = String(r.name || '').replace(/[\/:\\]/g, '-').trim();
   return `${(name.includes(day) ? name : `${name} ${day}`).trim() || 'Tour'}.pdf`;
 }
 
-function openTourPdfSheet() {
-  const active = state.routes.filter((r) => r.status === 'active');
-  const done = state.routes.filter((r) => r.status === 'completed');
-  const tours = [...active, ...done];
-  if (!tours.length) {
-    renderSheetShell(`
-      <h2 class="sheet-title">Tour als PDF</h2>
-      <p class="sheet-lead">Es gibt noch keine Tour. Leg zuerst eine an.</p>
-      <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn accent">Fertig</button></div>
-    `, { label: 'Tour als PDF' });
-    return;
+/// Mehr → Tour als PDF: the day's tours come from the Zusteller-Portal, the
+/// way they do for a new tour — see `openGourmetSheet`.
+const openTourPdfSheet = () => openGourmetSheet(null, true);
+
+/// The tour picked in the sheet: its deliveries with their parcels and
+/// notes, straight from the portal, and out as a file.
+async function exportTourPdf(tour) {
+  const date = gourmet.date;
+  const back = `<button type="button" onclick="showGourmetTours()" class="press-98 wide-btn quiet">Zurück</button>`;
+  if (!gourmetBody(sheetBusy('Stopps werden geholt …'), escapeHtml(tour.name))) return;
+  try {
+    const { entries } = await api('/portal/entries', { method: 'POST', body: JSON.stringify({ tour_id: tour.id, date }), timeoutMs: 3 * 60 * 1000 });
+    if (!gourmet.pdf || gourmet.tour?.id !== tour.id) return;
+    const pdf = { name: tour.name, date, entries };
+    const file = new File([tourPdfBytes(pdf)], tourPdfFilename(pdf), { type: 'application/pdf' });
+    tourPdfFile = file;
+    gourmetBody(`
+      <div class="sheet-note" style="background:rgba(52,199,89,.14);color:#1B6B32"><span style="color:#248A3D">${ICONS.checkCircle}</span><span>${entries.length === 1 ? '1 Stopp' : `${entries.length} Stopps`}, ${dayLabel(date)}. Die Liste ist fertig.</span></div>
+      <button type="button" onclick="deliverTourPdf()" class="press-98 wide-btn accent">PDF öffnen</button>
+      ${back}
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Fertig</button>`, escapeHtml(tour.name));
+  } catch (err) {
+    if (/anmelden|Anmeldung/.test(err.message)) { showGourmetLogin(err.message); return; }
+    gourmetBody(sheetError(err.message, `showGourmetDeliveries(${tour.id})`) + back, escapeHtml(tour.name));
   }
-  // The tour being worked, until another is picked.
-  const preset = tours.find((r) => r.id === state.currentRoute?.id)?.id ?? tours[0].id;
-  const option = (r) => `<option value="${r.id}" ${r.id === preset ? 'selected' : ''}>${escapeHtml(r.name)}${r.status === 'completed' ? ` · ${fmtDate(r.completed_at || r.created_at)}` : ''}</option>`;
-  renderSheetShell(`
-    <h2 class="sheet-title">Tour als PDF</h2>
-    <p class="sheet-lead">Alle Stopps in der Fahrreihenfolge, als Liste zum Ausdrucken.</p>
-    <div><label class="${LABEL}" for="pdf-tour">Tour</label>
-      <select id="pdf-tour" class="${FIELD}">${tours.map(option).join('')}</select>
-    </div>
-    <div class="pb-2" style="margin-top:1rem">
-      <button type="button" id="pdf-go" onclick="exportTourPdf()" class="press-98 wide-btn accent">PDF erstellen</button>
-      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Fertig</button>
-    </div>
-  `, { label: 'Tour als PDF' });
 }
 
-async function exportTourPdf() {
-  const id = Number(document.getElementById('pdf-tour')?.value);
-  const button = document.getElementById('pdf-go');
-  if (!id || button?.disabled) return;
-  if (button) button.disabled = true;
-  try {
-    const r = await api(`/routes/${id}`);
-    if (!r.stops.some((s) => s.kind === 'customer' && !skipsDoor(s))) {
-      toast('Diese Tour hat noch keine Stopps.', 'error');
-      return;
+// Handed over on a tap of its own: a share sheet may only open from one,
+// and the fetch above is long past the tap that started it.
+let tourPdfFile = null;
+async function deliverTourPdf() {
+  const file = tourPdfFile;
+  if (!file) return;
+  // On a phone the share sheet — print, mail, WhatsApp — and a plain
+  // download everywhere else.
+  if (matchMedia('(pointer: coarse)').matches && navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); return; } catch (err) {
+      if (err?.name === 'AbortError') return;
     }
-    const file = new File([tourPdfBytes(r)], tourPdfFilename(r), { type: 'application/pdf' });
-    // On a phone the share sheet — print, mail, WhatsApp — and a plain
-    // download everywhere else.
-    if (matchMedia('(pointer: coarse)').matches && navigator.canShare?.({ files: [file] })) {
-      try { await navigator.share({ files: [file] }); return; } catch (err) {
-        if (err?.name === 'AbortError') return;
-      }
-    }
-    const url = URL.createObjectURL(file);
-    const link = Object.assign(document.createElement('a'), { href: url, download: file.name });
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-  } catch (err) {
-    toast(err.message || 'Das PDF konnte nicht erstellt werden.', 'error');
-  } finally {
-    if (button) button.disabled = false;
   }
+  const url = URL.createObjectURL(file);
+  const link = Object.assign(document.createElement('a'), { href: url, download: file.name });
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 // ---------------------------------------------------------------------
