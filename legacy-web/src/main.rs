@@ -597,7 +597,7 @@ struct AppState {
     // Nominatim's ~1 req/s public usage policy instead of bursting past it.
     nominatim_last: AsyncMutex<Option<Instant>>,
     // Per-client-IP request counters backing `rate_limit_mw` — see there
-    // for why this exists at all (there's no authentication in this app).
+    // for why this exists at all.
     rate_limit: AsyncMutex<HashMap<IpAddr, RateEntry>>,
     /// Whether to believe `X-Forwarded-For` when identifying a client for
     /// rate limiting — see `client_ip`.
@@ -705,10 +705,9 @@ impl AppState {
 }
 
 // ---------------------------------------------------------------------
-// Rate limiting — this app has no authentication whatsoever (see the
-// module doc comment: it's a small self-hosted single-tenant tool), so
-// every `/api/*` route is reachable by anyone who can reach the port.
-// Without a cap, a script (or just a buggy retry loop) hitting `/api`
+// Rate limiting — the sign-in itself, and everything behind it, is
+// reachable by anyone who can reach the port and has (or guesses at) an
+// account. Without a cap, a script (or just a buggy retry loop) hitting `/api`
 // hard can: exhaust this process's SQLite/CPU budget, and worse, burn
 // through Nominatim's/OSRM's shared public-usage allowance fast enough
 // to get this server's IP rate-limited or banned by them — which would

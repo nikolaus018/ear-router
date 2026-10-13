@@ -28,10 +28,13 @@ A native iOS app. Tours, stops, delivery status and every floor ever learned
 live on the phone; the network is needed only to load a day's tour from the
 Zusteller-Portal, to look an address up and to optimise the route.
 
+Beside it, a web version of the same round for a driver without the app —
+see [legacy-web](#legacy-web).
+
 ```
 ios/            The app. Open ios/EarRouter.xcodeproj in Xcode.
 ios/Tools/      Draws the app icon. Not part of the build.
-legacy-web/     The previous Rust + PWA version, kept for reference.
+legacy-web/     The web version: a Rust server and the PWA it serves.
 ```
 
 ## The app
