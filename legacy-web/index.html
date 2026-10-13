@@ -283,6 +283,13 @@
   .wide-btn.primary { background: #34C759; color: #fff; }
   .wide-btn.accent { background: #ED1639; color: #fff; }
   .wide-btn.quiet { background: rgba(120,120,128,.14); color: #000; }
+  .km-field { display: flex; align-items: center; gap: .75rem; background: #fff; border-radius: .875rem; padding: .25rem 1rem; }
+  .km-field label { width: 2.25rem; font-size: 15px; color: rgba(0,0,0,.55); }
+  .km-field input { flex: 1; min-width: 0; text-align: right; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; padding: .625rem 0; background: transparent; outline: none; }
+  .km-field span { font-size: 15px; color: rgba(0,0,0,.55); }
+  /* Mehr: a tint per row, as Settings does -- after a week the driver
+     reaches for the orange tile, not for the second row down. */
+  .tile { flex: none; width: 1.875rem; height: 1.875rem; border-radius: .45rem; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 16px; }
   /* Geliefert on Jetzt and on the map's card: green by hue, not by weight,
      beside the filled Navigation -- the pairing the iOS app uses. */
   .wide-btn.done { background: rgba(52,199,89,.18); color: #1B7A35; }
@@ -2951,7 +2958,7 @@ const MAPS_PROVIDER_KEY = 'ear_maps_provider';
 // from the text alone — so this is a tool the driver reaches for on
 // purpose, not a guess the app makes for them.
 // ---------------------------------------------------------------------
-const SAFE_CODE_LETTER_TO_DIGIT = { C:'0', E:'1', Z:'2', D:'3', V:'4', F:'5', S:'6', A:'8', N:'9' };
+const SAFE_CODE_LETTER_TO_DIGIT = { C:'0', E:'1', Z:'2', D:'3', V:'4', F:'5', S:'6', '?':'7', A:'8', N:'9' };
 
 // A character with no entry in the table (an X, a hyphen, a space) is
 // passed through unchanged rather than dropped or flagged — the driver said
@@ -2970,10 +2977,10 @@ function onTurcodeInput(value) {
 
 function renderTurcodeSheet() {
   renderSheetShell(`
-    <h2 class="text-[22px] font-bold mb-1">Türcode entschlüsseln</h2>
-    <p class="text-[13px] text-black/55 mb-4 leading-snug">Buchstaben aus der Notiz eingeben. Zeichen, die keine Ziffer haben (z. B. X oder ein Bindestrich), bleiben unverändert — die gehören dann schon direkt zum Code.</p>
+    <h2 class="text-[22px] font-bold mb-1">Türcode</h2>
+    <p class="text-[13px] text-black/55 mb-4 leading-snug">Zeichen aus der Notiz eingeben — auch das Fragezeichen, das für die 7 steht. Zeichen ohne eigene Ziffer (z. B. X oder ein Bindestrich) bleiben unverändert — die gehören dann schon direkt zum Code.</p>
     <input id="turcode-input" type="text" inputmode="text" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false"
-      oninput="onTurcodeInput(this.value)" placeholder="z.B. ENVV" enterkeyhint="done"
+      oninput="onTurcodeInput(this.value)" placeholder="z. B. EN?V" enterkeyhint="done"
       class="w-full bg-white rounded-xl px-4 py-3 text-[20px] font-mono tracking-wide text-center uppercase focus:outline-none focus:ring-2 focus:ring-brand-600" />
     <div class="${CARD} mt-3 p-4 text-center">
       <p class="text-[11px] font-semibold uppercase tracking-wide text-black/55 mb-1">Code</p>
@@ -2982,7 +2989,7 @@ function renderTurcodeSheet() {
     <div class="mt-4 pb-2">
       <button type="button" onclick="closeSheet()" class="press-98 w-full py-3 rounded-xl bg-brand-600 font-semibold text-white">Fertig</button>
     </div>
-  `, { label: 'Türcode entschlüsseln' });
+  `, { label: 'Türcode' });
   setTimeout(() => document.getElementById('turcode-input')?.focus(), 80);
 }
 
@@ -6548,7 +6555,6 @@ function tourReport(r) {
   const handed = count('delivered') + neighbour;
   const times = customers.filter((s) => s.settled_at && !skipsDoor(s)).map((s) => Date.parse(s.settled_at)).filter(Number.isFinite).sort((a, b) => a - b);
   const day = fmtDate(r.completed_at || r.created_at);
-  const odometer = kilometerFor(r);
 
   let span = '';
   if (times.length) {
@@ -6567,32 +6573,34 @@ function tourReport(r) {
   if (stillOpen.length) lines.push('', `Nicht angefahren (${stillOpen.length}):`, ...stillOpen.map((s) => `· ${entry(s)}`));
   lines.push('');
   if (snap.totalKm >= 0.05) lines.push(`Strecke laut Planung: ${fmtKm(snap.totalKm)}`);
-  if (odometer != null) lines.push(`Laut Tacho: ${odometer} km`);
-  return { text: lines.join('\n').trim(), span, handed, owed, lager, notHome, stillOpen, km: snap.totalKm, odometer, day };
+  return { text: lines.join('\n').trim(), span, handed, owed, lager, cancelled, neighbour, notHome, stillOpen, km: snap.totalKm, day };
 }
 
 function openReportSheet() {
   const r = state.currentRoute;
   if (!r) return;
   const rep = tourReport(r);
-  const person = (s) => `<div class="px-4 py-3"><p class="font-medium">${escapeHtml(s.kunde || 'Ohne Namen')}</p><p class="text-[13px] text-black/55">${escapeHtml([s.strasse, s.plz].filter(Boolean).join(', '))}${s.telefon ? ` · ${escapeHtml(s.telefon)}` : ''}</p></div>`;
+  const person = (s) => `<div class="px-4 py-3"><p class="font-medium">${escapeHtml(s.kunde || 'Ohne Namen')}</p><p class="text-[13px] text-black/55">${escapeHtml([s.strasse, s.plz].filter(Boolean).join(', '))}</p>${s.telefon ? `<p class="text-[13px] text-black/55">${escapeHtml(s.telefon)}</p>` : ''}</div>`;
   const fact = (label, value) => `<div class="flex items-baseline justify-between gap-3 px-4 py-3"><span class="text-[15px] text-black/60">${label}</span><span class="font-semibold">${value}</span></div>`;
-  const allGood = !rep.notHome.length && !rep.stillOpen.length;
+  const foot = (text) => `<p class="now-caption" style="padding:0 1rem 1rem; margin-top:-.5rem">${text}</p>`;
   renderSheetShell(`
     <h2 class="sheet-title">Tagesabschluss</h2>
-    <p class="sheet-lead">${escapeHtml(r.name)} · ${rep.day}${rep.span ? ` · ${rep.span}` : ''}</p>
-    ${allGood ? `<div class="sheet-note" style="background:rgba(52,199,89,.14);color:#1B6B32"><span style="color:#248A3D">${ICONS.checkCircle}</span><span>Alle haben ihr Essen bekommen.</span></div>` : ''}
+    <p class="sheet-lead">${escapeHtml(r.name)}${r.name.includes(rep.day) ? '' : ` · ${rep.day}`}</p>
     <div class="${GROUP} mb-4">
       ${fact('Geliefert', `${rep.handed} von ${rep.owed}`)}
-      ${rep.lager ? fact('Ins Lager mitgenommen', rep.lager) : ''}
-      ${rep.km >= 0.05 ? fact('Strecke laut Planung', fmtKm(rep.km)) : ''}
-      ${rep.odometer != null ? fact('Laut Tacho', `${rep.odometer} km`) : ''}
+      ${rep.neighbour ? fact('davon bei Nachbarn', rep.neighbour) : ''}
+      ${rep.cancelled ? fact('Abbestellt', rep.cancelled) : ''}
+      ${rep.lager ? fact('Ins Lager', rep.lager) : ''}
+      ${rep.span ? fact('Unterwegs', rep.span) : ''}
+      ${rep.km >= 0.05 ? fact('Strecke', fmtKm(rep.km)) : ''}
     </div>
-    ${rep.notHome.length ? `<p class="${SECTION_LABEL} !pt-0" style="color:#B26A00">Nicht angetroffen · ${rep.notHome.length}</p><div class="${GROUP} mb-4">${rep.notHome.map(person).join('')}</div>` : ''}
-    ${rep.stillOpen.length ? `<p class="${SECTION_LABEL} !pt-0">Nicht angefahren · ${rep.stillOpen.length}</p><div class="${GROUP} mb-4">${rep.stillOpen.map(person).join('')}</div>` : ''}
+    ${rep.notHome.length ? `<p class="${SECTION_LABEL} !pt-0 flex items-center gap-1.5"><span class="flex" style="color:#FF9500">${ICONS.bellOff}</span>Nicht angetroffen</p><div class="${GROUP} mb-4">${rep.notHome.map(person).join('')}</div>${foot('Diese Kunden haben heute kein Essen bekommen.')}` : ''}
+    ${rep.stillOpen.length ? `<p class="${SECTION_LABEL} !pt-0 flex items-center gap-1.5"><span class="flex" style="color:#FF9500">${ICONS.circle}</span>Nicht angefahren</p><div class="${GROUP} mb-4">${rep.stillOpen.map(person).join('')}</div>${foot('Diese Stopps sind offen geblieben.')}` : ''}
     <div class="pb-2">
-      <button type="button" onclick="shareReport()" class="press-98 wide-btn accent">${ICONS.external} ${navigator.share ? 'An das Büro senden' : 'Text kopieren'}</button>
-      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Fertig</button>
+      ${navigator.share ? `<button type="button" onclick="shareReport()" class="press-98 wide-btn accent">${ICONS.external} Bericht teilen</button>` : ''}
+      <button type="button" id="report-copy" onclick="copyReport(this)" class="press-98 wide-btn ${navigator.share ? 'quiet' : 'accent'}">${ICONS.copy} Bericht kopieren</button>
+      <p class="now-caption" style="padding:.625rem .25rem 0">Als Text — für WhatsApp, eine Mail oder die Zwischenablage.</p>
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet" style="margin-top:.875rem">Fertig</button>
     </div>
   `, { label: 'Tagesabschluss' });
 }
@@ -6600,15 +6608,25 @@ function openReportSheet() {
 async function shareReport() {
   const r = state.currentRoute;
   if (!r) return;
-  const text = tourReport(r).text;
   try {
-    if (navigator.share) { await navigator.share({ text }); return; }
-    await navigator.clipboard.writeText(text);
-    toast('Kopiert ✓', 'success');
+    await navigator.share({ text: tourReport(r).text });
   } catch (err) {
-    // Dismissing the share sheet is not a failure worth a message.
     if (err?.name !== 'AbortError') toast('Teilen nicht möglich.', 'error');
   }
+}
+
+async function copyReport(button) {
+  const r = state.currentRoute;
+  if (!r) return;
+  try {
+    await navigator.clipboard.writeText(tourReport(r).text);
+  } catch (_) {
+    toast('Der Bericht konnte nicht kopiert werden.', 'error');
+    return;
+  }
+  if (!button?.isConnected) return;
+  button.innerHTML = `${ICONS.check} Kopiert`;
+  setTimeout(() => { if (button.isConnected) button.innerHTML = `${ICONS.copy} Bericht kopieren`; }, 1500);
 }
 
 // ---------------------------------------------------------------------
@@ -6617,61 +6635,101 @@ async function shareReport() {
 // Kept on this device per day; the difference goes on the Tagesabschluss.
 // ---------------------------------------------------------------------
 // Per account: two drivers who share a phone do not share a van.
-const kmKey = () => `ear.kilometer.v1.${state.user?.id ?? 0}`;
+const kmKey = () => `ear.kilometer.v2.${state.user?.id ?? 0}`;
+
+/// The reading "Stand merken" kept, as `{ reading, savedAt }`, or `null`.
 function loadKilometer() {
   try {
     const v = JSON.parse(localStorage.getItem(kmKey()) || 'null');
-    if (v && typeof v === 'object' && v.day === isoDay(new Date())) return v;
+    if (v && Number.isFinite(v.reading) && v.reading >= 0) return v;
   } catch (_) { /* unreadable — start clean */ }
-  return { day: isoDay(new Date()), start: '', end: '' };
-}
-const kmDriven = (v) => {
-  const a = parseFloat(String(v.start).replace(',', '.')), b = parseFloat(String(v.end).replace(',', '.'));
-  return Number.isFinite(a) && Number.isFinite(b) && b >= a ? Math.round((b - a) * 10) / 10 : null;
-};
-/// The day's odometer kilometres, for a tour driven today.
-function kilometerFor(r) {
-  const day = isoDay(new Date(r.completed_at || Date.now()));
-  const v = loadKilometer();
-  return v.day === day ? kmDriven(v) : null;
-}
-function openKilometerSheet() {
-  const v = loadKilometer();
-  renderSheetShell(`
-    <h2 class="sheet-title">Kilometerstand</h2>
-    <p class="sheet-lead">Den Tachostand bei der Abfahrt und bei der Rückkehr eintragen. Gilt für heute.</p>
-    <div class="space-y-3">
-      <div><label class="${LABEL}" for="km-start">Bei der Abfahrt</label><input id="km-start" inputmode="decimal" value="${escapeAttr(v.start)}" placeholder="z.B. 48210" oninput="saveKilometer()" class="${FIELD}" /></div>
-      <div><label class="${LABEL}" for="km-end">Bei der Rückkehr</label><input id="km-end" inputmode="decimal" value="${escapeAttr(v.end)}" placeholder="z.B. 48263" oninput="saveKilometer()" class="${FIELD}" /></div>
-    </div>
-    <div class="now-card" style="margin-top:1rem; text-align:center">
-      <p class="now-caption">Heute gefahren</p>
-      <p id="km-result" class="now-name" style="margin-top:.25rem"></p>
-    </div>
-    <div class="pb-2" style="margin-top:1rem"><button type="button" onclick="closeSheet()" class="press-98 wide-btn accent">Fertig</button></div>
-  `, { label: 'Kilometerstand' });
-  saveKilometer();
-}
-function saveKilometer() {
-  const v = { day: isoDay(new Date()), start: document.getElementById('km-start')?.value.trim() || '', end: document.getElementById('km-end')?.value.trim() || '' };
-  try { localStorage.setItem(kmKey(), JSON.stringify(v)); } catch (_) { /* private mode — the sum still shows */ }
-  const out = document.getElementById('km-result');
-  const driven = kmDriven(v);
-  if (out) out.textContent = driven != null ? `${String(driven).replace('.', ',')} km` : '–';
+  return null;
 }
 
-// ---------------------------------------------------------------------
-// Tour als PDF — the tour as the sheet of paper the Lager hands out: A4
-// across, the day above the table, one row a door, "Seite 1 von 4"
-// underneath. Blue header on the first page only, every other row tinted,
-// the text on the bottom line of its cell — `TourPDF` on iOS is the same
-// page. The columns are the ones this app has something to put in.
-//
-// Written out by hand rather than with a library: it is one table in two
-// fonts every PDF reader already has, and the widths below are those
-// fonts' own (Helvetica's, per 1000 units), so a line breaks where the
-// reader will draw it and not where this browser's font happens to.
-// ---------------------------------------------------------------------
+/// "48.210,5", "48210.5" and "48 210" are all one number. With both a comma
+/// and a point, whichever comes last is the decimal one.
+function parseKilometer(text) {
+  let s = String(text || '').trim().replace(/[\s  ']/g, '');
+  if (!s || !/^[\d.,]+$/.test(s)) return null;
+  const comma = s.lastIndexOf(','), dot = s.lastIndexOf('.');
+  if (comma >= 0 && dot >= 0) s = s.split(comma > dot ? '.' : ',').join('');
+  s = s.replace(/,/g, '.');
+  // More than one separator left is no number ("1.2.3").
+  if ((s.match(/\./g) || []).length > 1) return null;
+  const value = Number(s);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+const formatKilometer = (value) => String(Math.round(value * 10) / 10).replace('.', ',');
+
+/// Set once "Stand merken" was pressed while the sheet is open.
+let kmSavedNow = false;
+
+function openKilometerSheet() {
+  const kept = loadKilometer();
+  kmSavedNow = false;
+  const now = new Date();
+  renderSheetShell(`
+    <h2 class="sheet-title">Kilometerstand</h2>
+    <p class="sheet-lead">${fmtDate(now.toISOString())} · ${fmtClock(now.getTime())} Uhr</p>
+    <div class="space-y-3">
+      <div class="km-field"><label for="km-old">Alt</label><input id="km-old" inputmode="decimal" autocomplete="off" value="${kept ? escapeAttr(formatKilometer(kept.reading)) : ''}" placeholder="0" oninput="paintKilometer()" /><span>km</span></div>
+      <div class="km-field"><label for="km-new">Neu</label><input id="km-new" inputmode="decimal" autocomplete="off" placeholder="0" oninput="paintKilometer()" /><span>km</span></div>
+    </div>
+    <div class="now-card" style="margin-top:1rem; text-align:center">
+      <p class="now-caption">Gefahren</p>
+      <p id="km-result" class="now-name" style="margin-top:.25rem; font-size:34px; font-variant-numeric: tabular-nums"></p>
+      <p id="km-backwards" class="now-fact warn" style="justify-content:center; display:none"><span>${ICONS.warning}</span><span>Der neue Stand ist kleiner als der alte.</span></p>
+    </div>
+    <div style="margin-top:1rem">
+      <button type="button" id="km-save" onclick="saveKilometer()" class="press-98 wide-btn accent">${ICONS.download} Stand merken</button>
+      <p id="km-foot" class="now-caption" style="padding:.625rem .25rem 0"></p>
+      <button type="button" id="km-forget" onclick="forgetKilometer()" class="press-98 wide-btn quiet" style="color:#D70015; margin-top:.875rem; display:none">Gemerkten Stand löschen</button>
+    </div>
+    <div class="pb-2" style="margin-top:.875rem"><button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Fertig</button></div>
+  `, { label: 'Kilometerstand' });
+  paintKilometer();
+  setTimeout(() => document.getElementById(kept ? 'km-new' : 'km-old')?.focus(), 350);
+}
+
+function paintKilometer() {
+  const oldReading = parseKilometer(document.getElementById('km-old')?.value);
+  const newReading = parseKilometer(document.getElementById('km-new')?.value);
+  const out = document.getElementById('km-result');
+  if (!out) return;
+  const both = oldReading != null && newReading != null;
+  out.textContent = both && newReading >= oldReading ? `${formatKilometer(newReading - oldReading)} km` : '—';
+  document.getElementById('km-backwards').style.display = both && newReading < oldReading ? 'flex' : 'none';
+  document.getElementById('km-save').disabled = newReading == null;
+  const kept = loadKilometer();
+  document.getElementById('km-forget').style.display = kept ? '' : 'none';
+  document.getElementById('km-foot').textContent = kmSavedNow
+    ? 'Gemerkt. Beim nächsten Öffnen steht dieser Wert schon oben.'
+    : kept
+    ? `„Alt“ ist der zuletzt gemerkte Stand${kept.savedAt ? ` · ${fmtDate(new Date(kept.savedAt).toISOString())}` : ''}. Kann überschrieben werden.`
+    : 'Beide Stände eintragen. „Stand merken“ übernimmt „Neu“ für das nächste Mal.';
+}
+
+/// "Stand merken": Neu becomes the Alt of the next time.
+function saveKilometer() {
+  const newReading = parseKilometer(document.getElementById('km-new')?.value);
+  if (newReading == null) return;
+  try { localStorage.setItem(kmKey(), JSON.stringify({ reading: newReading, savedAt: Date.now() })); }
+  catch (_) { toast('Der Stand konnte hier nicht gemerkt werden.', 'error'); return; }
+  document.getElementById('km-old').value = formatKilometer(newReading);
+  document.getElementById('km-new').value = '';
+  document.getElementById('km-new').blur();
+  kmSavedNow = true;
+  if (navigator.vibrate) navigator.vibrate(15);
+  paintKilometer();
+}
+
+async function forgetKilometer() {
+  const ok = await confirmSheet({ title: 'Gemerkten Stand löschen?', message: '„Alt“ muss danach wieder von Hand eingetragen werden.', confirmLabel: 'Löschen', danger: true });
+  if (ok) { try { localStorage.removeItem(kmKey()); } catch (_) { /* nothing was kept */ } }
+  // The question took the sheet's place: back to it, with what is true now.
+  openKilometerSheet();
+}
+
 const PDF_WIDTHS = (() => {
   const regular = [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
   const bold = [278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,584];
@@ -7693,6 +7751,7 @@ document.addEventListener('visibilitychange', syncWakeLock);
 // title, matching the Routen tab's language.
 // ---------------------------------------------------------------------
 function renderMoreTab() {
+  const tile = (color, iconSvg) => `<span class="tile" style="background:${color}">${iconSvg}</span>`;
   return `
     <div data-scroll role="main" class="flex-1 min-h-0 overflow-y-auto momentum" style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
       <div class="sticky top-0 z-20 bg-[#F2F2F7]/85 backdrop-blur-xl compact-title" data-compact-title style="opacity:0; padding-top: calc(env(safe-area-inset-top) + 0.5rem)">
@@ -7721,59 +7780,51 @@ function renderMoreTab() {
 
         <p class="${SECTION_LABEL}">Zusteller-Tools</p>
         <div class="${GROUP}">
-          <button onclick="openGourmetAccount()" class="${ROW}">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.person}</span>
-            <div class="flex-1 min-w-0">
-              <p class="text-[15px]">Gourmet-Anmeldung</p>
-              <p class="text-[13px] text-black/55">Zugang zum Zusteller-Portal</p>
-            </div>
-            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
-          </button>
           <a href="https://zusteller.gourmet-daheim.at/#/customers" target="_blank" rel="noopener" class="${ROW}">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.external}</span>
-            <p class="flex-1 text-[15px]">Gourmet-Kundenliste öffnen</p>
+            ${tile('#AF52DE', ICONS.external)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Gourmet</p><p class="text-[13px] text-black/55">Kundenliste öffnen</p></div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </a>
+          <button onclick="openTourPdfSheet()" class="${ROW}">
+            ${tile('#FF3B30', ICONS.doc)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Tour als PDF</p><p class="text-[13px] text-black/55">Stoppliste zum Ausdrucken</p></div>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>
           <button onclick="renderTurcodeSheet()" class="${ROW}">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.key}</span>
-            <p class="flex-1 text-[15px]">Türcode entschlüsseln</p>
+            ${tile('#5856D6', ICONS.key)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Türcode</p><p class="text-[13px] text-black/55">Buchstaben in Ziffern</p></div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </button>
           <button onclick="openKilometerSheet()" class="${ROW}">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.gauge}</span>
-            <div class="flex-1 min-w-0">
-              <p class="text-[15px]">Kilometerstand</p>
-              <p class="text-[13px] text-black/55">Gefahrene Kilometer laut Tacho</p>
-            </div>
-            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
-          </button>
-          <button onclick="openTourPdfSheet()" class="${ROW}">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.note}</span>
-            <div class="flex-1 min-w-0">
-              <p class="text-[15px]">Tour als PDF</p>
-              <p class="text-[13px] text-black/55">Stoppliste zum Ausdrucken</p>
-            </div>
+            ${tile('#30B0C7', ICONS.gauge)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Kilometerstand</p><p class="text-[13px] text-black/55">Gefahrene Kilometer</p></div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </button>
           <a href="tel:+43189145173,1" class="${ROW}">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.phone}</span>
-            <div class="flex-1 min-w-0">
-              <p class="text-[15px]">Büro anrufen</p>
-              <p class="text-[13px] text-black/55">+43 1 89145173, wählt die 1</p>
-            </div>
+            ${tile('#34C759', ICONS.phone)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Büro anrufen</p><p class="text-[13px] text-black/55">+43 1 89145173, wählt die 1</p></div>
           </a>
         </div>
 
-        <p class="${SECTION_LABEL}">Einstellungen</p>
-        <div class="${GROUP}">
+        <div class="${GROUP}" style="margin-top:1.5rem">
           <label class="flex items-center gap-3 px-4 py-3">
-            <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.compass}</span>
-            <span class="flex-1 text-[15px]">Navigations-App</span>
-            <select onchange="setMapsProvider(this.value)" aria-label="Navigations-App für „In Maps öffnen“-Links" class="text-[15px] text-black/55 bg-transparent text-right rounded-lg px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600">
+            ${tile('#007AFF', ICONS.compass)}
+            <span class="flex-1 text-[15px]">Navigation</span>
+            <select onchange="setMapsProvider(this.value)" aria-label="Navigations-App" class="text-[15px] text-black/55 bg-transparent text-right rounded-lg px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600">
               ${Object.entries(MAPS_PROVIDERS).map(([id, p]) => `<option value="${id}" ${getMapsProvider() === id ? 'selected' : ''}>${p.label}</option>`).join('')}
             </select>
           </label>
         </div>
+        <p class="now-caption" style="padding:.5rem 1rem 0">Womit „Navigation starten“ öffnet.</p>
+
+        <div class="${GROUP}" style="margin-top:1.5rem">
+          <button onclick="openGourmetAccount()" class="${ROW}">
+            ${tile('#8E8E93', ICONS.person)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Gourmet-Anmeldung</p><p class="text-[13px] text-black/55">Zugang zum Zusteller-Portal</p></div>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>
+        </div>
+        <p class="now-caption" style="padding:.5rem 1rem 0">Touren und Stopps liegen in deinem Konto auf dem Server, nicht auf diesem Gerät.</p>
 
         <p class="${SECTION_LABEL}">Über diese App</p>
         <div class="${GROUP}">
@@ -7786,7 +7837,7 @@ function renderMoreTab() {
           </div>
           <div class="flex items-center gap-3 px-4 py-3">
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.mapPin}</span>
-            <p class="text-[14px] text-black/60 leading-snug">Kartendaten: OpenFreeMap &amp; OpenStreetMap-Mitwirkende. Geocoding: Stadt Wien &amp; Nominatim. Routing: OSRM.</p>
+            <p class="text-[14px] text-black/60 leading-snug">Tourdaten: Zusteller-Portal. Karten: OpenFreeMap, Stadt Wien &amp; OpenStreetMap-Mitwirkende. Adressregister: Stadt Wien. Geocoder: Nominatim. Routing: OSRM.</p>
           </div>
           <button onclick="reloadApp()" class="${ROW}">
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.refresh}</span>
@@ -7800,7 +7851,7 @@ function renderMoreTab() {
             <span class="w-9 h-9 shrink-0 rounded-full bg-black/5 text-black/55 flex items-center justify-center">${ICONS.person}</span>
             <div class="flex-1 min-w-0">
               <p class="text-[15px] font-medium">Nikolaus Marek</p>
-              <p class="text-[13px] text-black/55">Entwickler · Kontakt aufnehmen</p>
+              <p class="text-[13px] text-black/55">nikolaus.marek@outlook.com</p>
             </div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </a>
