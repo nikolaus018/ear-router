@@ -6121,9 +6121,11 @@ function renderNowTab() {
   const caption = [
     `${r.delivered_count} von ${r.customer_count} geliefert`,
     notHome.length ? `${notHome.length} nicht angetroffen` : '',
+  const toLagerCount = stops.filter((s) => s.kind === 'customer' && s.outcome === 'toLager').length;
   ].filter(Boolean).join(' · ');
   const progress = `
     <p class="now-caption" style="padding: .25rem .25rem .5rem">${caption}</p>
+    toLagerCount ? `${toLagerCount} ins Lager` : '',
     <div class="h-1.5 bg-black/10 rounded-full overflow-hidden mb-4">
       <div class="h-full bg-success transition-all duration-500" style="width: ${customers.length ? Math.round((settled / customers.length) * 100) : 0}%"></div>
     </div>`;
@@ -6142,7 +6144,7 @@ function renderNowTab() {
 
   // Every door answered for. What is left is to say so — and, if a meal came
   // back, who did not get theirs.
-  const toLager = stops.filter((s) => s.outcome === 'toLager').length;
+  const toLager = toLagerCount;
   const allDelivered = notHome.length === 0;
   const count = r.customer_count;
   const handed = r.delivered_count === count
