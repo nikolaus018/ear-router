@@ -112,14 +112,6 @@ struct NavigateNextStopIntent: AppIntent {
             throw CarPlayNavigation.Failure.noStore
         }
         let (stop, url) = try CarPlayNavigation.destination(in: ModelContext(container))
-        // Already on its way there — sent by "Geliefert" at the door a minute
-        // ago, or by this same automation before the cable was wiggled. The
-        // navigation app comes to the front and keeps the route it has.
-        if NavigationHandoff.isUnderWay(to: stop.id),
-           let front = NavigationHandoff.provider.front
-        {
-            return .result(opensIntent: OpenURLIntent(front))
-        }
         // Plugging the phone in at the depot is leaving for the Lager, too.
         TourDeparture.noteNavigation(to: stop)
         return .result(opensIntent: OpenURLIntent(url))

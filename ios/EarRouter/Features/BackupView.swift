@@ -266,7 +266,6 @@ enum Settings {
         Upstreams.Keys.osrmURL,
         NavigationHandoff.providerKey,
         CarPlayNavigation.enabledKey,
-        AutoContinue.enabledKey,
         Kilometerstand.lastKey,
         Kilometerstand.hasLastKey,
         Kilometerstand.savedAtKey,
@@ -291,8 +290,7 @@ enum Settings {
             switch key {
             case Kilometerstand.lastKey, Kilometerstand.savedAtKey:
                 out[key] = String(defaults.double(forKey: key))
-            case Kilometerstand.hasLastKey, CarPlayNavigation.enabledKey,
-                AutoContinue.enabledKey:
+            case Kilometerstand.hasLastKey, CarPlayNavigation.enabledKey:
                 out[key] = defaults.bool(forKey: key) ? "1" : "0"
             default:
                 if let s = defaults.string(forKey: key) { out[key] = s }
@@ -307,8 +305,7 @@ enum Settings {
             switch key {
             case Kilometerstand.lastKey, Kilometerstand.savedAtKey:
                 if let d = Double(value) { defaults.set(d, forKey: key) }
-            case Kilometerstand.hasLastKey, CarPlayNavigation.enabledKey,
-                AutoContinue.enabledKey:
+            case Kilometerstand.hasLastKey, CarPlayNavigation.enabledKey:
                 defaults.set(value == "1" || value.lowercased() == "true", forKey: key)
             default:
                 defaults.set(value, forKey: key)

@@ -3,8 +3,7 @@ import Testing
 import SwiftData
 @testable import EarRouter
 
-/// Which doors are carried along from the one the van is standing at, and when
-/// "Geliefert" starts the navigation by itself.
+/// Which doors are carried along from the one the van is standing at.
 @MainActor
 struct WalkOnTests {
 
@@ -63,68 +62,5 @@ struct WalkOnTests {
         #expect(WalkOn.doors(after: a, in: [a, b]).isEmpty)
         let found = door("C", north: 0)
         #expect(WalkOn.doors(after: found, in: [found, b]).isEmpty)
-    }
-
-    // MARK: - Geliefert, and on
-
-    @Test func continuesToADoorThatIsDrivenTo() {
-        let a = door("A", north: 0), far = door("D", north: 400)
-        let next = AutoContinue.destination(
-            after: a, outcome: .delivered, next: far, enabled: true)
-        #expect(next?.id == far.id)
-        // Nobody home is still a door stood at.
-        #expect(
-            AutoContinue.destination(
-                after: a, outcome: .notHome, next: far, enabled: true) != nil)
-    }
-
-    @Test func staysPutForADoorThatIsWalkedTo() {
-        let a = door("A", north: 0), b = door("B", north: 60)
-        #expect(
-            AutoContinue.destination(
-                after: a, outcome: .delivered, next: b, enabled: true) == nil)
-    }
-
-    @Test func staysPutWhenThereIsNoDrivingToDo() {
-        let a = door("A", north: 0), far = door("D", north: 400)
-        func go(_ outcome: DeliveryOutcome, next: Stop?, on: Bool = true)
-            -> Stop?
-        {
-            AutoContinue.destination(
-                after: a, outcome: outcome, next: next, enabled: on)
-        }
-        // Noted from the phone, not at a door.
-        #expect(go(.cancelled, next: far) == nil)
-        #expect(go(.toLager, next: far) == nil)
-        // The tour is done, or it is switched off.
-        #expect(go(.delivered, next: nil) == nil)
-        #expect(go(.delivered, next: far, on: false) == nil)
-    }
-
-    @Test func aStopJustSentToTheNavigationIsUnderWay() {
-        let defaults = UserDefaults(suiteName: "WalkOnTests.\(UUID().uuidString)")!
-        let stop = UUID(), other = UUID()
-        let sent = Date(timeIntervalSince1970: 1_000_000)
-        #expect(!NavigationHandoff.isUnderWay(to: stop, at: sent, in: defaults))
-        NavigationHandoff.noteStarted(stop, at: sent, in: defaults)
-        #expect(NavigationHandoff.isUnderWay(to: stop, at: sent + 120, in: defaults))
-        // Another stop, or the same one after a break, is asked for again.
-        #expect(!NavigationHandoff.isUnderWay(to: other, at: sent + 120, in: defaults))
-        #expect(!NavigationHandoff.isUnderWay(to: stop, at: sent + 11 * 60, in: defaults))
-        #expect(!NavigationHandoff.isUnderWay(to: stop, at: sent - 60, in: defaults))
-    }
-
-    @Test func everyNavigationAppCanBeBroughtToTheFront() {
-        for provider in NavigationHandoff.Provider.allCases {
-            #expect(provider.front != nil)
-        }
-    }
-
-    @Test func goesOnFromTheLagerToTheFirstDoor() {
-        let lager = door("Lager", north: 0, kind: .via), a = door("A", north: 30)
-        #expect(
-            AutoContinue.destination(
-                after: lager, outcome: .delivered, next: a, enabled: true)
-                != nil)
     }
 }

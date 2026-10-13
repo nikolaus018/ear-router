@@ -51,15 +51,6 @@ enum WalkOn {
         return out
     }
 
-    /// Whether `next` is carried along from `stop` rather than driven to.
-    @MainActor
-    static func reaches(_ next: Stop, from stop: Stop) -> Bool {
-        guard stop.kind == .customer, next.kind == .customer,
-              let metres = metres(from: points(of: stop), to: points(of: next))
-        else { return false }
-        return metres <= reach
-    }
-
     /// Where a stop is: its pin on the map, and the street door when that is
     /// somewhere else. Two houses are as close as their closest pair.
     @MainActor
@@ -90,37 +81,5 @@ enum WalkOn {
             }
         }
         return best
-    }
-}
-
-/// "Geliefert" carries straight on: the navigation to the next stop starts
-/// with the tick, so it is already running when the driver is back at the
-/// wheel — one press per door instead of two and a look for the second.
-enum AutoContinue {
-    /// Also read directly by `@AppStorage` in the settings screen.
-    static let enabledKey = "now.autoContinue"
-
-    /// On unless switched off. It follows a button the driver pressed, at the
-    /// moment the next thing they do is drive there.
-    static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: enabledKey) == nil || defaults.bool(forKey: enabledKey)
-    }
-
-    /// Where to navigate once `stop` has been answered for with `outcome`, or
-    /// `nil` to stay put.
-    ///
-    /// Only after a door the driver stood at. Abbestellt and "ins Lager" are
-    /// noted from the phone, often the evening before, and re-plan the tour
-    /// behind them — neither is a moment to open a navigation app. And not to
-    /// a door within `WalkOn.reach`: that one is walked to.
-    @MainActor
-    static func destination(
-        after stop: Stop, outcome: DeliveryOutcome, next: Stop?,
-        enabled: Bool = isEnabled()
-    ) -> Stop? {
-        guard enabled, !outcome.skipsDoor,
-              let next, next.id != stop.id, !WalkOn.reaches(next, from: stop)
-        else { return nil }
-        return next
     }
 }

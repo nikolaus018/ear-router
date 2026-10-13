@@ -53,16 +53,6 @@ enum NavigationHandoff {
             }
         }
 
-        /// The app itself, with nothing asked of it: whatever it is
-        /// navigating to stays as it is. See `isUnderWay`.
-        var front: URL? {
-            switch self {
-            case .apple: URL(string: "maps://")
-            case .waze: URL(string: "waze://")
-            case .google: URL(string: "comgooglemaps://")
-            }
-        }
-
         func address(_ addr: String) -> URL? {
             var allowed = CharacterSet.urlQueryAllowed
             // `+` as well as the obvious separators: it is legal in a query
@@ -96,41 +86,6 @@ enum NavigationHandoff {
                 .flatMap(Provider.init(rawValue:)) ?? .apple
         }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: providerKey) }
-    }
-
-    // MARK: - Already under way
-
-    /// Which stop the navigation app was last sent to, and when.
-    ///
-    /// Two things start a navigation without a thumb on "Navigation": the tick
-    /// at the door ("Geliefert" goes on to the next stop) and the car (the
-    /// CarPlay automation, as the phone is plugged back in a minute later).
-    /// Both mean the same stop. Sent twice, the navigation app throws away a
-    /// route it is already driving and works the same one out again — so the
-    /// second one to arrive only brings the app to the front.
-    static let lastStopKey = "maps.lastStop"
-    static let lastAtKey = "maps.lastAt"
-
-    /// The walk from a door back to the van, generously. Past this the
-    /// navigation app may have been closed or sent somewhere else by hand,
-    /// and asking again is the safe thing.
-    static let underWayFor: TimeInterval = 10 * 60
-
-    static func noteStarted(
-        _ stopID: UUID, at now: Date = Date(), in defaults: UserDefaults = .standard
-    ) {
-        defaults.set(stopID.uuidString, forKey: lastStopKey)
-        defaults.set(now, forKey: lastAtKey)
-    }
-
-    static func isUnderWay(
-        to stopID: UUID, at now: Date = Date(), in defaults: UserDefaults = .standard
-    ) -> Bool {
-        guard defaults.string(forKey: lastStopKey) == stopID.uuidString,
-              let at = defaults.object(forKey: lastAtKey) as? Date
-        else { return false }
-        let age = now.timeIntervalSince(at)
-        return age >= 0 && age < underWayFor
     }
 
     /// Pin, then entrance, then address — see the type's own comment.
