@@ -169,13 +169,19 @@ struct TourSplitSheet: View {
             let stops = try await PortalPlacement.place(deliveries) { done, total in
                 Task { @MainActor in busy = "Adresse \(done) von \(total) wird gesucht …" }
             }
+            // One table call, for the fair split and for every person's
+            // "ca. 4 h 05". Never fails: without OSRM it is the straight line.
+            busy = "Fahrzeiten werden berechnet …"
+            let durations = await SplitDurations.load(for: stops)
+            try Task.checkCancellation()
             // The token and the deliveries are kept: a share that becomes a
             // tour needs its Paket and phone numbers, and those are one
             // detail call per stop away.
             split = SplitState(
                 tourName: tour.name, tourID: tour.id, date: date, people: people, stops: stops,
                 token: token,
-                deliveries: Dictionary(deliveries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a }))
+                deliveries: Dictionary(deliveries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a }),
+                durations: durations)
         } catch is CancellationError {
         } catch let e as AppError {
             error = e
@@ -195,6 +201,9 @@ struct SplitStop: Identifiable {
     let address: String
     let plz: String
     let coordinate: CLLocationCoordinate2D?
+    /// The geocoder found this very door, not only the street — so another
+    /// stop at the same point is the same building. See `fairSplitInput`.
+    var exactPoint = false
 
     /// The stop as an import entry, with only what the tour list carried.
     /// Used when the detail fetch is not available or did not answer.
@@ -221,6 +230,9 @@ struct SplitState: Identifiable {
     let token: String?
     /// The delivery behind each stop, for that same detail fetch.
     let deliveries: [Int: GourmetPortal.Delivery]
+    /// The drive between every two stops, for the fair split and the day
+    /// each person has. `nil` until it is known.
+    var durations: SplitDurations?
     /// Delivery id → person index. A stop with no entry is still free.
     private(set) var owner: [Int: Int] = [:]
     private var history: [[Int: Int]] = []
@@ -228,7 +240,7 @@ struct SplitState: Identifiable {
     init(
         tourName: String, tourID: Int? = nil, date: Date = Date(), people: Int,
         stops: [SplitStop], token: String? = nil,
-        deliveries: [Int: GourmetPortal.Delivery] = [:]
+        deliveries: [Int: GourmetPortal.Delivery] = [:], durations: SplitDurations? = nil
     ) {
         self.tourName = tourName
         self.tourID = tourID
@@ -237,9 +249,14 @@ struct SplitState: Identifiable {
         self.stops = stops
         self.token = token
         self.deliveries = deliveries
+        self.durations = durations
     }
 
     var canUndo: Bool { !history.isEmpty }
+    /// Whether the fair split has anything to share out.
+    var hasFreePlacedStops: Bool {
+        stops.contains { $0.coordinate != nil && owner[$0.id] == nil }
+    }
     var freeCount: Int { stops.count - owner.count }
 
     func owner(of stop: SplitStop) -> Int? { owner[stop.id] }
@@ -265,6 +282,17 @@ struct SplitState: Identifiable {
     mutating func toggle(_ id: Int, for person: Int) {
         history.append(owner)
         owner[id] = owner[id] == person ? nil : person
+    }
+
+    /// The fair split's answer, as one step "Rückgängig" takes back whole.
+    /// Returns how many stops changed hands.
+    @discardableResult
+    mutating func assign(_ owners: [Int: Int]) -> Int {
+        let changed = owners.filter { owner[$0.key] != $0.value && (0..<people).contains($0.value) }
+        guard !changed.isEmpty else { return 0 }
+        history.append(owner)
+        for (id, person) in changed { owner[id] = person }
+        return changed.count
     }
 
     mutating func undo() {
@@ -414,6 +442,9 @@ private struct TourSplitMapView: View {
     @State private var confirmingClose = false
     @State private var tapTick = 0
     @State private var lassoTick = 0
+    /// Asks the panel for the fair split: the panel is the screen in front,
+    /// and the one that can show it working and what it came to.
+    @State private var fairRequest = 0
 
     var body: some View {
         NavigationStack {
@@ -443,6 +474,10 @@ private struct TourSplitMapView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        Button("Fair aufteilen", systemImage: "wand.and.stars") {
+                            fairRequest += 1
+                        }
+                        .disabled(!state.hasFreePlacedStops)
                         Button("Rückgängig", systemImage: "arrow.uturn.backward") {
                             withAnimation(.snappy) { state.undo() }
                         }
@@ -472,6 +507,7 @@ private struct TourSplitMapView: View {
             SplitPanel(
                 state: $state, person: $person, detent: $detent,
                 confirmingClose: $confirmingClose,
+                fairRequest: fairRequest,
                 onClose: { dismiss() },
                 onOpenedTour: onOpenedTour,
                 onFocus: { stop in
@@ -966,22 +1002,36 @@ private struct SplitPanel: View {
     /// Asked from here rather than from the map underneath: this sheet is the
     /// screen in front, and only the one in front can present anything.
     @Binding var confirmingClose: Bool
+    /// Bumped by "Fair aufteilen" in the map's menu.
+    var fairRequest: Int
     var onClose: () -> Void
     var onOpenedTour: () -> Void
     var onFocus: (SplitStop) -> Void
 
     @State private var showingOverview = false
+    @State private var busy: String?
+    @State private var fairSummary: String?
 
     private var color: Color { SplitState.colors[person] }
     private var mine: [SplitStop] { state.stops(of: person) }
 
     var body: some View {
+        // Once per redraw: every person's day is a short route worked out.
+        let days = state.days()
         NavigationStack {
             List {
                 Section {
                     if mine.isEmpty {
                         Text("Noch keine Stopps — einkreisen oder antippen.")
                             .foregroundStyle(.secondary)
+                        if state.hasFreePlacedStops {
+                            Button {
+                                startFairSplit()
+                            } label: {
+                                Label("Automatisch fair aufteilen", systemImage: "wand.and.stars")
+                            }
+                            .disabled(busy != nil)
+                        }
                     }
                     ForEach(mine) { stop in
                         Button {
@@ -1016,8 +1066,14 @@ private struct SplitPanel: View {
             // below the list rather than scrolling away inside it: at the
             // smallest detent the list is two rows tall, and both of them are
             // needed from there.
-            .safeAreaInset(edge: .top, spacing: 0) { personBar }
+            .safeAreaInset(edge: .top, spacing: 0) { personBar(days: days) }
             .safeAreaInset(edge: .bottom, spacing: 0) { finishBar }
+            .floatingBanner {
+                if let busy {
+                    BusyBanner(text: busy)
+                }
+            }
+            .animation(.snappy, value: busy)
             .navigationTitle("Aufteilen")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
@@ -1028,6 +1084,16 @@ private struct SplitPanel: View {
         .onChange(of: showingOverview) { _, open in
             // The overview is a list of everyone's share; it wants the room.
             if open { detent = .large }
+        }
+        .onChange(of: fairRequest) { _, _ in startFairSplit() }
+        .alert(
+            "Fair aufgeteilt",
+            isPresented: Binding(
+                get: { fairSummary != nil }, set: { if !$0 { fairSummary = nil } })
+        ) {
+            Button("OK") {}
+        } message: {
+            Text(fairSummary ?? "")
         }
         .confirmationDialog(
             "Aufteilung verwerfen?", isPresented: $confirmingClose, titleVisibility: .visible
@@ -1043,14 +1109,13 @@ private struct SplitPanel: View {
     /// several, and the one that holds eight people as comfortably as two —
     /// with "Weiter" beside it for the way a split is actually done: one
     /// person, then the next.
-    private var personBar: some View {
+    private func personBar(days: [SplitDay]?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
                 Menu {
                     Picker("Person", selection: $person) {
                         ForEach(0..<state.people, id: \.self) { index in
-                            Text("Person \(index + 1) · \(Format.stops(state.stops(of: index).count))")
-                                .tag(index)
+                            Text(pickerLine(for: index, days: days)).tag(index)
                         }
                     }
                 } label: {
@@ -1066,7 +1131,7 @@ private struct SplitPanel: View {
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
 
-                Text(Format.stops(mine.count))
+                Text(dayLine(days))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .contentTransition(.numericText())
@@ -1106,6 +1171,49 @@ private struct SplitPanel: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+
+    /// "12 Stopps · ca. 4 h 05": the person's day as "Tour vorbereiten" would
+    /// count it, so a split drawn by hand can be seen to be fair or not.
+    private func dayLine(_ days: [SplitDay]?) -> String {
+        let count = Format.stops(mine.count)
+        guard let days, days.indices.contains(person), days[person].stops > 0 else { return count }
+        return "\(count) · ca. \(days[person].clock)"
+    }
+
+    private func pickerLine(for index: Int, days: [SplitDay]?) -> String {
+        let line = "Person \(index + 1) · \(Format.stops(state.stops(of: index).count))"
+        guard let days, days.indices.contains(index), days[index].stops > 0 else { return line }
+        return "\(line) · \(days[index].clock)"
+    }
+
+    private func startFairSplit() {
+        guard busy == nil, state.hasFreePlacedStops else { return }
+        Task { await fairSplit() }
+    }
+
+    /// The free stops shared out so everybody's day is as long as anybody's
+    /// — see `SplitPlanner`. What was handed out by hand stays where it is.
+    private func fairSplit() async {
+        busy = "Wird fair aufgeteilt …"
+        defer { busy = nil }
+        // Asked again when the first time had no OSRM: the signal may be back.
+        if state.durations?.estimated != false {
+            busy = "Fahrzeiten werden berechnet …"
+            let fresh = await SplitDurations.load(for: state.stops)
+            if state.durations == nil || !fresh.estimated { state.durations = fresh }
+            busy = "Wird fair aufgeteilt …"
+        }
+        guard let input = state.fairSplitInput(history: .current) else { return }
+        let planned = await Task.detached(priority: .userInitiated) {
+            SplitPlanner.plan(
+                doors: input.doors, people: input.people, durations: input.durations.seconds,
+                deadline: Date().addingTimeInterval(SplitPlanner.thinkingTime))
+        }.value
+        withAnimation(.snappy) { _ = state.assign(input.owners(planned)) }
+        let unplaced = state.stops.filter { $0.coordinate == nil && state.owner(of: $0) == nil }
+        fairSummary = FairSplitInput.summary(
+            input.days(planned), estimated: input.durations.estimated, unplacedFree: unplaced.count)
     }
 
     private func unplacedRow(_ stop: SplitStop) -> some View {
@@ -1181,9 +1289,10 @@ private struct SplitOverview: View {
     }
 
     var body: some View {
+        let days = state.days()
         List {
             ForEach(0..<state.people, id: \.self) { person in
-                section(for: person)
+                section(for: person, day: days.flatMap { $0.indices.contains(person) ? $0[person] : nil })
             }
             let rest = state.stops(of: nil)
             if !rest.isEmpty {
@@ -1215,7 +1324,7 @@ private struct SplitOverview: View {
     }
 
     @ViewBuilder
-    private func section(for person: Int) -> some View {
+    private func section(for person: Int, day: SplitDay?) -> some View {
         let mine = state.stops(of: person)
         Section {
             if mine.isEmpty {
@@ -1235,6 +1344,9 @@ private struct SplitOverview: View {
             HStack(spacing: 6) {
                 Circle().fill(SplitState.colors[person]).frame(width: 10, height: 10)
                 Text("Person \(person + 1) · \(mine.count)")
+                if let day, day.stops > 0 {
+                    Text("· ca. \(day.clock)").foregroundStyle(.secondary)
+                }
                 Spacer()
                 if !mine.isEmpty {
                     ShareLink(item: state.shareText(for: person)) {

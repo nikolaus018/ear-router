@@ -34,10 +34,24 @@ struct PaceHistory: Equatable, Sendable {
     /// at the average of all of them, the Monday round was promised finished
     /// forty minutes before it was.
     var doorByTour: [String: Double] = [:]
+    /// What each customer's own door took, by `StockwerkKey`: the fourth floor
+    /// without a lift, the Haustür nobody opens, the lady who wants to talk.
+    /// Kept raw — the mean and how many doors it is of — because what it is
+    /// pulled towards is the tour it is driven on, and that is only known when
+    /// it is asked for. See `doorMinutes(forCustomer:onTour:)`.
+    var doorByCustomer: [String: CustomerDoor] = [:]
+
+    struct CustomerDoor: Equatable, Sendable {
+        var minutes: Double
+        var samples: Int
+    }
 
     /// How many doors' worth the figure for all tours weighs against one
     /// tour's own: a round driven once has said little yet.
     static let tourWeight = 8.0
+    /// The same for one customer against their tour: a door is driven once
+    /// a week, and one slow morning there is not who they are.
+    static let customerWeight = 3.0
 
     /// What a tour is recognised by from one week to the next: its name,
     /// whatever the capitals and the spacing.
@@ -48,6 +62,15 @@ struct PaceHistory: Equatable, Sendable {
     /// The door time to start a tour of this name from.
     func doorMinutes(forTour name: String) -> Double? {
         doorByTour[Self.tourKey(name)] ?? doorMinutes
+    }
+
+    /// The door time to count one customer at: their own doors, pulled
+    /// towards the tour's figure — or the assumption, on a phone with none.
+    func doorMinutes(forCustomer key: String?, onTour name: String) -> Double {
+        let tour = doorMinutes(forTour: name) ?? RouteSnapshot.Pace.assumedMinutes
+        guard let key, let own = doorByCustomer[key], own.samples > 0 else { return tour }
+        let n = Double(own.samples)
+        return (own.minutes * n + Self.customerWeight * tour) / (n + Self.customerWeight)
     }
 
     static let none = PaceHistory()
@@ -96,11 +119,20 @@ struct PaceHistory: Equatable, Sendable {
         var waits: [Double] = []
         var leads: [Double] = []
         var byTour: [String: [Double]] = [:]
+        var byCustomer: [String: [Double]] = [:]
 
         for route in routes where route.status == .completed {
             let snapshot = RouteSnapshot(route, history: .none)
             doors.append(contentsOf: snapshot.doorSamples)
             byTour[tourKey(route.name), default: []].append(contentsOf: snapshot.doorSamples)
+            let arrivals = Dictionary(
+                snapshot.ordered.compactMap { stop in
+                    snapshot.plannedMinutes(to: stop).map { (stop.id, $0) }
+                }, uniquingKeysWith: { a, _ in a })
+            for sample in RouteSnapshot.doorSamplesByStop(snapshot.ordered, arrivals: arrivals) {
+                guard let key = StockwerkKey.make(for: sample.stop) else { continue }
+                byCustomer[key, default: []].append(sample.minutes)
+            }
             if let wait = lagerWait(in: snapshot) { waits.append(wait) }
             if let lead = lead(in: snapshot, departedAt: departure(route.id)) { leads.append(lead) }
         }
@@ -113,6 +145,11 @@ struct PaceHistory: Equatable, Sendable {
             let own = samples.reduce(0) { $0 + min($1, RouteSnapshot.Pace.cap) }
             let blended = (own + tourWeight * door) / (Double(samples.count) + tourWeight)
             learned.doorByTour[key] = min(max(blended, 2), RouteSnapshot.Pace.cap)
+        }
+        for (key, samples) in byCustomer where !samples.isEmpty {
+            let own = samples.reduce(0) { $0 + min($1, RouteSnapshot.Pace.cap) }
+            learned.doorByCustomer[key] = CustomerDoor(
+                minutes: own / Double(samples.count), samples: samples.count)
         }
 
         // What is left of the wait once the first door's own time is taken

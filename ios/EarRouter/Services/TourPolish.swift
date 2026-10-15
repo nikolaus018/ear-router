@@ -82,8 +82,9 @@ enum TourPolish {
     }
 
     /// Makes improving moves on `o[lo..<hi]` until there are none, and returns
-    /// what the tour then costs.
-    private static func settle(_ o: inout [Int], _ m: [[Double]], _ lo: Int, _ hi: Int) -> Double {
+    /// what the tour then costs. `SplitPlanner` uses it on every share it
+    /// tries; it needs `hi - lo >= 1`.
+    static func settle(_ o: inout [Int], _ m: [[Double]], _ lo: Int, _ hi: Int) -> Double {
         let n = o.count
         // The drive between two neighbours, where an end of the tour has no
         // neighbour and costs nothing.
@@ -159,7 +160,7 @@ enum TourPolish {
     }
 
     /// A fixed-seed generator, so one tour never comes back in two orders.
-    private struct SplitMix {
+    struct SplitMix {
         var state: UInt64
         init(seed: UInt64) { state = seed }
         mutating func next() -> UInt64 {

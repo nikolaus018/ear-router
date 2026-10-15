@@ -191,7 +191,8 @@ enum PortalPlacement {
                 plz: delivery.deliveryAddress.zip?.trimmed ?? "")
         }
         var placed: [Int: CLLocationCoordinate2D] = [:]
-        try await withThrowingTaskGroup(of: (Int, CLLocationCoordinate2D?).self) { group in
+        var exact: Set<Int> = []
+        try await withThrowingTaskGroup(of: (Int, CLLocationCoordinate2D?, Bool).self) { group in
             var next = 0
             var done = 0
             func enqueue() {
@@ -202,26 +203,30 @@ enum PortalPlacement {
                     do {
                         let hit = try await Geocoder.shared.geocode(
                             strasse: input.address, plz: input.plz)
-                        return (input.id, CLLocationCoordinate2D(latitude: hit.lat, longitude: hit.lon))
+                        return (
+                            input.id, CLLocationCoordinate2D(latitude: hit.lat, longitude: hit.lon),
+                            hit.precision == .exact)
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
-                        return (input.id, nil)
+                        return (input.id, nil, false)
                     }
                 }
             }
             for _ in 0..<4 { enqueue() }
-            while let (id, coordinate) = try await group.next() {
+            while let (id, coordinate, isExact) = try await group.next() {
                 done += 1
                 onProgress(done, inputs.count)
                 if let coordinate { placed[id] = coordinate }
+                if isExact { exact.insert(id) }
                 enqueue()
             }
         }
         return inputs.map { input in
             SplitStop(
                 id: input.id, name: input.name.isEmpty ? "Ohne Namen" : input.name,
-                address: input.address, plz: input.plz, coordinate: placed[input.id])
+                address: input.address, plz: input.plz, coordinate: placed[input.id],
+                exactPoint: exact.contains(input.id))
         }
     }
 }
