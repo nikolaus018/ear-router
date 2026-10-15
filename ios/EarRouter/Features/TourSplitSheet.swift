@@ -235,7 +235,13 @@ struct SplitState: Identifiable {
     let deliveries: [Int: GourmetPortal.Delivery]
     /// The drive between every two stops, for the fair split and the day
     /// each person has. `nil` until it is known.
-    var durations: SplitDurations?
+    var durations: SplitDurations? {
+        didSet { revision += 1 }
+    }
+    /// Counts every change to the stops or their drive times, which is what
+    /// tells `planCache` an answer it holds is out of date.
+    private(set) var revision = 0
+    let planCache = SplitPlanCache()
     /// Delivery id → person index. A stop with no entry is still free.
     private(set) var owner: [Int: Int] = [:]
     private var history: [[Int: Int]] = []
@@ -361,7 +367,7 @@ struct SplitState: Identifiable {
     // MARK: Sharing
 
     func shareText(for person: Int) -> String {
-        let mine = stops(of: person)
+        let mine = drivingOrder(of: person)
         return (["Person \(person + 1) (\(mine.count))"]
             + mine.map { "• \($0.name) – \($0.address)" })
             .joined(separator: "\n")
@@ -1018,7 +1024,7 @@ private struct SplitPanel: View {
     @State private var fairSummary: String?
 
     private var color: Color { SplitState.colors[person] }
-    private var mine: [SplitStop] { state.stops(of: person) }
+    private var mine: [SplitStop] { state.drivingOrder(of: person) }
 
     var body: some View {
         // Once per redraw: every person's day is a short route worked out.
@@ -1183,14 +1189,9 @@ private struct SplitPanel: View {
     /// be fair or not — and six customers at one address read as the one
     /// stop they are to drive to.
     private func dayLine(_ days: [SplitDay]?) -> String {
-        let count = Format.stops(mine.count)
+        let count = Format.stops(state.stops(of: person).count)
         guard let days, days.indices.contains(person), days[person].stops > 0 else { return count }
-        var day = days[person]
-        // The stops off the map are the person's too, each its own address.
-        let unplaced = mine.count - day.stops
-        day.stops += unplaced
-        day.addresses += unplaced
-        return "\(day.stopsLine) · ca. \(day.clock)"
+        return "\(days[person].stopsLine) · ca. \(days[person].clock)"
     }
 
     private func pickerLine(for index: Int, days: [SplitDay]?) -> String {
@@ -1216,7 +1217,8 @@ private struct SplitPanel: View {
             if state.durations == nil || !fresh.estimated { state.durations = fresh }
             busy = "Wird fair aufgeteilt …"
         }
-        guard let input = state.fairSplitInput(history: .current) else { return }
+        let history = PaceHistory.current
+        guard let input = state.fairSplitInput(history: history) else { return }
         let planned = await Task.detached(priority: .userInitiated) {
             SplitPlanner.plan(
                 doors: input.doors, people: input.people, durations: input.durations.seconds,
@@ -1226,9 +1228,11 @@ private struct SplitPanel: View {
         // and a door tapped meanwhile was a decision.
         let owners = input.owners(planned).filter { state.owner[$0.key] == nil }
         withAnimation(.snappy) { _ = state.assign(owners) }
+        state.remember(planned, from: input, history: history)
         let unplaced = state.stops.filter { $0.coordinate == nil && state.owner(of: $0) == nil }
         fairSummary = FairSplitInput.summary(
-            input.days(planned), estimated: input.durations.estimated, unplacedFree: unplaced.count)
+            state.days(history: history) ?? input.days(planned),
+            estimated: input.durations.estimated, unplacedFree: unplaced.count)
     }
 
     private func unplacedRow(_ stop: SplitStop) -> some View {
@@ -1340,7 +1344,7 @@ private struct SplitOverview: View {
 
     @ViewBuilder
     private func section(for person: Int, day: SplitDay?) -> some View {
-        let mine = state.stops(of: person)
+        let mine = state.drivingOrder(of: person)
         Section {
             if mine.isEmpty {
                 Text("Keine Stopps").foregroundStyle(.secondary)

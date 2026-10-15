@@ -131,12 +131,13 @@ enum SplitPlanner {
     static let gapWeight = 1.0
 
     /// What a split made by hand comes to: each person's doors in the
-    /// shortest order found, and how long their day is.
+    /// shortest order found, and how long their day is — finished the way
+    /// `plan` finishes its own, so a share counts the same either way.
     static func evaluate(
         _ shares: [[Int]], doors: [Door], durations: [[Double]]
     ) -> [Day] {
         let engine = Engine(doors: doors, people: shares.count, durations: durations)
-        return shares.map { engine.day(engine.ordered($0)) }
+        return shares.map { engine.day(engine.polished(engine.ordered($0))) }
     }
 
     // MARK: - The search

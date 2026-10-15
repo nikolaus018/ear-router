@@ -171,21 +171,19 @@ extension SplitState {
     /// Stops with no place on the map are left out: there is no telling what
     /// the drive to them is. They stay where they are, free or not.
     ///
-    /// `handedOutOnly` leaves the free stops out too: what each person's day
-    /// is now, rather than what it would be with the free door next to one
-    /// of theirs.
-    func fairSplitInput(history: PaceHistory, handedOutOnly: Bool = false) -> FairSplitInput? {
+    /// `person` leaves everybody else's stops out, and the free ones: what
+    /// that person's day is now, rather than what it would be with the free
+    /// door next to one of theirs.
+    func fairSplitInput(history: PaceHistory, of person: Int? = nil) -> FairSplitInput? {
         guard let durations else { return nil }
         let customers = stops.compactMap { stop -> ParkingStops.Customer? in
             guard let point = durations.point[stop.id], let coordinate = stop.coordinate,
-                  !handedOutOnly || owner[stop.id] != nil
+                  person == nil || owner[stop.id] == person
             else { return nil }
             return ParkingStops.Customer(
                 id: stop.id, address: ParkingStops.addressKey(stop.door ?? stop.address, plz: stop.plz),
                 point: point, coordinate: coordinate, exact: stop.exactPoint, owner: owner[stop.id],
-                minutes: history.doorMinutes(
-                    forCustomer: StockwerkKey.make(kunde: stop.name, strasse: stop.address, plz: stop.plz),
-                    onTour: tourName))
+                minutes: doorMinutes(stop, history: history))
         }
         let (units, doors, addresses) = ParkingStops.build(customers)
         let lead = history.leadMinutes ?? durations.startToLagerSeconds / 60
@@ -195,17 +193,109 @@ extension SplitState {
             durations: durations, fixedMinutes: lead + loading)
     }
 
+    private func doorMinutes(_ stop: SplitStop, history: PaceHistory) -> Double {
+        history.doorMinutes(
+            forCustomer: StockwerkKey.make(kunde: stop.name, strasse: stop.address, plz: stop.plz),
+            onTour: tourName)
+    }
+
     /// Each person's day with the split as it stands — drawn by hand or not.
     /// `nil` until the drive between the stops is known.
     func days(history: PaceHistory = .current) -> [SplitDay]? {
-        guard let input = fairSplitInput(history: history, handedOutOnly: true) else { return nil }
-        var shares = [[Int]](repeating: [], count: people)
-        for (index, door) in input.doors.enumerated() {
-            if let who = door.owner, who < people { shares[who].append(index) }
+        guard durations != nil else { return nil }
+        return (0..<people).map { plan(of: $0, history: history)?.day ?? SplitDay(
+            stops: 0, drivingMinutes: 0, doorMinutes: 0, totalMinutes: 0) }
+    }
+
+    /// One person's day as it stands, and their stops in the order they
+    /// would drive them. `nil` until the drive between the stops is known.
+    ///
+    /// Finished in the order the planner finishes its own, so the figure
+    /// under a person is the one "Fair aufteilen" said; and kept until their
+    /// stops change, rather than worked out again on every redraw.
+    func plan(of person: Int, history: PaceHistory = .current) -> SplitPlan? {
+        guard durations != nil else { return nil }
+        let key = SplitPlanCache.Key(
+            ids: stops(of: person).map(\.id), revision: revision, history: history)
+        if let known = planCache.plan(for: person, key: key) { return known }
+        guard let input = fairSplitInput(history: history, of: person) else { return nil }
+        let day = SplitPlanner.evaluate(
+            [Array(input.doors.indices)], doors: input.doors, durations: input.durations.seconds)[0]
+        let plan = finished(day, of: person, in: input, history: history)
+        planCache.store(plan, for: person, key: key)
+        return plan
+    }
+
+    /// Keeps what the fair split itself worked out as everybody's day, for
+    /// each person whose stops are still exactly what it gave them — so the
+    /// figures on screen are the ones its summary says.
+    func remember(_ planned: [SplitPlanner.Day], from input: FairSplitInput, history: PaceHistory) {
+        for (person, day) in planned.enumerated() where person < people {
+            let given = Set(day.doors.flatMap { input.units[$0] })
+            let mine = stops(of: person)
+            guard Set(mine.filter { durations?.point[$0.id] != nil }.map(\.id)) == given else { continue }
+            planCache.store(
+                finished(day, of: person, in: input, history: history), for: person,
+                key: SplitPlanCache.Key(ids: mine.map(\.id), revision: revision, history: history))
         }
-        let planned = SplitPlanner.evaluate(
-            shares, doors: input.doors, durations: input.durations.seconds)
-        return input.days(planned)
+    }
+
+    /// A planned day as the screen shows it. The person's stops with no
+    /// place on the map are in it at their door time, with no drive: they
+    /// are doors somebody walks up to all the same.
+    private func finished(
+        _ day: SplitPlanner.Day, of person: Int, in input: FairSplitInput, history: PaceHistory
+    ) -> SplitPlan {
+        var out = input.days([day])[0]
+        let unplaced = stops(of: person).filter { durations?.point[$0.id] == nil }
+        if !unplaced.isEmpty {
+            out.stops += unplaced.count
+            out.addresses += unplaced.count
+            out.doorMinutes += unplaced.reduce(0) { $0 + doorMinutes($1, history: history) }
+            out.totalMinutes = input.fixedMinutes + out.drivingMinutes + out.doorMinutes
+        }
+        return SplitPlan(
+            day: out, order: day.doors.flatMap { input.units[$0] } + unplaced.map(\.id))
+    }
+
+    /// The person's stops in the order they would drive them; the stops
+    /// with no place on the map last.
+    func drivingOrder(of person: Int) -> [SplitStop] {
+        let mine = stops(of: person)
+        guard let order = plan(of: person)?.order else { return mine }
+        let byID = Dictionary(mine.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let ordered = order.compactMap { byID[$0] }
+        return ordered.count == mine.count ? ordered : mine
+    }
+}
+
+/// One person's share as the screen shows it.
+struct SplitPlan: Equatable, Sendable {
+    var day: SplitDay
+    /// Stop ids, in the order they are driven.
+    var order: [Int]
+}
+
+/// What `SplitState.plan(of:)` worked out, held by reference so a view body
+/// can read through it. Copies of the state share it, which is harmless: an
+/// entry is used only for exactly the stops, the drive times and the door
+/// times it was made with.
+final class SplitPlanCache: @unchecked Sendable {
+    struct Key: Equatable {
+        let ids: [Int]
+        let revision: Int
+        let history: PaceHistory
+    }
+
+    private let lock = NSLock()
+    private var entries: [Int: (key: Key, plan: SplitPlan)] = [:]
+
+    func plan(for person: Int, key: Key) -> SplitPlan? {
+        lock.withLock { entries[person].flatMap { $0.key == key ? $0.plan : nil } }
+    }
+
+    func store(_ plan: SplitPlan, for person: Int, key: Key) {
+        lock.withLock { entries[person] = (key, plan) }
     }
 }
 

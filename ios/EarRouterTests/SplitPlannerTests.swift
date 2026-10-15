@@ -275,6 +275,41 @@ struct FairSplitInputTests {
         #expect(state.freeCount == 6)
     }
 
+    /// What the fair split says in its summary is what the picker and the
+    /// Übersicht then show, and the list is in the order it is driven.
+    @Test func theFiguresOnScreenAreTheOnesTheFairSplitSaid() {
+        let stops = (0..<8).map {
+            stop($0, "Gasse \($0 + 1)", at: CLLocationCoordinate2D(
+                latitude: 48.18 + Double($0 % 4) * 0.012, longitude: 16.30 + Double($0 / 4) * 0.05))
+        }
+        var state = SplitState(tourName: "VM 4", people: 2, stops: stops)
+        state.durations = durations(stops)
+        let input = state.fairSplitInput(history: .none)!
+        let planned = SplitPlanner.plan(
+            doors: input.doors, people: 2, durations: input.durations.seconds, rounds: 10)
+        state.assign(input.owners(planned))
+        state.remember(planned, from: input, history: .none)
+
+        #expect(state.days(history: .none) == input.days(planned))
+        for person in 0..<2 {
+            #expect(state.plan(of: person, history: .none)?.order
+                == planned[person].doors.flatMap { input.units[$0] })
+        }
+    }
+
+    /// A stop off the map is still a door to walk up to: in the day, with
+    /// its door time and no drive.
+    @Test func aStopWithNoPlaceStillCountsInTheDay() {
+        let stops = [stop(1, "Gentzgasse 1", at: gemeindebau), stop(2, "Unbekannt 4", at: nil)]
+        var state = SplitState(tourName: "VM 4", people: 2, stops: stops)
+        state.durations = durations(stops)
+        state.claim([1, 2], for: 0)
+        let day = state.days(history: .none)![0]
+        #expect(day.stops == 2)
+        #expect(abs(day.doorMinutes - 2 * RouteSnapshot.Pace.assumedMinutes) < 0.01)
+        #expect(state.drivingOrder(of: 0).map(\.id) == [1, 2])
+    }
+
     @Test func theSummarySaysHowFarApartTheDaysAre() {
         let days = [
             SplitDay(stops: 12, drivingMinutes: 90, doorMinutes: 84, totalMinutes: 245, addresses: 7),
