@@ -42,13 +42,14 @@ struct SplitPlannerTests {
     /// doors are worth more than three quick ones.
     @Test func slowDoorsCountForMoreThanQuickOnes() {
         // Every door at one place, so only the door times can tell them apart.
-        let m = matrix([(0, 0), (0, 0)] + Array(repeating: (1_000.0, 0.0), count: 8))
+        let m = matrix([(0, 0), (0, 0)] + Array(repeating: (1_000.0, 0.0), count: 6))
         let slow = (0..<2).map { SplitPlanner.Door(point: 2 + $0, seconds: 1_200, owner: nil) }
-        let quick = (2..<8).map { SplitPlanner.Door(point: 2 + $0, seconds: 400, owner: nil) }
+        let quick = (2..<6).map { SplitPlanner.Door(point: 2 + $0, seconds: 400, owner: nil) }
         let days = SplitPlanner.plan(doors: slow + quick, people: 2, durations: m, rounds: 40)
 
-        // 2 × 20 + 6 × 6.7 min = 80 min: 40 each, which is one slow door and
-        // three quick ones each — not four doors each by count.
+        // 2 × 20 + 4 × 6.7 min: one slow door and two quick ones each is the
+        // only even split — not both slow doors to one person and three
+        // doors each by count.
         let doorMinutes = days.map { $0.doorSeconds / 60 }
         #expect(abs(doorMinutes[0] - doorMinutes[1]) < 0.01)
         for day in days { #expect(day.doors.filter { $0 < 2 }.count == 1) }
@@ -88,7 +89,8 @@ struct SplitPlannerTests {
             let centre = (6_000.0, 6_000.0)
             let m = matrix([centre, centre] + points)
             let given = doors(45)
-            let planned = SplitPlanner.plan(doors: given, people: 3, durations: m, rounds: 120)
+            let planned = SplitPlanner.plan(
+                doors: given, people: 3, durations: m, objective: .fair, rounds: 120)
 
             // Three slices of fifteen doors by angle round the Lager.
             let byAngle = points.indices.sorted {
@@ -106,13 +108,40 @@ struct SplitPlannerTests {
         }
     }
 
+    /// Fair, but never by sending everybody on a detour: every minute more
+    /// altogether than the most efficient split takes at least a minute off
+    /// the gap between the longest day and the shortest.
+    @Test func everyMinuteMoreBuysAMinuteOfFairness() {
+        for seed in [5, 6, 7] as [UInt64] {
+            // Lager and Ziel in two corners, as Liesing and Floridsdorf are.
+            let m = matrix([(0, 0), (12_000, 12_000)] + scatter(30, seed: seed))
+            let given = doors(30)
+            let efficient = SplitPlanner.plan(
+                doors: given, people: 3, durations: m, objective: .leastTotal, rounds: 60)
+            let planned = SplitPlanner.plan(doors: given, people: 3, durations: m, rounds: 60)
+            let total = { (days: [SplitPlanner.Day]) in days.reduce(0) { $0 + $1.seconds } }
+            let gap = { (days: [SplitPlanner.Day]) in
+                days.map(\.seconds).max()! - days.map(\.seconds).min()!
+            }
+            let summary = "seed \(seed): planned \(planned.map { Int($0.seconds / 60) }), "
+                + "efficient \(efficient.map { Int($0.seconds / 60) })"
+
+            #expect(total(planned) - total(efficient) <= gap(efficient) - gap(planned) + 1, "\(summary)")
+            #expect(total(efficient) <= total(planned) + 1, "\(summary)")
+            // Nobody sent home with nothing to make the numbers work.
+            #expect(planned.allSatisfy { !$0.doors.isEmpty }, "\(summary)")
+            // And on these tours, a good deal fairer for it.
+            #expect(gap(planned) < gap(efficient) / 2, "\(summary)")
+        }
+    }
+
     @Test func moreLeftToShareThanPeopleIsFineAndSoIsTheReverse() {
         let m = matrix([(0, 0), (0, 0), (100, 0), (200, 0)])
         let days = SplitPlanner.plan(doors: doors(2), people: 4, durations: m, rounds: 10)
         #expect(days.count == 4)
         #expect(days.flatMap(\.doors).sorted() == [0, 1])
-        // A person with no doors has no day, rather than a drive to nowhere.
-        for day in days where day.doors.isEmpty { #expect(day.seconds == 0) }
+        // A person with no doors only drives home from the Lager.
+        for day in days where day.doors.isEmpty { #expect(day.seconds == m[0][1]) }
     }
 
     @Test func aBigTourFinishesInsideItsTime() {
@@ -238,6 +267,69 @@ struct FairSplitInputTests {
         #expect(text.contains("6 min auseinander"))
         #expect(text.contains("Luftlinie"))
         #expect(text.contains("2 Stopps ohne Ort"))
+    }
+}
+
+/// The customers one van delivers from one parking place.
+struct ParkingStopsTests {
+    /// Metres east of a point in Währing, at 48.23° N.
+    private func east(_ metres: Double) -> CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: 48.23, longitude: 16.34 + metres / (111_000 * cos(48.23 * .pi / 180)))
+    }
+
+    private func customer(
+        _ id: Int, at metres: Double, address: String? = nil, exact: Bool = true, owner: Int? = nil
+    ) -> ParkingStops.Customer {
+        ParkingStops.Customer(
+            id: id, address: ParkingStops.addressKey(address ?? "Gasse \(id)", plz: "1180"),
+            point: id + 2, coordinate: east(metres), exact: exact, owner: owner, minutes: 7)
+    }
+
+    @Test func doorsAShortWalkApartAreOneParkingStop() {
+        let built = ParkingStops.build([customer(0, at: 0), customer(1, at: 60), customer(2, at: 400)])
+        #expect(built.units.count == 2)
+        #expect(built.units.contains { Set($0) == [0, 1] })
+        // The first door whole, the second a walk from it.
+        let walk = built.doors[built.units.firstIndex { $0.contains(0) }!]
+        #expect(abs(walk.seconds - 7 * 60 * (1 + ParkingStops.walkOnShare)) < 0.01)
+    }
+
+    /// Houses ninety metres apart all down a street: each within a walk of
+    /// the next, but the street is not one place to park.
+    @Test func aLongStreetIsNotOneParkingStop() {
+        let built = ParkingStops.build((0..<5).map { customer($0, at: Double($0) * 90) })
+        for unit in built.units {
+            let positions = unit.map { Double($0) * 90 }
+            #expect(positions.max()! - positions.min()! <= WalkOn.reach)
+        }
+        #expect(built.units.flatMap { $0 }.sorted() == [0, 1, 2, 3, 4])
+    }
+
+    @Test func aPinOnlyOnTheStreetIsNextToNothing() {
+        let built = ParkingStops.build([customer(0, at: 0, exact: false), customer(1, at: 30)])
+        #expect(built.units.count == 2)
+    }
+
+    @Test func aFreeDoorNextToOneGivenByHandGoesAlong() {
+        let built = ParkingStops.build([customer(0, at: 0, owner: 1), customer(1, at: 40)])
+        #expect(built.units == [[0, 1]] || built.units == [[1, 0]])
+        #expect(built.doors[0].owner == 1)
+    }
+
+    @Test func twoPeoplesDoorsAreNeverOneParkingStop() {
+        let built = ParkingStops.build([customer(0, at: 0, owner: 0), customer(1, at: 40, owner: 1)])
+        #expect(built.units.count == 2)
+    }
+
+    @Test func householdsAtOneDoorAreAtTheSharedShare() {
+        // One point, as `SplitDurations` gives two customers at one coordinate.
+        let first = customer(0, at: 0, address: "Gentzgasse 129/1")
+        let second = ParkingStops.Customer(
+            id: 1, address: ParkingStops.addressKey("Gentzgasse 129/2", plz: "1180"), point: first.point,
+            coordinate: first.coordinate, exact: true, owner: nil, minutes: 7)
+        let built = ParkingStops.build([first, second])
+        #expect(built.units.count == 1)
+        #expect(abs(built.doors[0].seconds - 7 * 60 * (1 + RouteSnapshot.Pace.sharedDoor)) < 0.01)
     }
 }
 

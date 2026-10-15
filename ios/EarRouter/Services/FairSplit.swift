@@ -147,88 +147,34 @@ extension FairSplitInput {
 }
 
 extension SplitState {
-    /// The split as the planner sees it: every placed stop in a door, and
-    /// every door with the time it takes.
+    /// The split as the planner sees it: every placed stop in a parking stop
+    /// — see `ParkingStops` — with the time it takes.
     ///
-    /// A door is one address, or one exactly known point — two flats in one
-    /// Gemeindebau. Its households always go to one driver: the second is
-    /// carried up on the same walk, at `RouteSnapshot.Pace.sharedDoor` of a
-    /// door's time, and splitting them would send two vans to one Haustür.
-    /// The one exception is a door whose households were already given to two
-    /// different people by hand: each keeps theirs, and a free household
-    /// there goes with the first.
-    ///
-    /// A door's time is each customer's own, from the tours driven before —
-    /// the fourth floor without a lift is in it, and so is the lady who
-    /// talks — pulled towards what a door on this tour takes. See
+    /// A customer's time is their own, from the tours driven before — the
+    /// fourth floor without a lift is in it, and so is the lady who talks —
+    /// pulled towards what a door on this tour takes. See
     /// `PaceHistory.doorMinutes(forCustomer:onTour:)`.
     ///
     /// Stops with no place on the map are left out: there is no telling what
     /// the drive to them is. They stay where they are, free or not.
-    func fairSplitInput(history: PaceHistory) -> FairSplitInput? {
+    ///
+    /// `handedOutOnly` leaves the free stops out too: what each person's day
+    /// is now, rather than what it would be with the free door next to one
+    /// of theirs.
+    func fairSplitInput(history: PaceHistory, handedOutOnly: Bool = false) -> FairSplitInput? {
         guard let durations else { return nil }
-        let placed = stops.filter { durations.point[$0.id] != nil }
-
-        // Union-find over the placed stops: by address, and by exact point.
-        var parent = Array(placed.indices)
-        func find(_ i: Int) -> Int {
-            var r = i
-            while parent[r] != r { r = parent[r] }
-            return r
+        let customers = stops.compactMap { stop -> ParkingStops.Customer? in
+            guard let point = durations.point[stop.id], let coordinate = stop.coordinate,
+                  !handedOutOnly || owner[stop.id] != nil
+            else { return nil }
+            return ParkingStops.Customer(
+                id: stop.id, address: ParkingStops.addressKey(stop.address, plz: stop.plz),
+                point: point, coordinate: coordinate, exact: stop.exactPoint, owner: owner[stop.id],
+                minutes: history.doorMinutes(
+                    forCustomer: StockwerkKey.make(kunde: stop.name, strasse: stop.address, plz: stop.plz),
+                    onTour: tourName))
         }
-        var byAddress: [String: Int] = [:]
-        var byPoint: [Int: Int] = [:]
-        for (i, stop) in placed.enumerated() {
-            let street = AddressText.matchKey(stop.address)
-            if !street.isEmpty {
-                let key = "\(street)|\(stop.plz.trimmed)"
-                if let first = byAddress[key] { parent[find(i)] = find(first) } else { byAddress[key] = i }
-            }
-            if stop.exactPoint, let point = durations.point[stop.id] {
-                if let first = byPoint[point] { parent[find(i)] = find(first) } else { byPoint[point] = i }
-            }
-        }
-        var groups: [Int: [SplitStop]] = [:]
-        var order: [Int] = []
-        for i in placed.indices {
-            let root = find(i)
-            if groups[root] == nil { order.append(root) }
-            groups[root, default: []].append(placed[i])
-        }
-
-        var units: [[Int]] = []
-        var doors: [SplitPlanner.Door] = []
-        for root in order {
-            let members = groups[root] ?? []
-            // By owner, so two people's households at one door stay apart.
-            let firstOwner = members.lazy.compactMap { owner[$0.id] }.first
-            var byOwner: [Int?: [SplitStop]] = [:]
-            var owners: [Int?] = []
-            for stop in members {
-                let who = owner[stop.id] ?? firstOwner
-                if byOwner[who] == nil { owners.append(who) }
-                byOwner[who, default: []].append(stop)
-            }
-            for who in owners {
-                let share = byOwner[who] ?? []
-                guard let point = share.first.flatMap({ durations.point[$0.id] }) else { continue }
-                let minutes = share
-                    .map {
-                        history.doorMinutes(
-                            forCustomer: StockwerkKey.make(kunde: $0.name, strasse: $0.address, plz: $0.plz),
-                            onTour: tourName)
-                    }
-                    .sorted(by: >)
-                // The longest is the door; every further household is
-                // carried up on the same walk.
-                let total = minutes.enumerated().reduce(0.0) { sum, item in
-                    sum + item.element * (item.offset == 0 ? 1 : RouteSnapshot.Pace.sharedDoor)
-                }
-                units.append(share.map(\.id))
-                doors.append(SplitPlanner.Door(point: point, seconds: total * 60, owner: who))
-            }
-        }
-
+        let (units, doors) = ParkingStops.build(customers)
         let lead = history.leadMinutes ?? durations.startToLagerSeconds / 60
         let loading = history.lagerMinutes ?? RouteSnapshot.Pace.lagerMinutes
         return FairSplitInput(
@@ -239,7 +185,7 @@ extension SplitState {
     /// Each person's day with the split as it stands — drawn by hand or not.
     /// `nil` until the drive between the stops is known.
     func days(history: PaceHistory = .current) -> [SplitDay]? {
-        guard let input = fairSplitInput(history: history) else { return nil }
+        guard let input = fairSplitInput(history: history, handedOutOnly: true) else { return nil }
         var shares = [[Int]](repeating: [], count: people)
         for (index, door) in input.doors.enumerated() {
             if let who = door.owner, who < people { shares[who].append(index) }
@@ -247,6 +193,169 @@ extension SplitState {
         let planned = SplitPlanner.evaluate(
             shares, doors: input.doors, durations: input.durations.seconds)
         return input.days(planned)
+    }
+}
+
+/// Where the van stops: the customers one driver delivers from one parking
+/// place, which is the thing the fair split hands out.
+///
+/// First the doors. One address, or one exactly known point, is one door —
+/// two flats in one Gemeindebau. A second household there is carried up on
+/// the same walk, at `RouteSnapshot.Pace.sharedDoor` of a door's time.
+///
+/// Then the doors a short walk apart — the next Stiege across the Hof, the
+/// house two down — the same `WalkOn.reach` Jetzt carries parcels along for.
+/// The van is parked once for all of them, so they are one parking stop:
+/// split between two drivers, both would park there. Each door after the
+/// first counts at `walkOnShare` of its time, with no drive. Every door in
+/// one is within the reach of every other, so a long street of houses ninety
+/// metres apart is not one parking stop a kilometre long. Only exactly known
+/// points: a pin in the middle of a street says nothing about which houses
+/// are next to each other.
+///
+/// Doors already given to somebody by hand stay theirs, and so does
+/// everything in a parking stop with them: a free door twenty metres from
+/// one of theirs goes along. Two people's doors are never one parking stop.
+enum ParkingStops {
+    /// A door a short walk from where the van stands, as a share of a door
+    /// driven to — its walk, stairs and hand-over less the parking and the
+    /// drive. Measured on the 13.10.2026 backup: two ticks in a row at most
+    /// a hundred metres apart were 4.4 minutes apart (median of 12), against
+    /// 6.3 minutes at a door driven to less its drive (median of 204); the
+    /// same backup gives a second household at one door 3.5 minutes, which
+    /// is `sharedDoor`'s 0.55.
+    static let walkOnShare = 0.68
+
+    struct Customer {
+        let id: Int
+        /// `addressKey`: empty when there is no street.
+        let address: String
+        /// Matrix point, shared by customers at the very same coordinate.
+        let point: Int
+        let coordinate: CLLocationCoordinate2D
+        let exact: Bool
+        let owner: Int?
+        let minutes: Double
+    }
+
+    static func addressKey(_ strasse: String, plz: String) -> String {
+        let street = AddressText.matchKey(strasse)
+        return street.isEmpty ? "" : "\(street)|\(plz.trimmed)"
+    }
+
+    /// The customer ids behind each parking stop, and the stop as the
+    /// planner sees it.
+    static func build(_ customers: [Customer]) -> (units: [[Int]], doors: [SplitPlanner.Door]) {
+        let doors = self.doors(customers)
+
+        // Which doors are a walk apart and may share a van.
+        func metres(_ a: Door, _ b: Door) -> Double {
+            WalkOn.metres(from: [a.coordinate], to: [b.coordinate]) ?? .infinity
+        }
+        func compatible(_ a: Int?, _ b: Int?) -> Bool { a == nil || b == nil || a == b }
+        let near: [[Int]] = doors.indices.map { i in
+            guard doors[i].exact else { return [] }
+            return doors.indices.filter { j in
+                j != i && doors[j].exact && compatible(doors[i].owner, doors[j].owner)
+                    && metres(doors[i], doors[j]) <= WalkOn.reach
+            }
+        }
+
+        // The door with most neighbours first, so a Hof is one parking stop
+        // round its middle rather than cut up from one corner.
+        let byCrowd = doors.indices.sorted { (near[$0].count, $1) > (near[$1].count, $0) }
+        var taken = [Bool](repeating: false, count: doors.count)
+        var units: [[Int]] = []
+        var out: [SplitPlanner.Door] = []
+        for anchor in byCrowd where !taken[anchor] {
+            taken[anchor] = true
+            var members = [anchor]
+            var owner = doors[anchor].owner
+            let candidates = near[anchor].filter { !taken[$0] }
+                .sorted { (metres(doors[anchor], doors[$0]), $0) < (metres(doors[anchor], doors[$1]), $1) }
+            for c in candidates where compatible(owner, doors[c].owner)
+                && members.allSatisfy({ metres(doors[$0], doors[c]) <= WalkOn.reach })
+            {
+                taken[c] = true
+                members.append(c)
+                owner = owner ?? doors[c].owner
+            }
+            // The longest door is where the van is parked for; every other
+            // is a walk from there.
+            let times = members.map { doors[$0].minutes }.sorted(by: >)
+            let minutes = times.enumerated().reduce(0.0) { sum, item in
+                sum + item.element * (item.offset == 0 ? 1 : walkOnShare)
+            }
+            units.append(members.flatMap { doors[$0].ids })
+            out.append(SplitPlanner.Door(point: doors[anchor].point, seconds: minutes * 60, owner: owner))
+        }
+        return (units, out)
+    }
+
+    private struct Door {
+        let ids: [Int]
+        let point: Int
+        let coordinate: CLLocationCoordinate2D
+        let exact: Bool
+        let owner: Int?
+        let minutes: Double
+    }
+
+    /// Households at one door together: by address, and by exact point. A
+    /// door whose households were given to two people by hand is two doors,
+    /// and a free household there goes with the first.
+    private static func doors(_ customers: [Customer]) -> [Door] {
+        var parent = Array(customers.indices)
+        func find(_ i: Int) -> Int {
+            var r = i
+            while parent[r] != r { r = parent[r] }
+            return r
+        }
+        var byAddress: [String: Int] = [:]
+        var byPoint: [Int: Int] = [:]
+        for (i, c) in customers.enumerated() {
+            if !c.address.isEmpty {
+                if let first = byAddress[c.address] { parent[find(i)] = find(first) } else { byAddress[c.address] = i }
+            }
+            if c.exact {
+                if let first = byPoint[c.point] { parent[find(i)] = find(first) } else { byPoint[c.point] = i }
+            }
+        }
+        var groups: [Int: [Customer]] = [:]
+        var order: [Int] = []
+        for i in customers.indices {
+            let root = find(i)
+            if groups[root] == nil { order.append(root) }
+            groups[root, default: []].append(customers[i])
+        }
+
+        var out: [Door] = []
+        for root in order {
+            let members = groups[root] ?? []
+            let firstOwner = members.lazy.compactMap(\.owner).first
+            var byOwner: [Int?: [Customer]] = [:]
+            var owners: [Int?] = []
+            for c in members {
+                let who = c.owner ?? firstOwner
+                if byOwner[who] == nil { owners.append(who) }
+                byOwner[who, default: []].append(c)
+            }
+            for who in owners {
+                let share = byOwner[who] ?? []
+                guard let first = share.first else { continue }
+                // Where the door is: an exactly known household's point when
+                // there is one.
+                let placed = share.first(where: \.exact) ?? first
+                let times = share.map(\.minutes).sorted(by: >)
+                let minutes = times.enumerated().reduce(0.0) { sum, item in
+                    sum + item.element * (item.offset == 0 ? 1 : RouteSnapshot.Pace.sharedDoor)
+                }
+                out.append(Door(
+                    ids: share.map(\.id), point: placed.point, coordinate: placed.coordinate,
+                    exact: placed.exact, owner: who, minutes: minutes))
+            }
+        }
+        return out
     }
 }
 

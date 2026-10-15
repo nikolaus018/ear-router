@@ -9,13 +9,21 @@ import Foundation
 /// back to the Ziel, by OSRM's times, plus what every one of those doors
 /// takes — see `SplitState.fairSplitInput` for where those come from.
 ///
-/// What is made as small as it can be is the sum of everybody's day squared,
+/// For `Objective.fair`, what is made as small as it can be is the sum of everybody's day squared,
 /// plus the longest day squared once more for every person. One number for
 /// three wishes, in that order: the longest day as short as it can be, the
 /// others as even as they can be, and no more driving than that needs. A
 /// move that takes ten minutes off the longest day by giving two others a few
 /// minutes more is taken; one that evens two days out by adding an hour of
 /// driving between them is not.
+///
+/// And efficient, not only even: the split screen asks for
+/// `Objective.fairAndEfficient`, which spends a minute more altogether only
+/// where it takes at least a minute off the gap between the longest day and
+/// the shortest — see `gapWeight`. Everybody sharing the tour drives from
+/// the Lager to the Ziel whatever they are given, so that leg is part of
+/// everybody's day — nobody is ever sent home with no doors to make the
+/// numbers come out.
 ///
 /// A door that already belongs to somebody — drawn round by hand before the
 /// planner was asked — stays theirs, and counts towards their day: the rest
@@ -30,11 +38,12 @@ import Foundation
 /// doors always come back split the same way, unless `deadline` cut it short.
 enum SplitPlanner {
 
-    /// One thing to hand out: a front door, with every household behind it.
+    /// One thing to hand out: where the van parks — see `ParkingStops` —
+    /// with every door and household delivered from there.
     struct Door: Sendable, Equatable {
         /// Index into the drive matrix handed to `plan`.
         let point: Int
-        /// Seconds spent at this door, every household behind it included.
+        /// Seconds spent there, every door and household included.
         let seconds: Double
         /// Who it already belongs to. Such a door is never moved.
         let owner: Int?
@@ -44,7 +53,8 @@ enum SplitPlanner {
     struct Day: Sendable, Equatable {
         /// Indices into the `doors` handed in, in the order they are driven.
         var doors: [Int]
-        /// From the Lager round the doors to the Ziel. Zero for nobody's.
+        /// From the Lager round the doors to the Ziel; for somebody with no
+        /// doors, the Lager to the Ziel.
         var drivingSeconds: Double
         var doorSeconds: Double
         var seconds: Double { drivingSeconds + doorSeconds }
@@ -59,7 +69,7 @@ enum SplitPlanner {
     static let lagerPoint = 0
     static let zielPoint = 1
 
-    /// The fairest split found.
+    /// The fairest split found that is also efficient — see `Objective`.
     ///
     /// `durations[a][b]` is the drive from point `a` to point `b` in seconds;
     /// `lagerPoint` and `zielPoint` must be in it. `rounds` is how many times
@@ -67,12 +77,58 @@ enum SplitPlanner {
     /// stops it early on a slow phone, with the best split found so far.
     static func plan(
         doors: [Door], people: Int, durations: [[Double]],
+        objective: Objective = .fairAndEfficient,
         rounds: Int = 600, deadline: Date = .distantFuture
     ) -> [Day] {
         guard people > 0 else { return [] }
-        let engine = Engine(doors: doors, people: people, durations: durations)
-        return engine.solve(rounds: rounds, deadline: deadline)
+        switch objective {
+        case .fair, .leastTotal:
+            return Engine(doors: doors, people: people, durations: durations, objective: objective)
+                .solve(rounds: rounds, deadline: deadline)
+        case .fairAndEfficient:
+            // The most efficient split first, in part of the time, as the
+            // first start of the search proper — so the answer is never
+            // worse by its own measure than simply the most efficient one.
+            let now = Date()
+            let first = min(deadline, now.addingTimeInterval(
+                max(0.2, deadline.timeIntervalSince(now) * 0.35)))
+            let efficient = Engine(
+                doors: doors, people: people, durations: durations, objective: .leastTotal)
+                .solve(rounds: rounds, deadline: first)
+            return Engine(doors: doors, people: people, durations: durations, objective: objective)
+                .solve(rounds: rounds, deadline: deadline, from: efficient.map(\.doors))
+        }
     }
+
+    /// What the search makes small.
+    enum Objective: Sendable, Equatable {
+        /// What the split screen asks for: the time everybody spends
+        /// altogether, plus `gapWeight` times the gap between the longest day
+        /// and the shortest. A minute more altogether is spent only where it
+        /// takes at least a minute off that gap.
+        case fairAndEfficient
+        /// The longest day, then the evenest days, then the least driving —
+        /// see the type's own description — at whatever it costs.
+        case fair
+        /// Only the time everybody spends altogether, with every person
+        /// given at least one door while there are enough. The most
+        /// efficient split, whoever it is unfair to.
+        case leastTotal
+    }
+
+    /// What a minute off the gap between the longest and the shortest day
+    /// is worth in minutes altogether: one.
+    ///
+    /// Measured on the 25 tours of the 13.10.2026 backup. The most efficient
+    /// split is never one anybody would drive — 190 minutes against 44 is
+    /// typical, the van that goes far getting everything out there — and
+    /// evening the days out completely cost 3.7 minutes altogether for two
+    /// people and 7.2 for three, but up to 19. A fixed cap of a few minutes
+    /// was tried first and was wrong exactly there: where evening out cost
+    /// twelve minutes, the cap could not pay for it and handed back the 190
+    /// against 44. At one to one, a gap of two hours is always worth closing
+    /// and nobody is sent on a detour to shave the last minutes off one.
+    static let gapWeight = 1.0
 
     /// What a split made by hand comes to: each person's doors in the
     /// shortest order found, and how long their day is.
@@ -92,6 +148,7 @@ enum SplitPlanner {
         let service: [Double]
         let owner: [Int?]
         let people: Int
+        let objective: Objective
         let free: [Int]
         /// Each door's nearest others, closest first: the only partners a
         /// swap is tried with. A door in Liesing is not swapped for one in
@@ -100,7 +157,8 @@ enum SplitPlanner {
 
         static let neighbourCount = 12
 
-        init(doors: [Door], people: Int, durations: [[Double]]) {
+        init(doors: [Door], people: Int, durations: [[Double]], objective: Objective = .fair) {
+            self.objective = objective
             let points = [SplitPlanner.lagerPoint, SplitPlanner.zielPoint] + doors.map(\.point)
             m = points.map { a in points.map { b in a == b ? 0 : max(0, durations[a][b]) } }
             service = doors.map { max(0, $0.seconds) }
@@ -121,8 +179,11 @@ enum SplitPlanner {
 
         // MARK: Days
 
+        /// From the Lager round `r` to the Ziel. A person with no doors still
+        /// drives the one without: everybody sharing the tour goes home, so
+        /// that leg is part of everybody's day and never a saving.
         func drive(_ r: [Int]) -> Double {
-            guard let first = r.first, let last = r.last else { return 0 }
+            guard let first = r.first, let last = r.last else { return m[0][1] }
             var s = m[0][first + 2] + m[last + 2][1]
             for k in 1..<r.count { s += m[r[k - 1] + 2][r[k] + 2] }
             return s
@@ -135,7 +196,6 @@ enum SplitPlanner {
         /// The cheapest place for `d` in `r`, and what it adds to the drive.
         func insertion(_ d: Int, into r: [Int]) -> (delta: Double, at: Int) {
             let x = d + 2
-            guard !r.isEmpty else { return (m[0][x] + m[x][1], 0) }
             var best = (delta: Double.infinity, at: 0)
             var prev = 0
             for k in 0...r.count {
@@ -149,7 +209,6 @@ enum SplitPlanner {
 
         /// What taking the door at `i` out of `r` saves on the drive.
         func removal(at i: Int, in r: [Int]) -> Double {
-            guard r.count > 1 else { return drive(r) }
             let x = r[i] + 2
             let prev = i > 0 ? r[i - 1] + 2 : 0
             let next = i < r.count - 1 ? r[i + 1] + 2 : 1
@@ -185,12 +244,33 @@ enum SplitPlanner {
         // MARK: The number being made small
 
         func cost(_ work: [Double]) -> Double {
-            var sum = 0.0, longest = 0.0
-            for w in work {
-                sum += w * w
-                longest = max(longest, w)
+            // A person with nothing is a split into fewer people: cheaper,
+            // and not what was asked. Priced above anything else, while
+            // there are doors enough to go round.
+            let idle = free.count >= people
+                ? Double(work.filter { $0 <= m[0][1] + 1e-6 }.count) * 1e15 : 0
+            switch objective {
+            case .fair:
+                var sum = 0.0, longest = 0.0
+                for w in work {
+                    sum += w * w
+                    longest = max(longest, w)
+                }
+                return sum + Double(people) * longest * longest + idle
+            case .leastTotal:
+                return work.reduce(0, +) + idle
+            case .fairAndEfficient:
+                var total = 0.0, longest = -Double.infinity, shortest = Double.infinity, squares = 0.0
+                for w in work {
+                    total += w
+                    longest = max(longest, w)
+                    shortest = min(shortest, w)
+                    squares += w * w
+                }
+                // The squares only break ties: of two splits alike in total
+                // and gap, the one whose middle days are evener.
+                return total + SplitPlanner.gapWeight * (longest - shortest) + squares * 1e-9 + idle
             }
-            return sum + Double(people) * longest * longest
         }
 
         struct Split {
@@ -376,7 +456,7 @@ enum SplitPlanner {
             return split(routes.map(settled))
         }
 
-        func solve(rounds: Int, deadline: Date) -> [Day] {
+        func solve(rounds: Int, deadline: Date, from given: [[Int]]? = nil) -> [Day] {
             guard !free.isEmpty else {
                 return (0..<people).map { p in day(ordered(owner.indices.filter { owner[$0] == p })) }
             }
@@ -385,7 +465,9 @@ enum SplitPlanner {
             var random = TourPolish.SplitMix(seed: 0x5350_4C49_54)
             for start in 0..<starts {
                 guard best == nil || Date() < deadline else { break }
-                var current = construct(seed: UInt64(start))
+                // A split handed in is the first start, as it is.
+                var current = start == 0 && given?.count == people
+                    ? split(given!) : construct(seed: UInt64(start))
                 improve(&current, deadline: deadline)
                 if best == nil || current.cost < best!.cost { best = current }
                 for _ in 0..<(max(0, rounds) / starts) {

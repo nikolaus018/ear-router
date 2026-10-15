@@ -371,7 +371,7 @@ extension RouteSnapshot {
     /// `PaceHistory` learn a customer's own time — see `doorByCustomer`.
     static func doorSamplesByStop(
         _ ordered: [Stop], arrivals: [UUID: Double]
-    ) -> [(stop: Stop, minutes: Double)] {
+    ) -> [(from: Stop, stop: Stop, minutes: Double)] {
         let stamped = ordered
             .filter { $0.kind == .customer && $0.isSettled && $0.outcome?.skipsDoor != true }
             .compactMap { stop -> (stop: Stop, at: Date, driving: Double)? in
@@ -380,12 +380,12 @@ extension RouteSnapshot {
             }
             .sorted { $0.at < $1.at }
 
-        var samples: [(stop: Stop, minutes: Double)] = []
+        var samples: [(from: Stop, stop: Stop, minutes: Double)] = []
         for (a, b) in zip(stamped, stamped.dropFirst()) {
             let gap = b.at.timeIntervalSince(a.at) / 60
             let drive = b.driving - a.driving
             guard (0.5...45).contains(gap), drive >= 0.3 else { continue }
-            samples.append((b.stop, max(0.5, gap - drive)))
+            samples.append((a.stop, b.stop, max(0.5, gap - drive)))
         }
         return samples
     }

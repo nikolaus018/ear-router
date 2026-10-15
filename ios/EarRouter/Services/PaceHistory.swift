@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import SwiftData
 
@@ -130,7 +131,14 @@ struct PaceHistory: Equatable, Sendable {
                     snapshot.plannedMinutes(to: stop).map { (stop.id, $0) }
                 }, uniquingKeysWith: { a, _ in a })
             for sample in RouteSnapshot.doorSamplesByStop(snapshot.ordered, arrivals: arrivals) {
-                guard let key = StockwerkKey.make(for: sample.stop) else { continue }
+                // Only a door driven to: one a walk from the last is the
+                // shorter time `ParkingStops.walkOnShare` already gives it,
+                // and learning it here would count that saving twice.
+                let walked = WalkOn.metres(
+                    from: [CLLocationCoordinate2D(latitude: sample.from.lat, longitude: sample.from.lon)],
+                    to: [CLLocationCoordinate2D(latitude: sample.stop.lat, longitude: sample.stop.lon)])
+                    .map { $0 <= WalkOn.reach } ?? false
+                guard !walked, let key = StockwerkKey.make(for: sample.stop) else { continue }
                 byCustomer[key, default: []].append(sample.minutes)
             }
             if let wait = lagerWait(in: snapshot) { waits.append(wait) }

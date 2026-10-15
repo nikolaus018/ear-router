@@ -1210,7 +1210,10 @@ private struct SplitPanel: View {
                 doors: input.doors, people: input.people, durations: input.durations.seconds,
                 deadline: Date().addingTimeInterval(SplitPlanner.thinkingTime))
         }.value
-        withAnimation(.snappy) { _ = state.assign(input.owners(planned)) }
+        // Only what is still free: the map stays in use while this thinks,
+        // and a door tapped meanwhile was a decision.
+        let owners = input.owners(planned).filter { state.owner[$0.key] == nil }
+        withAnimation(.snappy) { _ = state.assign(owners) }
         let unplaced = state.stops.filter { $0.coordinate == nil && state.owner(of: $0) == nil }
         fairSummary = FairSplitInput.summary(
             input.days(planned), estimated: input.durations.estimated, unplacedFree: unplaced.count)
