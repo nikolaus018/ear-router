@@ -204,6 +204,9 @@ struct SplitStop: Identifiable {
     /// The geocoder found this very door, not only the street — so another
     /// stop at the same point is the same building. See `fairSplitInput`.
     var exactPoint = false
+    /// The address without the flat, where it is known — see
+    /// `GourmetPortal.doorLine`. Households with the same one share a door.
+    var door: String? = nil
 
     /// The stop as an import entry, with only what the tour list carried.
     /// Used when the detail fetch is not available or did not answer.

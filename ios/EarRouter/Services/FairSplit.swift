@@ -181,7 +181,7 @@ extension SplitState {
                   !handedOutOnly || owner[stop.id] != nil
             else { return nil }
             return ParkingStops.Customer(
-                id: stop.id, address: ParkingStops.addressKey(stop.address, plz: stop.plz),
+                id: stop.id, address: ParkingStops.addressKey(stop.door ?? stop.address, plz: stop.plz),
                 point: point, coordinate: coordinate, exact: stop.exactPoint, owner: owner[stop.id],
                 minutes: history.doorMinutes(
                     forCustomer: StockwerkKey.make(kunde: stop.name, strasse: stop.address, plz: stop.plz),
@@ -328,7 +328,8 @@ enum ParkingStops {
         let minutes: Double
     }
 
-    /// Households at one door together: by address, and by exact point. A
+    /// Households at one door together: by address — the flat left off,
+    /// where the portal says which part is the flat — and by exact point. A
     /// door whose households were given to two people by hand is two doors,
     /// and a free household there goes with the first.
     private static func doors(_ customers: [Customer]) -> [Door] {

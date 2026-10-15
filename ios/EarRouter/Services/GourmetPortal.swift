@@ -401,6 +401,17 @@ enum GourmetPortal {
         (customerName(delivery.customer), streetLine(delivery.deliveryAddress))
     }
 
+    /// The front door: the street line without the flat. Two flats behind
+    /// one Stiege — "Nordmanngasse 27/1/6" and "27/1/7" — are one door to
+    /// ring at, which the joined line cannot tell from two Stiegen: is the
+    /// "115" in "Czerningasse 4/115" a Stiege or a Tür? The portal's own
+    /// fields can.
+    static func doorLine(_ delivery: Delivery) -> String {
+        var address = delivery.deliveryAddress
+        address.flatNumber = nil
+        return streetLine(address)
+    }
+
     private static func customerName(_ customer: Customer) -> String {
         [customer.firstname, customer.lastname]
             .compactMap { $0?.trimmed }

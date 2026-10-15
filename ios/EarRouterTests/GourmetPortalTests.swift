@@ -83,6 +83,15 @@ struct GourmetPortalTests {
         #expect(GourmetPortal.customerJSON(from: d).strasse == "Gentzgasse 129/1/23")
     }
 
+    /// The front door leaves the flat off, and only the flat.
+    @Test func theDoorLineIsTheStreetLineWithoutTheFlat() {
+        let d = delivery(address: address(
+            street: "Gentzgasse 129", staircase: "1", flatNumber: "23"))
+        #expect(GourmetPortal.doorLine(d) == "Gentzgasse 129/1")
+        let noStiege = delivery(address: address(street: "Czerningasse 4", flatNumber: "115"))
+        #expect(GourmetPortal.doorLine(noStiege) == "Czerningasse 4")
+    }
+
     @Test func street2ComesBeforeStaircaseAndFlatNumber() {
         let d = delivery(address: address(
             street: "Großfeldstraße 9", street2: "Parz. 68", staircase: "1"))

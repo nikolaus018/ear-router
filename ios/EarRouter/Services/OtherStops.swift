@@ -188,7 +188,8 @@ enum PortalPlacement {
             let (name, address) = GourmetPortal.summary(delivery)
             return (
                 id: delivery.id, name: name, address: address,
-                plz: delivery.deliveryAddress.zip?.trimmed ?? "")
+                plz: delivery.deliveryAddress.zip?.trimmed ?? "",
+                door: GourmetPortal.doorLine(delivery))
         }
         var placed: [Int: CLLocationCoordinate2D] = [:]
         var exact: Set<Int> = []
@@ -226,7 +227,7 @@ enum PortalPlacement {
             SplitStop(
                 id: input.id, name: input.name.isEmpty ? "Ohne Namen" : input.name,
                 address: input.address, plz: input.plz, coordinate: placed[input.id],
-                exactPoint: exact.contains(input.id))
+                exactPoint: exact.contains(input.id), door: input.door)
         }
     }
 }

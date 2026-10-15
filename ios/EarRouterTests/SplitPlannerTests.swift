@@ -202,6 +202,26 @@ struct FairSplitInputTests {
         #expect(input.addresses[0] == 1)
     }
 
+    /// Two flats behind one Stiege are one door even where the geocoder only
+    /// found the street — "Nordmanngasse 27/1/6" and "27/1/7".
+    @Test func flatsBehindOneStiegeAreOneDoor() {
+        let street = CLLocationCoordinate2D(latitude: 48.2401, longitude: 16.4001)
+        var six = stop(1, "Nordmanngasse 27/1/6", at: street, exact: false)
+        six.door = "Nordmanngasse 27/1"
+        var seven = stop(2, "Nordmanngasse 27/1/7", at: street, exact: false)
+        seven.door = "Nordmanngasse 27/1"
+        var otherStiege = stop(3, "Nordmanngasse 27/2/1", at: street, exact: false)
+        otherStiege.door = "Nordmanngasse 27/2"
+        let stops = [six, seven, otherStiege]
+        var state = SplitState(tourName: "VM 5", people: 2, stops: stops)
+        state.durations = durations(stops)
+        let input = state.fairSplitInput(history: .none)!
+
+        #expect(input.units.count == 2)
+        #expect(input.units.contains { Set($0) == [1, 2] })
+        #expect(input.units.contains { $0 == [3] })
+    }
+
     /// A district centroid is no door: thirty customers there are not one
     /// Gemeindebau.
     @Test func anApproximatePointJoinsNothing() {
