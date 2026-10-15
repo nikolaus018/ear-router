@@ -320,20 +320,22 @@ struct SplitState: Identifiable {
     /// Ladeliste is empty and "Anrufen" has no number.
     ///
     /// A fetch that fails falls back to the name and address already on
-    /// screen. A tour missing its Paket is worth having; a tour that could not
-    /// be created at all is not.
+    /// screen — for that stop alone: one request lost in a stairwell used to
+    /// cost the whole share its Paket and leave the Ladeliste empty. A tour
+    /// missing one Paket is worth having; a tour that could not be created at
+    /// all is not.
     func entries(
         for person: Int, onProgress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }
     ) async -> [CustomerJSON] {
         let mine = stops(of: person)
         let wanted = mine.compactMap { deliveries[$0.id] }
-        guard let token, !wanted.isEmpty else { return mine.map(\.plainEntry) }
-        do {
-            return try await GourmetPortal.fetchDetails(
-                for: wanted, token: token, onProgress: onProgress)
-        } catch {
-            return mine.map(\.plainEntry)
+        var details: [Int: CustomerJSON] = [:]
+        if let token, !wanted.isEmpty {
+            details = (try? await GourmetPortal.fetchEachDetail(
+                for: wanted, token: token, credentials: GourmetCredentialsStore.load(),
+                onProgress: onProgress)) ?? [:]
         }
+        return mine.map { details[$0.id] ?? $0.plainEntry }
     }
 
     /// "VM 4 DO Vormittag · P2", with the date added only when a tour of that

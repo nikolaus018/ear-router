@@ -391,6 +391,37 @@ enum GourmetPortal {
         return entries
     }
 
+    /// The same, one delivery at a time: a detail call that does not answer
+    /// leaves that one delivery out of the result instead of failing all the
+    /// others — the caller falls back to the list data for it alone. A login
+    /// that ran out while the split was being drawn is renewed once.
+    static func fetchEachDetail(
+        for deliveries: [Delivery], token: String, credentials: Credentials?,
+        onProgress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }
+    ) async throws -> [Int: CustomerJSON] {
+        var token = token
+        var renewed = false
+        var out: [Int: CustomerJSON] = [:]
+        for (index, delivery) in deliveries.enumerated() {
+            try Task.checkCancellation()
+            onProgress(index + 1, deliveries.count)
+            do {
+                out[delivery.id] = customerJSON(
+                    from: try await deliveryDetail(id: delivery.id, token: token))
+            } catch {
+                try Task.checkCancellation()
+                guard !renewed, let credentials, let fresh = try? await login(credentials)
+                else { continue }
+                renewed = true
+                token = fresh
+                if let detail = try? await deliveryDetail(id: delivery.id, token: token) {
+                    out[delivery.id] = customerJSON(from: detail)
+                }
+            }
+        }
+        return out
+    }
+
     // MARK: - Mapping to the app's own shape
 
     /// Name and address alone — what the list endpoint already carries,
