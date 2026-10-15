@@ -1173,12 +1173,19 @@ private struct SplitPanel: View {
         .background(.bar)
     }
 
-    /// "12 Stopps · ca. 4 h 05": the person's day as "Tour vorbereiten" would
-    /// count it, so a split drawn by hand can be seen to be fair or not.
+    /// "21 Stopps an 16 Adressen · ca. 4 h 05": the person's day as "Tour
+    /// vorbereiten" would count it, so a split drawn by hand can be seen to
+    /// be fair or not — and six customers at one address read as the one
+    /// stop they are to drive to.
     private func dayLine(_ days: [SplitDay]?) -> String {
         let count = Format.stops(mine.count)
         guard let days, days.indices.contains(person), days[person].stops > 0 else { return count }
-        return "\(count) · ca. \(days[person].clock)"
+        var day = days[person]
+        // The stops off the map are the person's too, each its own address.
+        let unplaced = mine.count - day.stops
+        day.stops += unplaced
+        day.addresses += unplaced
+        return "\(day.stopsLine) · ca. \(day.clock)"
     }
 
     private func pickerLine(for index: Int, days: [SplitDay]?) -> String {

@@ -78,14 +78,26 @@ struct SplitDay: Equatable, Sendable {
     /// From leaving for the Lager to being back: the morning lead and the
     /// loading are everybody's, and in it so the figure is the day's.
     var totalMinutes: Double
+    /// How many addresses those stops are at: six customers at one address
+    /// are six stops and one place to deliver to.
+    var addresses = 0
+
+    /// "21 Stopps an 16 Adressen", or just "16 Stopps" where every stop is
+    /// an address of its own.
+    var stopsLine: String {
+        addresses > 0 && addresses < stops
+            ? "\(Format.stops(stops)) an \(addresses) Adressen" : Format.stops(stops)
+    }
 }
 
 /// What the planner needs, cut off from the screen so it can run off the
 /// main actor.
 struct FairSplitInput: Sendable {
-    /// The stop ids behind each door, in `doors` order.
+    /// The stop ids behind each parking stop, in `doors` order.
     let units: [[Int]]
     let doors: [SplitPlanner.Door]
+    /// How many addresses each parking stop is.
+    let addresses: [Int]
     let people: Int
     let durations: SplitDurations
     /// Minutes every share carries whoever drives it: the morning to the
@@ -99,7 +111,8 @@ struct FairSplitInput: Sendable {
             let doors = day.doorSeconds / 60
             return SplitDay(
                 stops: stops, drivingMinutes: driving, doorMinutes: doors,
-                totalMinutes: stops == 0 ? 0 : fixedMinutes + driving + doors)
+                totalMinutes: stops == 0 ? 0 : fixedMinutes + driving + doors,
+                addresses: day.doors.reduce(0) { $0 + addresses[$1] })
         }
     }
 
@@ -120,7 +133,7 @@ extension FairSplitInput {
         var lines = days.enumerated().map { index, day in
             day.stops == 0
                 ? "Person \(index + 1): keine Stopps"
-                : "Person \(index + 1): \(Format.stops(day.stops)) · ca. \(day.clock)"
+                : "Person \(index + 1): \(day.stopsLine) · ca. \(day.clock)"
         }
         let worked = days.filter { $0.stops > 0 }.map(\.totalMinutes)
         if worked.count > 1, let longest = worked.max(), let shortest = worked.min() {
@@ -174,12 +187,12 @@ extension SplitState {
                     forCustomer: StockwerkKey.make(kunde: stop.name, strasse: stop.address, plz: stop.plz),
                     onTour: tourName))
         }
-        let (units, doors) = ParkingStops.build(customers)
+        let (units, doors, addresses) = ParkingStops.build(customers)
         let lead = history.leadMinutes ?? durations.startToLagerSeconds / 60
         let loading = history.lagerMinutes ?? RouteSnapshot.Pace.lagerMinutes
         return FairSplitInput(
-            units: units, doors: doors, people: people, durations: durations,
-            fixedMinutes: lead + loading)
+            units: units, doors: doors, addresses: addresses, people: people,
+            durations: durations, fixedMinutes: lead + loading)
     }
 
     /// Each person's day with the split as it stands — drawn by hand or not.
@@ -200,8 +213,9 @@ extension SplitState {
 /// place, which is the thing the fair split hands out.
 ///
 /// First the doors. One address, or one exactly known point, is one door —
-/// two flats in one Gemeindebau. A second household there is carried up on
-/// the same walk, at `RouteSnapshot.Pace.sharedDoor` of a door's time.
+/// two flats in one Gemeindebau, six meals for one office. Every household
+/// after the first there is `sameDoorShare` of a door: no drive, no parking,
+/// no second walk to the Haustür — only more to carry.
 ///
 /// Then the doors a short walk apart — the next Stiege across the Hof, the
 /// house two down — the same `WalkOn.reach` Jetzt carries parcels along for.
@@ -221,10 +235,19 @@ enum ParkingStops {
     /// driven to — its walk, stairs and hand-over less the parking and the
     /// drive. Measured on the 13.10.2026 backup: two ticks in a row at most
     /// a hundred metres apart were 4.4 minutes apart (median of 12), against
-    /// 6.3 minutes at a door driven to less its drive (median of 204); the
-    /// same backup gives a second household at one door 3.5 minutes, which
-    /// is `sharedDoor`'s 0.55.
+    /// 6.3 minutes at a door driven to less its drive (median of 204).
     static let walkOnShare = 0.68
+
+    /// Another household at the same door, as a share of a door: six
+    /// customers at one address count as two doors. His rule (15.10.2026),
+    /// from a split where the six went to one person whose 21 stops were
+    /// "really 15", "but a lot to carry, so maybe count that as two".
+    ///
+    /// Lower than the arrival estimate's `RouteSnapshot.Pace.sharedDoor`
+    /// on purpose. That one is a second household's minutes as the ticks
+    /// say — measured on three pairs only — and a split is about how much
+    /// of the day's work a share is, which the driver knows better.
+    static let sameDoorShare = 0.2
 
     struct Customer {
         let id: Int
@@ -245,7 +268,9 @@ enum ParkingStops {
 
     /// The customer ids behind each parking stop, and the stop as the
     /// planner sees it.
-    static func build(_ customers: [Customer]) -> (units: [[Int]], doors: [SplitPlanner.Door]) {
+    static func build(
+        _ customers: [Customer]
+    ) -> (units: [[Int]], doors: [SplitPlanner.Door], addresses: [Int]) {
         let doors = self.doors(customers)
 
         // Which doors are a walk apart and may share a van.
@@ -267,6 +292,7 @@ enum ParkingStops {
         var taken = [Bool](repeating: false, count: doors.count)
         var units: [[Int]] = []
         var out: [SplitPlanner.Door] = []
+        var addresses: [Int] = []
         for anchor in byCrowd where !taken[anchor] {
             taken[anchor] = true
             var members = [anchor]
@@ -287,9 +313,10 @@ enum ParkingStops {
                 sum + item.element * (item.offset == 0 ? 1 : walkOnShare)
             }
             units.append(members.flatMap { doors[$0].ids })
+            addresses.append(members.count)
             out.append(SplitPlanner.Door(point: doors[anchor].point, seconds: minutes * 60, owner: owner))
         }
-        return (units, out)
+        return (units, out, addresses)
     }
 
     private struct Door {
@@ -348,7 +375,7 @@ enum ParkingStops {
                 let placed = share.first(where: \.exact) ?? first
                 let times = share.map(\.minutes).sorted(by: >)
                 let minutes = times.enumerated().reduce(0.0) { sum, item in
-                    sum + item.element * (item.offset == 0 ? 1 : RouteSnapshot.Pace.sharedDoor)
+                    sum + item.element * (item.offset == 0 ? 1 : sameDoorShare)
                 }
                 out.append(Door(
                     ids: share.map(\.id), point: placed.point, coordinate: placed.coordinate,

@@ -198,7 +198,8 @@ struct FairSplitInputTests {
         #expect(Set(input.units[0]) == [1, 2, 3])
         // The first at a whole door's time, the other two carried up with it.
         let door = RouteSnapshot.Pace.assumedMinutes * 60
-        #expect(abs(input.doors[0].seconds - door * (1 + 2 * RouteSnapshot.Pace.sharedDoor)) < 0.01)
+        #expect(abs(input.doors[0].seconds - door * (1 + 2 * ParkingStops.sameDoorShare)) < 0.01)
+        #expect(input.addresses[0] == 1)
     }
 
     /// A district centroid is no door: thirty customers there are not one
@@ -256,12 +257,12 @@ struct FairSplitInputTests {
 
     @Test func theSummarySaysHowFarApartTheDaysAre() {
         let days = [
-            SplitDay(stops: 12, drivingMinutes: 90, doorMinutes: 84, totalMinutes: 245),
+            SplitDay(stops: 12, drivingMinutes: 90, doorMinutes: 84, totalMinutes: 245, addresses: 7),
             SplitDay(stops: 10, drivingMinutes: 100, doorMinutes: 70, totalMinutes: 251),
             SplitDay(stops: 0, drivingMinutes: 0, doorMinutes: 0, totalMinutes: 0),
         ]
         let text = FairSplitInput.summary(days, estimated: true, unplacedFree: 2)
-        #expect(text.contains("Person 1: 12 Stopps · ca. 4 h 05"))
+        #expect(text.contains("Person 1: 12 Stopps an 7 Adressen · ca. 4 h 05"))
         #expect(text.contains("Person 2: 10 Stopps · ca. 4 h 11"))
         #expect(text.contains("Person 3: keine Stopps"))
         #expect(text.contains("6 min auseinander"))
@@ -329,7 +330,47 @@ struct ParkingStopsTests {
             coordinate: first.coordinate, exact: true, owner: nil, minutes: 7)
         let built = ParkingStops.build([first, second])
         #expect(built.units.count == 1)
-        #expect(abs(built.doors[0].seconds - 7 * 60 * (1 + RouteSnapshot.Pace.sharedDoor)) < 0.01)
+        #expect(abs(built.doors[0].seconds - 7 * 60 * (1 + ParkingStops.sameDoorShare)) < 0.01)
+    }
+
+    /// Six customers at one address are two doors' work, not six: the one
+    /// who gets them gets that many more stops elsewhere.
+    @Test func sixAtOneAddressCountAsTwoDoors() {
+        // Twenty houses in a grid 300 m apart round the Lager, and an office
+        // with six customers in the middle of the east side.
+        var customers: [ParkingStops.Customer] = []
+        var positions: [(Double, Double)] = [(0, 0), (0, 0)]
+        for x in [-750.0, -450, -150, 150, 450, 750] {
+            for y in [-450.0, -150, 150, 450] where !(x == 450 && y == 150) {
+                customers.append(ParkingStops.Customer(
+                    id: customers.count, address: ParkingStops.addressKey("Gasse \(customers.count)", plz: "1180"),
+                    point: positions.count, coordinate: east(x), exact: true, owner: nil, minutes: 7))
+                positions.append((x, y))
+            }
+        }
+        let office = positions.count
+        positions.append((450, 150))
+        for _ in 0..<6 {
+            customers.append(ParkingStops.Customer(
+                id: customers.count, address: ParkingStops.addressKey("Büro 1", plz: "1180"),
+                point: office, coordinate: east(450), exact: true, owner: nil, minutes: 7))
+        }
+        // The grid's own rows are 300 m apart, too far to walk: only the
+        // x is in the coordinate, so walking is ruled out by the minutes.
+        let built = ParkingStops.build(customers.map {
+            ParkingStops.Customer(
+                id: $0.id, address: $0.address, point: $0.point, coordinate: $0.coordinate,
+                exact: false, owner: nil, minutes: 7)
+        })
+        let m = positions.map { a in positions.map { b in hypot(a.0 - b.0, a.1 - b.1) / 8 } }
+        let days = SplitPlanner.plan(doors: built.doors, people: 2, durations: m, rounds: 60)
+
+        let stops = days.map { $0.doors.reduce(0) { $0 + built.units[$1].count } }
+        let withOffice = days.firstIndex { $0.doors.contains { built.units[$0].count == 6 } }!
+        // 23 houses and the office as two: 12.5 doors each, so the office
+        // goes with about ten houses and the other person has about thirteen.
+        #expect(stops[withOffice] >= stops[1 - withOffice] + 2, "\(stops)")
+        #expect(built.addresses.reduce(0, +) == 24)
     }
 }
 
