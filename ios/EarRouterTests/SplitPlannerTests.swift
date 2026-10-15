@@ -310,6 +310,46 @@ struct FairSplitInputTests {
         #expect(state.drivingOrder(of: 0).map(\.id) == [1, 2])
     }
 
+    /// A Nachlieferung typed in on the split screen: free, in the fair
+    /// split once it has drive times, and with its Paket when its share
+    /// becomes a tour.
+    @Test func aTypedInStopIsSharedOutLikeAnyOtherAndKeepsItsPaket() async {
+        let stops = [stop(1, "Gentzgasse 1", at: gemeindebau)]
+        var state = SplitState(tourName: "VM 4", people: 2, stops: stops)
+        state.durations = durations(stops)
+        let entry = CustomerJSON(
+            kunde: "Fam. Novak", strasse: "Währinger Straße 2", plz: "1090",
+            paket: "1x Vitalmenü", notiz: "Nachlieferung", telefon: "0664 123")
+        var extra = stop(state.nextTypedID, "Währinger Straße 2", at: CLLocationCoordinate2D(latitude: 48.22, longitude: 16.36))
+        extra.typed = entry
+        #expect(extra.id < 0)
+        state.add(extra)
+
+        #expect(state.owner(of: extra) == nil)
+        #expect(state.lacksDurations)
+        state.durations = durations(state.stops)
+        #expect(!state.lacksDurations)
+        #expect(state.fairSplitInput(history: .none)!.units.flatMap { $0 }.contains(extra.id))
+
+        state.claim([1, extra.id], for: 1)
+        let entries = await state.entries(for: 1)
+        #expect(entries.contains(entry))
+    }
+
+    @Test func aTypedInStopCanBeDeletedAndUndoDoesNotBringItsOwnerBack() {
+        var extra = stop(-1, "Neugasse 1", at: gemeindebau)
+        extra.typed = CustomerJSON(kunde: "X", strasse: "Neugasse 1", plz: "1180", paket: nil, notiz: nil)
+        var state = SplitState(tourName: "VM 4", people: 2, stops: [stop(1, "Gentzgasse 1", at: nil), extra])
+        state.claim([-1], for: 0)
+        state.delete(-1)
+        #expect(state.stops.map(\.id) == [1])
+        state.undo()
+        #expect(state.owner.isEmpty)
+        // A portal stop is not the screen's to delete.
+        state.delete(1)
+        #expect(state.stops.count == 1)
+    }
+
     @Test func theSummarySaysHowFarApartTheDaysAre() {
         let days = [
             SplitDay(stops: 12, drivingMinutes: 90, doorMinutes: 84, totalMinutes: 245, addresses: 7),

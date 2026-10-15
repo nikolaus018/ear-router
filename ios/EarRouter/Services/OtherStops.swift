@@ -232,6 +232,18 @@ enum PortalPlacement {
     }
 }
 
+extension PortalPlacement {
+    /// A stop typed in on the split screen, put on the map the same way:
+    /// left without a pin, rather than refused, where nobody can place it.
+    static func place(typed entry: CustomerJSON, id: Int) async -> SplitStop {
+        let hit = try? await Geocoder.shared.geocode(strasse: entry.strasse, plz: entry.plz)
+        return SplitStop(
+            id: id, name: entry.kunde.trimmed, address: entry.strasse.trimmed, plz: entry.plz.trimmed,
+            coordinate: hit.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) },
+            exactPoint: hit?.precision == .exact, typed: entry)
+    }
+}
+
 /// Stops the driver added to the other driver's side by hand: deliveries the
 /// portal's list does not carry, like a Nachlieferung that one of the two has
 /// to make anyway. Kept per route, beside `PortalTourLink`, and let go of with

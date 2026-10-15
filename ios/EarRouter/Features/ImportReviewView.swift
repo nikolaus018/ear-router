@@ -475,9 +475,23 @@ struct ImportEntryEditor: View {
 
     private enum Field: Hashable { case kunde, telefon, strasse, plz, paket, notiz }
 
-    init(entry: ImportReviewView.Entry, onSave: @escaping (ImportReviewView.Entry) -> Void) {
+    /// "Neuer Stopp" / "Hinzufügen" where the form makes a stop rather than
+    /// corrects a row, as it does on the split screen.
+    private let title: String
+    private let confirm: String
+    /// Only an entry an import would take can be confirmed: there is no
+    /// review after this one to catch it.
+    private let strict: Bool
+
+    init(
+        entry: ImportReviewView.Entry, title: String = "Eintrag", confirm: String = "Fertig",
+        strict: Bool = false, onSave: @escaping (ImportReviewView.Entry) -> Void
+    ) {
         _entry = State(initialValue: entry)
         original = entry
+        self.title = title
+        self.confirm = confirm
+        self.strict = strict
         self.onSave = onSave
     }
 
@@ -592,7 +606,7 @@ struct ImportEntryEditor: View {
                     Text("Autokorrektur ist hier aus — Türcodes und Stiegen bleiben, wie sie sind.")
                 }
             }
-            .navigationTitle("Eintrag")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -608,13 +622,15 @@ struct ImportEntryEditor: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Fertig") {
+                    Button(confirm) {
                         onSave(result)
                         dismiss()
                     }
+                    .disabled(strict && result.problem != nil)
                 }
             }
             .interactiveDismissDisabled(hasChanges)
+            .onAppear { if strict && entry.kunde.isEmpty { focused = .kunde } }
         }
     }
 }

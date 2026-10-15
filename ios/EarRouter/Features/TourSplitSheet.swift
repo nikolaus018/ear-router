@@ -207,11 +207,18 @@ struct SplitStop: Identifiable {
     /// The address without the flat, where it is known — see
     /// `GourmetPortal.doorLine`. Households with the same one share a door.
     var door: String? = nil
+    /// Typed in on the split screen — a Nachlieferung, anything the portal's
+    /// list does not have — with everything it was given. Such a stop has a
+    /// negative id and lives only as long as the split, unless it is in a
+    /// share that becomes a tour.
+    var typed: CustomerJSON? = nil
+
+    var isTyped: Bool { typed != nil }
 
     /// The stop as an import entry, with only what the tour list carried.
     /// Used when the detail fetch is not available or did not answer.
     var plainEntry: CustomerJSON {
-        CustomerJSON(kunde: name, strasse: address, plz: plz, paket: nil, notiz: nil)
+        typed ?? CustomerJSON(kunde: name, strasse: address, plz: plz, paket: nil, notiz: nil)
     }
 }
 
@@ -227,7 +234,7 @@ struct SplitState: Identifiable {
     let tourID: Int?
     let date: Date
     let people: Int
-    let stops: [SplitStop]
+    private(set) var stops: [SplitStop]
     /// The login this split was loaded with, kept so a share can be turned
     /// into a tour without signing in again.
     let token: String?
@@ -302,6 +309,35 @@ struct SplitState: Identifiable {
         history.append(owner)
         for (id, person) in changed { owner[id] = person }
         return changed.count
+    }
+
+    // MARK: Stops typed in here
+
+    /// The id the next typed-in stop gets: below zero, where no portal
+    /// delivery is.
+    var nextTypedID: Int { min(-1, (stops.map(\.id).min() ?? 0) - 1) }
+
+    /// A stop typed in on this screen. Free, as every stop starts out.
+    mutating func add(_ stop: SplitStop) {
+        stops.append(stop)
+        revision += 1
+    }
+
+    /// Takes a typed-in stop away again, from whoever had it — and from
+    /// every step "Rückgängig" could go back to, so it does not come back
+    /// as an owner of nothing.
+    mutating func delete(_ id: Int) {
+        guard stops.contains(where: { $0.id == id && $0.isTyped }) else { return }
+        stops.removeAll { $0.id == id }
+        owner[id] = nil
+        for i in history.indices { history[i][id] = nil }
+        revision += 1
+    }
+
+    /// Whether a stop on the map has no drive times yet — one typed in while
+    /// the table could not be asked again.
+    var lacksDurations: Bool {
+        stops.contains { $0.coordinate != nil && durations?.point[$0.id] == nil }
     }
 
     mutating func undo() {
@@ -456,6 +492,8 @@ private struct TourSplitMapView: View {
     /// Asks the panel for the fair split: the panel is the screen in front,
     /// and the one that can show it working and what it came to.
     @State private var fairRequest = 0
+    /// Asks the panel for the form a stop is typed into, for the same reason.
+    @State private var addRequest = 0
 
     var body: some View {
         NavigationStack {
@@ -485,6 +523,9 @@ private struct TourSplitMapView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        Button("Stopp hinzufügen", systemImage: "plus") {
+                            addRequest += 1
+                        }
                         Button("Fair aufteilen", systemImage: "wand.and.stars") {
                             fairRequest += 1
                         }
@@ -519,6 +560,7 @@ private struct TourSplitMapView: View {
                 state: $state, person: $person, detent: $detent,
                 confirmingClose: $confirmingClose,
                 fairRequest: fairRequest,
+                addRequest: addRequest,
                 onClose: { dismiss() },
                 onOpenedTour: onOpenedTour,
                 onFocus: { stop in
@@ -590,12 +632,7 @@ private struct SplitMapView: UIViewRepresentable {
         coordinator.lassoLayer.lineCap = .round
         overlay.layer.addSublayer(coordinator.lassoLayer)
 
-        let annotations = stops.compactMap { stop in
-            stop.coordinate.map { SplitAnnotation(id: stop.id, name: stop.name, coordinate: $0) }
-        }
-        coordinator.annotations = Dictionary(uniqueKeysWithValues: annotations.map { ($0.id, $0) })
-        coordinator.offsets = Self.fanOut(annotations)
-        map.addAnnotations(annotations)
+        coordinator.sync(stops)
 
         map.onFirstLayout = { [weak coordinator] in coordinator?.fit(animated: false) }
         coordinator.lastFit = fitToken
@@ -628,6 +665,7 @@ private struct SplitMapView: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self
         coordinator.armLasso()
+        coordinator.sync(stops)
         coordinator.refreshPins()
         if fitToken != coordinator.lastFit {
             coordinator.lastFit = fitToken
@@ -764,6 +802,38 @@ private struct SplitMapView: UIViewRepresentable {
         }
 
         // MARK: Pins
+
+        /// The pins brought in line with the stops: one typed in appears, one
+        /// deleted goes, and the ring round a shared point is drawn again.
+        func sync(_ stops: [SplitStop]) {
+            guard let map else { return }
+            var wanted: [Int: SplitStop] = [:]
+            for stop in stops where stop.coordinate != nil { wanted[stop.id] = stop }
+            var changed = false
+            for (id, annotation) in Array(annotations) {
+                if let stop = wanted[id], let c = stop.coordinate,
+                    c.latitude == annotation.coordinate.latitude,
+                    c.longitude == annotation.coordinate.longitude, stop.name == annotation.name
+                {
+                    continue
+                }
+                map.removeAnnotation(annotation)
+                annotations[id] = nil
+                changed = true
+            }
+            for (id, stop) in wanted where annotations[id] == nil {
+                guard let c = stop.coordinate else { continue }
+                let annotation = SplitAnnotation(id: id, name: stop.name, coordinate: c)
+                annotations[id] = annotation
+                map.addAnnotation(annotation)
+                changed = true
+            }
+            guard changed else { return }
+            offsets = SplitMapView.fanOut(Array(annotations.values))
+            for (id, annotation) in annotations {
+                map.view(for: annotation)?.centerOffset = offsets[id] ?? .zero
+            }
+        }
 
         func refreshPins() {
             for id in annotations.keys { configure(id) }
@@ -1015,6 +1085,8 @@ private struct SplitPanel: View {
     @Binding var confirmingClose: Bool
     /// Bumped by "Fair aufteilen" in the map's menu.
     var fairRequest: Int
+    /// Bumped by "Stopp hinzufügen" in the map's menu.
+    var addRequest: Int
     var onClose: () -> Void
     var onOpenedTour: () -> Void
     var onFocus: (SplitStop) -> Void
@@ -1022,6 +1094,8 @@ private struct SplitPanel: View {
     @State private var showingOverview = false
     @State private var busy: String?
     @State private var fairSummary: String?
+    @State private var addingStop = false
+    @State private var notice: String?
 
     private var color: Color { SplitState.colors[person] }
     private var mine: [SplitStop] { state.drivingOrder(of: person) }
@@ -1054,6 +1128,12 @@ private struct SplitPanel: View {
                         .swipeActions {
                             Button("Entfernen", role: .destructive) {
                                 withAnimation { state.toggle(stop.id, for: person) }
+                            }
+                            if stop.isTyped {
+                                Button("Löschen") {
+                                    withAnimation { state.delete(stop.id) }
+                                }
+                                .tint(.gray)
                             }
                         }
                     }
@@ -1097,6 +1177,23 @@ private struct SplitPanel: View {
             if open { detent = .large }
         }
         .onChange(of: fairRequest) { _, _ in startFairSplit() }
+        .onChange(of: addRequest) { _, _ in if busy == nil { addingStop = true } }
+        .sheet(isPresented: $addingStop) {
+            ImportEntryEditor(
+                entry: .init(CustomerJSON(kunde: "", strasse: "", plz: "", paket: nil, notiz: nil)),
+                title: "Neuer Stopp", confirm: "Hinzufügen", strict: true
+            ) { entry in
+                Task { await addStop(entry.json) }
+            }
+        }
+        .alert(
+            "Stopp hinzugefügt",
+            isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })
+        ) {
+            Button("OK") {}
+        } message: {
+            Text(notice ?? "")
+        }
         .alert(
             "Fair aufgeteilt",
             isPresented: Binding(
@@ -1210,11 +1307,14 @@ private struct SplitPanel: View {
     private func fairSplit() async {
         busy = "Wird fair aufgeteilt …"
         defer { busy = nil }
-        // Asked again when the first time had no OSRM: the signal may be back.
-        if state.durations?.estimated != false {
+        // Asked again when the first time had no OSRM — the signal may be
+        // back — or a stop typed in since has no drive times yet.
+        if state.durations?.estimated != false || state.lacksDurations {
             busy = "Fahrzeiten werden berechnet …"
             let fresh = await SplitDurations.load(for: state.stops)
-            if state.durations == nil || !fresh.estimated { state.durations = fresh }
+            if state.durations?.estimated != false || !fresh.estimated || state.lacksDurations {
+                state.durations = fresh
+            }
             busy = "Wird fair aufgeteilt …"
         }
         let history = PaceHistory.current
@@ -1233,6 +1333,27 @@ private struct SplitPanel: View {
         fairSummary = FairSplitInput.summary(
             state.days(history: history) ?? input.days(planned),
             estimated: input.durations.estimated, unplacedFree: unplaced.count)
+    }
+
+    /// A stop typed in: on the map, free, and in everybody's day once the
+    /// drive to it is known. Nothing is saved — closing the split forgets it
+    /// unless it is in a share that becomes a tour.
+    private func addStop(_ entry: CustomerJSON) async {
+        guard busy == nil else { return }
+        busy = "Adresse wird gesucht …"
+        defer { busy = nil }
+        let stop = await PortalPlacement.place(typed: entry, id: state.nextTypedID)
+        withAnimation(.snappy) { state.add(stop) }
+        guard stop.coordinate != nil else {
+            notice = "„\(stop.name)“ wurde auf der Karte nicht gefunden. Der Stopp steht unter „Nicht auf der Karte“ und kann dort zugeteilt werden."
+            return
+        }
+        onFocus(stop)
+        busy = "Fahrzeiten werden berechnet …"
+        let fresh = await SplitDurations.load(for: state.stops)
+        // A table from OSRM is not swapped for a guess because the signal
+        // dropped; the new stop then waits for "Fair aufteilen" to ask again.
+        if !fresh.estimated || state.durations?.estimated != false { state.durations = fresh }
     }
 
     private func unplacedRow(_ stop: SplitStop) -> some View {
@@ -1257,6 +1378,13 @@ private struct SplitPanel: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .swipeActions {
+            if stop.isTyped {
+                Button("Löschen", role: .destructive) {
+                    withAnimation { state.delete(stop.id) }
+                }
+            }
+        }
     }
 }
 
@@ -1265,7 +1393,17 @@ private struct StopLine: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(stop.name)
+            HStack(spacing: 6) {
+                Text(stop.name)
+                if stop.isTyped {
+                    Text("Hinzugefügt")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(.quaternary, in: .capsule)
+                }
+            }
             Text(stop.address.isEmpty ? "Keine Adresse" : stop.address)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -1316,7 +1454,16 @@ private struct SplitOverview: View {
             let rest = state.stops(of: nil)
             if !rest.isEmpty {
                 Section("Nicht zugeteilt · \(rest.count)") {
-                    ForEach(rest) { StopLine(stop: $0) }
+                    ForEach(rest) { stop in
+                        StopLine(stop: stop)
+                            .swipeActions {
+                                if stop.isTyped {
+                                    Button("Löschen", role: .destructive) {
+                                        withAnimation { state.delete(stop.id) }
+                                    }
+                                }
+                            }
+                    }
                 }
             }
         }
