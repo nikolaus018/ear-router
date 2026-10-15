@@ -236,11 +236,28 @@ extension PortalPlacement {
     /// A stop typed in on the split screen, put on the map the same way:
     /// left without a pin, rather than refused, where nobody can place it.
     static func place(typed entry: CustomerJSON, id: Int) async -> SplitStop {
-        let hit = try? await Geocoder.shared.geocode(strasse: entry.strasse, plz: entry.plz)
+        let (coordinate, exact) = await locate(strasse: entry.strasse, plz: entry.plz)
         return SplitStop(
             id: id, name: entry.kunde.trimmed, address: entry.strasse.trimmed, plz: entry.plz.trimmed,
-            coordinate: hit.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) },
-            exactPoint: hit?.precision == .exact, typed: entry)
+            coordinate: coordinate, exactPoint: exact, typed: entry)
+    }
+
+    /// A portal stop at the address the driver corrected it to. Its Paket
+    /// still comes from the portal; the address it is delivered to is this.
+    static func place(_ stop: SplitStop, at strasse: String, plz: String) async -> SplitStop {
+        let (coordinate, exact) = await locate(strasse: strasse, plz: plz)
+        return SplitStop(
+            id: stop.id, name: stop.name, address: strasse.trimmed, plz: plz.trimmed,
+            coordinate: coordinate, exactPoint: exact, addressCorrected: true)
+    }
+
+    private static func locate(
+        strasse: String, plz: String
+    ) async -> (CLLocationCoordinate2D?, exact: Bool) {
+        guard let hit = try? await Geocoder.shared.geocode(strasse: strasse, plz: plz) else {
+            return (nil, false)
+        }
+        return (CLLocationCoordinate2D(latitude: hit.lat, longitude: hit.lon), hit.precision == .exact)
     }
 }
 

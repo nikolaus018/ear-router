@@ -350,6 +350,20 @@ struct FairSplitInputTests {
         #expect(state.stops.count == 1)
     }
 
+    /// A corrected address puts the stop on the map for whoever had it, and
+    /// is the address its share is delivered to.
+    @Test func aCorrectedAddressKeepsTheStopWithItsPerson() async {
+        var state = SplitState(tourName: "VM 4", people: 2, stops: [stop(7, "Gentzgase 129", at: nil)])
+        state.claim([7], for: 1)
+        var fixed = stop(7, "Gentzgasse 129", at: gemeindebau)
+        fixed.addressCorrected = true
+        state.replace(fixed)
+
+        #expect(state.owner(of: fixed) == 1)
+        #expect(state.stops[0].coordinate != nil)
+        #expect(await state.entries(for: 1).map(\.strasse) == ["Gentzgasse 129"])
+    }
+
     @Test func theSummarySaysHowFarApartTheDaysAre() {
         let days = [
             SplitDay(stops: 12, drivingMinutes: 90, doorMinutes: 84, totalMinutes: 245, addresses: 7),

@@ -212,6 +212,9 @@ struct SplitStop: Identifiable {
     /// negative id and lives only as long as the split, unless it is in a
     /// share that becomes a tour.
     var typed: CustomerJSON? = nil
+    /// A portal stop whose address the driver corrected here: the share
+    /// that becomes a tour is delivered there, not where the portal says.
+    var addressCorrected = false
 
     var isTyped: Bool { typed != nil }
 
@@ -334,6 +337,14 @@ struct SplitState: Identifiable {
         revision += 1
     }
 
+    /// The same stop placed again — a corrected address, an edited
+    /// typed-in one. Whoever had it keeps it.
+    mutating func replace(_ stop: SplitStop) {
+        guard let i = stops.firstIndex(where: { $0.id == stop.id }) else { return }
+        stops[i] = stop
+        revision += 1
+    }
+
     /// Whether a stop on the map has no drive times yet — one typed in while
     /// the table could not be asked again.
     var lacksDurations: Bool {
@@ -377,7 +388,14 @@ struct SplitState: Identifiable {
                 for: wanted, token: token, credentials: GourmetCredentialsStore.load(),
                 onProgress: onProgress)) ?? [:]
         }
-        return mine.map { details[$0.id] ?? $0.plainEntry }
+        return mine.map { stop in
+            guard var detail = details[stop.id] else { return stop.plainEntry }
+            if stop.addressCorrected {
+                detail.strasse = stop.address
+                detail.plz = stop.plz
+            }
+            return detail
+        }
     }
 
     /// "VM 4 DO Vormittag · P2", with the date added only when a tour of that
@@ -1096,6 +1114,12 @@ private struct SplitPanel: View {
     @State private var fairSummary: String?
     @State private var addingStop = false
     @State private var notice: String?
+    /// A typed-in stop open in the form again.
+    @State private var editingTyped: SplitStop?
+    /// A portal stop whose address is being corrected, and the two fields.
+    @State private var correcting: SplitStop?
+    @State private var draftStrasse = ""
+    @State private var draftPLZ = ""
 
     private var color: Color { SplitState.colors[person] }
     private var mine: [SplitStop] { state.drivingOrder(of: person) }
@@ -1148,7 +1172,7 @@ private struct SplitPanel: View {
                     } header: {
                         Text("Nicht auf der Karte")
                     } footer: {
-                        Text("Adresse nicht gefunden — hier antippen, um sie zuzuteilen.")
+                        Text("Adresse nicht gefunden — antippen, um sie zuzuteilen, oder nach links wischen, um die Adresse zu korrigieren.")
                     }
                 }
             }
@@ -1185,6 +1209,34 @@ private struct SplitPanel: View {
             ) { entry in
                 Task { await addStop(entry.json) }
             }
+        }
+        .sheet(item: $editingTyped) { stop in
+            ImportEntryEditor(
+                entry: .init(stop.plainEntry), title: "Stopp", confirm: "Fertig", strict: true
+            ) { entry in
+                Task {
+                    await relocate { await PortalPlacement.place(typed: entry.json, id: stop.id) }
+                }
+            }
+        }
+        .alert(
+            "Adresse korrigieren",
+            isPresented: Binding(get: { correcting != nil }, set: { if !$0 { correcting = nil } })
+        ) {
+            TextField("Straße und Hausnummer", text: $draftStrasse)
+                .autocorrectionDisabled()
+            TextField("PLZ", text: $draftPLZ)
+                .keyboardType(.numberPad)
+            Button("Suchen") {
+                guard let stop = correcting else { return }
+                let strasse = draftStrasse, plz = draftPLZ
+                Task {
+                    await relocate { await PortalPlacement.place(stop, at: strasse, plz: plz) }
+                }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Nur für diese Aufteilung — und für die Tour, die daraus wird.")
         }
         .alert(
             "Stopp hinzugefügt",
@@ -1349,6 +1401,26 @@ private struct SplitPanel: View {
             return
         }
         onFocus(stop)
+        await refreshDurations()
+    }
+
+    /// A stop that was not on the map, looked up again at the address the
+    /// driver gave it.
+    private func relocate(_ place: () async -> SplitStop) async {
+        guard busy == nil else { return }
+        busy = "Adresse wird gesucht …"
+        defer { busy = nil }
+        let placed = await place()
+        withAnimation(.snappy) { state.replace(placed) }
+        guard placed.coordinate != nil else {
+            notice = "„\(placed.name)“ wurde auch dort nicht gefunden."
+            return
+        }
+        onFocus(placed)
+        await refreshDurations()
+    }
+
+    private func refreshDurations() async {
         busy = "Fahrzeiten werden berechnet …"
         let fresh = await SplitDurations.load(for: state.stops)
         // A table from OSRM is not swapped for a guess because the signal
@@ -1384,6 +1456,17 @@ private struct SplitPanel: View {
                     withAnimation { state.delete(stop.id) }
                 }
             }
+            Button("Adresse") {
+                if stop.isTyped {
+                    editingTyped = stop
+                } else {
+                    draftStrasse = stop.address
+                    draftPLZ = stop.plz
+                    correcting = stop
+                }
+            }
+            .tint(.blue)
+            .disabled(busy != nil)
         }
     }
 }
