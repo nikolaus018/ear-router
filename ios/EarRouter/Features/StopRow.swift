@@ -138,6 +138,8 @@ struct StopRow: View {
             fixedIcon("shippingbox.fill")
         case .end:
             fixedIcon("flag.checkered")
+        case .pause:
+            fixedIcon("cup.and.saucer.fill")
         }
     }
 
@@ -466,7 +468,7 @@ struct StopListRow: View {
             .accessibilityHint(
                 isCustomer
                     ? "Doppeltippen zum Bearbeiten"
-                    : (stop.kind == .start || stop.kind == .end)
+                    : (stop.kind == .start || stop.kind == .end || stop.kind == .pause)
                     ? "Doppeltippen zum Bearbeiten"
                     : stop.excluded
                     ? "Wieder einplanen über die Taste am Zeilenende"
@@ -544,7 +546,9 @@ struct StopListRow: View {
 
     @ViewBuilder
     private var trailingSwipes: some View {
-        if isCustomer {
+        // The pause goes the way a door does: it is only on the tour because
+        // the driver put it there, and "Pause zu Hause" puts it back.
+        if isCustomer || stop.kind == .pause {
             // Not `role: .destructive`. That role tells the list to
             // play its own delete animation — the row collapsing away
             // — the instant the button is tapped, on the assumption
@@ -625,8 +629,13 @@ struct StopListRow: View {
                     systemImage: stop.isSettled ? "arrow.uturn.backward" : "checkmark.circle",
                     action: onToggleDelivered)
             }
-            if stop.kind == .start || stop.kind == .end {
+            if stop.kind == .start || stop.kind == .end || stop.kind == .pause {
                 Button("Bearbeiten", systemImage: "pencil", action: onTap)
+            }
+            if stop.kind == .pause {
+                Button(
+                    "Pause entfernen", systemImage: "trash", role: .destructive,
+                    action: onDelete)
             }
             if stop.canToggleExcluded {
                 Divider()

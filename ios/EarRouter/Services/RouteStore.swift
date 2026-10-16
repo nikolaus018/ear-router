@@ -557,6 +557,42 @@ enum RouteStore {
         await RouteOptimizer.optimizeBestEffort(route, in: context)
     }
 
+    /// "Pause zu Hause", on or off.
+    ///
+    /// On puts the driver's home on the tour as its last stop before Ziel, and
+    /// the doors still open are planned again to finish near it — the driver
+    /// has decided by now, so the drive should be the shortest one that ends
+    /// at home. Off takes it away, and the open doors are planned towards Ziel
+    /// again. Until it is switched on, nothing on the tour knows it exists.
+    ///
+    /// A stop of its own rather than a flag on the route, so the pause is
+    /// navigated to, ticked off and drawn exactly like Lager and Ziel are.
+    static func setPause(
+        _ on: Bool, on route: Route, home: HomeAddress? = HomeAddress.load(),
+        reroute: Bool = true, in context: ModelContext
+    ) async throws {
+        let existing = route.stops.filter { $0.kind == .pause }
+        if on {
+            guard existing.isEmpty else { return }
+            guard let home else {
+                throw AppError.message(
+                    "Zuerst unter Mehr → Zuhause die eigene Adresse eintragen.")
+            }
+            let pause = Stop(
+                kind: .pause, kunde: "Pause", strasse: home.strasse, plz: home.plz,
+                lat: home.lat, lon: home.lon, orderIndex: nextOrderIndex(in: route))
+            pause.route = route
+            context.insert(pause)
+            keepZielLast(in: route)
+        } else {
+            guard !existing.isEmpty else { return }
+            for stop in existing { context.delete(stop) }
+        }
+        route.markRoutingStale()
+        try context.save()
+        if reroute { await RouteOptimizer.optimizeBestEffort(route, in: context) }
+    }
+
     /// Moves a pin by hand. Outranks the geocoder from here on.
     static func pinDrop(
         _ stop: Stop, to coordinate: (lat: Double, lon: Double),
@@ -595,8 +631,8 @@ enum RouteStore {
         guard order.map(\.id) != customers.map(\.id) else { return false }
 
         let fixed = route.orderedStops.filter { $0.kind != .customer }
-        let head = fixed.filter { $0.kind != .end }
-        let tail = fixed.filter { $0.kind == .end }
+        let head = fixed.filter { $0.kind == .start || $0.kind == .via }
+        let tail = fixed.filter { $0.kind == .pause } + fixed.filter { $0.kind == .end }
         for (index, stop) in (head + order + tail).enumerated() {
             stop.orderIndex = index
             stop.nextLegKm = nil
@@ -1190,13 +1226,22 @@ enum RouteStore {
     /// the end until the optimizer places them — which, with OSRM slow or
     /// down, can be all day — and until then the list showed them under Ziel,
     /// as if they were to be driven after the van was back.
+    ///
+    /// A Pause zu Hause goes with it, directly above Ziel: it is the last stop
+    /// before the van goes back, whatever was added after it.
     static func keepZielLast(in route: Route) {
-        guard let end = route.stops.first(where: { $0.kind == .end }) else { return }
+        let tail = route.stops.filter { $0.kind == .pause }
+            + route.stops.filter { $0.kind == .end }
+        guard !tail.isEmpty else { return }
+        let tailIDs = Set(tail.map(\.id))
         var highest = Int.min
-        for s in route.stops where s.id != end.id && s.orderIndex > highest {
+        for s in route.stops where !tailIDs.contains(s.id) && s.orderIndex > highest {
             highest = s.orderIndex
         }
-        if highest >= end.orderIndex { end.orderIndex = highest + 1 }
+        for s in tail {
+            if highest >= s.orderIndex { s.orderIndex = highest + 1 }
+            highest = s.orderIndex
+        }
     }
 
     // MARK: - Matching a paste against the route

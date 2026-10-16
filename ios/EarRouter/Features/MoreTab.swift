@@ -21,6 +21,7 @@ struct MoreTab: View {
     @State private var showingCarPlaySetup = false
     @State private var showingSplit = false
     @State private var showingPDF = false
+    @State private var home = HomeAddress.load()
 
     /// The driver's own dispatch portal — the customer list this app's stops
     /// are copied out of in the first place.
@@ -113,6 +114,16 @@ struct MoreTab: View {
                     "iOS lässt die App das nicht von selbst starten — das übernimmt eine "
                         + "Automation in „Kurzbefehle“, die einmal eingerichtet wird. "
                         + "Dieser Schalter ist der Hauptschalter dafür.")
+            }
+
+            Section {
+                NavigationLink {
+                    HomeAddressView(home: $home)
+                } label: {
+                    SettingsRow(
+                        icon: "house.fill", tint: .cyan, title: "Zuhause",
+                        detail: home?.line ?? "Für „Pause zu Hause“")
+                }
             }
 
             Section {

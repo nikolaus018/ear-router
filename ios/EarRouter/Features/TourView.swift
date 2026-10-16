@@ -442,6 +442,16 @@ struct TourView: View {
                 Button("Adressen prüfen", systemImage: "mappin.and.ellipse") {
                     startLongJob { await recheck() }
                 }
+                // Switched on once the driver knows there is time for it —
+                // until then the tour is planned to Ziel as if it did not
+                // exist. See `RouteStore.setPause`.
+                if route.status == .active {
+                    Toggle(
+                        "Pause zu Hause", systemImage: "cup.and.saucer",
+                        isOn: Binding(
+                            get: { route.stops.contains { $0.kind == .pause } },
+                            set: { on in Task { await setPause(on) } }))
+                }
                 Divider()
                 Button("Umbenennen", systemImage: "pencil") {
                     newName = route.name
@@ -646,6 +656,19 @@ struct TourView: View {
             self.error = e
         } catch {
             self.error = AppError.message("Konnte den Stopp nicht ändern.")
+        }
+    }
+
+    private func setPause(_ on: Bool) async {
+        let banner = ownsBanner
+        if banner { busy = on ? "Pause wird eingeplant …" : "Pause wird entfernt …" }
+        defer { if banner { busy = nil } }
+        do {
+            try await RouteStore.setPause(on, on: route, in: context)
+        } catch let e as AppError {
+            self.error = e
+        } catch {
+            self.error = AppError.message("Die Pause konnte nicht geändert werden.")
         }
     }
 

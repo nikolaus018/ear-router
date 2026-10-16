@@ -456,7 +456,10 @@ private struct NowStopCard: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 if isCheckpoint {
-                    Image(systemName: stop.kind == .via ? "shippingbox.fill" : "flag.checkered")
+                    Image(
+                        systemName: stop.kind == .via
+                            ? "shippingbox.fill"
+                            : stop.kind == .pause ? "cup.and.saucer.fill" : "flag.checkered")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
                         .frame(width: badge, height: badge)

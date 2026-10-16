@@ -98,6 +98,7 @@ struct StopEditorSheet: View {
         case .start: return "Start"
         case .end: return "Ziel"
         case .via: return "Lager"
+        case .pause: return "Pause"
         case .customer: return "Stopp"
         }
     }

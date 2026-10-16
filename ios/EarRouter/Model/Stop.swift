@@ -11,6 +11,10 @@ enum StopKind: String, Codable, Sendable, CaseIterable {
     case via
     /// Where the tour finishes.
     case end
+    /// "Pause zu Hause": the driver's home, driven after the last door and
+    /// before Ziel. Only on a tour where the driver switched it on — see
+    /// `RouteStore.setPause` — and removed again rather than switched off.
+    case pause
     /// An actual delivery.
     case customer
 
@@ -299,13 +303,13 @@ extension Stop {
     /// Only ever on a customer. The fixed points are not doors.
     var isOpenDelivery: Bool { kind == .customer && !isSettled }
 
-    /// Lager and Ziel, on a tour that drives them. They are ticked off like a
+    /// Lager, Pause and Ziel, on a tour that drives them. They are ticked off like a
     /// door — loading at the warehouse and getting back are two stops of the
     /// shift as much as any customer — but they are not deliveries: no meal,
     /// no number, no "nicht angetroffen", and no place in the day's report.
     ///
     /// Not Start. The driver is standing in it when the tour begins.
-    var isCheckpoint: Bool { (kind == .via || kind == .end) && !excluded }
+    var isCheckpoint: Bool { (kind == .via || kind == .end || kind == .pause) && !excluded }
 
     /// Start and Lager can be switched out of a tour. Ziel cannot: without it
     /// the tour ends wherever the optimizer finds cheapest, so its address is
@@ -315,7 +319,7 @@ extension Stop {
         switch kind {
         case .start, .via: true
         case .end: excluded
-        case .customer: false
+        case .pause, .customer: false
         }
     }
 
@@ -439,6 +443,7 @@ extension Stop {
         case .start: "Start"
         case .via: "Lager"
         case .end: "Ziel"
+        case .pause: "Pause"
         case .customer: kunde ?? "Stopp"
         }
     }

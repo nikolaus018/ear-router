@@ -1292,6 +1292,7 @@ struct MapTab: View {
         case .start: "house.fill"
         case .via: "shippingbox.fill"
         case .end: "flag.checkered"
+        case .pause: "cup.and.saucer.fill"
         case .customer: "mappin"
         }
     }
