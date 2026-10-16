@@ -2397,6 +2397,7 @@ const ICONS = {
   box: icon('<path d="M3.5 8 12 4l8.5 4-8.5 4-8.5-4Z"/><path d="M3.5 8v8l8.5 4 8.5-4V8"/><path d="M12 12v8"/>'),
   house: icon('<path d="M4 11.5 12 4l8 7.5"/><path d="M6 10v9h12v-9"/><path d="M10 19v-5h4v5"/>'),
   flag: icon('<path d="M6 3v18"/><path d="M6 4.5h11l-3 3.75 3 3.75H6"/>'),
+  cup: icon('<path d="M5 9h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5V9Z"/><path d="M16 10h1.5a2.5 2.5 0 0 1 0 5H16"/><path d="M4 21h14"/><path d="M9 3v3M12 3v3"/>'),
   pencil: icon('<path d="M4 20l.9-3.6L16 5.3l3.7 3.7L8.6 20.1 4 20Z"/><path d="M13.8 6.8l3.4 3.4"/>'),
   trash: icon('<path d="M4 7h16"/><path d="M9 7V4.3h6V7"/><path d="M6.5 7l.9 12.7h9.2L17.5 7"/><path d="M10 11v6"/><path d="M14 11v6"/>'),
   refresh: icon('<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5.5h-5.5"/>'),
@@ -3239,9 +3240,9 @@ const handedOver = (outcome) => outcome === 'delivered' || outcome === 'neighbou
 /// The van does not go to this door: out of the route, the counts and the
 /// Ladeliste.
 const skipsDoor = (s) => s.kind === 'customer' && (s.outcome === 'toLager' || s.outcome === 'cancelled');
-/// Lager and Ziel, on a tour that drives them. Ticked off like a door, but
-/// not deliveries. Not Start — the driver is standing in it.
-const isCheckpoint = (s) => (s.kind === 'via' || s.kind === 'end') && !s.excluded;
+/// Lager, Pause and Ziel, on a tour that drives them. Ticked off like a door,
+/// but not deliveries. Not Start — the driver is standing in it.
+const isCheckpoint = (s) => (s.kind === 'via' || s.kind === 'end' || s.kind === 'pause') && !s.excluded;
 /// A stop still to be ticked off, delivery or checkpoint.
 const isOpenStop = (s) => (s.kind === 'customer' || isCheckpoint(s)) && !s.outcome;
 /// Which stop is next: the first one still open in the list — except that
@@ -4458,7 +4459,9 @@ function openFixedStopSheet(stop) {
   // What each fixed point can be asked to do. Start can be swapped for
   // "where I am"; the Lager can be left out; Ziel stays — without it the
   // tour would end wherever happens to be cheapest — and only moves.
-  const toggle = stop.kind === 'start'
+  const toggle = stop.kind === 'pause'
+    ? null
+    : stop.kind === 'start'
     ? { title: 'Von meinem Standort starten', sub: 'Die Tour beginnt dort, wo du gerade bist, statt an dieser Adresse.' }
     : stop.kind === 'via'
     ? { title: 'In dieser Tour überspringen', sub: 'Das Lager wird nicht angefahren und nicht in Strecke und Fahrzeit eingerechnet.' }
@@ -4467,7 +4470,7 @@ function openFixedStopSheet(stop) {
     : null;
   renderSheetShell(`
     <h2 class="sheet-title">${meta.title}</h2>
-    <p class="sheet-lead">${stop.kind === 'start' ? 'Wo die Tour beginnt.' : stop.kind === 'via' ? 'Wo das Essen geladen wird.' : 'Wo die Tour endet.'} Gilt nur für diese Tour.</p>
+    <p class="sheet-lead">${stop.kind === 'start' ? 'Wo die Tour beginnt.' : stop.kind === 'via' ? 'Wo das Essen geladen wird.' : stop.kind === 'pause' ? 'Wo du vor dem Ziel Pause machst.' : 'Wo die Tour endet.'} Gilt nur für diese Tour.</p>
 
     ${toggle ? `
     <div class="${GROUP} mb-4">
@@ -4494,9 +4497,112 @@ function openFixedStopSheet(stop) {
 
     <div class="pb-2" style="margin-top:1.25rem">
       <button type="button" onclick="saveFixedStop(${stop.id})" class="press-98 wide-btn accent">Speichern</button>
+      ${stop.kind === 'pause' ? `<button type="button" onclick="closeSheet(); setPause(false)" class="press-98 wide-btn quiet" style="color:#D70015">Pause entfernen</button>` : ''}
       <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
     </div>
   `, { label: meta.title });
+}
+
+// ---------------------------------------------------------------------
+// Pause zu Hause — the driver's home as the last stop before Ziel, once
+// they know there is time for it. Until then the tour is planned to Ziel as
+// if it did not exist. Switching it on re-plans the doors still open so
+// they finish near home; the iOS app's `RouteStore.setPause`.
+// ---------------------------------------------------------------------
+function openHomeSheet() {
+  const h = homeState.home;
+  renderSheetShell(`
+    <h2 class="sheet-title">Zuhause</h2>
+    <p class="sheet-lead">Für „Pause zu Hause“ in einer Tour: die Pause kommt als letzter Stopp vor das Ziel.</p>
+    <form id="home-form" novalidate class="space-y-3">
+      <div>
+        <label class="${LABEL}" for="home-strasse">Straße &amp; Hausnummer</label>
+        <input id="home-strasse" autocomplete="street-address" maxlength="${LIMITS.strasse}" value="${escapeAttr(h?.strasse || '')}" class="${FIELD}" />
+      </div>
+      <div>
+        <label class="${LABEL}" for="home-plz">Postleitzahl</label>
+        <input id="home-plz" inputmode="numeric" maxlength="4" autocomplete="postal-code" value="${escapeAttr(h?.plz || '')}" class="${FIELD}" />
+      </div>
+      <div style="padding-top:.5rem">
+        <button type="submit" class="press-98 wide-btn accent">Speichern</button>
+        ${h ? `<button type="button" onclick="clearHome()" class="press-98 wide-btn quiet" style="color:#D70015">Adresse löschen</button>` : ''}
+        <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
+      </div>
+    </form>
+  `, { label: 'Zuhause' });
+  const form = document.getElementById('home-form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const strasse = document.getElementById('home-strasse').value.trim();
+    const plz = document.getElementById('home-plz').value.trim();
+    if (!strasse || !/^[1-9]\d{3}$/.test(plz)) { toast('Bitte Straße und eine vierstellige Postleitzahl eintragen.', 'error'); return; }
+    if (strasse === (h?.strasse || '') && plz === (h?.plz || '')) { closeSheet(); return; }
+    const btn = form.querySelector('[type=submit]');
+    btn.disabled = true;
+    btn.textContent = 'Adresse wird gesucht …';
+    try {
+      homeState = await api('/home', { method: 'PUT', body: JSON.stringify({ strasse, plz }) });
+      closeSheet();
+      toast('Gespeichert ✓', 'success');
+      render();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Speichern';
+      toast(err.message, 'error');
+    }
+  });
+}
+
+async function clearHome() {
+  closeSheet();
+  try {
+    homeState = await api('/home', { method: 'PUT', body: JSON.stringify({ clear: true }) });
+    render();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+/// The sentence the confirmation asks with — the iOS app's
+/// `PauseDetour.summary`. `zielBefore` is the arrival at Ziel as the tour
+/// stands; the detour moves it, and so does the pause — by however long the
+/// driver takes, which nobody can say beforehand, so it is named and not
+/// counted.
+function pauseSummary(detour, zielBefore, endsAtHome) {
+  if (!detour) return 'Der Umweg konnte gerade nicht berechnet werden.';
+  const first = `Umweg +${fmtDuration(detour.minutes)} · ${fmtKm(detour.km)}.`;
+  if (endsAtHome) return `${first} Die Tour endet dann zu Hause.`;
+  if (zielBefore == null) return first;
+  const after = zielBefore + detour.minutes * 60000;
+  return `${first} Am Ziel ca. ${fmtClock(after)} statt ${fmtClock(zielBefore)}, plus die Pause.`;
+}
+
+/// Works out what the pause would cost before it goes on the tour —
+/// whether there is time for it is the question the driver is asking.
+async function previewPause() {
+  const r = state.currentRoute;
+  if (!r) return;
+  if (!homeState.home) { toast('Zuerst unter Mehr → Zuhause die eigene Adresse eintragen.', 'error'); return; }
+  showProgress('Umweg wird berechnet …');
+  let detour = null;
+  try { detour = await api(`/routes/${r.id}/pause-detour`); } catch (_) { /* asked blind, below */ }
+  finally { hideProgress(); }
+  if (state.currentRoute?.id !== r.id) return;
+  const ziel = r.stops.find((s) => s.kind === 'end' && !s.excluded);
+  const zielBefore = ziel ? routeSnapshot(r).eta(ziel) : null;
+  const ok = await confirmSheet({
+    title: 'Pause zu Hause einplanen?',
+    message: pauseSummary(detour, zielBefore, !ziel),
+    confirmLabel: 'Einplanen',
+  });
+  if (ok) setPause(true);
+}
+
+async function setPause(on) {
+  const r = state.currentRoute;
+  if (!r) return;
+  await refreshCurrentRoute(
+    () => api(`/routes/${r.id}/pause`, { method: 'POST', retry: true, body: JSON.stringify({ on }) }),
+    on ? 'Pause wird eingeplant …' : 'Pause wird entfernt …',
+  );
 }
 
 /// The driver's position, or `null` when the phone will not say within a
@@ -6280,6 +6386,18 @@ const DEPARTURE_STALE_MS = 4 * 3600 * 1000;
 // on the server is the same rule.
 const tourKey = (name) => String(name || '').trim().split(/\s+/).join(' ').toLowerCase();
 
+/// Mehr → Zuhause: where "Pause zu Hause" drives to. Kept on the account,
+/// like the tours.
+let homeState = { home: null };
+
+async function loadHome() {
+  try {
+    const h = await api('/home');
+    if (h && typeof h === 'object') homeState = h;
+    paintEtas();
+  } catch (_) { /* no home address is a fine place to start from */ }
+}
+
 async function loadPaceHistory() {
   try {
     const h = await api('/pace');
@@ -7258,6 +7376,7 @@ async function signedIn(user) {
   state.detailOrigin = null;
   await loadRoutes();
   loadPaceHistory();
+  loadHome();
 }
 
 /// Back to the login, with nothing of the last user left in memory — the
@@ -7275,6 +7394,7 @@ function signedOut() {
   importController = null;
   // What the last driver's tours taught about door times is theirs.
   paceHistory = { door_minutes: null, lager_minutes: null, door_by_tour: {}, lead_minutes: null };
+  homeState = { home: null };
   render();
 }
 
@@ -7635,7 +7755,7 @@ function nowStopCard(r, stop) {
   // nothing to edit.
   const more = !meta
     ? `<button onclick="openStopMenu(getStop(${stop.id}))" aria-label="Mehr" title="Mehr" class="tap-target press-fade w-9 h-9 shrink-0 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>`
-    : stop.kind === 'end'
+    : stop.kind === 'end' || stop.kind === 'pause'
     ? `<button onclick="openFixedStopSheet(getStop(${stop.id}))" aria-label="Bearbeiten" title="Bearbeiten" class="tap-target press-fade w-9 h-9 shrink-0 flex items-center justify-center text-black/60 text-lg">${ICONS.kebab}</button>`
     : '';
   return `
@@ -7818,6 +7938,14 @@ function renderMoreTab() {
         <p class="now-caption" style="padding:.5rem 1rem 0">Womit „Navigation starten“ öffnet.</p>
 
         <div class="${GROUP}" style="margin-top:1.5rem">
+          <button onclick="openHomeSheet()" class="${ROW}">
+            ${tile('#32ADE6', ICONS.house)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Zuhause</p><p class="text-[13px] text-black/55 truncate">${homeState.home ? escapeHtml(`${homeState.home.strasse}, ${homeState.home.plz}`) : 'Für „Pause zu Hause“'}</p></div>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>
+        </div>
+
+        <div class="${GROUP}" style="margin-top:1.5rem">
           <button onclick="openGourmetAccount()" class="${ROW}">
             ${tile('#8E8E93', ICONS.person)}
             <div class="flex-1 min-w-0"><p class="text-[15px]">Gourmet-Anmeldung</p><p class="text-[13px] text-black/55">Zugang zum Zusteller-Portal</p></div>
@@ -7874,6 +8002,7 @@ function stopKindMeta(stop) {
   if (stop.kind === 'start') return { icon: ICONS.house, title: 'Start', subtitle: `${stop.strasse}, ${stop.plz}` };
   if (stop.kind === 'via') return { icon: ICONS.box, title: 'Lager', subtitle: `${stop.strasse}, ${stop.plz}` };
   if (stop.kind === 'end') return { icon: ICONS.flag, title: 'Ziel', subtitle: `${stop.strasse}, ${stop.plz}` };
+  if (stop.kind === 'pause') return { icon: ICONS.cup, title: 'Pause', subtitle: `${stop.strasse}, ${stop.plz}` };
   return null;
 }
 
@@ -10128,8 +10257,15 @@ function closeRouteMenu() {
 }
 
 function toggleRouteMenu() {
-  const menu = document.getElementById('route-menu');
+  let menu = document.getElementById('route-menu');
   if (!menu) return;
+  // Drawn afresh on opening. A partial repaint of the list leaves the menu
+  // as it was first drawn, and what it offers depends on the tour as it is
+  // now: a pause on it or not, anything ticked to reset.
+  if (menu.classList.contains('hidden') && state.currentRoute) {
+    menu.outerHTML = renderRouteMenu();
+    menu = document.getElementById('route-menu');
+  }
   const open = menu.classList.toggle('hidden') === false;
   document.getElementById('route-menu-btn')?.setAttribute('aria-expanded', String(open));
   // Move into the menu when it opens so a keyboard user lands on the first
@@ -10165,6 +10301,9 @@ function renderRouteMenu() {
       ${item("reoptimizeAfresh()", ICONS.refresh, "Neu optimieren")}
       ${r.customer_count < 2 && r.stops.filter((s) => s.kind === 'customer').length < 2 ? off(ICONS.sort, "Reihenfolge ändern") : item("openReorderSheet()", ICONS.sort, "Reihenfolge ändern")}
       ${item("recheckAddresses()", ICONS.mapPin, "Adressen prüfen")}
+      ${r.status === 'completed' ? '' : r.stops.some((s) => s.kind === 'pause')
+        ? item("setPause(false)", ICONS.cup, "Pause zu Hause entfernen")
+        : item("previewPause()", ICONS.cup, "Pause zu Hause")}
       ${gap}
       ${item("renameRoute()", ICONS.pencil, "Umbenennen")}
       ${settled ? item("resetDelivered()", ICONS.refresh, "Lieferstatus zurücksetzen", true) : off(ICONS.refresh, "Lieferstatus zurücksetzen")}

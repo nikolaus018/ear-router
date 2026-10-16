@@ -1319,7 +1319,13 @@ CREATE TABLE IF NOT EXISTS users (
     is_admin INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     portal_username TEXT,
-    portal_password TEXT
+    portal_password TEXT,
+    -- Where the driver lives: the one place "Pause zu Hause" drives to.
+    -- Looked up when saved, so switching the pause on needs no geocoder.
+    home_strasse TEXT,
+    home_plz TEXT,
+    home_lat REAL,
+    home_lon REAL
 );
 
 -- One row per signed-in browser. The token is the cookie's value.
@@ -1389,6 +1395,18 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     }
     if !route_cols.contains("departed_at") {
         conn.execute("ALTER TABLE routes ADD COLUMN departed_at TEXT", [])?;
+    }
+    let user_cols: HashSet<String> = conn
+        .prepare("PRAGMA table_info(users)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<Result<_, _>>()?;
+    if !user_cols.contains("home_strasse") {
+        conn.execute_batch(
+            "ALTER TABLE users ADD COLUMN home_strasse TEXT; \
+             ALTER TABLE users ADD COLUMN home_plz TEXT; \
+             ALTER TABLE users ADD COLUMN home_lat REAL; \
+             ALTER TABLE users ADD COLUMN home_lon REAL;",
+        )?;
     }
     if !route_cols.contains("user_id") {
         conn.execute("ALTER TABLE routes ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE", [])?;
@@ -3546,6 +3564,7 @@ impl FixedStop {
 /// missing any of them; each also carries its own `excluded` flag, which
 /// is what keeps a switched-off stop visible in the list (see
 /// `display_order`) while being invisible to the routing calls.
+#[derive(Clone)]
 struct RouteNodes {
     start: Option<FixedStop>,
     via: Option<FixedStop>,
@@ -3566,9 +3585,78 @@ struct RouteNodes {
     /// from where I am". It carries the Start row's id, so the drive from
     /// here lands on that row and is counted in the kilometres.
     current_location: Option<StopCoord>,
+    /// "Pause zu Hause", when the driver switched it on: driven after the
+    /// last door and before Ziel. See `set_pause`.
+    pause: Option<StopCoord>,
+    /// The pause has been ticked off: the van is at home, or has been.
+    pause_done: bool,
+}
+
+/// What one optimization asks OSRM, worked out before anything is sent --
+/// the same shape as the iOS app's `RouteOptimizer.Plan`.
+struct TripPlan {
+    /// Routed as listed before the trip: the head, the doors already driven
+    /// and a pause already ticked. Its last point is the anchor.
+    fixed: Vec<StopCoord>,
+    anchor: Option<StopCoord>,
+    /// The anchor, the open customers, and the trip's last point: an open
+    /// pause, or else Ziel.
+    trip_nodes: Vec<StopCoord>,
+    fix_first: bool,
+    fix_last: bool,
+    /// Routed as listed after the trip: pause -> Ziel, while the pause is
+    /// still to come and the tour drives a Ziel.
+    tail: Vec<StopCoord>,
 }
 
 impl RouteNodes {
+    /// The plan for a tour OSRM orders.
+    ///
+    /// A pause still to come is where the open doors finish: the driver
+    /// switched it on because they are going home before Ziel. Ziel follows
+    /// it, routed as listed. A pause already ticked is where the van is.
+    fn trip_plan(&self) -> TripPlan {
+        let end = FixedStop::active(self.end);
+        let pause_open = self.pause.filter(|_| !self.pause_done);
+        let pause_driven = self.pause.filter(|_| self.pause_done);
+        let last = pause_open.or(end);
+        let mut fixed: Vec<StopCoord> = self.head();
+        fixed.extend(self.driven.iter().copied());
+        fixed.extend(pause_driven);
+        // Mid-tour it is the last door answered for, not the warehouse.
+        // Planned from the depot every time, one stop added after the
+        // fifteenth delivery could land between the third and fourth --
+        // become "next", and send the driver back across town.
+        let anchor = fixed.last().copied();
+        let driven_ids: HashSet<i64> = self.driven.iter().map(|n| n.id).collect();
+        let mut trip_nodes: Vec<StopCoord> = Vec::new();
+        trip_nodes.extend(anchor);
+        trip_nodes.extend(self.customers.iter().copied().filter(|c| !driven_ids.contains(&c.id)));
+        trip_nodes.extend(last);
+        let tail = match (pause_open, end) {
+            (Some(p), Some(e)) => vec![p, e],
+            _ => Vec::new(),
+        };
+        // OSRM cannot solve a `roundtrip=false` trip with both ends open
+        // (see `osrm_trip`). A tour with depot, warehouse *and* destination
+        // all switched off has no fixed point left to anchor to, so the
+        // first customer -- first by stop id, i.e. the order they were
+        // entered -- is pinned as the starting point and the tour is left
+        // free to end wherever is cheapest.
+        TripPlan { fix_first: anchor.is_some() || last.is_none(), fix_last: last.is_some(), fixed, anchor, trip_nodes, tail }
+    }
+
+    /// The driving order of a tour sorted by hand: the head, the customers
+    /// exactly as listed, then the pause and Ziel.
+    fn listed_order(&self, listed: &[StopCoord]) -> Vec<StopCoord> {
+        let skipped: HashSet<i64> = self.skipped.iter().map(|n| n.id).collect();
+        let mut routed = self.head();
+        routed.extend(listed.iter().copied().filter(|n| !skipped.contains(&n.id)));
+        routed.extend(self.pause);
+        routed.extend(FixedStop::active(self.end));
+        routed
+    }
+
     /// The fixed points that lead the tour, in their fixed order — depot
     /// then warehouse, minus whichever of them this tour skips. Never
     /// handed to the trip optimizer: driving to the warehouse before the
@@ -3600,13 +3688,85 @@ fn append_geometry(acc: &mut Vec<[f64; 2]>, segment: Vec<[f64; 2]>) {
 /// by `routed` (that ordering is the whole point of the optimization).
 fn display_order(nodes: &RouteNodes, routed: &[StopCoord]) -> Vec<StopCoord> {
     let customer_ids: HashSet<i64> = nodes.customers.iter().map(|c| c.id).collect();
-    let mut out: Vec<StopCoord> = Vec::with_capacity(routed.len() + nodes.skipped.len() + 3);
+    let mut out: Vec<StopCoord> = Vec::with_capacity(routed.len() + nodes.skipped.len() + 4);
     out.extend(nodes.start.map(|f| f.coord));
     out.extend(nodes.via.map(|f| f.coord));
     out.extend(routed.iter().copied().filter(|n| customer_ids.contains(&n.id)));
     out.extend(nodes.skipped.iter().copied());
+    out.extend(nodes.pause);
     out.extend(nodes.end.map(|f| f.coord));
     out
+}
+
+/// Every stop of a route sorted into the roles the optimizer plans around,
+/// and -- on a tour sorted by hand -- its customers in the listed order.
+fn read_nodes(
+    conn: &Connection,
+    route_id: i64,
+    stops: &[PlanningRow],
+) -> Result<(RouteNodes, Option<Vec<StopCoord>>), AppError> {
+    let hand_ordered: bool = conn
+        .query_row("SELECT hand_ordered FROM routes WHERE id = ?1", params![route_id], |r| r.get::<_, i64>(0))
+        .optional()?
+        .is_some_and(|v| v != 0);
+    let hand_order: Option<Vec<StopCoord>> = hand_ordered.then(|| {
+        let mut listed: Vec<&PlanningRow> = stops.iter().filter(|s| s.kind == "customer").collect();
+        listed.sort_by_key(|s| (s.order_index, s.id));
+        listed.iter().map(|s| StopCoord { id: s.id, lat: s.lat, lon: s.lon }).collect()
+    });
+
+    let mut nodes = RouteNodes {
+        start: None,
+        via: None,
+        end: None,
+        customers: Vec::new(),
+        skipped: Vec::new(),
+        driven: driven_order(stops),
+        current_location: None,
+        pause: None,
+        pause_done: false,
+    };
+    let mut skipped: Vec<&PlanningRow> = Vec::new();
+    for s in stops {
+        let coord = StopCoord { id: s.id, lat: s.lat, lon: s.lon };
+        let fixed = FixedStop { coord, excluded: s.excluded };
+        // `excluded` is only ever written to a fixed stop, and a
+        // customer row carrying it anyway (a hand-edited database)
+        // must not silently disappear from the tour — hence matching
+        // on the kind rather than on the flag.
+        match s.kind.as_str() {
+            "start" => nodes.start = Some(fixed),
+            "via" => nodes.via = Some(fixed),
+            "end" => nodes.end = Some(fixed),
+            "pause" => {
+                nodes.pause = Some(coord);
+                nodes.pause_done = s.outcome.is_some();
+            }
+            _ if s.skips_door() => skipped.push(s),
+            _ => nodes.customers.push(coord),
+        }
+    }
+    skipped.sort_by_key(|s| (s.order_index, s.id));
+    nodes.skipped = skipped.iter().map(|s| StopCoord { id: s.id, lat: s.lat, lon: s.lon }).collect();
+    // Before the first door only: after it the trip starts at the door,
+    // and a fix used then would draw the line from wherever the van is
+    // now back to the first delivery.
+    if let (Some(start), true) = (nodes.start, nodes.driven.is_empty()) {
+        let here: Option<(f64, f64, i64)> = conn
+            .query_row(
+                "SELECT here_lat, here_lon, here_at FROM routes WHERE id = ?1 AND here_at IS NOT NULL",
+                params![route_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if let Some((lat, lon, at)) = here {
+            let fresh = chrono::Utc::now().timestamp() - at <= HERE_MAX_AGE_SECS;
+            if start.excluded && fresh && is_plausible_latlon(lat, lon) {
+                nodes.current_location = Some(StopCoord { id: start.coord.id, lat, lon });
+            }
+        }
+    }
+    Ok((nodes, hand_order))
 }
 
 /// Re-solves stop order + fetches real geometry for a route via OSRM.
@@ -3659,87 +3819,23 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         let conn = state.db()?;
         let stops = planning_rows(&conn, route_id)?;
         planned_from = planning_fingerprint(&stops);
-        let hand_ordered: bool = conn
-            .query_row("SELECT hand_ordered FROM routes WHERE id = ?1", params![route_id], |r| r.get::<_, i64>(0))
-            .optional()?
-            .is_some_and(|v| v != 0);
-        hand_order = hand_ordered.then(|| {
-            let mut listed: Vec<&PlanningRow> = stops.iter().filter(|s| s.kind == "customer").collect();
-            listed.sort_by_key(|s| (s.order_index, s.id));
-            listed.iter().map(|s| StopCoord { id: s.id, lat: s.lat, lon: s.lon }).collect()
-        });
-
-        let mut nodes = RouteNodes {
-            start: None,
-            via: None,
-            end: None,
-            customers: Vec::new(),
-            skipped: Vec::new(),
-            driven: driven_order(&stops),
-            current_location: None,
-        };
-        let mut skipped: Vec<&PlanningRow> = Vec::new();
-        for s in &stops {
-            let coord = StopCoord { id: s.id, lat: s.lat, lon: s.lon };
-            let fixed = FixedStop { coord, excluded: s.excluded };
-            // `excluded` is only ever written to a fixed stop, and a
-            // customer row carrying it anyway (a hand-edited database)
-            // must not silently disappear from the tour — hence matching
-            // on the kind rather than on the flag.
-            match s.kind.as_str() {
-                "start" => nodes.start = Some(fixed),
-                "via" => nodes.via = Some(fixed),
-                "end" => nodes.end = Some(fixed),
-                _ if s.skips_door() => skipped.push(s),
-                _ => nodes.customers.push(coord),
-            }
-        }
-        skipped.sort_by_key(|s| (s.order_index, s.id));
-        nodes.skipped = skipped.iter().map(|s| StopCoord { id: s.id, lat: s.lat, lon: s.lon }).collect();
-        // Before the first door only: after it the trip starts at the door,
-        // and a fix used then would draw the line from wherever the van is
-        // now back to the first delivery.
-        if let (Some(start), true) = (nodes.start, nodes.driven.is_empty()) {
-            let here: Option<(f64, f64, i64)> = conn
-                .query_row(
-                    "SELECT here_lat, here_lon, here_at FROM routes WHERE id = ?1 AND here_at IS NOT NULL",
-                    params![route_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .optional()?;
-            if let Some((lat, lon, at)) = here {
-                let fresh = chrono::Utc::now().timestamp() - at <= HERE_MAX_AGE_SECS;
-                if start.excluded && fresh && is_plausible_latlon(lat, lon) {
-                    nodes.current_location = Some(StopCoord { id: start.coord.id, lat, lon });
-                }
-            }
-        }
+        let (nodes, listed) = read_nodes(&conn, route_id, &stops)?;
+        hand_order = listed;
         nodes
     };
-
-    let head = nodes.head();
-    let end = FixedStop::active(nodes.end);
 
     // `routed` is the driving order and `legs[i]` is the leg from
     // `routed[i]` to `routed[i + 1]`, so `legs.len() + 1 == routed.len()`
     // holds from here to the write below.
-    //
-    // Depot -> warehouse, and on through the doors already driven to: fixed,
-    // never reordered, so routed as listed rather than handed to the trip
-    // optimizer. With nothing driven and either fixed point off there is no
-    // such leg at all.
-    let mut routed: Vec<StopCoord> = head.iter().chain(nodes.driven.iter()).copied().collect();
+    let mut routed: Vec<StopCoord>;
     let mut legs: Vec<(f64, f64)> = Vec::new();
     let mut geometry: Vec<[f64; 2]> = Vec::new();
 
     if let Some(listed) = &hand_order {
         // Sorted by hand: the fixed head, the customers exactly as listed,
-        // then the destination -- one call for the line on the map and the
-        // distance on each row, and nothing for OSRM to choose.
-        let skipped: HashSet<i64> = nodes.skipped.iter().map(|n| n.id).collect();
-        routed = head.clone();
-        routed.extend(listed.iter().copied().filter(|n| !skipped.contains(&n.id)));
-        routed.extend(end);
+        // then the pause and the destination -- one call for the line on the
+        // map and the distance on each row, and nothing for OSRM to choose.
+        routed = nodes.listed_order(listed);
         if routed.len() >= 2 {
             let coords: Vec<(f64, f64)> = routed.iter().map(|n| (n.lat, n.lon)).collect();
             let (path_legs, path_geom) = osrm_route_through(state, &coords, false).await?;
@@ -3747,37 +3843,20 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
             append_geometry(&mut geometry, path_geom);
         }
     } else {
-        // The optimized section runs from the last point already driven
-        // through every open customer to the destination. That point is the
-        // anchor: it is already in `routed` and goes into the trip only to
-        // be routed *from*, never to be added a second time.
-        //
-        // Mid-tour it is the last door answered for, not the warehouse.
-        // Planned from the depot every time, one stop added after the
-        // fifteenth delivery could land between the third and fourth --
-        // become "next", and send the driver back across town.
-        let anchor = routed.last().copied();
-        let driven_ids: HashSet<i64> = nodes.driven.iter().map(|n| n.id).collect();
-        let mut trip_nodes: Vec<StopCoord> = Vec::new();
-        trip_nodes.extend(anchor);
-        trip_nodes.extend(nodes.customers.iter().copied().filter(|c| !driven_ids.contains(&c.id)));
-        trip_nodes.extend(end);
+        // Depot -> warehouse, and on through the doors already driven to:
+        // fixed, never reordered, so routed as listed rather than handed to
+        // the trip optimizer. The optimized section runs from the last of
+        // them -- the anchor, already in `routed`, and in the trip only to be
+        // routed *from* -- through every open customer to the destination,
+        // or to a pause still to come, with Ziel routed after it.
+        let plan = nodes.trip_plan();
+        routed = plan.fixed.clone();
+        let fixed_coords: Vec<(f64, f64)> = plan.fixed.iter().map(|n| (n.lat, n.lon)).collect();
+        let trip_coords: Vec<(f64, f64)> = plan.trip_nodes.iter().map(|n| (n.lat, n.lon)).collect();
+        let tail_coords: Vec<(f64, f64)> = plan.tail.iter().map(|n| (n.lat, n.lon)).collect();
 
-        // OSRM cannot solve a `roundtrip=false` trip with both ends open
-        // (see `osrm_trip`). A tour with depot, warehouse *and* destination
-        // all switched off has no fixed point left to anchor to, so the
-        // first customer -- first by stop id, i.e. the order they were
-        // entered -- is pinned as the starting point and the tour is left
-        // free to end wherever is cheapest. That is a real choice made on
-        // the driver's behalf, but it is the only one on offer, and "start
-        // where the list starts" is what a hand-entered list already implies.
-        let fix_first = anchor.is_some() || end.is_none();
-        let fix_last = end.is_some();
-        let fixed_coords: Vec<(f64, f64)> = routed.iter().map(|n| (n.lat, n.lon)).collect();
-        let trip_coords: Vec<(f64, f64)> = trip_nodes.iter().map(|n| (n.lat, n.lon)).collect();
-
-        // Both halves are asked for at once. Neither needs the other's
-        // answer, and the driver is watching a spinner for the sum of them.
+        // All asked for at once. None needs another's answer, and the driver
+        // is watching a spinner for the sum of them.
         let fixed = async {
             if fixed_coords.len() >= 2 {
                 osrm_route_through(state, &fixed_coords, false).await.map(Some)
@@ -3787,12 +3866,19 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         };
         let trip = async {
             if trip_coords.len() >= 2 {
-                osrm_trip(state, &trip_coords, fix_first, fix_last).await.map(Some)
+                osrm_trip(state, &trip_coords, plan.fix_first, plan.fix_last).await.map(Some)
             } else {
                 Ok(None)
             }
         };
-        let (fixed, trip) = tokio::join!(fixed, trip);
+        let tail = async {
+            if tail_coords.len() >= 2 {
+                osrm_route_through(state, &tail_coords, false).await.map(Some)
+            } else {
+                Ok(None)
+            }
+        };
+        let (fixed, trip, tail) = tokio::join!(fixed, trip, tail);
 
         if let Some((path_legs, path_geom)) = fixed? {
             legs.extend(path_legs);
@@ -3800,17 +3886,23 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
         }
         if let Some((order, trip_legs, trip_geom)) = trip? {
             for &idx in &order {
-                if anchor.is_some() && idx == 0 {
+                if plan.anchor.is_some() && idx == 0 {
                     continue; // the anchor, already the last entry of `routed`
                 }
-                routed.push(trip_nodes[idx]);
+                routed.push(plan.trip_nodes[idx]);
             }
             legs.extend(trip_legs);
             append_geometry(&mut geometry, trip_geom);
         } else {
             // At most one point after the head -- nothing to optimize, but
             // it still belongs in the driving order.
-            routed.extend(trip_nodes.into_iter().skip(anchor.is_some() as usize));
+            routed.extend(plan.trip_nodes.iter().copied().skip(plan.anchor.is_some() as usize));
+        }
+        if let Some((path_legs, path_geom)) = tail? {
+            // The pause is already the trip's last point.
+            routed.extend(plan.tail.iter().copied().skip(1));
+            legs.extend(path_legs);
+            append_geometry(&mut geometry, path_geom);
         }
     }
 
@@ -3879,6 +3971,7 @@ async fn reoptimize_route(state: &AppState, route_id: i64) -> Result<(), AppErro
             .into_iter()
             .chain(nodes.via.map(|f| f.coord))
             .chain(listed.iter().copied())
+            .chain(nodes.pause)
             .chain(nodes.end.map(|f| f.coord))
             .collect(),
         None => display_order(&nodes, &routed),
@@ -5178,13 +5271,18 @@ async fn set_stop_order(
                 "Die Tour hat sich inzwischen geändert. Bitte die Reihenfolge noch einmal öffnen.".into(),
             ));
         }
-        // Start and Lager keep 0 and 1; Ziel goes behind the last customer.
+        // Start and Lager keep 0 and 1; a pause and Ziel go behind the last
+        // customer, in that order.
         for (pos, id) in payload.stop_ids.iter().enumerate() {
             tx.execute("UPDATE stops SET order_index = ?1 WHERE id = ?2", params![pos as i64 + 2, id])?;
         }
         tx.execute(
-            "UPDATE stops SET order_index = ?1 WHERE route_id = ?2 AND kind = 'end'",
+            "UPDATE stops SET order_index = ?1 WHERE route_id = ?2 AND kind = 'pause'",
             params![payload.stop_ids.len() as i64 + 2, route_id],
+        )?;
+        tx.execute(
+            "UPDATE stops SET order_index = ?1 WHERE route_id = ?2 AND kind = 'end'",
+            params![payload.stop_ids.len() as i64 + 3, route_id],
         )?;
         tx.execute("UPDATE routes SET hand_ordered = 1, needs_optimize = 1 WHERE id = ?1", params![route_id])?;
         tx.commit()?;
@@ -5192,6 +5290,240 @@ async fn set_stop_order(
     reoptimize_best_effort(&state, route_id).await;
     let conn = state.db()?;
     Ok(Json(get_route_detail(&conn, route_id)?))
+}
+
+/// Moves a pause and Ziel back below every stop appended after them, in
+/// that order. New stops go on the end until the optimizer places them --
+/// which, with OSRM slow or down, can be all day -- and until then the list
+/// showed them under Ziel, as if they were driven after the van was back.
+fn keep_tail_last(conn: &Connection, route_id: i64) -> Result<(), AppError> {
+    let mut highest: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(order_index), 0) FROM stops WHERE route_id = ?1 AND kind NOT IN ('pause', 'end')",
+        params![route_id],
+        |r| r.get(0),
+    )?;
+    for kind in ["pause", "end"] {
+        let rows: Vec<(i64, i64)> = {
+            let mut stmt = conn.prepare("SELECT id, order_index FROM stops WHERE route_id = ?1 AND kind = ?2")?;
+            let rows = stmt.query_map(params![route_id, kind], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+            rows
+        };
+        for (id, order) in rows {
+            let order = if order <= highest {
+                conn.execute("UPDATE stops SET order_index = ?1 WHERE id = ?2", params![highest + 1, id])?;
+                highest + 1
+            } else {
+                order
+            };
+            highest = order;
+        }
+    }
+    Ok(())
+}
+
+/// Where the driver lives, as saved under Mehr -> Zuhause.
+struct Home {
+    strasse: String,
+    plz: String,
+    lat: f64,
+    lon: f64,
+}
+
+fn load_home(conn: &Connection, user_id: i64) -> Result<Option<Home>, AppError> {
+    let (strasse, plz, lat, lon): (Option<String>, Option<String>, Option<f64>, Option<f64>) = conn.query_row(
+        "SELECT home_strasse, home_plz, home_lat, home_lon FROM users WHERE id = ?1",
+        params![user_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+    Ok(match (strasse, plz, lat, lon) {
+        (Some(strasse), Some(plz), Some(lat), Some(lon)) if is_plausible_latlon(lat, lon) => {
+            Some(Home { strasse, plz, lat, lon })
+        }
+        _ => None,
+    })
+}
+
+fn home_json(home: &Option<Home>) -> Value {
+    json!({ "home": home.as_ref().map(|h| json!({ "strasse": h.strasse, "plz": h.plz })) })
+}
+
+/// `GET /api/home`.
+async fn get_home(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db()?;
+    Ok(Json(home_json(&load_home(&conn, user.id)?)))
+}
+
+#[derive(Deserialize)]
+struct HomeUpdate {
+    strasse: Option<String>,
+    plz: Option<String>,
+    /// `true` forgets the address.
+    #[serde(default)]
+    clear: bool,
+}
+
+/// `PUT /api/home`: the address, looked up once here.
+async fn put_home(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Json(payload): Json<HomeUpdate>,
+) -> Result<Json<Value>, AppError> {
+    if payload.clear {
+        let conn = state.db()?;
+        conn.execute(
+            "UPDATE users SET home_strasse = NULL, home_plz = NULL, home_lat = NULL, home_lon = NULL WHERE id = ?1",
+            params![user.id],
+        )?;
+    } else if payload.strasse.is_some() || payload.plz.is_some() {
+        let strasse = payload.strasse.as_deref().unwrap_or("").trim().to_string();
+        let plz = payload.plz.as_deref().unwrap_or("").trim().to_string();
+        if strasse.is_empty() {
+            return Err(AppError::BadRequest("Straße darf nicht leer sein.".into()));
+        }
+        check_len(&strasse, "Straße", MAX_STRASSE_LEN)?;
+        check_no_control_chars(&strasse, "Straße", false)?;
+        check_plz(&plz)?;
+        let (lat, lon, _, _) = geocode_address(&state, &strasse, &plz).await?;
+        let conn = state.db()?;
+        conn.execute(
+            "UPDATE users SET home_strasse = ?1, home_plz = ?2, home_lat = ?3, home_lon = ?4 WHERE id = ?5",
+            params![strasse, plz, lat, lon, user.id],
+        )?;
+    }
+    let conn = state.db()?;
+    Ok(Json(home_json(&load_home(&conn, user.id)?)))
+}
+
+#[derive(Deserialize)]
+struct PauseSwitch {
+    on: bool,
+}
+
+/// `POST /api/routes/:id/pause`: "Pause zu Hause", on or off.
+///
+/// On puts the driver's home on the tour as its last stop before Ziel, and
+/// the doors still open are planned again to finish near it -- the driver
+/// has decided by now. Off takes it away, and the open doors are planned
+/// towards Ziel again. The same rule as the iOS app's `RouteStore.setPause`.
+async fn set_pause(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    AxPath(route_id): AxPath<i64>,
+    Json(payload): Json<PauseSwitch>,
+) -> Result<Json<RouteDetail>, AppError> {
+    let lock = state.route_lock(route_id).await;
+    {
+        let _guard = lock.lock().await;
+        let mut conn = state.db()?;
+        require_route_exists(&conn, route_id)?;
+        let home = load_home(&conn, user.id)?;
+        let tx = conn.transaction()?;
+        let existing: i64 =
+            tx.query_row("SELECT COUNT(*) FROM stops WHERE route_id = ?1 AND kind = 'pause'", params![route_id], |r| r.get(0))?;
+        let changed = if payload.on {
+            if existing == 0 {
+                let home = home.ok_or_else(|| {
+                    AppError::BadRequest("Zuerst unter Mehr → Zuhause die eigene Adresse eintragen.".into())
+                })?;
+                tx.execute(
+                    "INSERT INTO stops (route_id, kind, kunde, strasse, plz, lat, lon, order_index, created_at) \
+                     VALUES (?1, 'pause', 'Pause', ?2, ?3, ?4, ?5, \
+                             (SELECT COALESCE(MAX(order_index), 0) + 1 FROM stops WHERE route_id = ?1), ?6)",
+                    params![route_id, home.strasse, home.plz, home.lat, home.lon, now_iso()],
+                )?;
+                keep_tail_last(&tx, route_id)?;
+                true
+            } else {
+                false
+            }
+        } else {
+            tx.execute("DELETE FROM stops WHERE route_id = ?1 AND kind = 'pause'", params![route_id])? > 0
+        };
+        if changed {
+            tx.execute("UPDATE routes SET needs_optimize = 1 WHERE id = ?1", params![route_id])?;
+        }
+        tx.commit()?;
+    }
+    reoptimize_best_effort(&state, route_id).await;
+    let conn = state.db()?;
+    Ok(Json(get_route_detail(&conn, route_id)?))
+}
+
+/// The part of two listed orders that differs: from the last point both
+/// share before their ends to the end of each.
+fn listed_ends(without: &[StopCoord], with: &[StopCoord], has_end: bool) -> (Vec<StopCoord>, Vec<StopCoord>) {
+    let shared = without.len().saturating_sub(has_end as usize);
+    if shared == 0 {
+        return (without.to_vec(), with.to_vec());
+    }
+    (without[shared - 1..].to_vec(), with[shared - 1..].to_vec())
+}
+
+fn sum_legs(legs: &[(f64, f64)]) -> (f64, f64) {
+    legs.iter().fold((0.0, 0.0), |acc, l| (acc.0 + l.0, acc.1 + l.1))
+}
+
+async fn through_total(state: &AppState, points: &[StopCoord]) -> Result<(f64, f64), AppError> {
+    if points.len() < 2 {
+        return Ok((0.0, 0.0));
+    }
+    let coords: Vec<(f64, f64)> = points.iter().map(|n| (n.lat, n.lon)).collect();
+    let (legs, _) = osrm_route_through(state, &coords, false).await?;
+    Ok(sum_legs(&legs))
+}
+
+/// Metres and seconds of everything a plan leaves to OSRM: the trip from
+/// where the van is, and Ziel behind the pause.
+async fn plan_total(state: &AppState, plan: &TripPlan) -> Result<(f64, f64), AppError> {
+    let mut total = (0.0, 0.0);
+    if plan.trip_nodes.len() >= 2 {
+        let coords: Vec<(f64, f64)> = plan.trip_nodes.iter().map(|n| (n.lat, n.lon)).collect();
+        let (_, legs, _) = osrm_trip(state, &coords, plan.fix_first, plan.fix_last).await?;
+        total = sum_legs(&legs);
+    }
+    let t = through_total(state, &plan.tail).await?;
+    Ok((total.0 + t.0, total.1 + t.1))
+}
+
+/// `GET /api/routes/:id/pause-detour`: what switching the pause on would
+/// add to the drive still ahead, planned the way switching it on would plan
+/// it. Nothing is written.
+async fn pause_detour(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    AxPath(route_id): AxPath<i64>,
+) -> Result<Json<Value>, AppError> {
+    let (nodes, hand_order, home) = {
+        let conn = state.db()?;
+        require_route_exists(&conn, route_id)?;
+        let home = load_home(&conn, user.id)?.ok_or_else(|| {
+            AppError::BadRequest("Zuerst unter Mehr → Zuhause die eigene Adresse eintragen.".into())
+        })?;
+        let stops = planning_rows(&conn, route_id)?;
+        let (nodes, hand_order) = read_nodes(&conn, route_id, &stops)?;
+        (nodes, hand_order, home)
+    };
+    let with = RouteNodes { pause: Some(StopCoord { id: -1, lat: home.lat, lon: home.lon }), pause_done: false, ..nodes.clone() };
+    let (without_total, with_total) = if let Some(listed) = &hand_order {
+        let (a, b) = listed_ends(
+            &nodes.listed_order(listed),
+            &with.listed_order(listed),
+            FixedStop::active(nodes.end).is_some(),
+        );
+        let (x, y) = tokio::join!(through_total(&state, &a), through_total(&state, &b));
+        (x?, y?)
+    } else {
+        let (pa, pb) = (nodes.trip_plan(), with.trip_plan());
+        let (x, y) = tokio::join!(plan_total(&state, &pa), plan_total(&state, &pb));
+        (x?, y?)
+    };
+    Ok(Json(json!({
+        "minutes": ((with_total.1 - without_total.1) / 60.0).max(0.0),
+        "km": ((with_total.0 - without_total.0) / 1000.0).max(0.0),
+    })))
 }
 
 #[derive(Deserialize)]
@@ -5247,7 +5579,7 @@ async fn mark_departed(State(state): State<Arc<AppState>>, AxPath(route_id): AxP
     let under_way: bool = conn
         .query_row(
             &format!(
-                "SELECT 1 FROM stops s WHERE s.route_id = ?1 AND s.kind IN ('customer', 'via', 'end') \
+                "SELECT 1 FROM stops s WHERE s.route_id = ?1 AND s.kind IN ('customer', 'via', 'pause', 'end') \
                  AND (s.outcome IS NOT NULL OR s.delivered = 1) AND NOT COALESCE({SQL_SKIPS_DOOR}, 0) LIMIT 1"
             ),
             params![route_id],
@@ -5632,6 +5964,7 @@ async fn add_stop(
              VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order + 1, precision, manual_pin as i64, now_iso(), telefon],
         )?;
+        keep_tail_last(&tx, route_id)?;
         // Set *before* attempting the reoptimize below, not just on
         // failure: if OSRM is briefly unreachable, the stop is still
         // saved (retrying the request would just add it twice) but the
@@ -5774,7 +6107,7 @@ async fn update_stop(
         // nothing else. Not Start: the driver is standing in it when the
         // tour begins. Not one this tour skips, either.
         if let (Some(outcome), None) = (new_outcome, payload.excluded) {
-            let is_checkpoint = (kind == "via" || kind == "end") && !cur_excluded;
+            let is_checkpoint = (kind == "via" || kind == "end" || kind == "pause") && !cur_excluded;
             let plain_tick = matches!(outcome, None | Some(outcome::DELIVERED));
             let nothing_else = payload.kunde.is_none()
                 && payload.telefon.is_none()
@@ -5785,7 +6118,7 @@ async fn update_stop(
                 && payload.lat.is_none()
                 && payload.lon.is_none();
             if !is_checkpoint || !plain_tick || !nothing_else {
-                return Err(AppError::Forbidden("Nur Lager und Ziel können abgehakt werden".into()));
+                return Err(AppError::Forbidden("Nur Lager, Pause und Ziel können abgehakt werden".into()));
             }
             let mut conn = state.db()?;
             let tx = conn.transaction()?;
@@ -5842,6 +6175,11 @@ async fn update_stop(
         // Ziel stays on every tour: without it the tour ends wherever the
         // optimizer finds cheapest. Its address is changed instead. One
         // switched off before this rule can still be switched back on.
+        // The pause is not switched off: it is taken away again, with the
+        // switch that put it there.
+        if kind == "pause" {
+            return Err(AppError::BadRequest("Die Pause wird über „Pause zu Hause“ entfernt.".into()));
+        }
         if kind == "end" && excluded && !cur_excluded {
             return Err(AppError::BadRequest(
                 "Das Ziel bleibt in jeder Tour. Stattdessen kann seine Adresse geändert werden.".into(),
@@ -6051,7 +6389,7 @@ async fn delete_stop(State(state): State<Arc<AppState>>, AxPath(stop_id): AxPath
             })
             .optional()?
             .ok_or_else(|| AppError::NotFound("Stopp nicht gefunden".into()))?;
-        if kind != "customer" {
+        if kind != "customer" && kind != "pause" {
             return Err(AppError::Forbidden("Fixe Stopps können nicht gelöscht werden".into()));
         }
         let tx = conn.transaction()?;
@@ -6592,6 +6930,7 @@ async fn import_entries(
                     params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order, precision, created_at],
                 )?;
             }
+            keep_tail_last(&tx, route_id)?;
             changed = true;
         }
 
@@ -7481,6 +7820,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/routes/:id/position", post(set_position))
         .route("/api/routes/:id/departed", post(mark_departed))
         .route("/api/routes/:id/order", put(set_stop_order))
+        .route("/api/routes/:id/pause", post(set_pause))
+        .route("/api/routes/:id/pause-detour", get(pause_detour))
         .route("/api/routes/:id/reset-delivered", post(reset_delivered))
         .route("/api/routes/:id/recheck-addresses", post(recheck_addresses))
         .route("/api/routes/:id/stops", post(add_stop))
@@ -7506,6 +7847,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         // flood it exists to report.
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
+        .route("/api/home", get(get_home).put(put_home))
         .route("/api/admin/users", get(admin_list_users).post(admin_create_user))
         .route("/api/admin/users/:id", patch(admin_update_user).delete(admin_delete_user))
         .route("/api/pace", get(pace_history))
@@ -8197,6 +8539,129 @@ mod tests {
             entrance_lat: None,
             entrance_lon: None,
         }
+    }
+
+    fn pc(id: i64) -> StopCoord {
+        StopCoord { id, lat: 48.2 + id as f64 / 1000.0, lon: 16.3 }
+    }
+
+    fn pause_nodes(customers: i64) -> RouteNodes {
+        RouteNodes {
+            start: Some(FixedStop { coord: pc(1), excluded: false }),
+            via: Some(FixedStop { coord: pc(2), excluded: false }),
+            end: Some(FixedStop { coord: pc(3), excluded: false }),
+            customers: (0..customers).map(|i| pc(10 + i)).collect(),
+            skipped: Vec::new(),
+            driven: Vec::new(),
+            current_location: None,
+            pause: None,
+            pause_done: false,
+        }
+    }
+
+    fn ids(v: &[StopCoord]) -> Vec<i64> {
+        v.iter().map(|c| c.id).collect()
+    }
+
+    /// Without a pause the plan is what it always was: the trip ends at Ziel.
+    #[test]
+    fn without_a_pause_the_trip_ends_at_ziel() {
+        let plan = pause_nodes(2).trip_plan();
+        assert_eq!(ids(&plan.trip_nodes), vec![2, 10, 11, 3]);
+        assert!(plan.fix_first && plan.fix_last);
+        assert!(plan.tail.is_empty());
+    }
+
+    /// The open doors finish at home, and Ziel is routed from there.
+    #[test]
+    fn an_open_pause_is_where_the_doors_finish() {
+        let mut n = pause_nodes(2);
+        n.pause = Some(pc(50));
+        let plan = n.trip_plan();
+        assert_eq!(ids(&plan.trip_nodes), vec![2, 10, 11, 50]);
+        assert!(plan.fix_last);
+        assert_eq!(ids(&plan.tail), vec![50, 3]);
+        let shown = display_order(&n, &[pc(1), pc(2), pc(11), pc(10), pc(50), pc(3)]);
+        assert_eq!(ids(&shown), vec![1, 2, 11, 10, 50, 3]);
+    }
+
+    /// Ziel switched off: the tour ends at home.
+    #[test]
+    fn without_ziel_the_tour_ends_at_home() {
+        let mut n = pause_nodes(2);
+        n.end = Some(FixedStop { coord: pc(3), excluded: true });
+        n.pause = Some(pc(50));
+        let plan = n.trip_plan();
+        assert_eq!(plan.trip_nodes.last().map(|c| c.id), Some(50));
+        assert!(plan.tail.is_empty());
+    }
+
+    /// Back from the pause: the van is at home, and a door added since is
+    /// planned from there.
+    #[test]
+    fn a_ticked_pause_is_where_the_van_is() {
+        let mut n = pause_nodes(3);
+        n.driven = vec![pc(10), pc(11)];
+        n.pause = Some(pc(50));
+        n.pause_done = true;
+        let plan = n.trip_plan();
+        assert_eq!(plan.anchor.map(|c| c.id), Some(50));
+        assert_eq!(ids(&plan.fixed), vec![1, 2, 10, 11, 50]);
+        assert_eq!(ids(&plan.trip_nodes), vec![50, 12, 3]);
+        assert!(plan.tail.is_empty());
+    }
+
+    /// A tour sorted by hand keeps its order; the pause goes before Ziel.
+    #[test]
+    fn a_hand_sorted_tour_drives_home_before_ziel() {
+        let mut n = pause_nodes(2);
+        n.pause = Some(pc(50));
+        assert_eq!(ids(&n.listed_order(&[pc(11), pc(10)])), vec![1, 2, 11, 10, 50, 3]);
+        let (a, b) = listed_ends(&pause_nodes(2).listed_order(&[pc(11), pc(10)]), &n.listed_order(&[pc(11), pc(10)]), true);
+        assert_eq!(ids(&a), vec![10, 3]);
+        assert_eq!(ids(&b), vec![10, 50, 3]);
+    }
+
+    /// A stop added after the pause goes above it, not between it and Ziel.
+    #[test]
+    fn new_stops_stay_above_pause_and_ziel() {
+        let conn = outcome_db(1);
+        conn.execute(
+            "INSERT INTO stops (id, route_id, kind, lat, lon, order_index, created_at) VALUES (50, 1, 'pause', 48.2, 16.3, 20, 'x')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO stops (id, route_id, kind, lat, lon, order_index, created_at) VALUES (60, 1, 'customer', 48.2, 16.3, 30, 'x')",
+            [],
+        )
+        .unwrap();
+        keep_tail_last(&conn, 1).unwrap();
+        let order: Vec<String> = conn
+            .prepare("SELECT kind FROM stops WHERE route_id = 1 ORDER BY order_index, id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(order[order.len() - 2..], ["pause".to_string(), "end".to_string()]);
+    }
+
+    /// The pause is ticked like Lager and Ziel, and read back as where the van is.
+    #[test]
+    fn the_pause_is_read_as_a_pause() {
+        let conn = outcome_db(1);
+        conn.execute(
+            "INSERT INTO stops (id, route_id, kind, lat, lon, order_index, created_at, outcome) \
+             VALUES (50, 1, 'pause', 48.25, 16.3, 20, 'x', 'delivered')",
+            [],
+        )
+        .unwrap();
+        let stops = planning_rows(&conn, 1).unwrap();
+        let (nodes, _) = read_nodes(&conn, 1, &stops).unwrap();
+        assert_eq!(nodes.pause.map(|c| c.id), Some(50));
+        assert!(nodes.pause_done);
+        assert!(!nodes.customers.iter().any(|c| c.id == 50));
     }
 
     /// A route with Start, Lager, Ziel and `n` customers, in memory.
