@@ -70,9 +70,10 @@ struct TourView: View {
     @State private var reordering = false
     /// "Neu optimieren" on a hand-sorted tour, waiting to be confirmed.
     @State private var confirmingReoptimize = false
-    /// "Pause zu Hause", waiting to be confirmed: the sentence saying what it
-    /// costs. See `previewPause`.
-    @State private var pausePreview: String?
+    /// A line that says what just happened and goes again by itself —
+    /// "Pause eingeplant · Umweg +7,3 km".
+    @State private var notice: String?
+    @State private var noticeTask: Task<Void, Never>?
 
     /// Every door ever answered for. Queried whole rather than per row: this is
     /// a few thousand short rows after years of tours, one pass turns it into
@@ -130,6 +131,9 @@ struct TourView: View {
             if let busy {
                 BusyBanner(text: busy, onCancel: busyTask.map { task in { task.cancel() } })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let notice {
+                BusyBanner(text: notice, showsProgress: false)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         // `safeAreaInset`, not an overlay: the list runs underneath the
@@ -140,6 +144,7 @@ struct TourView: View {
             finishButton(snapshot)
         }
         .animation(.snappy, value: busy)
+        .animation(.snappy, value: notice)
         .navigationTitle(route.name)
         .navigationSubtitle(snapshot.summary(of: route))
         // Default placement: tucked above the list, revealed by pulling it down,
@@ -233,22 +238,6 @@ struct TourView: View {
             Button("Abbrechen", role: .cancel) {}
         } message: {
             Text("Deine eigene Reihenfolge wird durch die optimierte ersetzt.")
-        }
-        .confirmationDialog(
-            "Pause zu Hause einplanen?",
-            isPresented: Binding(
-                get: { pausePreview != nil },
-                set: { if !$0 { pausePreview = nil } }),
-            titleVisibility: .visible,
-            presenting: pausePreview
-        ) { _ in
-            Button("Einplanen") {
-                pausePreview = nil
-                Task { await setPause(true) }
-            }
-            Button("Abbrechen", role: .cancel) { pausePreview = nil }
-        } message: { text in
-            Text(text)
         }
         .confirmationDialog(
             "Lieferstatus zurücksetzen?", isPresented: $confirmingReset,
@@ -469,9 +458,7 @@ struct TourView: View {
                         "Pause zu Hause", systemImage: "cup.and.saucer",
                         isOn: Binding(
                             get: { route.stops.contains { $0.kind == .pause } },
-                            set: { on in
-                                Task { on ? await previewPause() : await setPause(false) }
-                            }))
+                            set: { on in Task { await setPause(on) } }))
                     .disabled(busy != nil)
                 }
                 Divider()
@@ -681,33 +668,32 @@ struct TourView: View {
         }
     }
 
-    /// Works out what the pause would cost before it goes on the tour —
-    /// whether there is time for it is the question the driver is asking.
-    private func previewPause() async {
-        guard let home = HomeAddress.load() else {
-            error = AppError.message("Zuerst unter Mehr → Zuhause die eigene Adresse eintragen.")
-            return
-        }
-        let banner = ownsBanner
-        if banner { busy = "Umweg wird berechnet …" }
-        let detour = try? await RouteOptimizer.pauseDetour(route, home: home)
-        if banner { busy = nil }
-        let snapshot = RouteSnapshot(route)
-        let ziel = snapshot.ordered.first { $0.kind == .end && !$0.excluded }
-        pausePreview = PauseDetour.summary(
-            detour, zielBefore: ziel.flatMap { snapshot.eta(for: $0) }, endsAtHome: ziel == nil)
-    }
-
+    /// No question first: a pause is easy to take off again. What it cost is
+    /// said afterwards, in kilometres — see `PauseDetour`.
     private func setPause(_ on: Bool) async {
+        let routed = { route.needsOptimize ? nil : RouteSnapshot(route).remainingKm }
+        let before = routed()
         let banner = ownsBanner
         if banner { busy = on ? "Pause wird eingeplant …" : "Pause wird entfernt …" }
-        defer { if banner { busy = nil } }
         do {
             try await RouteStore.setPause(on, on: route, in: context)
         } catch let e as AppError {
             self.error = e
         } catch {
             self.error = AppError.message("Die Pause konnte nicht geändert werden.")
+        }
+        if banner { busy = nil }
+        guard on, route.stops.contains(where: { $0.kind == .pause }) else { return }
+        show(PauseDetour.notice(kmBefore: before, kmAfter: routed()))
+    }
+
+    private func show(_ text: String) {
+        noticeTask?.cancel()
+        notice = text
+        noticeTask = Task {
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            notice = nil
         }
     }
 
@@ -872,6 +858,8 @@ struct BusyBanner: View {
     /// Offered by the two jobs that run on the network for a minute at a time.
     /// A one-off write has nothing to interrupt and gets no button.
     var onCancel: (() -> Void)?
+    /// Off for a line that reports something finished rather than running.
+    var showsProgress = true
 
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -888,7 +876,7 @@ struct BusyBanner: View {
 
         return layout {
             HStack(spacing: 10) {
-                ProgressView().controlSize(.small)
+                if showsProgress { ProgressView().controlSize(.small) }
                 Text(text)
                     .font(.subheadline.weight(.medium))
                     .fixedSize(horizontal: false, vertical: true)

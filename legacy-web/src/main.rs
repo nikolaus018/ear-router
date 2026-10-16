@@ -5452,80 +5452,6 @@ async fn set_pause(
     Ok(Json(get_route_detail(&conn, route_id)?))
 }
 
-/// The part of two listed orders that differs: from the last point both
-/// share before their ends to the end of each.
-fn listed_ends(without: &[StopCoord], with: &[StopCoord], has_end: bool) -> (Vec<StopCoord>, Vec<StopCoord>) {
-    let shared = without.len().saturating_sub(has_end as usize);
-    if shared == 0 {
-        return (without.to_vec(), with.to_vec());
-    }
-    (without[shared - 1..].to_vec(), with[shared - 1..].to_vec())
-}
-
-fn sum_legs(legs: &[(f64, f64)]) -> (f64, f64) {
-    legs.iter().fold((0.0, 0.0), |acc, l| (acc.0 + l.0, acc.1 + l.1))
-}
-
-async fn through_total(state: &AppState, points: &[StopCoord]) -> Result<(f64, f64), AppError> {
-    if points.len() < 2 {
-        return Ok((0.0, 0.0));
-    }
-    let coords: Vec<(f64, f64)> = points.iter().map(|n| (n.lat, n.lon)).collect();
-    let (legs, _) = osrm_route_through(state, &coords, false).await?;
-    Ok(sum_legs(&legs))
-}
-
-/// Metres and seconds of everything a plan leaves to OSRM: the trip from
-/// where the van is, and Ziel behind the pause.
-async fn plan_total(state: &AppState, plan: &TripPlan) -> Result<(f64, f64), AppError> {
-    let mut total = (0.0, 0.0);
-    if plan.trip_nodes.len() >= 2 {
-        let coords: Vec<(f64, f64)> = plan.trip_nodes.iter().map(|n| (n.lat, n.lon)).collect();
-        let (_, legs, _) = osrm_trip(state, &coords, plan.fix_first, plan.fix_last).await?;
-        total = sum_legs(&legs);
-    }
-    let t = through_total(state, &plan.tail).await?;
-    Ok((total.0 + t.0, total.1 + t.1))
-}
-
-/// `GET /api/routes/:id/pause-detour`: what switching the pause on would
-/// add to the drive still ahead, planned the way switching it on would plan
-/// it. Nothing is written.
-async fn pause_detour(
-    State(state): State<Arc<AppState>>,
-    axum::Extension(user): axum::Extension<AuthUser>,
-    AxPath(route_id): AxPath<i64>,
-) -> Result<Json<Value>, AppError> {
-    let (nodes, hand_order, home) = {
-        let conn = state.db()?;
-        require_route_exists(&conn, route_id)?;
-        let home = load_home(&conn, user.id)?.ok_or_else(|| {
-            AppError::BadRequest("Zuerst unter Mehr → Zuhause die eigene Adresse eintragen.".into())
-        })?;
-        let stops = planning_rows(&conn, route_id)?;
-        let (nodes, hand_order) = read_nodes(&conn, route_id, &stops)?;
-        (nodes, hand_order, home)
-    };
-    let with = RouteNodes { pause: Some(StopCoord { id: -1, lat: home.lat, lon: home.lon }), pause_done: false, ..nodes.clone() };
-    let (without_total, with_total) = if let Some(listed) = &hand_order {
-        let (a, b) = listed_ends(
-            &nodes.listed_order(listed),
-            &with.listed_order(listed),
-            FixedStop::active(nodes.end).is_some(),
-        );
-        let (x, y) = tokio::join!(through_total(&state, &a), through_total(&state, &b));
-        (x?, y?)
-    } else {
-        let (pa, pb) = (nodes.trip_plan(), with.trip_plan());
-        let (x, y) = tokio::join!(plan_total(&state, &pa), plan_total(&state, &pb));
-        (x?, y?)
-    };
-    Ok(Json(json!({
-        "minutes": ((with_total.1 - without_total.1) / 60.0).max(0.0),
-        "km": ((with_total.0 - without_total.0) / 1000.0).max(0.0),
-    })))
-}
-
 #[derive(Deserialize)]
 struct Position {
     lat: f64,
@@ -7821,7 +7747,6 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/routes/:id/departed", post(mark_departed))
         .route("/api/routes/:id/order", put(set_stop_order))
         .route("/api/routes/:id/pause", post(set_pause))
-        .route("/api/routes/:id/pause-detour", get(pause_detour))
         .route("/api/routes/:id/reset-delivered", post(reset_delivered))
         .route("/api/routes/:id/recheck-addresses", post(recheck_addresses))
         .route("/api/routes/:id/stops", post(add_stop))
@@ -8617,9 +8542,6 @@ mod tests {
         let mut n = pause_nodes(2);
         n.pause = Some(pc(50));
         assert_eq!(ids(&n.listed_order(&[pc(11), pc(10)])), vec![1, 2, 11, 10, 50, 3]);
-        let (a, b) = listed_ends(&pause_nodes(2).listed_order(&[pc(11), pc(10)]), &n.listed_order(&[pc(11), pc(10)]), true);
-        assert_eq!(ids(&a), vec![10, 3]);
-        assert_eq!(ids(&b), vec![10, 50, 3]);
     }
 
     /// A stop added after the pause goes above it, not between it and Ziel.

@@ -4561,48 +4561,29 @@ async function clearHome() {
   } catch (err) { toast(err.message, 'error'); }
 }
 
-/// The sentence the confirmation asks with — the iOS app's
-/// `PauseDetour.summary`. `zielBefore` is the arrival at Ziel as the tour
-/// stands; the detour moves it, and so does the pause — by however long the
-/// driver takes, which nobody can say beforehand, so it is named and not
-/// counted.
-function pauseSummary(detour, zielBefore, endsAtHome) {
-  if (!detour) return 'Der Umweg konnte gerade nicht berechnet werden.';
-  const first = `Umweg +${fmtDuration(detour.minutes)} · ${fmtKm(detour.km)}.`;
-  if (endsAtHome) return `${first} Die Tour endet dann zu Hause.`;
-  if (zielBefore == null) return first;
-  const after = zielBefore + detour.minutes * 60000;
-  return `${first} Am Ziel ca. ${fmtClock(after)} statt ${fmtClock(zielBefore)}, plus die Pause.`;
+/// What switching the pause on cost, said once it is on — the iOS app's
+/// `PauseDetour.notice`: the kilometres still to drive after the re-plan
+/// against those before it. Kilometres, not minutes, and nothing about how
+/// long the pause takes, which nobody can say. `null` on either side: the
+/// tour was not routed then.
+function pauseNotice(kmBefore, kmAfter) {
+  if (kmBefore == null || kmAfter == null) return 'Pause eingeplant';
+  return `Pause eingeplant · Umweg +${fmtKm(Math.max(0, kmAfter - kmBefore))}`;
 }
 
-/// Works out what the pause would cost before it goes on the tour —
-/// whether there is time for it is the question the driver is asking.
-async function previewPause() {
-  const r = state.currentRoute;
-  if (!r) return;
-  if (!homeState.home) { toast('Zuerst unter Mehr → Zuhause die eigene Adresse eintragen.', 'error'); return; }
-  showProgress('Umweg wird berechnet …');
-  let detour = null;
-  try { detour = await api(`/routes/${r.id}/pause-detour`); } catch (_) { /* asked blind, below */ }
-  finally { hideProgress(); }
-  if (state.currentRoute?.id !== r.id) return;
-  const ziel = r.stops.find((s) => s.kind === 'end' && !s.excluded);
-  const zielBefore = ziel ? routeSnapshot(r).eta(ziel) : null;
-  const ok = await confirmSheet({
-    title: 'Pause zu Hause einplanen?',
-    message: pauseSummary(detour, zielBefore, !ziel),
-    confirmLabel: 'Einplanen',
-  });
-  if (ok) setPause(true);
-}
-
+/// No question first: a pause is easy to take off again.
 async function setPause(on) {
   const r = state.currentRoute;
   if (!r) return;
+  if (on && !homeState.home) { toast('Zuerst unter Mehr → Zuhause die eigene Adresse eintragen.', 'error'); return; }
+  const routed = (route) => (route && !route.needs_optimize ? routeSnapshot(route).remainingKm : null);
+  const before = routed(r);
   await refreshCurrentRoute(
     () => api(`/routes/${r.id}/pause`, { method: 'POST', retry: true, body: JSON.stringify({ on }) }),
     on ? 'Pause wird eingeplant …' : 'Pause wird entfernt …',
   );
+  const after = state.currentRoute;
+  if (on && after?.id === r.id && after.stops.some((s) => s.kind === 'pause')) toast(pauseNotice(before, routed(after)), 'success');
 }
 
 /// The driver's position, or `null` when the phone will not say within a
@@ -10303,7 +10284,7 @@ function renderRouteMenu() {
       ${item("recheckAddresses()", ICONS.mapPin, "Adressen prüfen")}
       ${r.status === 'completed' ? '' : r.stops.some((s) => s.kind === 'pause')
         ? item("setPause(false)", ICONS.cup, "Pause zu Hause entfernen")
-        : item("previewPause()", ICONS.cup, "Pause zu Hause")}
+        : item("setPause(true)", ICONS.cup, "Pause zu Hause")}
       ${gap}
       ${item("renameRoute()", ICONS.pencil, "Umbenennen")}
       ${settled ? item("resetDelivered()", ICONS.refresh, "Lieferstatus zurücksetzen", true) : off(ICONS.refresh, "Lieferstatus zurücksetzen")}
