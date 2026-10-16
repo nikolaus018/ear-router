@@ -657,6 +657,36 @@ struct BackupTests {
         #expect(Upstreams.current.osrm.absoluteString == "https://osrm.example.com")
     }
 
+    /// The home address comes back as one `HomeAddress.load` can read: the
+    /// position as a `Double`, not the string it travelled as, or the switch
+    /// on the tour would find no home on a phone that plainly has one.
+    @Test func theHomeAddressSurvivesBeingCapturedAndRestored() throws {
+        let defaults = UserDefaults.standard
+        let keys = [
+            HomeAddress.Keys.strasse, HomeAddress.Keys.plz,
+            HomeAddress.Keys.lat, HomeAddress.Keys.lon,
+        ]
+        let before = keys.map { ($0, defaults.object(forKey: $0)) }
+        defer {
+            for (key, value) in before {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+
+        let home = HomeAddress(
+            strasse: "Gentzgasse 129", plz: "1180", lat: 48.2283, lon: 16.3389)
+        home.save(to: defaults)
+
+        let captured = Settings.capture()
+        #expect(captured[HomeAddress.Keys.strasse] == "Gentzgasse 129")
+
+        HomeAddress.clear(in: defaults)
+        Settings.restore(captured)
+
+        #expect(HomeAddress.load(from: defaults) == home)
+    }
+
     /// A trip meter that has just been reset really does read 0, and that is a
     /// value worth carrying like any other — which is the whole reason
     /// `hasLastReading` is stored separately from the reading.
