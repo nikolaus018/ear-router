@@ -70,6 +70,9 @@ struct TourView: View {
     @State private var reordering = false
     /// "Neu optimieren" on a hand-sorted tour, waiting to be confirmed.
     @State private var confirmingReoptimize = false
+    /// "Pause zu Hause", waiting to be confirmed: the sentence saying what it
+    /// costs. See `previewPause`.
+    @State private var pausePreview: String?
 
     /// Every door ever answered for. Queried whole rather than per row: this is
     /// a few thousand short rows after years of tours, one pass turns it into
@@ -230,6 +233,22 @@ struct TourView: View {
             Button("Abbrechen", role: .cancel) {}
         } message: {
             Text("Deine eigene Reihenfolge wird durch die optimierte ersetzt.")
+        }
+        .confirmationDialog(
+            "Pause zu Hause einplanen?",
+            isPresented: Binding(
+                get: { pausePreview != nil },
+                set: { if !$0 { pausePreview = nil } }),
+            titleVisibility: .visible,
+            presenting: pausePreview
+        ) { _ in
+            Button("Einplanen") {
+                pausePreview = nil
+                Task { await setPause(true) }
+            }
+            Button("Abbrechen", role: .cancel) { pausePreview = nil }
+        } message: { text in
+            Text(text)
         }
         .confirmationDialog(
             "Lieferstatus zurücksetzen?", isPresented: $confirmingReset,
@@ -450,7 +469,10 @@ struct TourView: View {
                         "Pause zu Hause", systemImage: "cup.and.saucer",
                         isOn: Binding(
                             get: { route.stops.contains { $0.kind == .pause } },
-                            set: { on in Task { await setPause(on) } }))
+                            set: { on in
+                                Task { on ? await previewPause() : await setPause(false) }
+                            }))
+                    .disabled(busy != nil)
                 }
                 Divider()
                 Button("Umbenennen", systemImage: "pencil") {
@@ -657,6 +679,23 @@ struct TourView: View {
         } catch {
             self.error = AppError.message("Konnte den Stopp nicht ändern.")
         }
+    }
+
+    /// Works out what the pause would cost before it goes on the tour —
+    /// whether there is time for it is the question the driver is asking.
+    private func previewPause() async {
+        guard let home = HomeAddress.load() else {
+            error = AppError.message("Zuerst unter Mehr → Zuhause die eigene Adresse eintragen.")
+            return
+        }
+        let banner = ownsBanner
+        if banner { busy = "Umweg wird berechnet …" }
+        let detour = try? await RouteOptimizer.pauseDetour(route, home: home)
+        if banner { busy = nil }
+        let snapshot = RouteSnapshot(route)
+        let ziel = snapshot.ordered.first { $0.kind == .end && !$0.excluded }
+        pausePreview = PauseDetour.summary(
+            detour, zielBefore: ziel.flatMap { snapshot.eta(for: $0) }, endsAtHome: ziel == nil)
     }
 
     private func setPause(_ on: Bool) async {

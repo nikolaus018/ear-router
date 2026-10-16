@@ -253,3 +253,53 @@ struct PauseAtHomeTests {
         #expect(HomeAddress.load(from: defaults) == nil)
     }
 }
+
+/// What the confirmation says before the pause goes on.
+@MainActor
+struct PauseDetourTests {
+    private let three = Date(timeIntervalSince1970: 1_757_000_000)
+
+    /// The drive only: how long the pause takes is the driver's business.
+    @Test func itSaysTheDetourAndTheNewZielTime() {
+        let text = PauseDetour.summary(
+            PauseDetour(minutes: 14, km: 6.2), zielBefore: three, endsAtHome: false)
+        let later = Format.time(three.addingTimeInterval(14 * 60))
+        #expect(text == "Umweg +14 min · 6,2 km. Am Ziel ca. \(later) "
+            + "statt \(Format.time(three)), plus die Pause.")
+    }
+
+    @Test func aTourEndingAtHomeSaysSo() {
+        let text = PauseDetour.summary(
+            PauseDetour(minutes: 5, km: 2), zielBefore: nil, endsAtHome: true)
+        #expect(text == "Umweg +5 min · 2,0 km. Die Tour endet dann zu Hause.")
+    }
+
+    @Test func withoutAZielTimeItSaysTheDetourAlone() {
+        let text = PauseDetour.summary(
+            PauseDetour(minutes: 5, km: 2), zielBefore: nil, endsAtHome: false)
+        #expect(text == "Umweg +5 min · 2,0 km.")
+    }
+
+    @Test func withoutOSRMItSaysItCouldNotTell() {
+        let text = PauseDetour.summary(nil, zielBefore: three, endsAtHome: false)
+        #expect(text == "Der Umweg konnte gerade nicht berechnet werden.")
+    }
+
+    private func c(_ n: Int) -> StopCoord {
+        StopCoord(id: UUID(), lat: 48.2 + Double(n) / 1000, lon: 16.3)
+    }
+
+    /// A hand-sorted tour: only the drive out of the last door differs.
+    @Test func aHandSortedTourComparesOnlyItsEnd() {
+        let (start, x, y, home, ziel) = (c(0), c(1), c(2), c(3), c(4))
+        let (a, b) = RouteOptimizer.listedEnds(
+            [start, x, y, ziel], [start, x, y, home, ziel], hasEnd: true)
+        #expect(a == [y, ziel])
+        #expect(b == [y, home, ziel])
+
+        let (open, toHome) = RouteOptimizer.listedEnds(
+            [start, x, y], [start, x, y, home], hasEnd: false)
+        #expect(open == [y])
+        #expect(toHome == [y, home])
+    }
+}
