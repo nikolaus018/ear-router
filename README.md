@@ -28,13 +28,9 @@ A native iOS app. Tours, stops, delivery status and every floor ever learned
 live on the phone; the network is needed only to load a day's tour from the
 Zusteller-Portal, to look an address up and to optimise the route.
 
-Beside it, a web version of the same round for a driver without the app —
-see [legacy-web](#legacy-web).
-
 ```
 ios/            The app. Open ios/EarRouter.xcodeproj in Xcode.
 ios/Tools/      Draws the app icon. Not part of the build.
-legacy-web/     The web version: a Rust server and the PWA it serves.
 ```
 
 ## The app
@@ -105,42 +101,6 @@ build to hand over for the map's per-frame change keys, the union-find behind
 So: develop with `EarRouter`, and reinstall the van's phone with
 `EarRouter (Fahrbetrieb)`. Tests run under Debug in both, which is where
 `ENABLE_TESTABILITY` lives.
-
-## legacy-web
-
-The web version: a Rust (Axum + SQLite) server and the single-file PWA it
-serves. It is the foolproof one — for a driver who should not have to learn
-anything. Stops come from the Zusteller-Portal or are typed in one at a time,
-and nothing in it is more technical than a postcode.
-
-| | |
-|---|---|
-| Touren | Active tours and, under them, the finished ones. "+" asks where the stops come from: *Von Gourmet laden* (sign in once, pick the day's tour, untick anybody not driven, look the list over in *Prüfen*) or *Leere Tour* |
-| An address that is not found | Never becomes a stop at the middle of its district. The form comes back saying so, to be corrected; the map, to put the pin on the house by hand, is the second way out. A tour that still has such a stop from before is not planned and not driven until it is fixed |
-| A tour | The stops in driving order with their arrival times; tap one for *Nicht angetroffen*, *Ins Lager mitnehmen*, *Bearbeiten*, *Aus der Tour entfernen*. *Tour vorbereiten* checks it over before the yard is left |
-| Jetzt | The stop the driver is at: Navigation (a hand-placed pin, else the house entrance from the city's register, else the address), Geliefert, Anrufen, and a banner that takes the last answer back |
-| Ladeliste | VM sums the Pakete; TK lists the customers, last door first. The switch is kept with the tour and decides what every row shows for the Paket |
-| Karte | The tour on the map |
-| Closing a tour | The Tagesabschluss, ready to send to the office |
-
-Everybody signs in. Each account has its own tours and its own portal login,
-kept on its row in `users`; the server does the talking to `odoo.gourmet.at`,
-because a browser cannot. The account `admin` — its password is the
-environment variable `EAR_ADMIN_PASSWORD`, applied on start — also has an Admin tab, where the other accounts are made,
-renamed, given a new password and deleted.
-
-Not in the web version, on purpose: the JSON editor, Erays Planer, Globale
-Infos, the other driver's stops, the toilets, backups, splitting a tour on
-the map. Not possible in a browser: Siri, the lock-screen card, CarPlay,
-saving a contact.
-
-```bash
-cd legacy-web
-cargo run --release
-```
-
-Serves on port 8000 (`EAR_PORT`). The database, `rerouter.db`, is created next
-to the binary. `cargo test` covers the rules the server decides.
 
 ## License
 

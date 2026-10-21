@@ -145,8 +145,16 @@ struct StockwerkListView: View {
         } label: {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(note.title)
-                        .foregroundStyle(Color.primary)
+                    HStack(spacing: 5) {
+                        Text(note.title)
+                            .foregroundStyle(Color.primary)
+                        if note.hasEntry {
+                            Image(systemName: "face.smiling.fill")
+                                .font(.caption)
+                                .foregroundStyle(Color.delivered)
+                                .accessibilityLabel("Globale Infos vorhanden")
+                        }
+                    }
                     if !note.subtitle.isEmpty {
                         Text(note.subtitle)
                             .font(.caption)

@@ -108,6 +108,10 @@ extension StockwerkNote {
             && (notiz?.trimmed.isEmpty ?? true)
             && !dontAsk
     }
+
+    /// Whether this customer has an active entry in Globale Infos —
+    /// floor, standing note, or "Nicht mehr fragen".
+    var hasEntry: Bool { !isBlank }
 }
 
 /// How a customer is identified across tours.

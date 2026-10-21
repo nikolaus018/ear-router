@@ -470,10 +470,18 @@ private struct NowStopCard: View {
                         number: number, kind: .current, size: badge,
                         font: .subheadline.weight(.semibold).monospacedDigit())
                 }
-                Text(stop.kunde ?? "Stopp")
-                    .font(.title2.bold())
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityAddTraits(.isHeader)
+                HStack(spacing: 6) {
+                    Text(stop.kunde ?? "Stopp")
+                        .font(.title2.bold())
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader)
+                    if info?.hasEntry == true {
+                        Image(systemName: "face.smiling.fill")
+                            .font(.title3)
+                            .foregroundStyle(Color.delivered)
+                            .accessibilityLabel("Globale Infos vorhanden")
+                    }
+                }
             }
 
             VStack(alignment: .leading, spacing: 4) {

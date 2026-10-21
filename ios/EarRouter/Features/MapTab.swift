@@ -359,6 +359,7 @@ struct MapTab: View {
                         stop: stop,
                         number: customerNumber(of: stop),
                         stockwerk: floor(for: stop),
+                        info: customerInfo(for: stop),
                         onBack: members.count > 1
                             ? { chosenMemberID = nil } : nil,
                         onNavigate: { navigate(to: stop) },
@@ -383,6 +384,7 @@ struct MapTab: View {
                     SharedPinSheet(
                         stops: members,
                         number: customerNumber(of:),
+                        info: customerInfo(for:),
                         onPick: { chosenMemberID = $0.id },
                         onMeasure: { if $0 > 0 { previewHeight = $0 } })
                 }
@@ -745,6 +747,11 @@ struct MapTab: View {
         guard let key = StockwerkKey.make(for: stop) else { return nil }
         let value = stockwerkNotes.first { $0.key == key }?.stockwerk?.trimmed
         return (value?.isEmpty ?? true) ? nil : value
+    }
+
+    private func customerInfo(for stop: Stop) -> StockwerkNote? {
+        guard let key = StockwerkKey.make(for: stop) else { return nil }
+        return stockwerkNotes.first { $0.key == key }
     }
 
     /// The floor question, asked from the map.
@@ -2052,6 +2059,7 @@ struct StopPreviewSheet: View {
     var number: Int?
     /// The floor, when this door has been answered for.
     var stockwerk: String?
+    var info: StockwerkNote? = nil
     /// Back to the list of everyone at this spot, when the card was opened from
     /// a shared pin.
     var onBack: (() -> Void)? = nil
@@ -2139,13 +2147,17 @@ struct StopPreviewSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(isCustomer ? (stop.kunde ?? "Stopp") : stop.fixedTitle)
-                    .font(.title3.bold())
-                    // Wraps rather than truncating, the same as the address
-                    // directly under it. Without this a customer's name was cut
-                    // to "Hyphen Te…" on the one card whose whole job is saying
-                    // whose door this pin is.
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    Text(isCustomer ? (stop.kunde ?? "Stopp") : stop.fixedTitle)
+                        .font(.title3.bold())
+                        .fixedSize(horizontal: false, vertical: true)
+                    if info?.hasEntry == true {
+                        Image(systemName: "face.smiling.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(Color.delivered)
+                            .accessibilityLabel("Globale Infos vorhanden")
+                    }
+                }
                 Text(Format.address(stop.listAddress))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2290,6 +2302,7 @@ struct StopPreviewSheet: View {
 private struct SharedPinSheet: View {
     let stops: [Stop]
     let number: (Stop) -> Int?
+    var info: ((Stop) -> StockwerkNote?)? = nil
     let onPick: (Stop) -> Void
     let onMeasure: (CGFloat) -> Void
 
@@ -2327,10 +2340,18 @@ private struct SharedPinSheet: View {
         HStack(spacing: 12) {
             StopNumberBadge(number: number(stop), kind: .of(stop), size: badgeSize)
             VStack(alignment: .leading, spacing: 2) {
-                Text(stop.kunde ?? "Stopp")
-                    .strikethrough(stop.delivered)
-                    .foregroundStyle(stop.isSettled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 5) {
+                    Text(stop.kunde ?? "Stopp")
+                        .strikethrough(stop.delivered)
+                        .foregroundStyle(stop.isSettled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if info?(stop)?.hasEntry == true {
+                        Image(systemName: "face.smiling.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.delivered)
+                            .accessibilityLabel("Globale Infos vorhanden")
+                    }
+                }
                 if let outcome = stop.outcome {
                     Text(outcome.label)
                         .font(.footnote)

@@ -178,6 +178,12 @@ struct StopRow: View {
                     // still has to do something about, it means the opposite.
                     .foregroundStyle(dimmed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                     .fixedSize(horizontal: false, vertical: true)
+                if info?.hasEntry == true {
+                    Image(systemName: "face.smiling.fill")
+                        .font(.caption)
+                        .foregroundStyle(Color.delivered)
+                        .accessibilityLabel("Globale Infos vorhanden")
+                }
                 if stop.pinned {
                     Image(systemName: "hand.point.up.left.fill")
                         .font(.caption2)

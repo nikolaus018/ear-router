@@ -17,6 +17,7 @@ struct MoreTab: View {
 
     @State private var showingTuercode = false
     @State private var showingKilometer = false
+    @State private var showingTemperatur = false
     @State private var showingGourmet = false
     @State private var showingCarPlaySetup = false
     @State private var showingSplit = false
@@ -77,6 +78,13 @@ struct MoreTab: View {
                     SettingsRow(
                         icon: "gauge.with.dots.needle.bottom.50percent", tint: .teal,
                         title: "Kilometerstand", detail: "Gefahrene Kilometer")
+                }
+                Button {
+                    showingTemperatur = true
+                } label: {
+                    SettingsRow(
+                        icon: "thermometer.snowflake", tint: .blue,
+                        title: "Temperaturen", detail: "Zufällige Werte (TK / VM)")
                 }
                 Button {
                     openURL(bueroURL)
@@ -175,6 +183,7 @@ struct MoreTab: View {
         .navigationTitle("Mehr")
         .sheet(isPresented: $showingTuercode) { TuercodeSheet() }
         .sheet(isPresented: $showingKilometer) { KilometerSheet() }
+        .sheet(isPresented: $showingTemperatur) { TemperaturSheet() }
         .sheet(isPresented: $showingSplit) { TourSplitSheet() }
         .sheet(isPresented: $showingPDF) { TourPDFSheet() }
         .sheet(isPresented: $showingGourmet) {

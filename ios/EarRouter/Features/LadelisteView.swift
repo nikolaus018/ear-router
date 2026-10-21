@@ -37,9 +37,9 @@ enum LadungPlan {
     /// the list the driver reads would produce a van packed for a route nobody
     /// is driving.
     ///
-    /// Without the abbestellt ones — see `Stop.isOwedAMeal`.
+    /// Without the abbestellt ones — see `Stop.isLoadedInVan`.
     static func loadingOrder(for route: Route) -> [LadungStop] {
-        route.customerStops.filter(\.isOwedAMeal).reversed().enumerated().map { position, stop in
+        route.customerStops.filter(\.isLoadedInVan).reversed().enumerated().map { position, stop in
             let kunde = stop.kunde?.trimmed ?? ""
             return LadungStop(
                 id: stop.id,
@@ -393,12 +393,12 @@ enum PaketParser {
         parse(paket).reduce(0) { $0 + $1.qty }
     }
 
-    /// Without the abbestellt ones — see `Stop.isOwedAMeal`.
+    /// Without the abbestellt ones — see `Stop.isLoadedInVan`.
     static func items(for route: Route) -> [PaketItem] {
         var byKey: [String: PaketItem] = [:]
         var order: [String] = []
 
-        for stop in route.customerStops where stop.isOwedAMeal {
+        for stop in route.customerStops where stop.isLoadedInVan {
             for (qty, label) in parse(stop.paket) {
                 let key = label.lowercased()
                     .components(separatedBy: .whitespacesAndNewlines)

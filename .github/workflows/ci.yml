@@ -21,14 +21,3 @@ jobs:
           xcodebuild test -project EarRouter.xcodeproj -scheme EarRouter \
             -destination 'platform=iOS Simulator,name=iPhone 17' \
             CODE_SIGNING_ALLOWED=NO | tail -40
-
-  legacy-web:
-    name: Legacy web server (Rust)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: legacy-web
-      - run: cargo test --manifest-path legacy-web/Cargo.toml

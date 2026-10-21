@@ -345,6 +345,12 @@ extension Stop {
     /// counting the meal, and "Tour vorbereiten" on asking for it to be loaded.
     var isOwedAMeal: Bool { kind == .customer && outcome?.skipsDoor != true }
 
+    /// Whether this customer's parcels go in the van: every customer except those
+    /// marked abbestellt (`.cancelled`). Customers marked "ins Lager" (`.toLager`)
+    /// are not delivered to, but their parcels are still loaded into the van to be
+    /// brought back to the warehouse.
+    var isLoadedInVan: Bool { kind == .customer && outcome != .cancelled }
+
     /// A door answered for in a way that says the van has loaded: any outcome
     /// but abbestellt, which is ticked in the yard as often as not. What ticks
     /// an open Lager — see `RouteStore.record`.

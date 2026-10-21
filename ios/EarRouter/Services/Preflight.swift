@@ -155,8 +155,8 @@ struct Preflight {
         // then opening a Ladeliste that lists sixteen customers was two answers
         // to one question.
         //
-        // And only for the meals actually owed — see `Stop.isOwedAMeal`.
-        let loaded = customers.filter(\.isOwedAMeal)
+        // And only for the meals actually loaded — see `Stop.isLoadedInVan`.
+        let loaded = customers.filter(\.isLoadedInVan)
         switch LadelisteMode.effective(for: route) {
         case .vm:
             let pieces = loaded.reduce(0) { $0 + PaketParser.totalQty($1.paket) }

@@ -452,6 +452,20 @@ struct LadelisteModeTests {
         #expect(order.map(\.name) == ["Letzte", "Erste"])
         #expect(order.map(\.position) == [1, 2])
     }
+
+    /// A customer whose parcel goes to the Lager is not driven to, but their
+    /// parcel is still loaded in the van and must stay on the Ladeliste.
+    @Test func aCustomerWhoseParcelGoesToLagerIsStillLoaded() throws {
+        let r = try route("TK1", kunden: [("Erste", "1x Menü"), ("Zweite", "2x Suppe"), ("Letzte", "1x Menü")])
+        try #require(r.customerStops.first { $0.kunde == "Zweite" }).record(.toLager)
+
+        let order = LadungPlan.loadingOrder(for: r)
+        #expect(order.map(\.name) == ["Letzte", "Zweite", "Erste"])
+        #expect(order.map(\.position) == [1, 2, 3])
+
+        let items = PaketParser.items(for: r)
+        #expect(items.contains { $0.label == "2x Suppe" })
+    }
 }
 
 /// What `Stop.displayPaket` shows at a door — the field the stop row, Jetzt,
