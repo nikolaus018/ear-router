@@ -89,21 +89,43 @@ struct SplitStateTests {
         #expect(name != "VM 4 DO Vormittag · P1")
     }
 
-    @Test func theSharedTextNamesEveryPersonAndWhatIsLeft() {
+    private func sharedJSON(_ split: SplitState, person: Int? = nil) throws -> [String: Any] {
+        let url = try split.writeShareFile(for: person)
+        let data = try Data(contentsOf: url)
+        #expect(url.pathExtension == "json")
+        #expect(String(decoding: data, as: UTF8.self).hasPrefix("{\n\"tour\""))
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    @Test func theSharedFileHoldsOnlyNameAndAddressPerStop() throws {
         var split = state(4, people: 2)
         split.claim([0, 1], for: 0)
         split.claim([2], for: 1)
-        let text = split.shareText
-        #expect(text.contains("VM 4 DO Vormittag"))
-        #expect(text.contains("Person 1 (2)"))
-        #expect(text.contains("Person 2 (1)"))
-        #expect(text.contains("Nicht zugeteilt (1)"))
+        let json = try sharedJSON(split)
+        #expect(json["tour"] as? String == "VM 4 DO Vormittag")
+        let persons = try #require(json["persons"] as? [[String: Any]])
+        #expect(persons.count == 2)
+        #expect(persons[0]["person"] as? Int == 1)
+        let stops = try #require(persons[0]["stops"] as? [[String: String]])
+        #expect(stops.count == 2)
+        #expect(Set(stops[0].keys) == ["name", "address"])
+        #expect((json["unassigned"] as? [Any])?.count == 1)
     }
 
-    @Test func aFullyDealtSplitSaysNothingAboutLeftovers() {
+    @Test func aSingleShareHoldsOnlyThatPerson() throws {
+        var split = state(2, people: 2)
+        split.claim([0, 1], for: 1)
+        let json = try sharedJSON(split, person: 1)
+        let persons = try #require(json["persons"] as? [[String: Any]])
+        #expect(persons.count == 1)
+        #expect(persons[0]["person"] as? Int == 2)
+        #expect(json["unassigned"] == nil)
+    }
+
+    @Test func aFullyDealtSplitHasNoLeftoversInTheFile() throws {
         var split = state(2, people: 2)
         split.claim([0, 1], for: 0)
-        #expect(!split.shareText.contains("Nicht zugeteilt"))
+        #expect(try sharedJSON(split)["unassigned"] == nil)
     }
 
     /// The stop as it reaches the import when the portal's detail call is not

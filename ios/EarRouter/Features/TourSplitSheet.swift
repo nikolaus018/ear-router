@@ -420,22 +420,55 @@ struct SplitState: Identifiable {
 
     // MARK: Sharing
 
-    func shareText(for person: Int) -> String {
-        let mine = drivingOrder(of: person)
-        return (["Person \(person + 1) (\(mine.count))"]
-            + mine.map { "• \($0.name) – \($0.address)" })
-            .joined(separator: "\n")
+    /// One stop as it goes out: the customer and the address, nothing else.
+    private struct SharedStop: Encodable {
+        let name: String
+        let address: String
     }
 
-    var shareText: String {
-        var sections = (0..<people).map(shareText(for:))
-        let rest = stops(of: nil)
-        if !rest.isEmpty {
-            sections.append(
-                (["Nicht zugeteilt (\(rest.count))"] + rest.map { "• \($0.name) – \($0.address)" })
-                    .joined(separator: "\n"))
+    private struct SharedPerson: Encodable {
+        let person: Int
+        let stops: [SharedStop]
+    }
+
+    private func sharedStops(_ stops: [SplitStop]) -> [SharedStop] {
+        stops.map { SharedStop(name: $0.name, address: $0.address) }
+    }
+
+    /// A JSON file of one person's share, or of everyone's when `person` is
+    /// nil — written when asked for, like the backup, and handed to the share
+    /// sheet.
+    ///
+    /// The top level is written by hand: `JSONEncoder` leaves key order to
+    /// chance unless it sorts them, and sorted, "tour" would land below the
+    /// persons instead of heading the file.
+    func writeShareFile(for person: Int? = nil) throws -> URL {
+        let who = person.map { [$0] } ?? Array(0..<people)
+        let rest = person == nil ? stops(of: nil) : []
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        func json(_ value: some Encodable) throws -> String {
+            String(decoding: try encoder.encode(value), as: UTF8.self)
         }
-        return "\(tourName)\n\n" + sections.joined(separator: "\n\n")
+
+        var parts = ["\"tour\" : \(try json(tourName.trimmed))"]
+        let persons = who.map {
+            SharedPerson(person: $0 + 1, stops: sharedStops(drivingOrder(of: $0)))
+        }
+        parts.append("\"persons\" : \(try json(persons))")
+        if !rest.isEmpty { parts.append("\"unassigned\" : \(try json(sharedStops(rest)))") }
+        let body = "{\n" + parts.joined(separator: ",\n") + "\n}\n"
+
+        let dir = URL.temporaryDirectory.appending(path: "TourTeilen", directoryHint: .isDirectory)
+        try? FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let base = tourName.trimmed.replacingOccurrences(of: "/", with: "-")
+        let suffix = person.map { "-P\($0 + 1)" } ?? ""
+        let url = dir.appending(path: "\(base.isEmpty ? "Tour" : base)\(suffix).json")
+        try Data(body.utf8).write(to: url, options: .atomic)
+        return url
     }
 }
 
@@ -1520,6 +1553,7 @@ private struct SplitOverview: View {
     /// just created nor cleaned up after a review that saved nothing.
     @State private var pending: ReviewContext?
     @State private var imported = false
+    @State private var sharing: SharedFile?
 
     struct ReviewContext: Identifiable {
         let id = UUID()
@@ -1555,9 +1589,7 @@ private struct SplitOverview: View {
         .toolbar(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                ShareLink(item: state.shareText) {
-                    Label("Alle teilen", systemImage: "square.and.arrow.up")
-                }
+                Button("Alle teilen", systemImage: "square.and.arrow.up") { share(nil) }
             }
         }
         .floatingBanner {
@@ -1567,6 +1599,7 @@ private struct SplitOverview: View {
         }
         .animation(.snappy, value: busy)
         .errorAlert($error)
+        .sheet(item: $sharing) { ShareSheet(items: [$0.url]) }
         .sheet(item: $review, onDismiss: reviewDismissed) { ctx in
             ImportReviewView(route: ctx.route, entries: ctx.entries) { imported = true }
         }
@@ -1598,7 +1631,7 @@ private struct SplitOverview: View {
                 }
                 Spacer()
                 if !mine.isEmpty {
-                    ShareLink(item: state.shareText(for: person)) {
+                    Button { share(person) } label: {
                         Image(systemName: "square.and.arrow.up")
                     }
                     .accessibilityLabel("Person \(person + 1) teilen")
@@ -1609,6 +1642,14 @@ private struct SplitOverview: View {
     }
 
     // MARK: Actions
+
+    private func share(_ person: Int?) {
+        do {
+            sharing = SharedFile(url: try state.writeShareFile(for: person))
+        } catch {
+            self.error = .message(error.localizedDescription)
+        }
+    }
 
     private func createTour(for person: Int) async {
         busy = "Paket wird geladen …"
