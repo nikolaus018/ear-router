@@ -89,11 +89,10 @@ struct JSONEditorSheet: View {
                     // on: live over an empty editor they both did nothing.
                     Button("Kopieren") { UIPasteboard.general.string = text }
                         .disabled(text.isEmpty)
-                    // The same button the Eray paste screen carries, and for
-                    // the same reasons — see `PasteTextButton`. It was the
-                    // system `PasteButton`, which drew a solid blue pill inside
-                    // the bar's own glass capsule and stayed just as blue, just
-                    // as tappable and entirely inert on an empty clipboard.
+                    // See `PasteTextButton`. It was the system `PasteButton`,
+                    // which drew a solid blue pill inside the bar's own glass
+                    // capsule and stayed just as blue, just as tappable and
+                    // entirely inert on an empty clipboard.
                     PasteTextButton { text = $0 }
                     Spacer()
                     // Empties the editor, which is what the word means — it

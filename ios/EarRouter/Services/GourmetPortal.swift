@@ -486,9 +486,9 @@ enum GourmetPortal {
         guard !lines.isEmpty else { return nil }
         let parts = lines.map { line -> String in
             guard line.quantity != 1 else { return line.name }
-            // Bounded before the conversion, as `ErayImport` bounds the same
-            // thing: `Int(_:)` traps on a Double too large to hold, and this is
-            // a number from somebody else's server.
+            // Bounded before the conversion: `Int(_:)` traps on a Double
+            // too large to hold, and this is a number from somebody else's
+            // server.
             let whole = line.quantity == line.quantity.rounded() && line.quantity.magnitude < 1e15
             let quantity = whole ? String(Int(line.quantity)) : String(format: "%.2f", line.quantity)
             return "\(quantity)x \(line.name)"

@@ -29,7 +29,6 @@ struct TourView: View {
     @State private var addingStop = false
     @State private var showingJSON = false
     @State private var showingGourmetImport = false
-    @State private var showingErayImport = false
     @State private var showingLadeliste = false
     @State private var renaming = false
     @State private var newName = ""
@@ -192,9 +191,6 @@ struct TourView: View {
         .sheet(isPresented: $showingGourmetImport) {
             GourmetImportSheet(mode: .existing(route))
         }
-        .sheet(isPresented: $showingErayImport) {
-            ErayImportSheet(mode: .existing(route))
-        }
         .sheet(isPresented: $showingLadeliste) {
             LadelisteView(route: route)
         }
@@ -300,7 +296,6 @@ struct TourView: View {
                     EmptyStopsPrompt(
                         onAdd: { addingStop = true },
                         onPortal: { showingGourmetImport = true },
-                        onEray: { showingErayImport = true },
                         onPaste: { showingJSON = true })
                 }
             }
@@ -427,9 +422,6 @@ struct TourView: View {
                 Menu("Stopps laden", systemImage: "arrow.down.circle") {
                     Button("Vom Zusteller-Portal", systemImage: "arrow.down.circle") {
                         showingGourmetImport = true
-                    }
-                    Button("Eray-Liste einsetzen", systemImage: "list.bullet.rectangle") {
-                        showingErayImport = true
                     }
                     Button("JSON einsetzen", systemImage: "curlybraces") {
                         showingJSON = true
@@ -803,9 +795,6 @@ struct EmptyStopsPrompt: View {
     /// list most often arrives, and the one path the tour's menu had and this
     /// prompt, the screen a new tour opens on, did not.
     let onPortal: () -> Void
-    /// A whole tour out of Eray's planner, of which this takes the
-    /// customers — see `ErayImport`.
-    let onEray: () -> Void
     let onPaste: () -> Void
 
     var body: some View {
@@ -815,7 +804,7 @@ struct EmptyStopsPrompt: View {
                     .font(.headline)
                 Text(
                     "Einzeln hinzufügen, oder die ganze Tagesliste auf einmal — vom "
-                        + "Zusteller-Portal, als Eray-Liste oder als JSON-Liste.")
+                        + "Zusteller-Portal oder als JSON-Liste.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -830,9 +819,6 @@ struct EmptyStopsPrompt: View {
                 VStack(spacing: 8) {
                     Button(action: onPortal) {
                         WideButtonLabel("Vom Zusteller-Portal", systemImage: "arrow.down.circle")
-                    }
-                    Button(action: onEray) {
-                        WideButtonLabel("Eray-Liste einsetzen", systemImage: "list.bullet.rectangle")
                     }
                     Button(action: onPaste) {
                         WideButtonLabel("JSON einsetzen", systemImage: "curlybraces")
