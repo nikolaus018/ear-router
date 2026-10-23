@@ -18,26 +18,18 @@ enum TemperaturModus: String, CaseIterable, Identifiable {
     var rangeDescription: String {
         switch self {
         case .tk: "-18 °C bis -10 °C"
-        case .vm: "-12 °C bis -8 °C"
+        case .vm: "-18 °C bis -4 °C"
         }
     }
 }
 
-/// The three logged tour temperatures: Start, Mitte, Ende.
+/// The three logged tour temperatures: Start, Mitte, Ende. Whole degrees.
 struct TourTemperaturen: Equatable {
-    let start: Double
-    let mitte: Double
-    let ende: Double
-    var mitDezimal: Bool = true
+    let start: Int
+    let mitte: Int
+    let ende: Int
 
-    func formatted(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.locale = Locale(identifier: "de_AT")
-        formatter.minimumFractionDigits = mitDezimal ? 1 : 0
-        formatter.maximumFractionDigits = mitDezimal ? 1 : 0
-        let numStr = formatter.string(from: NSNumber(value: value)) ?? "\(value)"
-        return "\(numStr) °C"
-    }
+    func formatted(_ value: Int) -> String { "\(value) °C" }
 
     var startText: String { formatted(start) }
     var mitteText: String { formatted(mitte) }
@@ -45,42 +37,22 @@ struct TourTemperaturen: Equatable {
 }
 
 enum TemperaturGenerator {
-    /// Generates 3 temperatures for TK or VM so that:
-    /// - For TK: between -18 °C and -10 °C, start not so cold, middle colder, end coldest.
-    /// - For VM: between -12 °C and -8 °C, start not so cold, middle colder, end coldest.
-    static func generate(modus: TemperaturModus, mitDezimal: Bool = true) -> TourTemperaturen {
-        if mitDezimal {
-            let (start, mitte, ende): (Double, Double, Double) = switch modus {
-            case .tk:
-                (
-                    -Double(Int.random(in: 100...125)) / 10.0,
-                    -Double(Int.random(in: 130...155)) / 10.0,
-                    -Double(Int.random(in: 160...180)) / 10.0
-                )
-            case .vm:
-                (
-                    -Double(Int.random(in: 80...93)) / 10.0,
-                    -Double(Int.random(in: 96...107)) / 10.0,
-                    -Double(Int.random(in: 110...120)) / 10.0
-                )
-            }
-            return TourTemperaturen(start: start, mitte: mitte, ende: ende, mitDezimal: true)
-        } else {
-            let (start, mitte, ende): (Double, Double, Double) = switch modus {
-            case .tk:
-                (
-                    -Double(Int.random(in: 10...12)),
-                    -Double(Int.random(in: 13...15)),
-                    -Double(Int.random(in: 16...18))
-                )
-            case .vm:
-                (
-                    -Double(Int.random(in: 8...9)),
-                    -10.0,
-                    -Double(Int.random(in: 11...12))
-                )
-            }
-            return TourTemperaturen(start: start, mitte: mitte, ende: ende, mitDezimal: false)
+    /// Generates 3 whole-degree temperatures, ends included, so that the start
+    /// is not so cold, the middle colder and the end coldest:
+    /// - TK: from -18 °C to -10 °C.
+    /// - VM: from -18 °C to -4 °C.
+    static func generate(modus: TemperaturModus) -> TourTemperaturen {
+        switch modus {
+        case .tk:
+            TourTemperaturen(
+                start: -Int.random(in: 10...12),
+                mitte: -Int.random(in: 13...15),
+                ende: -Int.random(in: 16...18))
+        case .vm:
+            TourTemperaturen(
+                start: -Int.random(in: 4...8),
+                mitte: -Int.random(in: 9...13),
+                ende: -Int.random(in: 14...18))
         }
     }
 }
@@ -89,7 +61,6 @@ struct TemperaturSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("temperatur.modus") private var modusRaw = TemperaturModus.tk.rawValue
-    @AppStorage("temperatur.mitDezimal") private var mitDezimal = true
 
     @State private var values: TourTemperaturen?
     @State private var copiedIndex: Int?
@@ -127,16 +98,6 @@ struct TemperaturSheet: View {
                     }
 
                     VStack(spacing: 12) {
-                        Toggle("Mit Kommastelle", isOn: Binding(
-                            get: { mitDezimal },
-                            set: { newValue in
-                                mitDezimal = newValue
-                                roll()
-                            }
-                        ))
-                        .font(.subheadline)
-                        .padding(.horizontal, 4)
-
                         Button {
                             roll()
                         } label: {
@@ -180,7 +141,7 @@ struct TemperaturSheet: View {
     }
 
     private func roll() {
-        values = TemperaturGenerator.generate(modus: modus, mitDezimal: mitDezimal)
+        values = TemperaturGenerator.generate(modus: modus)
         rollCount += 1
         copiedIndex = nil
         copiedAll = false

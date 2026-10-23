@@ -3,46 +3,38 @@ import Testing
 
 struct TemperaturTests {
 
-    @Test func tkTemperaturesAreWithinBoundsAndStrictlyGetColder() {
-        for _ in 0..<100 {
-            let decimal = TemperaturGenerator.generate(modus: .tk, mitDezimal: true)
-            #expect(decimal.start >= -12.5 && decimal.start <= -10.0)
-            #expect(decimal.mitte >= -15.5 && decimal.mitte <= -13.0)
-            #expect(decimal.ende >= -18.0 && decimal.ende <= -16.0)
-            #expect(decimal.start > decimal.mitte)
-            #expect(decimal.mitte > decimal.ende)
-
-            let integer = TemperaturGenerator.generate(modus: .tk, mitDezimal: false)
-            #expect(integer.start >= -12.0 && integer.start <= -10.0)
-            #expect(integer.mitte >= -15.0 && integer.mitte <= -13.0)
-            #expect(integer.ende >= -18.0 && integer.ende <= -16.0)
-            #expect(integer.start > integer.mitte)
-            #expect(integer.mitte > integer.ende)
+    @Test func tkTemperaturesAreWholeDegreesWithinBoundsAndGetColder() {
+        for _ in 0..<200 {
+            let t = TemperaturGenerator.generate(modus: .tk)
+            for v in [t.start, t.mitte, t.ende] { #expect((-18)...(-10) ~= v) }
+            #expect(t.start > t.mitte)
+            #expect(t.mitte > t.ende)
         }
     }
 
-    @Test func vmTemperaturesAreWithinBoundsAndStrictlyGetColder() {
-        for _ in 0..<100 {
-            let decimal = TemperaturGenerator.generate(modus: .vm, mitDezimal: true)
-            #expect(decimal.start >= -9.3 && decimal.start <= -8.0)
-            #expect(decimal.mitte >= -10.7 && decimal.mitte <= -9.6)
-            #expect(decimal.ende >= -12.0 && decimal.ende <= -11.0)
-            #expect(decimal.start > decimal.mitte)
-            #expect(decimal.mitte > decimal.ende)
-
-            let integer = TemperaturGenerator.generate(modus: .vm, mitDezimal: false)
-            #expect(integer.start >= -9.0 && integer.start <= -8.0)
-            #expect(integer.mitte == -10.0)
-            #expect(integer.ende >= -12.0 && integer.ende <= -11.0)
-            #expect(integer.start > integer.mitte)
-            #expect(integer.mitte > integer.ende)
+    @Test func vmTemperaturesAreWholeDegreesWithinBoundsAndGetColder() {
+        for _ in 0..<200 {
+            let t = TemperaturGenerator.generate(modus: .vm)
+            for v in [t.start, t.mitte, t.ende] { #expect((-18)...(-4) ~= v) }
+            #expect(t.start > t.mitte)
+            #expect(t.mitte > t.ende)
         }
+    }
+
+    @Test func bothEndsOfTheRangeCanCome() {
+        var tk: Set<Int> = [], vm: Set<Int> = []
+        for _ in 0..<2000 {
+            let a = TemperaturGenerator.generate(modus: .tk)
+            let b = TemperaturGenerator.generate(modus: .vm)
+            tk.formUnion([a.start, a.ende]); vm.formUnion([b.start, b.ende])
+        }
+        #expect(tk.contains(-10) && tk.contains(-18))
+        #expect(vm.contains(-4) && vm.contains(-18))
     }
 
     @Test func formattingIncludesDegreeCelsius() {
-        let temp = TourTemperaturen(start: -11.2, mitte: -14.5, ende: -17.8, mitDezimal: true)
-        #expect(temp.startText.contains("°C"))
-        #expect(temp.mitteText.contains("°C"))
+        let temp = TourTemperaturen(start: -11, mitte: -14, ende: -17)
+        #expect(temp.startText == "-11 °C")
         #expect(temp.endeText.contains("°C"))
     }
 }
