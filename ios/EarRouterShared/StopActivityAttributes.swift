@@ -36,6 +36,24 @@ struct StopActivityAttributes: ActivityAttributes {
         var kundeninfo: String?
         /// The stop's number on the tour, for the badge.
         var number: Int?
+        /// Which way and how far the door is — present only once the driver is
+        /// close enough for an arrow to be worth drawing.
+        var kompass: Kompass?
+    }
+
+    /// The arrow that leads the last stretch to the door.
+    ///
+    /// Already worked out and already coarse: the extension cannot see the
+    /// phone's position, so the app hands it an angle and a distance, rounded
+    /// so that a state does not change (and cost an update) for every step.
+    struct Kompass: Codable, Hashable {
+        /// Degrees clockwise from the way the driver is facing: 0 is straight
+        /// ahead, 90 is to the right. Whole numbers, in steps of 15.
+        var grad: Int
+        /// Metres to the door, rounded for reading.
+        var meter: Int
+        /// Close enough that an arrow is only noise: draw a pin instead.
+        var da: Bool
     }
 
     /// The tour's name — the activity's identity, and deliberately not drawn.

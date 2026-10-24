@@ -67,8 +67,15 @@ enum StopActivity {
             notiz: Self.capped(stop.notiz),
             stockwerk: Self.capped(info?.stockwerk).map(Format.floor),
             kundeninfo: Self.capped(info?.notiz),
-            number: snapshot.number(stop))
-        enqueue(tour: route.name, state: state)
+            number: snapshot.number(stop),
+            kompass: nil)
+        // Pointed at the new door before the state is built, so a stop that
+        // has just changed does not carry the last one's arrow.
+        CompassGuide.shared.setTarget(id: stop.id, coordinate: CompassGuide.point(for: stop))
+        var withCompass = state
+        withCompass.kompass = CompassGuide.shared.hint
+        current = (route.name, withCompass)
+        enqueue(tour: route.name, state: withCompass)
     }
 
     /// Takes the activity down — the tour is finished, deleted, or there is no
@@ -93,7 +100,21 @@ enum StopActivity {
     nonisolated static let fieldBytes = 300
 
     static func end() {
+        current = nil
+        CompassGuide.shared.setTarget(id: nil, coordinate: nil)
         enqueue(tour: nil, state: nil)
+    }
+
+    /// What was last sent, kept so that the arrow can change without the rest
+    /// of the card being rebuilt from the store.
+    private static var current: (tour: String, state: StopActivityAttributes.ContentState)?
+
+    /// Puts a new arrow (or none) on the card that is already up.
+    static func setKompass(_ kompass: StopActivityAttributes.Kompass?) {
+        guard var now = current, now.state.kompass != kompass else { return }
+        now.state.kompass = kompass
+        current = now
+        enqueue(tour: now.tour, state: now.state)
     }
 
     // MARK: - Private
