@@ -20,12 +20,6 @@ struct StopLiveActivity: Widget {
                     numberBadge(context.state.number)
                         .padding(.leading, 4)
                 }
-                DynamicIslandExpandedRegion(.trailing) {
-                    if let kompass = context.state.kompass {
-                        compassView(kompass, size: 40)
-                            .padding(.trailing, 4)
-                    }
-                }
                 DynamicIslandExpandedRegion(.bottom) {
                     // One line each, truncating. The expanded island is a fixed
                     // height and crops silently: four stacked facts at their
@@ -79,15 +73,8 @@ struct StopLiveActivity: Widget {
                 // name.
                 numberBadge(context.state.number, compact: true)
             } compactTrailing: {
-                // The arrow takes the box's place once there is one: the
-                // island's trailing slot is the one glance that can say which
-                // way, and the box says nothing the number did not.
-                if let kompass = context.state.kompass {
-                    compactArrow(kompass)
-                } else {
-                    Image(systemName: "shippingbox.fill")
-                        .foregroundStyle(.tint)
-                }
+                Image(systemName: "shippingbox.fill")
+                    .foregroundStyle(.tint)
             } minimal: {
                 numberBadge(context.state.number, compact: true)
             }
@@ -97,22 +84,6 @@ struct StopLiveActivity: Widget {
     // MARK: - Lock screen
 
     private func lockScreen(
-        _ state: StopActivityAttributes.ContentState
-    ) -> some View {
-        // The arrow sits beside the card rather than in it: a row of its own
-        // would cost the note its height, and the card is cropped from both
-        // ends when it runs over.
-        HStack(alignment: .center, spacing: 10) {
-            lockScreenText(state)
-            if let kompass = state.kompass {
-                compassView(kompass, size: 48)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-    }
-
-    private func lockScreenText(
         _ state: StopActivityAttributes.ContentState
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -175,44 +146,7 @@ struct StopLiveActivity: Widget {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: - Compass
-
-    /// A ring with an arrow in it and the distance underneath. The arrow is
-    /// turned by the app's angle, so "up" is the way the driver is facing, not
-    /// north — nobody walking to a door wants to do that sum.
-    private func compassView(
-        _ kompass: StopActivityAttributes.Kompass, size: CGFloat
-    ) -> some View {
-        VStack(spacing: 2) {
-            ZStack {
-                Circle().strokeBorder(.tint.opacity(0.35), lineWidth: 2)
-                if kompass.da {
-                    Image(systemName: "mappin")
-                        .font(.title3.bold())
-                        .foregroundStyle(.tint)
-                } else {
-                    Image(systemName: "location.north.fill")
-                        .font(.title3)
-                        .foregroundStyle(.tint)
-                        .rotationEffect(.degrees(Double(kompass.grad)))
-                }
-            }
-            .frame(width: size, height: size)
-            Text(kompass.da ? "da" : "\(kompass.meter) m")
-                .font(.caption2.bold().monospacedDigit())
-                .lineLimit(1)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(kompass.da ? "Du bist da" : "Noch \(kompass.meter) Meter")
-    }
-
-    private func compactArrow(_ kompass: StopActivityAttributes.Kompass) -> some View {
-        Image(systemName: kompass.da ? "mappin" : "location.north.fill")
-            .font(.caption.bold())
-            .foregroundStyle(.tint)
-            .rotationEffect(.degrees(kompass.da ? 0 : Double(kompass.grad)))
+        .padding(14)
     }
 
     /// Address and floor as one line, for the island. Either half alone when
