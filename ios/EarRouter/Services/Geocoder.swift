@@ -18,6 +18,8 @@ struct GeocodeResult: Sendable {
 /// covers real, currently-occupied addresses that Nominatim sometimes has not
 /// caught up on. Nominatim stays as the fallback for anything it does not
 /// recognize. An address neither can find falls through to manual pin-drop.
+/// When the register cannot be reached at all, the copy of it the app ships
+/// with — `AddressPack` — answers in its place.
 ///
 /// Only for a Vienna postcode, though. A tour that runs past the Stadtgrenze
 /// — Gerasdorf, Schwechat, Klosterneuburg — is geocoded by Nominatim alone,
@@ -36,6 +38,19 @@ actor Geocoder {
     /// The earliest a *future* call may go out — a reservation, not a record of
     /// the last one. See `throttleNominatim`.
     private var nominatimNextSlot = Date.distantPast
+
+    /// After a failed call the city's two services are skipped for a while
+    /// and `AddressPack` answers straight away. Without it a service that
+    /// hangs rather than refusing costs every lookup — four of them per
+    /// address — the full request timeout before the pack is asked, and a
+    /// thirty-stop import takes half an hour.
+    private static let cityCooldown: TimeInterval = 120
+    private var registerDownUntil = Date.distantPast
+    private var entrancesDownUntil = Date.distantPast
+    /// Tests only: answer every register and entrance question from the pack,
+    /// as during an outage. See `LiveGeocodeTests`.
+    private var cityForcedOffline = false
+    func forceCityOffline(_ on: Bool) { cityForcedOffline = on }
 
     private let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
@@ -96,25 +111,34 @@ actor Geocoder {
         // remembered — cached as exact, it was served for good, and the
         // register's own Stiege-precise answer was never asked for again once
         // it was back up. Nor is "nobody has it" a verdict worth keeping.
+        //
+        // So is an answer from `AddressPack`, the register as it was when the
+        // app was built: the right door today, but kept, it would stand in for
+        // the live register long after the outage, and a house built since
+        // would stay "not found" for good.
         var registerUnreachable = false
         if Postcodes.isVienna(plz) {
             try Task.checkCancellation()
             let register = await wienOGDGeocode(strasse: strasse, plz: plz)
             if let hit = register.hit {
-                await GeocodeCache.shared.store(
-                    key, lat: hit.lat, lon: hit.lon,
-                    displayName: hit.displayName, precision: hit.precision)
+                if !register.offline {
+                    await GeocodeCache.shared.store(
+                        key, lat: hit.lat, lon: hit.lon,
+                        displayName: hit.displayName, precision: hit.precision)
+                }
                 return hit
             }
-            registerUnreachable = register.unreachable
+            registerUnreachable = register.unreachable || register.offline
 
             // The register did not have this address in the district it was
             // filed under. Before spending throttled Nominatim calls — and
             // before ending up at a district-centre pin the driver cannot
             // explain — ask the register the same question without the
             // district.
+            // Asked of the pack too: a street that runs through one other
+            // district in the download still does.
             try Task.checkCancellation()
-            if !registerUnreachable,
+            if !register.unreachable,
                let actual = await districtHint(normalized: normalized, plz: plz) {
                 log.info("address exists in a different district: \(plz) → \(actual)")
                 throw AppError.wrongDistrict(strasse.trimmed, actualPlz: actual)
@@ -198,7 +222,7 @@ actor Geocoder {
 
         // An empty answer is as good as none: the register returns nothing at
         // all for a house it does not know, and the entrance layer may still.
-        let features = await ogdFetch(simplified) ?? []
+        let features = await ogdFetch(simplified)?.features ?? []
         let streetKey = AddressText.matchKey(AddressText.streetNameOnly(simplified))
         // Only for the number that was asked for. For a number it does not
         // know, the register answers with the nearest one it does — "Gentzgasse
@@ -297,6 +321,12 @@ actor Geocoder {
     private func entranceFetch(
         street: String, number: String, plz: String
     ) async -> [EntranceFeature]? {
+        // The pack's copy of the layer, when the layer cannot be asked.
+        func offline() -> [EntranceFeature]? {
+            guard !Task.isCancelled else { return nil }
+            return AddressPack.shared.entrances(street: street, number: number, plz: plz)
+        }
+        if cityForcedOffline || Date() < entrancesDownUntil { return offline() }
         // Digits only in the prefix, so "12a" still finds "12A"; the exact
         // number is picked out of what comes back. Quotes doubled, which is
         // how CQL escapes them inside a string.
@@ -325,13 +355,17 @@ actor Geocoder {
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode)
             else {
-                log.warning("Wien entrance lookup error status")
-                return nil
+                log.warning("Wien entrance lookup error status, answering from the pack")
+                entrancesDownUntil = Date().addingTimeInterval(Self.cityCooldown)
+                return offline()
             }
             return try JSONDecoder().decode(EntranceCollection.self, from: data).features
-        } catch {
-            log.warning("Wien entrance lookup failed: \(error.localizedDescription)")
+        } catch let e as URLError where e.code == .cancelled {
             return nil
+        } catch {
+            log.warning("Wien entrance lookup failed, answering from the pack: \(error.localizedDescription)")
+            entrancesDownUntil = Date().addingTimeInterval(Self.cityCooldown)
+            return offline()
         }
     }
 
@@ -373,17 +407,23 @@ actor Geocoder {
     /// sub-address and nothing at all on the ones that do not.
     ///
     /// `unreachable` when no answer was found and at least one of the calls
-    /// failed outright — the register may well have the address.
+    /// failed outright — the register may well have the address. `offline`
+    /// when at least one was answered by `AddressPack` instead.
     private func wienOGDGeocode(
         strasse: String, plz: String
-    ) async -> (hit: GeocodeResult?, unreachable: Bool) {
+    ) async -> (hit: GeocodeResult?, unreachable: Bool, offline: Bool) {
+        var trace = RegisterTrace()
+        let hit = await wienOGDSearch(strasse: strasse, plz: plz, trace: &trace)
+        return (hit, hit == nil && trace.failed, trace.offline)
+    }
+
+    private struct RegisterTrace {
         var failed = false
-        let hit = await wienOGDSearch(strasse: strasse, plz: plz, failed: &failed)
-        return (hit, hit == nil && failed)
+        var offline = false
     }
 
     private func wienOGDSearch(
-        strasse: String, plz: String, failed: inout Bool
+        strasse: String, plz: String, trace: inout RegisterTrace
     ) async -> GeocodeResult? {
         let normalized = AddressText.normalize(strasse)
         let simplified = AddressText.simplifyHousenumber(normalized)
@@ -396,7 +436,7 @@ actor Geocoder {
         if let sub {
             if let hit = await ogdSearchOne(
                 query: sub.query, plz: plz, subCheck: .require(sub.key),
-                segments: segments, numbers: numbers, failed: &failed) {
+                segments: segments, numbers: numbers, trace: &trace) {
                 return hit
             }
         }
@@ -407,7 +447,7 @@ actor Geocoder {
         if let number, let lettered = numbers.first(where: { $0 != number }),
            let hit = await ogdSearchOne(
                query: "\(AddressText.streetNameOnly(simplified)) \(lettered.uppercased())",
-               plz: plz, subCheck: .absent, numbers: [lettered], failed: &failed),
+               plz: plz, subCheck: .absent, numbers: [lettered], trace: &trace),
            hit.precision == .exact {
             return hit
         }
@@ -416,13 +456,13 @@ actor Geocoder {
 
         if let hit = await ogdSearchOne(
             query: simplified, plz: plz, subCheck: fallbackCheck, numbers: numbers,
-            failed: &failed) {
+            trace: &trace) {
             return hit
         }
         if simplified != normalized,
            let hit = await ogdSearchOne(
             query: normalized, plz: plz, subCheck: fallbackCheck, numbers: numbers,
-            failed: &failed) {
+            trace: &trace) {
             return hit
         }
         return nil
@@ -474,12 +514,14 @@ actor Geocoder {
 
     private func ogdSearchOne(
         query: String, plz: String, subCheck: SubCheck, segments: [String] = [],
-        numbers: Set<String>, failed: inout Bool
+        numbers: Set<String>, trace: inout RegisterTrace
     ) async -> GeocodeResult? {
-        guard let features = await ogdFetch(query) else {
-            failed = true
+        guard let answer = await ogdFetch(query) else {
+            trace.failed = true
             return nil
         }
+        if answer.offline { trace.offline = true }
+        let features = answer.features
         // `matchKey`, not a lowercased raw string — see `pickFeature`.
         let ourStreet = AddressText.matchKey(AddressText.streetNameOnly(query))
         guard let best = Self.pickFeature(
@@ -792,9 +834,21 @@ actor Geocoder {
     /// One raw OGD lookup: the request and the parse. `nil` when the register
     /// could not be asked or its reply not read, and an empty list when it
     /// answered that it has nothing. Never throwing is what lets the caller
-    /// treat the register as a first attempt rather than a hard dependency. An outage the night before a route is due degrades to the
-    /// Nominatim pipeline, not to a failure.
-    private func ogdFetch(_ query: String) async -> [OGDFeature]? {
+    /// treat the register as a first attempt rather than a hard dependency.
+    ///
+    /// When the service cannot be asked, `AddressPack` answers in its place
+    /// (`offline`), so an outage the night before a route is due still places
+    /// the stops at their doors. `nil` only when neither can answer — or the
+    /// lookup was cancelled — and then it degrades to the Nominatim pipeline,
+    /// not to a failure.
+    private func ogdFetch(_ query: String) async -> RegisterAnswer? {
+        func offline() -> RegisterAnswer? {
+            guard !Task.isCancelled else { return nil }
+            return AddressPack.shared.registerAnswer(for: query)
+                .map { RegisterAnswer(features: $0, offline: true) }
+        }
+        if cityForcedOffline || Date() < registerDownUntil { return offline() }
+
         var comps = URLComponents(url: Upstreams.current.wienOGD, resolvingAgainstBaseURL: false)
         comps?.queryItems = [
             URLQueryItem(name: "Address", value: query),
@@ -807,15 +861,17 @@ actor Geocoder {
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode)
             else {
-                log.warning("Wien OGD error status, falling back to Nominatim")
-                return nil
+                log.warning("Wien OGD error status, answering from the pack")
+                registerDownUntil = Date().addingTimeInterval(Self.cityCooldown)
+                return offline()
             }
             // A query with zero matches comes back as an HTTP 200 with a
             // completely empty body (not `{"features":[]}`) — has to be
             // checked before handing an empty string to the JSON parser. It
             // is an answer, "none", and not a failure.
-            guard !data.isEmpty else { return [] }
-            return try JSONDecoder().decode(OGDFeatureCollection.self, from: data).features
+            guard !data.isEmpty else { return RegisterAnswer(features: [], offline: false) }
+            let features = try JSONDecoder().decode(OGDFeatureCollection.self, from: data).features
+            return RegisterAnswer(features: features, offline: false)
         } catch let e as URLError where e.code == .cancelled {
             // Answered `nil` like any other failure — but logged as what it is,
             // and safe only because `geocode` re-checks cancellation between
@@ -825,9 +881,16 @@ actor Geocoder {
             log.debug("Wien OGD lookup cancelled")
             return nil
         } catch {
-            log.warning("Wien OGD unreachable or unparseable: \(error.localizedDescription)")
-            return nil
+            log.warning("Wien OGD unreachable or unparseable, answering from the pack: \(error.localizedDescription)")
+            registerDownUntil = Date().addingTimeInterval(Self.cityCooldown)
+            return offline()
         }
+    }
+
+    private struct RegisterAnswer {
+        let features: [OGDFeature]
+        /// Answered by `AddressPack`, not the service.
+        let offline: Bool
     }
 
     /// Which Vienna district the register actually files this street+number
@@ -843,7 +906,7 @@ actor Geocoder {
     private func districtHint(normalized: String, plz: String) async -> String? {
         let simplified = AddressText.simplifyHousenumber(normalized)
         let ourStreet = AddressText.matchKey(AddressText.streetNameOnly(simplified))
-        guard let features = await ogdFetch(simplified) else { return nil }
+        guard let features = await ogdFetch(simplified)?.features else { return nil }
 
         return Self.unanimousPostcode(features, streetKey: ourStreet, otherThan: plz)
     }

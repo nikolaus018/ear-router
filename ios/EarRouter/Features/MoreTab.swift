@@ -526,7 +526,11 @@ struct AboutView: View {
             } header: {
                 Text("Daten")
             } footer: {
-                Text("Nominatim-Daten © OpenStreetMap-Mitwirkende, ODbL.")
+                Text(
+                    "Daten der Stadt Wien (Adressregister, WCs): data.wien.gv.at, CC BY 4.0. "
+                        + "Eine Kopie des Adressregisters (Stand \(AddressPack.bundledDate ?? "unbekannt")) "
+                        + "ist in der App und springt ein, wenn die Stadt nicht erreichbar ist. "
+                        + "Nominatim-Daten © OpenStreetMap-Mitwirkende, ODbL.")
             }
 
             Section {

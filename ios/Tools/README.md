@@ -19,3 +19,12 @@ that have been added or closed:
 ```bash
 python3 Tools/MakeRestrooms.py EarRouter/Resources/Restrooms.json
 ```
+
+`MakeAddressPack.py` builds the copy of Vienna's address register and its
+entrance points (Stadt Wien — data.wien.gv.at, CC BY 4.0) that the geocoder
+answers from when the city's address service cannot be reached. Run it again
+before a release to pick up new buildings:
+
+```bash
+python3 Tools/MakeAddressPack.py EarRouter/Resources/WienAdressen.deflate
+```

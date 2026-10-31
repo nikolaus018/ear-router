@@ -5,6 +5,8 @@ import Testing
 /// Runs the real geocoder against the live Vienna register and Nominatim.
 /// Off unless `LIVE_GEOCODE_CASES` names a JSON file of cases; results are
 /// written to `LIVE_GEOCODE_OUT`. Pass both with a `TEST_RUNNER_` prefix.
+/// `LIVE_GEOCODE_OFFLINE=1` cuts the city's services off, so the register
+/// answers come from `AddressPack` — run once each way and compare.
 @Suite struct LiveGeocodeTests {
     struct Case: Codable {
         let kind: String
@@ -38,6 +40,8 @@ import Testing
         let cases = try JSONDecoder().decode(
             [Case].self, from: Data(contentsOf: URL(fileURLWithPath: Self.casesPath!)))
         await GeocodeCache.shared.clear()
+        let geocoder = env["LIVE_GEOCODE_OFFLINE"] == "1" ? Geocoder() : Geocoder.shared
+        if env["LIVE_GEOCODE_OFFLINE"] == "1" { await geocoder.forceCityOffline(true) }
 
         var out: [Outcome] = []
         try await withThrowingTaskGroup(of: Outcome.self) { group in
@@ -50,14 +54,14 @@ import Testing
                         kind: c.kind, input: c.input, plz: c.plz, expect: c.expect,
                         lat: c.lat, lon: c.lon)
                     do {
-                        let r = try await Geocoder.shared.geocode(strasse: c.input, plz: c.plz)
+                        let r = try await geocoder.geocode(strasse: c.input, plz: c.plz)
                         o.gotLat = r.lat; o.gotLon = r.lon
                         o.precision = "\(r.precision)"; o.display = r.displayName
                     } catch {
                         o.error = error.localizedDescription
                     }
                     if c.kind == "user",
-                       let e = await Geocoder.shared.entrance(strasse: c.input, plz: c.plz) {
+                       let e = await geocoder.entrance(strasse: c.input, plz: c.plz) {
                         o.entranceLat = e.lat; o.entranceLon = e.lon
                     }
                     return o
