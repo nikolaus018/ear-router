@@ -159,8 +159,13 @@ final class AddressPack: @unchecked Sendable {
     /// reads it by: about 0 for the address asked for, a hair above that for
     /// the other doors of the same house, under 1 for a lettered neighbour
     /// ("8B" for "8") and in the hundreds for another number on the street.
+    ///
+    /// Every row of the street, not the best hundred: the wrong-district hint
+    /// reads the postcodes of all of them, and a street through two districts
+    /// cut down to its nearest numbers could show only one and send the stop
+    /// to the wrong one.
     static func registerAnswer(
-        for query: String, in contents: Contents, limit: Int = 100
+        for query: String, in contents: Contents
     ) -> [Geocoder.OGDFeature] {
         let normalized = AddressText.normalize(query)
         let streetPart = AddressText.streetNameOnly(normalized)
@@ -205,7 +210,7 @@ final class AddressPack: @unchecked Sendable {
                 out.append(feature(street.name, row, adresse: adresse, ranking: rank + penalty))
             }
         }
-        return Array(out.sorted { ($0.properties.ranking ?? 0) < ($1.properties.ranking ?? 0) }.prefix(limit))
+        return out.sorted { ($0.properties.ranking ?? 0) < ($1.properties.ranking ?? 0) }
     }
 
     private static func ranking(

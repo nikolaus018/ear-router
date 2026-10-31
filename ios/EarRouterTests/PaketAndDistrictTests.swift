@@ -464,7 +464,7 @@ struct LadelisteModeTests {
         #expect(order.map(\.position) == [1, 2, 3])
 
         let items = PaketParser.items(for: r)
-        #expect(items.contains { $0.label == "2x Suppe" })
+        #expect(items.contains { $0.label == "Suppe" && $0.qty == 2 })
     }
 }
 
