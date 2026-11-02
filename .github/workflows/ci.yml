@@ -21,3 +21,14 @@ jobs:
           xcodebuild test -project EarRouter.xcodeproj -scheme EarRouter \
             -destination 'platform=iOS Simulator,name=iPhone 17' \
             CODE_SIGNING_ALLOWED=NO | tail -40
+
+  web:
+    name: Web server (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web
+      - run: cargo test --manifest-path web/Cargo.toml
