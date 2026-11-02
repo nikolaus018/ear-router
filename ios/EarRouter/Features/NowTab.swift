@@ -207,7 +207,9 @@ struct NowTab: View {
                     focus.showOnMap(stop: current, of: route)
                 }
             }
-            if current.kind == .customer || current.kind == .start || current.kind == .end {
+            if current.kind == .customer || current.kind == .start || current.kind == .end
+                || current.kind == .pause
+            {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         // The two answers that are not a delivery, where the
