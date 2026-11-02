@@ -280,16 +280,15 @@ final class GuidanceSession {
     /// "In 250 Metern …" once, "Jetzt …" once, per manoeuvre.
     private func announce(_ p: GuidanceProgress) {
         announceCamera(p)
-        guard let route, p.stepIndex + 1 < route.steps.count else { return }
-        let next = route.steps[p.stepIndex + 1]
-        let far = "\(p.stepIndex)-far", near = "\(p.stepIndex)-near"
-        if p.metersToManeuver <= 50, !announced.contains(near) {
+        guard let route, let next = GuidanceEngine.upcoming(route: route, progress: p) else { return }
+        let far = "\(next.index)-far", near = "\(next.index)-near"
+        if next.meters <= 50, !announced.contains(near) {
             announced.insert(near)
             announced.insert(far)
-            say(ManeuverText.instruction(next))
-        } else if p.metersToManeuver <= 300, !announced.contains(far) {
+            say(ManeuverText.instruction(next.step))
+        } else if next.meters <= 300, !announced.contains(far) {
             announced.insert(far)
-            say(ManeuverText.spoken(next, in: p.metersToManeuver))
+            say(ManeuverText.spoken(next.step, in: next.meters))
         }
     }
 
@@ -436,6 +435,8 @@ struct GuidanceView: View {
     @State private var remainingLine: [CLLocationCoordinate2D] = []
 
     private static let pitch = 58.0
+    /// How far ahead of the van, as a share of the camera distance, the camera looks.
+    private static let lookAhead = 0.08
     private static let tick = 0.2
 
     init(target: GuidanceTarget) {
@@ -460,6 +461,7 @@ struct GuidanceView: View {
                 }
             }
         }
+        .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .excludingAll))
         .mapControls {}
         .onMapCameraChange(frequency: .continuous) { reportedHeading = $0.camera.heading }
         .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { _ in release() })
@@ -468,6 +470,7 @@ struct GuidanceView: View {
         .safeAreaInset(edge: .top) { banner }
         .safeAreaInset(edge: .bottom) { footer }
         .overlay(alignment: .bottomTrailing) { recenterButton }
+        .overlay(alignment: .bottomLeading) { signs }
         .onAppear {
             wasIdleDisabled = UIApplication.shared.isIdleTimerDisabled
             UIApplication.shared.isIdleTimerDisabled = true
@@ -482,6 +485,7 @@ struct GuidanceView: View {
         .onChange(of: voiceOn) { _, now in session.voiceOn = now }
         .onChange(of: session.puck) { _, _ in steerCamera() }
         .onChange(of: session.progress?.stepIndex) { _, _ in rebuildLine() }
+        .onChange(of: Int((session.progress?.along ?? 0) / 25)) { _, _ in rebuildLine() }
         .onChange(of: session.route) { _, _ in rebuildLine() }
     }
 
@@ -512,7 +516,9 @@ struct GuidanceView: View {
         else if puck.speed > 0.5 || !puck.onRoute {
             camHeading += GuidanceEngine.angleDelta(from: camHeading, to: puck.heading) * 0.3
         }
-        let toTurn = session.progress?.metersToManeuver ?? 1000
+        let toTurn = session.route.flatMap { r in
+            session.progress.flatMap { GuidanceEngine.upcoming(route: r, progress: $0)?.meters }
+        } ?? 1000
         var wanted = min(1100, max(320, 260 + puck.speed * 16))
         if toTurn < 150 { wanted = min(wanted, 300) }
         camDistance = firstFrame ? wanted : camDistance + (wanted - camDistance) * 0.12
@@ -520,7 +526,7 @@ struct GuidanceView: View {
         if camHeading < 0 { camHeading += 360 }
 
         // Looking ahead of the van, so it sits low on the screen.
-        let ahead = camDistance * 0.28
+        let ahead = camDistance * Self.lookAhead
         let rad = camHeading * .pi / 180
         let center = CLLocationCoordinate2D(
             latitude: puck.lat + cos(rad) * ahead / 110_540,
@@ -542,9 +548,10 @@ struct GuidanceView: View {
             remainingLine = []
             return
         }
-        let from = session.progress?.stepIndex ?? 0
-        remainingLine = route.steps.dropFirst(min(from, max(0, route.steps.count - 1)))
-            .flatMap(\.geometry)
+        let from = min(session.progress?.stepIndex ?? 0, max(0, route.steps.count - 1))
+        let current = GuidanceEngine.remainder(
+            of: route.steps[from].geometry, from: session.progress?.along ?? 0)
+        remainingLine = (current + route.steps.dropFirst(from + 1).flatMap(\.geometry))
             .compactMap { c in
                 c.count == 2 ? CLLocationCoordinate2D(latitude: c[0], longitude: c[1]) : nil
             }
@@ -563,6 +570,26 @@ struct GuidanceView: View {
                 .rotationEffect(.degrees(angle))
         }
         .animation(.linear(duration: Self.tick), value: angle)
+    }
+
+    /// Limit, speed and camera, floating over the map's lower left.
+    @ViewBuilder
+    private var signs: some View {
+        if session.phase == .guiding {
+            VStack(spacing: 8) {
+                if let cam = session.cameraAhead { CameraBadge(distance: cam.distance) }
+                if let limit = session.speedLimit { LimitSign(kmh: limit) }
+                Text("\(Int((session.speed * 3.6).rounded()))")
+                    .font(.title3.bold().monospacedDigit())
+                    .foregroundStyle(
+                        session.speedLimit.map { session.speed * 3.6 > Double($0) + 3 } == true
+                            ? Color.red : Color.primary)
+                    .frame(width: 52, height: 52)
+                    .background(.thinMaterial, in: Circle())
+                    .accessibilityLabel("\(Int((session.speed * 3.6).rounded())) Kilometer pro Stunde")
+            }
+            .padding(.leading, 16).padding(.bottom, 110)
+        }
     }
 
     @ViewBuilder
@@ -611,18 +638,20 @@ struct GuidanceView: View {
 
     @ViewBuilder
     private var guidingBanner: some View {
-        if let route = session.route, let p = session.progress, p.stepIndex + 1 < route.steps.count {
-            let next = route.steps[p.stepIndex + 1]
+        if let route = session.route, let p = session.progress,
+           let up = GuidanceEngine.upcoming(route: route, progress: p)
+        {
+            let next = up.step
             HStack(spacing: 14) {
                 Image(systemName: ManeuverText.symbol(next))
                     .font(.system(size: 44, weight: .bold))
                     .frame(width: 56)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(ManeuverText.distance(p.metersToManeuver)).font(.largeTitle.bold())
+                    Text(ManeuverText.distance(up.meters)).font(.largeTitle.bold())
                     Text(ManeuverText.instruction(next)).font(.headline)
                 }
             }
-            if p.metersToManeuver < 600, LaneStrip.worthShowing(next.lanes) {
+            if up.meters < 600, LaneStrip.worthShowing(next.lanes) {
                 LaneStrip(lanes: next.lanes).padding(.top, 6)
             }
         }
@@ -631,25 +660,12 @@ struct GuidanceView: View {
     // MARK: Footer
 
     private var footer: some View {
-        HStack {
-            if session.phase == .guiding {
-                if let cam = session.cameraAhead { CameraBadge(distance: cam.distance) }
-                if let limit = session.speedLimit { LimitSign(kmh: limit) }
-                Text("\(Int((session.speed * 3.6).rounded()))")
-                    .font(.title3.bold().monospacedDigit())
-                    .foregroundStyle(
-                        session.speedLimit.map { session.speed * 3.6 > Double($0) + 3 } == true
-                            ? Color.red : Color.primary)
-                    .frame(width: 52, height: 52)
-                    .background(.thinMaterial, in: Circle())
-                    .accessibilityLabel("\(Int((session.speed * 3.6).rounded())) Kilometer pro Stunde")
-            }
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 10) {
+            if let p = session.progress, let route = session.route, session.phase == .guiding {
+                Text(remainingText(p, route))
+                    .font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
+            } else {
                 Text(target.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                if let p = session.progress, let route = session.route, session.phase == .guiding {
-                    Text(remainingText(p, route))
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
             }
             Spacer()
             Button {
@@ -661,6 +677,8 @@ struct GuidanceView: View {
             .accessibilityLabel(voiceOn ? "Ansagen ausschalten" : "Ansagen einschalten")
             Button(session.phase == .arrived ? "Fertig" : "Beenden") { dismiss() }
                 .buttonStyle(.borderedProminent)
+                .lineLimit(1)
+                .fixedSize()
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))

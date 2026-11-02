@@ -234,3 +234,33 @@ struct SpeedCameraTests {
         #expect(pts == [.init(lat: 48.2, lon: 16.3, kmh: 50), .init(lat: 48.3, lon: 16.4, kmh: nil)])
     }
 }
+
+struct UpcomingManeuverTests {
+    private func step(_ type: String, _ modifier: String?, _ distance: Double, _ geometry: [[Double]]) -> GuidanceStep {
+        GuidanceStep(type: type, modifier: modifier, name: "X", exit: nil, distance: distance, geometry: geometry)
+    }
+
+    @Test func skipsRoadNameChangesAndAddsTheirDistance() {
+        let route = GuidanceRoute(
+            steps: [
+                step("depart", nil, 100, [[48.2000, 16.3000], [48.2009, 16.3000]]),
+                step("new name", "straight", 200, [[48.2009, 16.3000], [48.2027, 16.3000]]),
+                step("turn", "left", 50, [[48.2027, 16.3000], [48.2027, 16.2993]]),
+                step("arrive", nil, 0, [[48.2027, 16.2993]]),
+            ],
+            geometry: [], distance: 350, duration: 40)
+        let p = GuidanceEngine.progress(route: route, at: (48.2000, 16.3000))
+        let up = try! #require(GuidanceEngine.upcoming(route: route, progress: p))
+        #expect(up.index == 2)
+        #expect(up.step.modifier == "left")
+        #expect(abs(up.meters - 300) < 8)
+    }
+
+    @Test func remainderStartsAtTheVanAndKeepsTheRest() {
+        let line: [[Double]] = [[48.2000, 16.3000], [48.2020, 16.3000]]
+        let rest = GuidanceEngine.remainder(of: line, from: 110)
+        #expect(rest.count == 2)
+        #expect(abs(rest[0][0] - 48.2010) < 0.0001)
+        #expect(rest[1] == [48.2020, 16.3000])
+    }
+}

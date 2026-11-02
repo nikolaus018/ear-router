@@ -99,6 +99,27 @@ enum GuidanceEngine {
             along: best.along, lat: on.lat, lon: on.lon, bearing: on.bearing)
     }
 
+    /// A road changing its name, or "continue straight": nothing to tell the
+    /// driver, and no other app announces it.
+    static func isTrivial(_ s: GuidanceStep) -> Bool {
+        (s.type == "new name" || s.type == "continue") && (s.modifier == nil || s.modifier == "straight")
+    }
+
+    /// The next manoeuvre worth telling the driver about, with its index and
+    /// the metres to it — past any trivial ones in between.
+    static func upcoming(
+        route: GuidanceRoute, progress p: GuidanceProgress
+    ) -> (index: Int, step: GuidanceStep, meters: Double)? {
+        var i = p.stepIndex + 1
+        guard i < route.steps.count else { return nil }
+        var meters = p.metersToManeuver
+        while i < route.steps.count - 1, isTrivial(route.steps[i]) {
+            meters += route.steps[i].distance
+            i += 1
+        }
+        return (i, route.steps[i], meters)
+    }
+
     /// `progress`, moved `meters` further down the road — dead reckoning. The
     /// van keeps its place on the line between GPS fixes and through a tunnel,
     /// crossing into the next step when it runs off the end of this one.
@@ -155,6 +176,27 @@ enum GuidanceEngine {
         }
         let last = pts[pts.count - 1]
         return (last[0], last[1], 0)
+    }
+
+    /// `line` from `along` metres on, starting at that point — what is still
+    /// ahead of the van on a step, so the drawn route does not trail behind it.
+    static func remainder(of line: [[Double]], from along: Double) -> [[Double]] {
+        let pts = line.filter { $0.count == 2 }
+        guard pts.count >= 2, along > 0 else { return pts }
+        var left = along
+        for i in 0..<(pts.count - 1) {
+            let len = meters((pts[i][0], pts[i][1]), (pts[i + 1][0], pts[i + 1][1]))
+            if left <= len {
+                let t = len == 0 ? 0 : left / len
+                let at = [
+                    pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t,
+                    pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t,
+                ]
+                return [at] + Array(pts[(i + 1)...])
+            }
+            left -= len
+        }
+        return [pts[pts.count - 1]]
     }
 
     /// Degrees clockwise from north, 0..<360.
