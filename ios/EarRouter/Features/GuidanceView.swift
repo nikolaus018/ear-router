@@ -431,6 +431,8 @@ struct GuidanceView: View {
     @State private var camHeading = 0.0
     @State private var camDistance = 450.0
     @State private var reportedHeading = 0.0
+    /// The map's tilt as it is now, so the puck can lie down by the same amount.
+    @State private var reportedPitch = GuidanceView.pitch
     @State private var firstFrame = true
     @State private var remainingLine: [CLLocationCoordinate2D] = []
 
@@ -463,7 +465,10 @@ struct GuidanceView: View {
         }
         .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .excludingAll))
         .mapControls {}
-        .onMapCameraChange(frequency: .continuous) { reportedHeading = $0.camera.heading }
+        .onMapCameraChange(frequency: .continuous) {
+            reportedHeading = $0.camera.heading
+            reportedPitch = $0.camera.pitch
+        }
         .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { _ in release() })
         .simultaneousGesture(MagnifyGesture().onChanged { _ in release() })
         .simultaneousGesture(RotateGesture().onChanged { _ in release() })
@@ -562,13 +567,17 @@ struct GuidanceView: View {
     private func puckView(_ puck: GuidancePuck) -> some View {
         // Pointing along the road, relative to how the map is turned now.
         let angle = GuidanceEngine.angleDelta(from: reportedHeading, to: puck.heading)
+        // Annotations always face the screen. Turning the whole puck about its
+        // horizontal axis by the map's tilt lays it on the road like paint,
+        // after the heading is applied so the arrow still points along it.
         return ZStack {
-            Circle().fill(.white).frame(width: 40, height: 40).shadow(radius: 3)
+            Circle().fill(.white).frame(width: 40, height: 40)
             Image(systemName: "location.north.fill")
                 .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(Color.accentColor)
-                .rotationEffect(.degrees(angle))
         }
+        .rotationEffect(.degrees(angle))
+        .rotation3DEffect(.degrees(reportedPitch), axis: (x: 1, y: 0, z: 0), perspective: 0.3)
         .animation(.linear(duration: Self.tick), value: angle)
     }
 
