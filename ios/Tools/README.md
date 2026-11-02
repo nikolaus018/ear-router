@@ -28,3 +28,10 @@ before a release to pick up new buildings:
 ```bash
 python3 Tools/MakeAddressPack.py EarRouter/Resources/WienAdressen.deflate
 ```
+
+The web version ships the same file as `web/WienAdressen.deflate`. Copy the
+new one over it after every run, or the two drift apart:
+
+```bash
+cp ios/EarRouter/Resources/WienAdressen.deflate web/WienAdressen.deflate
+```

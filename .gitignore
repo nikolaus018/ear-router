@@ -21,3 +21,6 @@ web/target/
 rerouter.db
 rerouter.db-wal
 rerouter.db-shm
+
+# Day exports from the Zusteller-Portal (customer data)
+TP_AST_*.json

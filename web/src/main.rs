@@ -2080,11 +2080,11 @@ async fn wien_ogd_fetch(state: &AppState, query: &str) -> Option<RegisterAnswer>
     // The copy of the register this server ships with, when the service
     // cannot be asked: an outage the night before a tour still places the
     // stops at their doors.
-    let offline = || {
-        address_pack::bundled().map(|pack| RegisterAnswer { features: address_pack::register_answer(query, pack), offline: true })
+    let offline = || async {
+        address_pack::load().await.map(|pack| RegisterAnswer { features: address_pack::register_answer(query, pack), offline: true })
     };
     if state.city.register_is_down() {
-        return offline();
+        return offline().await;
     }
     // Only genuine failure modes (network error, a non-2xx status, a body
     // that doesn't even parse) are logged here — a "no match" (an empty
@@ -2106,13 +2106,13 @@ async fn wien_ogd_fetch(state: &AppState, query: &str) -> Option<RegisterAnswer>
         Err(e) => {
             tracing::warn!(error = %e, query, "wien ogd unreachable, answering from the pack");
             state.city.register_failed();
-            return offline();
+            return offline().await;
         }
     };
     if !resp.status().is_success() {
         tracing::warn!(status = %resp.status(), query, "wien ogd returned an error status, answering from the pack");
         state.city.register_failed();
-        return offline();
+        return offline().await;
     }
     // A query with zero matches comes back as an HTTP 200 with a completely
     // empty body (not `{"features":[]}`) — has to be checked before handing
@@ -2123,7 +2123,7 @@ async fn wien_ogd_fetch(state: &AppState, query: &str) -> Option<RegisterAnswer>
         Err(e) => {
             tracing::warn!(error = %e, query, "wien ogd response body unreadable, answering from the pack");
             state.city.register_failed();
-            return offline();
+            return offline().await;
         }
     };
     if body.trim().is_empty() {
@@ -2134,7 +2134,7 @@ async fn wien_ogd_fetch(state: &AppState, query: &str) -> Option<RegisterAnswer>
         Err(e) => {
             tracing::warn!(error = %e, query, "wien ogd response did not parse, answering from the pack");
             state.city.register_failed();
-            offline()
+            offline().await
         }
     }
 }
@@ -4300,6 +4300,12 @@ mod address_pack {
         streets: HashMap<String, Street>,
     }
 
+    /// `bundled`, read on a thread of its own: the first read unpacks and
+    /// parses the whole register, and must not hold up the server's workers.
+    pub async fn load() -> Option<&'static Contents> {
+        tokio::task::spawn_blocking(bundled).await.ok().flatten()
+    }
+
     /// The copy this server ships with, read on first use. `None` when it
     /// cannot be read.
     pub fn bundled() -> Option<&'static Contents> {
@@ -4543,12 +4549,23 @@ fn pick_entrance(features: &[EntranceFeature], number: &str, plz: &str) -> Optio
     is_in_vienna(lat, lon).then_some((lat, lon))
 }
 
-/// `None` when the call failed; an empty list when it answered "none".
-async fn entrance_fetch(state: &AppState, street: &str, number: &str, plz: &str) -> Option<Vec<EntranceFeature>> {
+/// What one entrance lookup came back with.
+struct EntranceAnswer {
+    features: Vec<EntranceFeature>,
+    /// Answered by `address_pack`, not by the layer.
+    offline: bool,
+}
+
+/// `None` when neither could answer; an empty list when it answered "none".
+async fn entrance_fetch(state: &AppState, street: &str, number: &str, plz: &str) -> Option<EntranceAnswer> {
     // The pack's copy of the layer, when the layer cannot be asked.
-    let offline = || address_pack::bundled().map(|pack| address_pack::entrances(street, number, plz, pack));
+    let offline = || async {
+        address_pack::load()
+            .await
+            .map(|pack| EntranceAnswer { features: address_pack::entrances(street, number, plz, pack), offline: true })
+    };
     if state.city.entrances_are_down() {
-        return offline();
+        return offline().await;
     }
     // Digits only in the prefix, so "12a" still finds "12A"; the exact
     // number is picked out of what comes back. Quotes doubled, which is how
@@ -4579,20 +4596,20 @@ async fn entrance_fetch(state: &AppState, street: &str, number: &str, plz: &str)
         Ok(r) => {
             tracing::warn!(status = %r.status(), "wien entrance lookup error status, answering from the pack");
             state.city.entrances_failed();
-            return offline();
+            return offline().await;
         }
         Err(e) => {
             tracing::warn!(error = %e, "wien entrance lookup failed, answering from the pack");
             state.city.entrances_failed();
-            return offline();
+            return offline().await;
         }
     };
     match resp.json::<EntranceCollection>().await {
-        Ok(c) => Some(c.features),
+        Ok(c) => Some(EntranceAnswer { features: c.features, offline: false }),
         Err(e) => {
             tracing::warn!(error = %e, "wien entrance answer did not parse, answering from the pack");
             state.city.entrances_failed();
-            offline()
+            offline().await
         }
     }
 }
@@ -4638,7 +4655,9 @@ async fn wien_entrance(state: &AppState, strasse: &str, plz: &str) -> Option<(f6
 
     // An empty answer is as good as none: the register returns nothing at
     // all for a house it does not know, and the entrance layer may still.
-    let features = wien_ogd_fetch(state, &simplified).await.map(|a| a.features).unwrap_or_default();
+    let register = wien_ogd_fetch(state, &simplified).await;
+    let mut from_pack = register.as_ref().is_some_and(|a| a.offline);
+    let features = register.map(|a| a.features).unwrap_or_default();
     let street_key = text::address_match_key(&text::street_name_only(&simplified));
     // Picked among the answers carrying that number, not taken as the best
     // answer overall: asked for "Serravagasse 2" the register ranks
@@ -4654,11 +4673,19 @@ async fn wien_entrance(state: &AppState, strasse: &str, plz: &str) -> Option<(f6
         .and_then(|f| f.properties.street_name.clone())
         .unwrap_or_else(|| text::street_name_only(&simplified));
 
-    let candidates = entrance_fetch(state, &street, &asked, plz).await?;
+    let answer = entrance_fetch(state, &street, &asked, plz).await?;
+    from_pack |= answer.offline;
+    let candidates = answer.features;
     let point = lettered
         .as_deref()
         .and_then(|n| pick_entrance(&candidates, n, plz))
         .or_else(|| pick_entrance(&candidates, &asked, plz));
+    // Not remembered when the pack answered either call: kept, it would stand
+    // in for the city long after an outage, and a house built since would
+    // stay without an entrance until the server restarts.
+    if from_pack {
+        return point;
+    }
     remember(point)
 }
 
