@@ -7066,6 +7066,18 @@ async fn import_entries(
         }
     }
 
+    // Never past what a route can be planned with -- counted on what the
+    // list would add, not on its length: a list loaded again is mostly the
+    // stops already on the tour.
+    if keep_unmatched {
+        let adding = unresolved.iter().filter(|(_, slot)| slot.is_none()).count();
+        if existing_customers.len() + adding > MAX_BULK_STOPS {
+            return Err(AppError::BadRequest(format!(
+                "Damit hätte die Route mehr als {MAX_BULK_STOPS} Stopps. Bitte weniger auswählen oder eine neue Route anlegen."
+            )));
+        }
+    }
+
     // ----- Geocode whatever is left, with bounded concurrency ----------
     // Split out invalid-PLZ entries first — same as before, no network
     // call spent on a PLZ that can't possibly be a Vienna address — so the
@@ -7896,17 +7908,6 @@ async fn portal_import(
                 conn.query_row("SELECT user_id FROM routes WHERE id = ?1", params![id], |r| r.get(0)).optional()?;
             if owner != Some(Some(user.id)) {
                 return Err(AppError::NotFound("Tour nicht gefunden".into()));
-            }
-            // Never past what a route can be planned with.
-            let have: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM stops WHERE route_id = ?1 AND kind = 'customer'",
-                params![id],
-                |r| r.get(0),
-            )?;
-            if have as usize + entries.len() > MAX_BULK_STOPS {
-                return Err(AppError::BadRequest(format!(
-                    "Damit hätte die Route mehr als {MAX_BULK_STOPS} Stopps. Bitte weniger auswählen oder eine neue Route anlegen."
-                )));
             }
             id
         }
