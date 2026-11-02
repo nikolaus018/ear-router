@@ -474,11 +474,35 @@ enum GourmetPortal {
             .compactMap { $0?.trimmed }
             .first { !$0.isEmpty }
 
+        // Cleaned here, once, for every caller: the import refuses a row over
+        // a newline in a phone line or a Notiz past its limit, and the review
+        // then leaves that row out of "Übernehmen" — a selected customer
+        // missing from the tour over text nobody typed.
         return CustomerJSON(
-            kunde: customerName(delivery.customer), strasse: streetLine(address),
-            plz: address.zip?.trimmed ?? "", paket: paketText(from: delivery), notiz: notiz,
-            telefon: delivery.customer.phone?.trimmed.nilIfEmpty,
+            kunde: oneLine(customerName(delivery.customer), FieldLimits.kunde),
+            strasse: oneLine(streetLine(address), FieldLimits.strasse),
+            plz: address.zip?.trimmed ?? "",
+            paket: paketText(from: delivery).map { oneLine($0, FieldLimits.paket) }?.nilIfEmpty,
+            notiz: notiz.map { String(stripControls($0, keepNewlines: true).prefix(FieldLimits.notiz)) }?
+                .nilIfEmpty,
+            telefon: delivery.customer.phone.map { oneLine($0, FieldLimits.telefon) }?.nilIfEmpty,
             paketCount: delivery.deliveryBundles?.count)
+    }
+
+    /// Control characters turned into spaces (tabs and newlines included, unless
+    /// newlines are kept), runs of spaces folded, then trimmed.
+    private static func stripControls(_ text: String, keepNewlines: Bool = false) -> String {
+        let cleaned = String(String.UnicodeScalarView(text.unicodeScalars.map { scalar in
+            if keepNewlines, scalar == "\n" || scalar == "\r" { return scalar }
+            return CharacterSet.controlCharacters.contains(scalar) ? " " : scalar
+        }))
+        return cleaned.trimmed
+    }
+
+    /// One line, cut to a field limit.
+    private static func oneLine(_ text: String, _ limit: Int) -> String {
+        let flat = stripControls(text).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return String(flat.prefix(limit)).trimmed
     }
 
     private static func paketText(from delivery: Delivery) -> String? {

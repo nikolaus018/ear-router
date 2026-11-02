@@ -65,6 +65,24 @@ struct GourmetPortalTests {
         #expect(GourmetPortal.customerJSON(from: d).kunde == "")
     }
 
+    // MARK: - Fields the import would refuse
+
+    /// A long phone line, a line break in it and an over-long Notiz used to
+    /// make the review flag the row, and "Übernehmen" left it out.
+    @Test func portalTextNeverMakesTheImportRefuseTheRow() {
+        let d = delivery(
+            customer: customer(
+                comment: String(repeating: "x", count: 1500),
+                phone: "+436763095249\nSchwester Frau Koch erreichbar ab 10 Uhr"),
+            address: address())
+        let json = GourmetPortal.customerJSON(from: d)
+        #expect(json.telefon.map { $0.count <= FieldLimits.telefon && !$0.contains("\n") } == true)
+        #expect((json.notiz?.count ?? 0) == FieldLimits.notiz)
+        #expect((try? RouteStore.validateCustomerFields(
+            kunde: json.kunde, strasse: json.strasse, paket: json.paket,
+            notiz: json.notiz, telefon: json.telefon)) != nil)
+    }
+
     // MARK: - Straße
 
     @Test func plainStreetNeedsNoSuffix() {
