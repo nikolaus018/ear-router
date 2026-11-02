@@ -719,6 +719,8 @@ struct AppState {
     /// would make handler-level tests possible. Nothing does that yet; the
     /// suite at the bottom of this file covers only the network-free parts.
     upstreams: Upstreams,
+    /// Which of the city's two services have just failed -- see `CityHealth`.
+    city: CityHealth,
     /// One lock per route id, held for the duration of `reoptimize_route`.
     /// Two optimizations of the *same* route running concurrently (a stop
     /// added while a bulk import is still finishing, say) would each compute
@@ -2074,7 +2076,16 @@ fn is_uncertain_door(
 /// counts as the address we asked for — can be done more than one way
 /// against the same response shape (see `wien_ogd_district_hint`, which asks
 /// the same question with the postcode filter deliberately removed).
-async fn wien_ogd_fetch(state: &AppState, query: &str) -> Option<Vec<OgdFeature>> {
+async fn wien_ogd_fetch(state: &AppState, query: &str) -> Option<RegisterAnswer> {
+    // The copy of the register this server ships with, when the service
+    // cannot be asked: an outage the night before a tour still places the
+    // stops at their doors.
+    let offline = || {
+        address_pack::bundled().map(|pack| RegisterAnswer { features: address_pack::register_answer(query, pack), offline: true })
+    };
+    if state.city.register_is_down() {
+        return offline();
+    }
     // Only genuine failure modes (network error, a non-2xx status, a body
     // that doesn't even parse) are logged here — a "no match" (an empty
     // body, or a body with no feature surviving the callers' filters) is the
@@ -2093,13 +2104,15 @@ async fn wien_ogd_fetch(state: &AppState, query: &str) -> Option<Vec<OgdFeature>
     {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, query, "wien ogd unreachable, falling back to nominatim");
-            return None;
+            tracing::warn!(error = %e, query, "wien ogd unreachable, answering from the pack");
+            state.city.register_failed();
+            return offline();
         }
     };
     if !resp.status().is_success() {
-        tracing::warn!(status = %resp.status(), query, "wien ogd returned an error status, falling back to nominatim");
-        return None;
+        tracing::warn!(status = %resp.status(), query, "wien ogd returned an error status, answering from the pack");
+        state.city.register_failed();
+        return offline();
     }
     // A query with zero matches comes back as an HTTP 200 with a completely
     // empty body (not `{"features":[]}`) — has to be checked before handing
@@ -2108,19 +2121,73 @@ async fn wien_ogd_fetch(state: &AppState, query: &str) -> Option<Vec<OgdFeature>
     let body = match resp.text().await {
         Ok(b) => b,
         Err(e) => {
-            tracing::warn!(error = %e, query, "wien ogd response body unreadable, falling back to nominatim");
-            return None;
+            tracing::warn!(error = %e, query, "wien ogd response body unreadable, answering from the pack");
+            state.city.register_failed();
+            return offline();
         }
     };
     if body.trim().is_empty() {
-        return Some(Vec::new());
+        return Some(RegisterAnswer { features: Vec::new(), offline: false });
     }
     match serde_json::from_str::<OgdFeatureCollection>(&body) {
-        Ok(parsed) => Some(parsed.features),
+        Ok(parsed) => Some(RegisterAnswer { features: parsed.features, offline: false }),
         Err(e) => {
-            tracing::warn!(error = %e, query, "wien ogd response did not parse, falling back to nominatim");
-            None
+            tracing::warn!(error = %e, query, "wien ogd response did not parse, answering from the pack");
+            state.city.register_failed();
+            offline()
         }
+    }
+}
+
+/// What one register lookup came back with.
+struct RegisterAnswer {
+    features: Vec<OgdFeature>,
+    /// Answered by `address_pack`, not by the service.
+    offline: bool,
+}
+
+/// What the register calls of one address came to: whether any failed
+/// outright, and whether any was answered by the pack instead.
+#[derive(Default)]
+struct RegisterTrace {
+    failed: bool,
+    offline: bool,
+}
+
+/// After a failed call the city's two services are skipped for a while and
+/// the pack answers straight away. Without it a service that hangs rather
+/// than refusing costs every lookup -- four of them per address -- the full
+/// request timeout before the pack is asked.
+#[derive(Default)]
+struct CityHealth {
+    register_down_until: StdMutex<Option<Instant>>,
+    entrances_down_until: StdMutex<Option<Instant>>,
+}
+
+impl CityHealth {
+    const COOLDOWN: Duration = Duration::from_secs(120);
+
+    fn is_down(slot: &StdMutex<Option<Instant>>) -> bool {
+        slot.lock().ok().and_then(|g| *g).is_some_and(|until| Instant::now() < until)
+    }
+
+    fn fail(slot: &StdMutex<Option<Instant>>) {
+        if let Ok(mut g) = slot.lock() {
+            *g = Some(Instant::now() + Self::COOLDOWN);
+        }
+    }
+
+    fn register_is_down(&self) -> bool {
+        Self::is_down(&self.register_down_until)
+    }
+    fn register_failed(&self) {
+        Self::fail(&self.register_down_until);
+    }
+    fn entrances_are_down(&self) -> bool {
+        Self::is_down(&self.entrances_down_until)
+    }
+    fn entrances_failed(&self) {
+        Self::fail(&self.entrances_down_until);
     }
 }
 
@@ -2176,17 +2243,32 @@ async fn wien_ogd_search_one(
     sub: SubCheck<'_>,
     segments: &[String],
     numbers: &[String],
-    failed: &mut bool,
+    trace: &mut RegisterTrace,
 ) -> Option<GeocodeHit> {
-    let Some(features) = wien_ogd_fetch(state, query).await else {
-        *failed = true;
+    let Some(answer) = wien_ogd_fetch(state, query).await else {
+        trace.failed = true;
         return None;
     };
+    trace.offline |= answer.offline;
+    ogd_decide(&answer.features, query, plz, sub, segments, numbers)
+}
+
+/// What one register answer comes to for the address asked: the feature it
+/// picks, how far that can be trusted. Whoever answered -- the service or the
+/// pack -- it is decided the same way.
+fn ogd_decide(
+    features: &[OgdFeature],
+    query: &str,
+    plz: &str,
+    sub: SubCheck<'_>,
+    segments: &[String],
+    numbers: &[String],
+) -> Option<GeocodeHit> {
     let street_key = text::address_match_key(&text::street_name_only(query));
-    let best = pick_ogd_feature(&features, plz, &street_key, sub.required(), segments, numbers)?;
+    let best = pick_ogd_feature(features, plz, &street_key, sub.required(), segments, numbers)?;
     let hit = ogd_result(best, query, plz, sub)?;
     let (sub_asked, no_door_named) = (matches!(sub, SubCheck::Downgrade(_)), sub == SubCheck::Absent);
-    if hit.3 == Precision::Exact && is_uncertain_door(best, &features, &street_key, numbers, sub_asked, no_door_named) {
+    if hit.3 == Precision::Exact && is_uncertain_door(best, features, &street_key, numbers, sub_asked, no_door_named) {
         tracing::debug!(query, "wien ogd answer is not provably the door asked for, downgrading to street precision");
         return Some((hit.0, hit.1, hit.2, Precision::Street));
     }
@@ -2219,15 +2301,15 @@ async fn wien_ogd_search_one(
 ///
 /// The second value says the register could not be asked: no answer was
 /// found and at least one of the calls failed outright. It may well have the
-/// address.
-async fn wien_ogd_geocode(state: &AppState, strasse: &str, plz: &str) -> (Option<GeocodeHit>, bool) {
-    let mut failed = false;
-    let hit = wien_ogd_search(state, strasse, plz, &mut failed).await;
-    let unreachable = hit.is_none() && failed;
-    (hit, unreachable)
+/// address. The third, that at least one call was answered by the pack.
+async fn wien_ogd_geocode(state: &AppState, strasse: &str, plz: &str) -> (Option<GeocodeHit>, bool, bool) {
+    let mut trace = RegisterTrace::default();
+    let hit = wien_ogd_search(state, strasse, plz, &mut trace).await;
+    let unreachable = hit.is_none() && trace.failed;
+    (hit, unreachable, trace.offline)
 }
 
-async fn wien_ogd_search(state: &AppState, strasse: &str, plz: &str, failed: &mut bool) -> Option<GeocodeHit> {
+async fn wien_ogd_search(state: &AppState, strasse: &str, plz: &str, trace: &mut RegisterTrace) -> Option<GeocodeHit> {
     let normalized = normalize_strasse_text(strasse);
     let simplified = simplify_housenumber(&normalized);
     let sub = text::housenumber_with_sub(&normalized);
@@ -2237,14 +2319,14 @@ async fn wien_ogd_search(state: &AppState, strasse: &str, plz: &str, failed: &mu
 
     if let Some((query, key)) = &sub {
         let check = SubCheck::Require(key);
-        if let Some(hit) = wien_ogd_search_one(state, query, plz, check, &segments, &numbers, failed).await {
+        if let Some(hit) = wien_ogd_search_one(state, query, plz, check, &segments, &numbers, trace).await {
             return Some(hit);
         }
     }
     if let Some(lettered) = numbers.get(1) {
         let query = format!("{} {}", text::street_name_only(&simplified), lettered.to_uppercase());
         let only = std::slice::from_ref(lettered);
-        let hit = wien_ogd_search_one(state, &query, plz, SubCheck::Absent, &[], only, failed).await;
+        let hit = wien_ogd_search_one(state, &query, plz, SubCheck::Absent, &[], only, trace).await;
         if let Some(hit) = hit.filter(|hit| hit.3 == Precision::Exact) {
             return Some(hit);
         }
@@ -2253,11 +2335,11 @@ async fn wien_ogd_search(state: &AppState, strasse: &str, plz: &str, failed: &mu
         Some((_, key)) => SubCheck::Downgrade(key),
         None => SubCheck::Absent,
     };
-    if let Some(hit) = wien_ogd_search_one(state, &simplified, plz, fallback_check, &[], &numbers, failed).await {
+    if let Some(hit) = wien_ogd_search_one(state, &simplified, plz, fallback_check, &[], &numbers, trace).await {
         return Some(hit);
     }
     if simplified != normalized {
-        if let Some(hit) = wien_ogd_search_one(state, &normalized, plz, fallback_check, &[], &numbers, failed).await {
+        if let Some(hit) = wien_ogd_search_one(state, &normalized, plz, fallback_check, &[], &numbers, trace).await {
             return Some(hit);
         }
     }
@@ -2277,7 +2359,7 @@ async fn wien_ogd_search(state: &AppState, strasse: &str, plz: &str, failed: &mu
 async fn wien_ogd_district_hint(state: &AppState, normalized: &str, plz: &str) -> Option<String> {
     let simplified = simplify_housenumber(normalized);
     let our_street = text::address_match_key(&text::street_name_only(&simplified));
-    let features = wien_ogd_fetch(state, &simplified).await?;
+    let features = wien_ogd_fetch(state, &simplified).await?.features;
     let mut postcodes: HashSet<String> = HashSet::new();
     for f in features {
         let same_street = f
@@ -2518,14 +2600,22 @@ async fn geocode_address_any(state: &AppState, strasse: &str, plz: &str) -> Resu
     // remembered: cached as exact it would be served for good, and the
     // register's own Stiege-precise answer never asked for again once it was
     // back up. Nor is "nobody has it" a verdict worth keeping.
-    let (ogd_hit, register_unreachable) =
-        if in_vienna { wien_ogd_geocode(state, strasse, plz).await } else { (None, false) };
+    //
+    // So is an answer from `address_pack`, the register as it was when the
+    // server was built: the right door today, but kept, it would stand in for
+    // the live register long after the outage, and a house built since would
+    // stay "not found" for good.
+    let (ogd_hit, register_failed, register_offline) =
+        if in_vienna { wien_ogd_geocode(state, strasse, plz).await } else { (None, false, false) };
     if let Some(hit) = ogd_hit {
-        let conn = state.db()?;
-        cache_store(&conn, &key, hit.0, hit.1, &hit.2, hit.3)?;
-        miss_clear(&conn, &key)?;
+        if !register_offline {
+            let conn = state.db()?;
+            cache_store(&conn, &key, hit.0, hit.1, &hit.2, hit.3)?;
+            miss_clear(&conn, &key)?;
+        }
         return Ok(hit);
     }
+    let register_unreachable = register_failed || register_offline;
 
     let normalized = normalize_strasse_text(strasse);
 
@@ -2535,8 +2625,10 @@ async fn geocode_address_any(state: &AppState, strasse: &str, plz: &str) -> Resu
     // register the same question without the district, because by far the
     // likeliest reason it just said no is that the district dropdown is
     // wrong. Naming the right one turns a vague pin into a one-tap fix.
+    // Asked of the pack too: a street that runs through one other district in
+    // the download still does.
     let district_hint =
-        if in_vienna && !register_unreachable { wien_ogd_district_hint(state, &normalized, plz).await } else { None };
+        if in_vienna && !register_failed { wien_ogd_district_hint(state, &normalized, plz).await } else { None };
     if let Some(actual_plz) = district_hint {
         tracing::info!(strasse = %normalized, given = plz, actual = %actual_plz, "address exists in a different district");
         return Err(geocode_error_wrong_district(strasse.trim(), &actual_plz));
@@ -4159,6 +4251,253 @@ fn is_in_vienna(lat: f64, lon: f64) -> bool {
     lat.is_finite() && lon.is_finite() && (47.7..=48.6).contains(&lat) && (15.8..=16.8).contains(&lon)
 }
 
+// ---------------------------------------------------------------------
+// The address pack
+//
+// Vienna's address register and its entrance points as they were when the
+// server was built -- `WienAdressen.deflate`, made by
+// `ios/Tools/MakeAddressPack.py`, the same file the iOS app ships with. What
+// the geocoder asks instead of the city's address service when that cannot
+// be reached, so an outage the night before a tour still places the stops at
+// their doors rather than leaving them all to Nominatim.
+//
+// It answers in the service's own shape -- `OgdFeature`s with a ranking -- so
+// everything the geocoder decides about an answer (the right Stiege, "≈" for
+// a neighbour, the wrong-district hint) is decided the same way for both.
+// What it cannot do is the service's fuzzy search: a street is found by
+// `address_match_key`, or one letter off it, and nothing looser.
+//
+// Read the first time it is needed, not at start: on a day the service is up
+// it is never read at all.
+// ---------------------------------------------------------------------
+mod address_pack {
+    use super::*;
+    use std::io::Read;
+    use std::sync::OnceLock;
+
+    static BUNDLED: &[u8] = include_bytes!("../WienAdressen.deflate");
+
+    pub struct Row {
+        /// "129/1", "17 Haus 1", "5-7 RINGSTRASSENGALERIEN".
+        number: String,
+        plz: String,
+        lat: f64,
+        lon: f64,
+    }
+
+    /// One street name as the register spells it, in every postcode it runs
+    /// through.
+    pub struct Street {
+        name: String,
+        addresses: Vec<Row>,
+        entrances: Vec<Row>,
+    }
+
+    pub struct Contents {
+        /// The day the file was made, "2026-10-31".
+        built_on: String,
+        /// Keyed on `text::address_match_key` of the street name.
+        streets: HashMap<String, Street>,
+    }
+
+    /// The copy this server ships with, read on first use. `None` when it
+    /// cannot be read.
+    pub fn bundled() -> Option<&'static Contents> {
+        static PACK: OnceLock<Option<Contents>> = OnceLock::new();
+        PACK.get_or_init(|| {
+            let started = Instant::now();
+            let mut text = String::new();
+            let read = flate2::read::DeflateDecoder::new(BUNDLED).read_to_string(&mut text);
+            let contents = read.ok().and_then(|_| parse(&text));
+            match &contents {
+                Some(c) => tracing::info!(built_on = %c.built_on, streets = c.streets.len(), secs = started.elapsed().as_secs_f32(), "address pack read"),
+                None => tracing::error!("address pack unreadable"),
+            }
+            contents
+        })
+        .as_ref()
+    }
+
+    /// The file's text, as `MakeAddressPack.py` writes it. `None` for anything
+    /// that does not start with its header.
+    pub fn parse(text: &str) -> Option<Contents> {
+        let mut built_on: Option<String> = None;
+        let mut streets: HashMap<String, Street> = HashMap::new();
+        // The file is sorted by street, so the key -- a regex and a fold --
+        // is worked out once per street rather than once per line.
+        let (mut last_name, mut last_key) = (String::new(), String::new());
+        for line in text.lines().filter(|l| !l.is_empty()) {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts[0] == "#" {
+                if parts.len() < 4 || parts[1] != "WienAdressen" {
+                    return None;
+                }
+                built_on = Some(parts[3].to_string());
+                continue;
+            }
+            built_on.as_ref()?;
+            let (Some(lat), Some(lon)) = (parts.get(4).and_then(|v| v.parse::<f64>().ok()), parts.get(5).and_then(|v| v.parse::<f64>().ok()))
+            else {
+                continue;
+            };
+            if parts.len() != 6 {
+                continue;
+            }
+            if parts[1] != last_name {
+                last_name = parts[1].to_string();
+                last_key = text::address_match_key(parts[1]);
+            }
+            let street = streets
+                .entry(last_key.clone())
+                .or_insert_with(|| Street { name: parts[1].to_string(), addresses: Vec::new(), entrances: Vec::new() });
+            let row = Row { number: parts[2].to_string(), plz: parts[3].to_string(), lat, lon };
+            if parts[0] == "A" {
+                street.addresses.push(row);
+            } else {
+                street.entrances.push(row);
+            }
+        }
+        Some(Contents { built_on: built_on?, streets })
+    }
+
+    /// What the address service would answer for `query` -- "Gentzgasse
+    /// 129/1", "Töllergasse 26A", "Gentzgasse 129" -- across every district,
+    /// as the service does.
+    ///
+    /// The ranking follows the service's scale, which is what the geocoder
+    /// reads it by: about 0 for the address asked for, a hair above that for
+    /// the other doors of the same house, under 1 for a lettered neighbour
+    /// ("8B" for "8") and in the hundreds for another number on the street.
+    ///
+    /// Every row of the street, not the best hundred: the wrong-district hint
+    /// reads the postcodes of all of them, and a street through two districts
+    /// cut down to its nearest numbers could show only one and send the stop
+    /// to the wrong one.
+    pub fn register_answer(query: &str, contents: &Contents) -> Vec<OgdFeature> {
+        let normalized = text::normalize_strasse_text(query);
+        let street_part = text::street_name_only(&normalized);
+        let key = text::address_match_key(&street_part);
+        let mut matched: Vec<(&Street, f64)> = contents.streets.get(&key).map(|s| vec![(s, 0.0)]).unwrap_or_default();
+        if matched.is_empty() {
+            // The service's own slack for a typo, kept as narrow as
+            // `pick_ogd_feature` takes it: one letter, on a long name.
+            matched = contents.streets.iter().filter(|(k, _)| text::is_one_typo_apart(k, &key)).map(|(_, s)| (s, 0.0015)).collect();
+        }
+        if matched.is_empty() {
+            return Vec::new();
+        }
+
+        let tail: String = normalized.chars().skip(street_part.chars().count()).collect::<String>().trim().to_string();
+        let asked_head = head(&tail);
+        let asked_digits = asked_head.as_deref().and_then(entrance_number).map(|n| digits(&n));
+        let asked_sub = text::sub_address_of(&normalized);
+
+        let mut out: Vec<OgdFeature> = Vec::new();
+        for (street, penalty) in matched {
+            let mut bare_houses: HashSet<String> = HashSet::new();
+            for row in &street.addresses {
+                let adresse = format!("{} {}", street.name, row.number);
+                let sub = text::sub_address_of(&adresse);
+                let row_head = head(&row.number);
+                if let (None, Some(h)) = (&sub, &row_head) {
+                    bare_houses.insert(format!("{h}|{}", row.plz));
+                }
+                let rank = ranking(row_head.as_deref(), sub.as_deref(), asked_head.as_deref(), asked_digits.as_deref(), asked_sub.as_deref());
+                out.push(feature(&street.name, row, adresse, rank + penalty));
+            }
+            // The register's download carries a house that has Stiegen only as
+            // its Stiegen -- "Gentzgasse 129/1", "129/2", never "129" itself,
+            // which the service answers with a point of its own. The entrance
+            // point stands in for it, for the number asked for.
+            let Some(asked) = asked_head.as_deref() else { continue };
+            for row in &street.entrances {
+                if head(&row.number).as_deref() != Some(asked) || bare_houses.contains(&format!("{asked}|{}", row.plz)) {
+                    continue;
+                }
+                let adresse = format!("{} {}", street.name, row.number);
+                let rank = if asked_sub.is_none() { 0.0 } else { 0.0002 };
+                out.push(feature(&street.name, row, adresse, rank + penalty));
+            }
+        }
+        out.sort_by(|a, b| a.properties.ranking.unwrap_or(0.0).total_cmp(&b.properties.ranking.unwrap_or(0.0)));
+        out
+    }
+
+    fn ranking(row_head: Option<&str>, row_sub: Option<&str>, asked_head: Option<&str>, asked_digits: Option<&str>, asked_sub: Option<&str>) -> f64 {
+        let (Some(asked_head), Some(row_head)) = (asked_head, row_head) else { return 100.0 };
+        if row_head == asked_head {
+            if row_sub == asked_sub {
+                return 0.0;
+            }
+            return if asked_sub.is_none() { 0.0001 } else { 0.0002 };
+        }
+        let row_digits = entrance_number(row_head).map(|n| digits(&n));
+        if row_digits.is_some() && row_digits.as_deref() == asked_digits {
+            return 0.5;
+        }
+        let (Some(a), Some(b)) = (
+            asked_digits.and_then(|d| d.parse::<i64>().ok()),
+            row_digits.as_deref().and_then(|d| d.parse::<i64>().ok()),
+        ) else {
+            return 1000.0;
+        };
+        // A range the number lies in is the building it is part of: asked for
+        // "Heinrich-Collin-Straße 14" the service answers "8-14", and the
+        // nearest number by arithmetic -- 13, across the road -- is 500 m off.
+        // Still not the house asked for, so above 1.
+        let range: Vec<&str> = row_head.split('-').collect();
+        if let [low, high] = range.as_slice() {
+            if let (Ok(low), Ok(high)) = (digits(low).parse::<i64>(), digits(high).parse::<i64>()) {
+                if (low..=high).contains(&a) {
+                    return 10.0;
+                }
+            }
+        }
+        100.0 + (a - b).abs() as f64
+    }
+
+    /// "129" of "129/1", "26a" of "26A Obj. 2", "5-7" of "5-7 RINGSTRASSENGALERIEN".
+    fn head(number: &str) -> Option<String> {
+        let h: String = number.chars().take_while(|c| !matches!(c, '/' | ' ' | '(')).collect::<String>().to_lowercase();
+        (!h.is_empty()).then_some(h)
+    }
+
+    fn digits(number: &str) -> String {
+        number.chars().take_while(|c| c.is_numeric()).collect()
+    }
+
+    fn feature(street: &str, row: &Row, adresse: String, ranking: f64) -> OgdFeature {
+        OgdFeature {
+            geometry: OgdGeometry { coordinates: [row.lon, row.lat] },
+            properties: OgdProperties {
+                street_name: Some(street.to_string()),
+                postal_code: Some(row.plz.clone()),
+                kategorie: Some("Adresse".to_string()),
+                adresse: Some(adresse),
+                ranking: Some(ranking),
+                street_number: Some(row.number.clone()),
+                bezirk: None,
+            },
+        }
+    }
+
+    /// What the entrance layer would answer for its `NAME LIKE 'street
+    /// digits%' AND PLZ = plz` query.
+    pub fn entrances(street: &str, number: &str, plz: &str, contents: &Contents) -> Vec<EntranceFeature> {
+        let prefix = digits(number);
+        let Some(found) = contents.streets.get(&text::address_match_key(street)) else { return Vec::new() };
+        found
+            .entrances
+            .iter()
+            .filter(|r| r.plz == plz && r.number.starts_with(&prefix))
+            .map(|r| EntranceFeature {
+                geometry: EntranceGeometry { coordinates: vec![r.lon, r.lat] },
+                properties: EntranceProperties { number: Some(r.number.clone()), plz: Some(r.plz.clone()) },
+            })
+            .collect()
+    }
+}
+
 /// "82" out of "82-92", "82/1" and "82 Kindertagesheim"; "12a" out of
 /// "12a/3". The part of the number the entrance layer files it under.
 fn entrance_number(street_number: &str) -> Option<String> {
@@ -4206,6 +4545,11 @@ fn pick_entrance(features: &[EntranceFeature], number: &str, plz: &str) -> Optio
 
 /// `None` when the call failed; an empty list when it answered "none".
 async fn entrance_fetch(state: &AppState, street: &str, number: &str, plz: &str) -> Option<Vec<EntranceFeature>> {
+    // The pack's copy of the layer, when the layer cannot be asked.
+    let offline = || address_pack::bundled().map(|pack| address_pack::entrances(street, number, plz, pack));
+    if state.city.entrances_are_down() {
+        return offline();
+    }
     // Digits only in the prefix, so "12a" still finds "12A"; the exact
     // number is picked out of what comes back. Quotes doubled, which is how
     // CQL escapes them inside a string.
@@ -4229,18 +4573,28 @@ async fn entrance_fetch(state: &AppState, street: &str, number: &str, plz: &str)
         ])
         .header(reqwest::header::USER_AGENT, UPSTREAM_USER_AGENT)
         .send()
-        .await
-        .map_err(|e| tracing::warn!(error = %e, "wien entrance lookup failed"))
-        .ok()?;
-    if !resp.status().is_success() {
-        tracing::warn!(status = %resp.status(), "wien entrance lookup error status");
-        return None;
+        .await;
+    let resp = match resp {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            tracing::warn!(status = %r.status(), "wien entrance lookup error status, answering from the pack");
+            state.city.entrances_failed();
+            return offline();
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "wien entrance lookup failed, answering from the pack");
+            state.city.entrances_failed();
+            return offline();
+        }
+    };
+    match resp.json::<EntranceCollection>().await {
+        Ok(c) => Some(c.features),
+        Err(e) => {
+            tracing::warn!(error = %e, "wien entrance answer did not parse, answering from the pack");
+            state.city.entrances_failed();
+            offline()
+        }
     }
-    resp.json::<EntranceCollection>()
-        .await
-        .map(|c| c.features)
-        .map_err(|e| tracing::warn!(error = %e, "wien entrance answer did not parse"))
-        .ok()
 }
 
 /// The answers already had, for as long as the server runs. Only answers:
@@ -4284,7 +4638,7 @@ async fn wien_entrance(state: &AppState, strasse: &str, plz: &str) -> Option<(f6
 
     // An empty answer is as good as none: the register returns nothing at
     // all for a house it does not know, and the entrance layer may still.
-    let features = wien_ogd_fetch(state, &simplified).await.unwrap_or_default();
+    let features = wien_ogd_fetch(state, &simplified).await.map(|a| a.features).unwrap_or_default();
     let street_key = text::address_match_key(&text::street_name_only(&simplified));
     // Picked among the answers carrying that number, not taken as the best
     // answer overall: asked for "Serravagasse 2" the register ranks
@@ -7886,7 +8240,7 @@ async fn main() {
         .user_agent(UPSTREAM_USER_AGENT)
         .build()
         .expect("failed to build HTTP client");
-    tracing::info!("Geocoding via Wien-OGD with Nominatim fallback, routing via OSRM — all live services, no local dataset.");
+    tracing::info!("Geocoding via Wien-OGD (its bundled copy answers when the city is down) with Nominatim fallback, routing via OSRM.");
 
     // Off unless explicitly enabled: believing `X-Forwarded-For` from a
     // client that isn't actually behind a trusted proxy hands anyone a way
@@ -7909,6 +8263,7 @@ async fn main() {
         rate_limit: AsyncMutex::new(HashMap::new()),
         trust_proxy,
         upstreams: Upstreams::from_env(),
+        city: CityHealth::default(),
         route_locks: AsyncMutex::new(HashMap::new()),
         osrm_primary_down_since: StdMutex::new(None),
     });
@@ -8602,6 +8957,136 @@ mod tests {
         assert_eq!(e["kunde"], "Anna Koch");
         assert_eq!(e["strasse"], "Gentzgasse 129");
         assert!(e["paket"].is_null());
+    }
+
+    // --- The address pack ------------------------------------------------
+
+    /// Real rows from the download, trimmed to the streets used here.
+    const PACK_TEXT: &str = "#\tWienAdressen\t1\t2026-10-31\n\
+        A\tDr.-Karl-Lueger-Platz\t1\t1010\t48.207000\t16.379000\n\
+        A\tGentzgasse\t127\t1180\t48.230300\t16.330900\n\
+        A\tGentzgasse\t129/1\t1180\t48.230569\t16.330485\n\
+        A\tGentzgasse\t129/2\t1180\t48.230705\t16.330182\n\
+        E\tGentzgasse\t129\t1180\t48.230549\t16.330604\n\
+        E\tGentzgasse\t127\t1180\t48.230280\t16.330950\n\
+        A\tDoningasse\t8B\t1220\t48.240000\t16.450000\n\
+        A\tDoningasse\t10\t1220\t48.240200\t16.450200\n\
+        A\tHeinrich-Collin-Straße\t8-14\t1140\t48.199000\t16.305000\n\
+        A\tHeinrich-Collin-Straße\t13\t1140\t48.195000\t16.302000\n";
+
+    /// The door the geocoder would take from the pack's answers, asked in the
+    /// order `wien_ogd_search` asks: the Stiege first, then the bare number.
+    fn pack_geocode(pack: &address_pack::Contents, typed: &str, plz: &str) -> Option<GeocodeHit> {
+        let normalized = text::normalize_strasse_text(typed);
+        let simplified = text::simplify_housenumber(&normalized);
+        let sub = text::housenumber_with_sub(&normalized);
+        let number = simplified.split(' ').next_back().and_then(entrance_number);
+        let segments = text::sub_address_segments(&normalized);
+        let numbers = asked_numbers(number.as_deref(), &segments);
+        let ask = |query: &str, check: SubCheck<'_>| {
+            let features = address_pack::register_answer(query, pack);
+            ogd_decide(&features, query, plz, check, &segments, &numbers)
+        };
+        if let Some((query, key)) = &sub {
+            if let Some(hit) = ask(query, SubCheck::Require(key)) {
+                return Some(hit);
+            }
+        }
+        let check = match &sub {
+            Some((_, key)) => SubCheck::Downgrade(key),
+            None => SubCheck::Absent,
+        };
+        ask(&simplified, check)
+    }
+
+    #[test]
+    fn the_pack_refuses_text_without_its_header() {
+        assert!(address_pack::parse("A\tGentzgasse\t127\t1180\t48.2\t16.3\n").is_none());
+        assert!(address_pack::parse(PACK_TEXT).is_some());
+    }
+
+    #[test]
+    fn a_stiege_from_the_pack_is_its_own_door() {
+        let pack = address_pack::parse(PACK_TEXT).unwrap();
+        let hit = pack_geocode(&pack, "Gentzgasse 129/2/5/23", "1180").unwrap();
+        assert_eq!(hit.3, Precision::Exact);
+        assert_eq!((hit.0, hit.1), (48.230705, 16.330182));
+        assert_eq!(hit.2, "Gentzgasse 129/2, 1180 Wien");
+    }
+
+    /// The download has number 129 only as its two Stiegen. Asked for the
+    /// house, the answer is its entrance -- the point the service would give.
+    #[test]
+    fn a_house_known_only_by_its_stiegen_is_answered_with_its_entrance() {
+        let pack = address_pack::parse(PACK_TEXT).unwrap();
+        let hit = pack_geocode(&pack, "Gentzgasse 129", "1180").unwrap();
+        assert_eq!(hit.3, Precision::Exact);
+        assert_eq!((hit.0, hit.1), (48.230549, 16.330604));
+    }
+
+    #[test]
+    fn the_pack_finds_a_street_however_it_is_typed() {
+        let pack = address_pack::parse(PACK_TEXT).unwrap();
+        let hit = pack_geocode(&pack, "Dr. Karl Lueger Platz 1", "1010").unwrap();
+        assert_eq!(hit.3, Precision::Exact);
+        assert_eq!(hit.2, "Dr.-Karl-Lueger-Platz 1, 1010 Wien");
+        assert_eq!(pack_geocode(&pack, "Gentzgase 127", "1180").unwrap().3, Precision::Exact);
+    }
+
+    /// A number the street does not have is a neighbour's door: never exact.
+    #[test]
+    fn a_number_the_street_does_not_have_is_only_the_street() {
+        let pack = address_pack::parse(PACK_TEXT).unwrap();
+        assert_eq!(pack_geocode(&pack, "Gentzgasse 999", "1180").unwrap().3, Precision::Street);
+    }
+
+    /// Number 14 is part of the "8-14" block, not the house across the road
+    /// that is numerically nearest.
+    #[test]
+    fn a_number_inside_a_range_is_that_building() {
+        let pack = address_pack::parse(PACK_TEXT).unwrap();
+        let hit = pack_geocode(&pack, "Heinrich-Collin-Straße 14/1/DG/35", "1140").unwrap();
+        assert_eq!(hit.3, Precision::Street);
+        assert_eq!(hit.2, "Heinrich-Collin-Straße 8-14, 1140 Wien");
+    }
+
+    #[test]
+    fn a_lettered_neighbour_from_the_pack_is_not_the_house() {
+        let pack = address_pack::parse(PACK_TEXT).unwrap();
+        let features = address_pack::register_answer("Doningasse 8", &pack);
+        assert_eq!(features[0].properties.street_number.as_deref(), Some("8B"));
+        let rank = features[0].properties.ranking.unwrap();
+        assert!(rank > 0.1 && rank < 1.0);
+        assert!(address_pack::register_answer("Nirgendwogasse 3", &pack).is_empty());
+    }
+
+    #[test]
+    fn the_pack_files_a_street_under_the_right_district() {
+        let pack = address_pack::parse(PACK_TEXT).unwrap();
+        let features = address_pack::register_answer("Gentzgasse 129", &pack);
+        let codes: HashSet<_> = features.iter().filter_map(|f| f.properties.postal_code.clone()).collect();
+        assert_eq!(codes, HashSet::from(["1180".to_string()]));
+    }
+
+    #[test]
+    fn pack_entrances_are_answered_like_the_layer() {
+        let pack = address_pack::parse(PACK_TEXT).unwrap();
+        let found = address_pack::entrances("Gentzgasse", "129", "1180", &pack);
+        assert_eq!(pick_entrance(&found, "129", "1180"), Some((48.230549, 16.330604)));
+        assert!(address_pack::entrances("Gentzgasse", "129", "1090", &pack).is_empty());
+    }
+
+    #[test]
+    fn the_bundled_pack_covers_vienna() {
+        let pack = address_pack::bundled().expect("bundled pack reads");
+        let features = address_pack::register_answer("Gentzgasse 129/1", pack);
+        let first = &features[0];
+        assert_eq!(first.properties.adresse.as_deref(), Some("Gentzgasse 129/1"));
+        assert_eq!(first.properties.postal_code.as_deref(), Some("1180"));
+        assert_eq!(first.properties.ranking, Some(0.0));
+        let found = address_pack::entrances("Gentzgasse", "129", "1180", pack);
+        let (lat, lon) = pick_entrance(&found, "129", "1180").expect("entrance of Gentzgasse 129");
+        assert!((lat - 48.2305).abs() < 0.001 && (lon - 16.3306).abs() < 0.001);
     }
 
     /// The pause is ticked like Lager and Ziel, and read back as where the van is.
