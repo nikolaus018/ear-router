@@ -415,6 +415,7 @@
 				DEVELOPMENT_TEAM = C5MSK2XBMK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "EarRouter-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "EAR Router";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
@@ -451,6 +452,7 @@
 				DEVELOPMENT_TEAM = C5MSK2XBMK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "EarRouter-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "EAR Router";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";

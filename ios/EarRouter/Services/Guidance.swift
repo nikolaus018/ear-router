@@ -10,6 +10,16 @@ struct GuidanceStep: Equatable, Sendable {
     var exit: Int?
     var distance: Double
     var geometry: [[Double]]
+    /// The lanes at this step's manoeuvre, left to right, when OpenStreetMap
+    /// has them for that junction. Empty otherwise.
+    var lanes: [GuidanceLane] = []
+}
+
+/// One lane at a junction: the ways it may be used to leave, and whether the
+/// route wants it.
+struct GuidanceLane: Equatable, Sendable {
+    var indications: [String]
+    var valid: Bool
 }
 
 struct GuidanceRoute: Equatable, Sendable {
@@ -29,6 +39,14 @@ struct GuidanceProgress: Equatable {
     var metersRemaining: Double
     var offRoute: Bool
     var arrived: Bool
+    /// Metres driven along `stepIndex`'s own line.
+    var along: Double = 0
+    /// The van's place on the route — the GPS fix pulled onto the line, as
+    /// every navigation app draws it — and the road's bearing there, degrees
+    /// clockwise from north.
+    var lat: Double = 0
+    var lon: Double = 0
+    var bearing: Double = 0
 }
 
 /// Position against route: which step, how far to the next turn, whether the
@@ -73,10 +91,88 @@ enum GuidanceEngine {
         let toManeuver = max(0, length - best.along)
         let after = steps[(best.index + 1)...].reduce(0) { $0 + $1.distance }
         let remaining = toManeuver + after
+        let on = point(on: steps[best.index].geometry, along: best.along)
         return GuidanceProgress(
             stepIndex: best.index, metersToManeuver: toManeuver, metersRemaining: remaining,
             offRoute: best.distance > offRouteMeters,
-            arrived: toEnd < arrivalMeters)
+            arrived: toEnd < arrivalMeters,
+            along: best.along, lat: on.lat, lon: on.lon, bearing: on.bearing)
+    }
+
+    /// `progress`, moved `meters` further down the road — dead reckoning. The
+    /// van keeps its place on the line between GPS fixes and through a tunnel,
+    /// crossing into the next step when it runs off the end of this one.
+    static func advanced(
+        _ p: GuidanceProgress, on route: GuidanceRoute, by meters: Double
+    ) -> GuidanceProgress {
+        let steps = route.steps
+        guard steps.count >= 2, meters > 0 else { return p }
+        let lastDriven = steps.count - 2
+        var index = min(p.stepIndex, lastDriven)
+        var along = p.along + meters
+        while index < lastDriven {
+            let length = polylineLength(steps[index].geometry)
+            guard along > length else { break }
+            along -= length
+            index += 1
+        }
+        let length = polylineLength(steps[index].geometry)
+        along = min(along, length)
+        let toManeuver = max(0, length - along)
+        let after = steps[(index + 1)...].reduce(0) { $0 + $1.distance }
+        let on = point(on: steps[index].geometry, along: along)
+        var q = p
+        q.stepIndex = index
+        q.along = along
+        q.metersToManeuver = toManeuver
+        q.metersRemaining = toManeuver + after
+        q.lat = on.lat
+        q.lon = on.lon
+        q.bearing = on.bearing
+        q.arrived = index == lastDriven && toManeuver < arrivalMeters
+        return q
+    }
+
+    /// The point `along` metres down `line`, and the bearing of the stretch
+    /// it is on. Clamped to the line's ends.
+    static func point(
+        on line: [[Double]], along: Double
+    ) -> (lat: Double, lon: Double, bearing: Double) {
+        let pts = line.filter { $0.count == 2 }
+        guard let first = pts.first else { return (0, 0, 0) }
+        guard pts.count >= 2 else { return (first[0], first[1], 0) }
+        var left = max(0, along)
+        for i in 0..<(pts.count - 1) {
+            let a = pts[i], b = pts[i + 1]
+            let len = meters((a[0], a[1]), (b[0], b[1]))
+            if left <= len || i == pts.count - 2 {
+                let t = len == 0 ? 0 : min(1, left / len)
+                return (
+                    a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t,
+                    bearing((a[0], a[1]), (b[0], b[1])))
+            }
+            left -= len
+        }
+        let last = pts[pts.count - 1]
+        return (last[0], last[1], 0)
+    }
+
+    /// Degrees clockwise from north, 0..<360.
+    static func bearing(_ a: (lat: Double, lon: Double), _ b: (lat: Double, lon: Double)) -> Double {
+        let lonScale = cos((a.lat + b.lat) / 2 * .pi / 180)
+        let dx = (b.lon - a.lon) * lonScale
+        let dy = b.lat - a.lat
+        guard dx != 0 || dy != 0 else { return 0 }
+        let deg = atan2(dx, dy) * 180 / .pi
+        return deg < 0 ? deg + 360 : deg
+    }
+
+    /// The shortest way round from `a` to `b`, in degrees, -180...180.
+    static func angleDelta(from a: Double, to b: Double) -> Double {
+        var d = (b - a).truncatingRemainder(dividingBy: 360)
+        if d > 180 { d -= 360 }
+        if d < -180 { d += 360 }
+        return d
     }
 
     // MARK: - Geometry

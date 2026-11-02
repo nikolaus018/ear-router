@@ -12,6 +12,7 @@ struct MoreTab: View {
         NavigationHandoff.Provider.apple.rawValue
 
     @AppStorage(CarPlayNavigation.enabledKey) private var carPlayEnabled = false
+    @AppStorage(SpeedCameras.enabledKey) private var cameraWarnings = true
 
     @Environment(\.openURL) private var openURL
 
@@ -104,8 +105,13 @@ struct MoreTab: View {
                     SettingsRow(
                         icon: "location.fill", tint: .blue, title: "Navigation")
                 }
+                Toggle(isOn: $cameraWarnings) {
+                    SettingsRow(
+                        icon: "camera.fill", tint: .red, title: "Radarwarnung",
+                        detail: "Nur in der App-Navigation")
+                }
             } footer: {
-                Text("Womit „Navigation starten“ öffnet.")
+                Text("Womit „Navigation starten“ öffnet. Die Radarwarnung gilt nur für „In der App“.")
             }
 
             // Under the navigation picker, because it is the same handover —

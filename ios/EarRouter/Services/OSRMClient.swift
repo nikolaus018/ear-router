@@ -94,7 +94,10 @@ actor OSRMClient {
             GuidanceStep(
                 type: s.maneuver.type, modifier: s.maneuver.modifier, name: s.name,
                 exit: s.maneuver.exit, distance: s.distance,
-                geometry: Self.flip(s.geometry.coordinates))
+                geometry: Self.flip(s.geometry.coordinates),
+                lanes: (s.intersections?.first?.lanes ?? []).map {
+                    GuidanceLane(indications: $0.indications, valid: $0.valid)
+                })
         }
         return GuidanceRoute(
             steps: steps, geometry: Self.toPolyline(route.geometry),
@@ -597,6 +600,15 @@ actor OSRMClient {
         let name: String
         let geometry: Geometry
         let maneuver: WireManeuver
+        /// The first one is the junction of the manoeuvre itself.
+        let intersections: [WireIntersection]?
+    }
+    private struct WireIntersection: Decodable {
+        let lanes: [WireLane]?
+    }
+    private struct WireLane: Decodable {
+        let indications: [String]
+        let valid: Bool
     }
     private struct WireManeuver: Decodable {
         let type: String
