@@ -35,8 +35,21 @@ enum CarPlayNavigation {
     /// parameter is for tests: this is global mutable state, and two of them
     /// racing on the standard suite is a test that passes alone and fails in a
     /// full run.
+    ///
+    /// Never while the in-app navigation is the chosen one: that guidance is
+    /// started from the Jetzt tab, after the first stop, and cannot be opened
+    /// by an intent with the app closed — the automation would instead hand
+    /// the stop to Apple Maps, behind the app's back. The switch itself is
+    /// left as the driver set it, so going back to Waze or Apple Maps turns
+    /// the car start on again without another trip to Mehr.
     static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: enabledKey)
+        defaults.bool(forKey: enabledKey) && !suspended(in: defaults)
+    }
+
+    /// True while the in-app navigation holds the switch off.
+    static func suspended(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.string(forKey: NavigationHandoff.providerKey)
+            == NavigationHandoff.Provider.inApp.rawValue
     }
 
     /// Why there was nothing to navigate to.
@@ -47,6 +60,7 @@ enum CarPlayNavigation {
     /// told at the wheel, and "Fehler 3" is not.
     enum Failure: Error, CustomLocalizedStringResourceConvertible {
         case disabled
+        case inApp
         case noStore
         case noTour
         case allDone
@@ -55,6 +69,7 @@ enum CarPlayNavigation {
         var localizedStringResource: LocalizedStringResource {
             switch self {
             case .disabled: "CarPlay-Navigation ist in EAR Router ausgeschaltet."
+            case .inApp: "Mit der App-Navigation startet das Auto die Navigation nicht von selbst."
             case .noStore: "Die Tourdaten lassen sich gerade nicht öffnen."
             case .noTour: "Es läuft gerade keine Tour."
             case .allDone: "Alle Stopps sind erledigt."
@@ -107,6 +122,7 @@ struct NavigateNextStopIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & OpensIntent {
+        guard !CarPlayNavigation.suspended() else { throw CarPlayNavigation.Failure.inApp }
         guard CarPlayNavigation.isEnabled() else { throw CarPlayNavigation.Failure.disabled }
         guard let container = try? AppSchema.container() else {
             throw CarPlayNavigation.Failure.noStore

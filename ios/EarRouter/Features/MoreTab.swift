@@ -16,6 +16,17 @@ struct MoreTab: View {
 
     @Environment(\.openURL) private var openURL
 
+    /// Reads off while the in-app navigation is chosen, but writes through to
+    /// the stored value, which is never touched by that choice.
+    private var carPlaySwitch: Binding<Bool> {
+        Binding(
+            get: {
+                carPlayEnabled
+                    && providerRaw != NavigationHandoff.Provider.inApp.rawValue
+            },
+            set: { carPlayEnabled = $0 })
+    }
+
     @State private var showingTuercode = false
     @State private var showingKilometer = false
     @State private var showingTemperatur = false
@@ -118,14 +129,21 @@ struct MoreTab: View {
             // the same stop, the same maps app — just started by the car
             // instead of by a thumb.
             Section {
-                Toggle(isOn: $carPlayEnabled) {
+                Toggle(isOn: carPlaySwitch) {
                     SettingsRow(
                         icon: "car.fill", tint: .mint, title: "CarPlay-Navigation",
-                        detail: "Beim Anstecken zum nächsten Stopp")
+                        detail: providerRaw == NavigationHandoff.Provider.inApp.rawValue
+                            ? "Aus bei App-Navigation" : "Beim Anstecken zum nächsten Stopp")
                 }
+                .disabled(providerRaw == NavigationHandoff.Provider.inApp.rawValue)
             } footer: {
                 Text(
-                    "iOS lässt die App das nicht von selbst starten — das übernimmt eine "
+                    providerRaw == NavigationHandoff.Provider.inApp.rawValue
+                        ? "Bei „In der App“ startet das Auto nichts von selbst — die lange Fahrt "
+                            + "zum ersten Stopp läuft mit Waze oder Apple Karten. Der Schalter "
+                            + "kommt so zurück, wie du ihn hattest, sobald du wieder eine "
+                            + "andere Navigation wählst."
+                        : "iOS lässt die App das nicht von selbst starten — das übernimmt eine "
                         + "Automation in „Kurzbefehle“, die einmal eingerichtet wird. "
                         + "Dieser Schalter ist der Hauptschalter dafür.")
             }
@@ -203,7 +221,9 @@ struct MoreTab: View {
         // who turns it on and drives off tomorrow would find that out in the
         // van.
         .onChange(of: carPlayEnabled) { _, on in
-            if on { showingCarPlaySetup = true }
+            if on, providerRaw != NavigationHandoff.Provider.inApp.rawValue {
+                showingCarPlaySetup = true
+            }
         }
     }
 }
