@@ -1,5 +1,6 @@
 import CoreLocation
 import Foundation
+import SwiftUI
 
 /// Hands a stop to whichever navigation app the driver uses.
 ///
@@ -23,6 +24,11 @@ enum NavigationHandoff {
 
     enum Provider: String, CaseIterable, Identifiable {
         case apple, waze, google
+        /// Guidance inside this app, on the same OSRM route the tour was
+        /// planned with — see `GuidanceView`. Everywhere an outside app is
+        /// still needed (a toilet, the car's automation) it hands over to
+        /// Apple Maps, which is what the URLs below do for it.
+        case inApp
 
         var id: String { rawValue }
 
@@ -31,6 +37,7 @@ enum NavigationHandoff {
             case .apple: "Karten"
             case .waze: "Waze"
             case .google: "Google Maps"
+            case .inApp: "In der App"
             }
         }
 
@@ -42,7 +49,7 @@ enum NavigationHandoff {
                 locale: Locale(identifier: "en_US_POSIX"),
                 lat, lon)
             switch self {
-            case .apple:
+            case .apple, .inApp:
                 return URL(string: "https://maps.apple.com/?daddr=\(ll)&dirflg=d")
             case .waze:
                 return URL(string: "https://waze.com/ul?ll=\(ll)&navigate=yes")
@@ -64,7 +71,7 @@ enum NavigationHandoff {
                 return nil
             }
             switch self {
-            case .apple:
+            case .apple, .inApp:
                 return URL(string: "https://maps.apple.com/?daddr=\(q)&dirflg=d")
             case .waze:
                 return URL(string: "https://waze.com/ul?q=\(q)&navigate=yes")
@@ -97,6 +104,32 @@ enum NavigationHandoff {
     /// screen can create but a hand-edited backup could.
     static func url(for stop: Stop) -> URL? {
         destination(for: stop).url(provider)
+    }
+
+    /// Starts navigation to `stop`: in this app when that is the chosen
+    /// provider and the stop has a point to drive to, otherwise by opening
+    /// `url` — what `url(for:)` gave — in the maps app.
+    @MainActor
+    static func start(_ stop: Stop, url: URL, openURL: OpenURLAction) {
+        if provider == .inApp, let point = guidancePoint(for: stop) {
+            GuidanceCoordinator.shared.target = GuidanceTarget(
+                title: [stop.kunde, stop.strasse].compactMap { $0 }.first { !$0.isEmpty } ?? "Stopp",
+                lat: point.lat, lon: point.lon)
+        } else {
+            openURL(url)
+        }
+    }
+
+    /// Where the in-app guidance drives to: the same pin, then entrance, then
+    /// building point as the handoff, but always a point — an address alone
+    /// is something only an outside app can look up.
+    static func guidancePoint(for stop: Stop) -> (lat: Double, lon: Double)? {
+        switch destination(for: stop) {
+        case .point(let lat, let lon): return (lat, lon)
+        case .address, .none:
+            let ok = Coordinates.isPlausible(lat: stop.lat, lon: stop.lon, forPlz: stop.plz ?? "")
+            return ok ? (stop.lat, stop.lon) : nil
+        }
     }
 
     enum Destination: Equatable {

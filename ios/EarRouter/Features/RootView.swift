@@ -69,6 +69,7 @@ struct RootView: View {
         // the tabs because it has to hold whichever tab is in front.
         .syncingLiveActivity()
         .keepingScreenAwakeDuringTour()
+        .guidingInApp()
     }
 }
 

@@ -301,7 +301,7 @@ struct NowTab: View {
     private func navigate(to stop: Stop) {
         guard let url = NavigationHandoff.url(for: stop) else { return }
         TourDeparture.noteNavigation(to: stop)
-        openURL(url)
+        NavigationHandoff.start(stop, url: url, openURL: openURL)
     }
 
     /// Ticks the stop off, offers to take it back, and — on the way past — asks
