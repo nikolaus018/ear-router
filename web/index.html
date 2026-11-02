@@ -2374,6 +2374,7 @@ const ICONS = {
   check: icon('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 'stroke-width="2.5"'),
   people: icon('<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6"/><path d="M17.5 14.3A6 6 0 0 1 21 20"/>'),
   phone: icon('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2Z"/>'),
+  thermometer: icon('<path d="M10 14.8V5a2 2 0 0 1 4 0v9.8a4 4 0 1 1-4 0Z"/><path d="M12 9v7"/>'),
   gauge: icon('<path d="M4.5 18a9 9 0 1 1 15 0"/><path d="M12 13l4-5"/><circle cx="12" cy="13" r="1.4" fill="currentColor" stroke="none"/>'),
   arrowUp: icon('<path d="M12 19V5"/><polyline points="6 11 12 5 18 11"/>', 'stroke-width="2"'),
   arrowDown: icon('<path d="M12 5v14"/><polyline points="6 13 12 19 18 13"/>', 'stroke-width="2"'),
@@ -3240,6 +3241,10 @@ const handedOver = (outcome) => outcome === 'delivered' || outcome === 'neighbou
 /// The van does not go to this door: out of the route, the counts and the
 /// Ladeliste.
 const skipsDoor = (s) => s.kind === 'customer' && (s.outcome === 'toLager' || s.outcome === 'cancelled');
+/// Whether this customer's parcels go in the van: everyone but the abbestellt
+/// ones. A customer marked "ins Lager" is not delivered to, but the parcels are
+/// still loaded to be brought back to the warehouse.
+const loadedInVan = (s) => s.kind === 'customer' && s.outcome !== 'cancelled';
 /// Lager, Pause and Ziel, on a tour that drives them. Ticked off like a door,
 /// but not deliveries. Not Start — the driver is standing in it.
 const isCheckpoint = (s) => (s.kind === 'via' || s.kind === 'end' || s.kind === 'pause') && !s.excluded;
@@ -5477,9 +5482,10 @@ function parcelCount(s) {
 ///        most of anything, then by name.
 ///   TK — the customers themselves, last door first, so the last one in is
 ///        the first one out.
-/// A door the van does not go to is on neither.
+/// Only an abbestellt customer is on neither: one marked "ins Lager" is not
+/// driven to, but the van still carries the parcels to bring back.
 function ladelisteItems(route, mode = ladelisteMode(route)) {
-  const owed = route.stops.filter((s) => s.kind === 'customer' && !skipsDoor(s));
+  const owed = route.stops.filter(loadedInVan);
   if (mode === 'tk') {
     return owed.slice().reverse().map((s, i) => {
       const n = parcelCount(s);
@@ -6729,6 +6735,80 @@ async function copyReport(button) {
 }
 
 // ---------------------------------------------------------------------
+// Temperaturen — three plausible readings for the Kühlnachweis, whole
+// degrees: the start not so cold, the middle colder, the end coldest.
+//   TK: -18 to -10 °C        VM: -18 to -4 °C
+// ---------------------------------------------------------------------
+const TEMPERATUR_MODE_KEY = 'ear_temperatur_modus';
+const TEMPERATUR_MODI = {
+  tk: { title: 'Tiefkühl (TK)', range: '-18 °C bis -10 °C', bands: [[10, 12], [13, 15], [16, 18]] },
+  vm: { title: 'Vitalmenü (VM)', range: '-18 °C bis -4 °C', bands: [[4, 8], [9, 13], [14, 18]] },
+};
+
+/// Start, Mitte, Ende as whole degrees below zero, each from its own band so
+/// they always get colder and both ends of the range can come.
+function generateTemperaturen(modus) {
+  const bands = (TEMPERATUR_MODI[modus] || TEMPERATUR_MODI.tk).bands;
+  return bands.map(([low, high]) => -(low + Math.floor(Math.random() * (high - low + 1))));
+}
+const temperaturText = (v) => `${v} °C`;
+
+let temperaturModus = 'tk';
+let temperaturValues = [];
+
+function openTemperaturSheet() {
+  try { if (localStorage.getItem(TEMPERATUR_MODE_KEY) === 'vm') temperaturModus = 'vm'; } catch (_) { /* private-browsing storage lockout */ }
+  temperaturValues = generateTemperaturen(temperaturModus);
+  paintTemperaturSheet();
+}
+
+function setTemperaturModus(modus) {
+  if (!TEMPERATUR_MODI[modus]) return;
+  temperaturModus = modus;
+  try { localStorage.setItem(TEMPERATUR_MODE_KEY, modus); } catch (_) { /* private-browsing storage lockout */ }
+  temperaturValues = generateTemperaturen(modus);
+  paintTemperaturSheet();
+}
+
+function rollTemperaturen() {
+  temperaturValues = generateTemperaturen(temperaturModus);
+  paintTemperaturSheet();
+}
+
+async function copyTemperatur(index, button) {
+  const text = index < 0 ? temperaturValues.map(temperaturText).join(' / ') : temperaturText(temperaturValues[index]);
+  if (!(await copyText(text))) { toast('Konnte nicht kopiert werden.', 'error'); return; }
+  if (!button || !button.isConnected) return;
+  const before = button.innerHTML;
+  button.innerHTML = index < 0 ? `${ICONS.check} Kopiert!` : ICONS.check;
+  setTimeout(() => { if (button.isConnected) button.innerHTML = before; }, 1500);
+}
+
+function paintTemperaturSheet() {
+  const modus = TEMPERATUR_MODI[temperaturModus];
+  const seg = (m, label) => `<button type="button" role="radio" aria-checked="${temperaturModus === m}" onclick="setTemperaturModus('${m}')" class="seg-btn ${temperaturModus === m ? 'on' : ''}">${label}</button>`;
+  const rows = [['Start', 'Vor Abfahrt'], ['Mitte', 'Tourmitte'], ['Ende', 'Rückkehr']];
+  renderSheetShell(`
+    <h2 class="sheet-title">Temperaturen</h2>
+    <div class="seg" role="radiogroup" aria-label="Tourart">${seg('tk', TEMPERATUR_MODI.tk.title)}${seg('vm', TEMPERATUR_MODI.vm.title)}</div>
+    <div class="${GROUP}">
+      ${rows.map(([title, sub], i) => `
+        <div class="${ROW}">
+          <div class="flex-1 min-w-0"><p class="text-[15px] font-semibold">${title}</p><p class="text-[13px] text-black/55">${sub}</p></div>
+          <p class="text-[20px] font-bold tabular-nums">${temperaturText(temperaturValues[i])}</p>
+          <button type="button" onclick="copyTemperatur(${i}, this)" aria-label="${title} kopieren" class="press-98 flex items-center justify-center w-11 h-11 text-brand-600">${ICONS.copy}</button>
+        </div>`).join('')}
+    </div>
+    <div style="margin-top:1rem">
+      <button type="button" onclick="rollTemperaturen()" class="press-98 wide-btn accent">${ICONS.refresh} Neu ausdenken</button>
+      <button type="button" onclick="copyTemperatur(-1, this)" class="press-98 wide-btn quiet">${ICONS.copy} Alle 3 kopieren</button>
+    </div>
+    <p class="text-[13px] text-black/55 px-1 text-center leading-snug" style="margin-top:.875rem">Drei plausible Temperaturen für den Kühlnachweis: am Start noch nicht so kalt, in der Mitte kälter und am Ende am kältesten (${modus.range}).</p>
+    <div class="pb-2" style="margin-top:.875rem"><button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Fertig</button></div>
+  `, { label: 'Temperaturen' });
+}
+
+// ---------------------------------------------------------------------
 // Kilometerstand — what the van's own odometer says the day was. Two
 // numbers, typed in the yard: before setting off and after getting back.
 // Kept on this device per day; the difference goes on the Tagesabschluss.
@@ -7180,14 +7260,16 @@ function preflightFindings(r) {
   if (stale) {
     out.push({ level: 'problem', icon: ICONS.checkCircle, title: `${stale} ${stale === 1 ? 'Stopp ist' : 'Stopps sind'} noch von einem früheren Tag abgehakt`, detail: 'Setz den Lieferstatus zurück, bevor du losfährst.', action: 'resetDelivered()', actionLabel: 'Zurücksetzen' });
   }
+  // And only for the meals actually loaded -- see `loadedInVan`.
+  const loaded = customers.filter(loadedInVan);
   if (isTkTour(r)) {
-    const doors = owed.length;
+    const doors = loaded.length;
     out.push({ level: 'note', icon: ICONS.box, title: `${doors} ${doors === 1 ? 'Kunde' : 'Kunden'} einladen`, detail: 'Die Ladeliste zählt sie rückwärts auf — letzter Kunde zuerst.', action: 'renderLadeliste()', actionLabel: 'Ladeliste' });
   } else {
     const pieces = ladelisteItems(r, 'vm').reduce((a, x) => a + x.qty, 0);
     if (pieces) out.push({ level: 'note', icon: ICONS.box, title: `${pieces} ${pieces === 1 ? 'Position' : 'Positionen'} einladen`, detail: 'Die Ladeliste hat sie aufgeschlüsselt.', action: 'renderLadeliste()', actionLabel: 'Ladeliste' });
   }
-  const notes = owed.filter((s) => (s.notiz || '').trim()).length;
+  const notes = loaded.filter((s) => (s.notiz || '').trim()).length;
   if (notes) out.push({ level: 'note', icon: ICONS.note, title: `${notes} ${notes === 1 ? 'Notiz' : 'Notizen'} auf der Tour`, detail: 'Stehen bei den Stopps — vor dem Läuten lesen.' });
   return out;
 }
@@ -7686,11 +7768,8 @@ function walkOnDoors(r, current) {
 
 /// Puts a stop's street on the clipboard -- street and number only, which is
 /// what gets pasted into a navigation app or a message to the office.
-async function copyAddress(stopId, button) {
-  const text = String(getStop(stopId)?.strasse || '').trim();
-  if (!text) return;
-  let ok = false;
-  try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (_) {
     // No clipboard API here (an old browser, or a page not served securely).
     const area = document.createElement('textarea');
     area.value = text;
@@ -7698,9 +7777,17 @@ async function copyAddress(stopId, button) {
     area.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
     document.body.appendChild(area);
     area.select();
+    let ok = false;
     try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
     area.remove();
+    return ok;
   }
+}
+
+async function copyAddress(stopId, button) {
+  const text = String(getStop(stopId)?.strasse || '').trim();
+  if (!text) return;
+  const ok = await copyText(text);
   if (!ok) { toast('Die Adresse konnte nicht kopiert werden.', 'error'); return; }
   if (!button || !button.isConnected) { toast('Adresse kopiert ✓', 'success'); return; }
   button.classList.add('copied');
@@ -7899,6 +7986,11 @@ function renderMoreTab() {
           <button onclick="openKilometerSheet()" class="${ROW}">
             ${tile('#30B0C7', ICONS.gauge)}
             <div class="flex-1 min-w-0"><p class="text-[15px]">Kilometerstand</p><p class="text-[13px] text-black/55">Gefahrene Kilometer</p></div>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>
+          <button onclick="openTemperaturSheet()" class="${ROW}">
+            ${tile('#007AFF', ICONS.thermometer)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Temperaturen</p><p class="text-[13px] text-black/55">Zufällige Werte (TK / VM)</p></div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </button>
           <a href="tel:+43189145173,1" class="${ROW}">

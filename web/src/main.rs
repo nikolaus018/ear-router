@@ -7270,19 +7270,23 @@ impl PortalDelivery {
                 }
             })
             .collect();
-        Some(clip_chars(&parts.join(", "), MAX_PAKET_LEN))
+        Some(one_line(&parts.join(", "), MAX_PAKET_LEN)).filter(|p| !p.is_empty())
     }
 
     /// One entry of the list `import_entries` reads.
     fn entry(&self) -> Value {
         let notiz = non_empty(&self.delivery_address.comment).or(non_empty(&self.customer.comment));
+        // Cleaned here, once, for every caller: the import refuses a row over
+        // a newline in a phone line or a Notiz past its limit, and the review
+        // then leaves that row out of "Übernehmen" -- a selected customer
+        // missing from the tour over text nobody typed.
         json!({
-            "kunde": clip_chars(&self.kunde(), MAX_KUNDE_LEN),
-            "strasse": clip_chars(&self.strasse(), MAX_STRASSE_LEN),
+            "kunde": one_line(&self.kunde(), MAX_KUNDE_LEN),
+            "strasse": one_line(&self.strasse(), MAX_STRASSE_LEN),
             "plz": self.plz(),
             "paket": self.paket(),
-            "notiz": notiz.map(|n| clip_chars(&strip_control(n), MAX_NOTIZ_LEN)),
-            "telefon": non_empty(&self.customer.phone).map(|t| clip_chars(t, MAX_TELEFON_LEN)),
+            "notiz": notiz.map(|n| clip_chars(&strip_control(n), MAX_NOTIZ_LEN)).filter(|n| !n.is_empty()),
+            "telefon": non_empty(&self.customer.phone).map(|t| one_line(t, MAX_TELEFON_LEN)).filter(|t| !t.is_empty()),
             "paket_count": self.delivery_bundles.as_ref().map(Vec::len),
         })
     }
@@ -7294,8 +7298,16 @@ fn clip_chars(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
+/// Control characters turned into spaces (newlines kept), then trimmed.
 fn strip_control(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control() || *c == '\n').collect()
+    s.chars().map(|c| if c.is_control() && c != '\n' && c != '\r' { ' ' } else { c }).collect::<String>().trim().to_string()
+}
+
+/// One line, cut to a field limit: every control character -- tabs and
+/// newlines too -- a space, runs of spaces folded, trimmed.
+fn one_line(s: &str, max: usize) -> String {
+    let flat = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>();
+    clip_chars(&flat.split_whitespace().collect::<Vec<_>>().join(" "), max).trim().to_string()
 }
 
 /// Every open delivery of one tour on one day, without its parcels: the
@@ -8567,6 +8579,29 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(order[order.len() - 2..], ["pause".to_string(), "end".to_string()]);
+    }
+
+    /// A line break in a phone line or a Notiz past its limit used to make the
+    /// import refuse the row, and "Übernehmen" left the customer out.
+    #[test]
+    fn portal_text_never_makes_the_import_refuse_the_row() {
+        let d: PortalDelivery = serde_json::from_value(json!({
+            "id": 1,
+            "customer": {
+                "firstname": "Anna\t", "lastname": "Koch",
+                "comment": "x".repeat(1500),
+                "phone": "+436763095249\nSchwester Frau Koch erreichbar ab 10 Uhr, bitte nicht vor neun anrufen"
+            },
+            "delivery_address": { "street": "Gentzgasse  129\n", "zip": "1180" },
+        }))
+        .unwrap();
+        let e = d.entry();
+        let telefon = e["telefon"].as_str().unwrap();
+        assert!(telefon.chars().count() <= MAX_TELEFON_LEN && !telefon.contains('\n'));
+        assert_eq!(e["notiz"].as_str().unwrap().chars().count(), MAX_NOTIZ_LEN);
+        assert_eq!(e["kunde"], "Anna Koch");
+        assert_eq!(e["strasse"], "Gentzgasse 129");
+        assert!(e["paket"].is_null());
     }
 
     /// The pause is ticked like Lager and Ziel, and read back as where the van is.
