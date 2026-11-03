@@ -212,19 +212,6 @@ struct CarPlayNavigationTests {
         }
     }
 
-    /// The in-app navigation holds the switch off without losing it: back on
-    /// Waze, the car start is exactly as the driver left it.
-    @Test func inAppNavigationSuspendsTheSwitchWithoutChangingIt() {
-        let store = defaults()
-        store.set(true, forKey: CarPlayNavigation.enabledKey)
-        store.set(NavigationHandoff.Provider.inApp.rawValue, forKey: NavigationHandoff.providerKey)
-        #expect(CarPlayNavigation.isEnabled(in: store) == false)
-        #expect(store.bool(forKey: CarPlayNavigation.enabledKey))
-
-        store.set(NavigationHandoff.Provider.waze.rawValue, forKey: NavigationHandoff.providerKey)
-        #expect(CarPlayNavigation.isEnabled(in: store))
-    }
-
     /// Whichever maps app the driver picked in Mehr — the car does not get its
     /// own setting.
     @Test func itFollowsTheDriversChosenMapsApp() throws {

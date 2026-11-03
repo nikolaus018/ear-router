@@ -717,7 +717,7 @@ struct MapTab: View {
     private func navigate(to stop: Stop) {
         guard let url = NavigationHandoff.url(for: stop) else { return }
         TourDeparture.noteNavigation(to: stop)
-        NavigationHandoff.start(stop, url: url, openURL: openURL)
+        openURL(url)
     }
 
     private func toggleDelivered(_ stop: Stop) {

@@ -12,20 +12,8 @@ struct MoreTab: View {
         NavigationHandoff.Provider.apple.rawValue
 
     @AppStorage(CarPlayNavigation.enabledKey) private var carPlayEnabled = false
-    @AppStorage(SpeedCameras.enabledKey) private var cameraWarnings = true
 
     @Environment(\.openURL) private var openURL
-
-    /// Reads off while the in-app navigation is chosen, but writes through to
-    /// the stored value, which is never touched by that choice.
-    private var carPlaySwitch: Binding<Bool> {
-        Binding(
-            get: {
-                carPlayEnabled
-                    && providerRaw != NavigationHandoff.Provider.inApp.rawValue
-            },
-            set: { carPlayEnabled = $0 })
-    }
 
     @State private var showingTuercode = false
     @State private var showingKilometer = false
@@ -116,34 +104,22 @@ struct MoreTab: View {
                     SettingsRow(
                         icon: "location.fill", tint: .blue, title: "Navigation")
                 }
-                Toggle(isOn: $cameraWarnings) {
-                    SettingsRow(
-                        icon: "camera.fill", tint: .red, title: "Radarwarnung",
-                        detail: "Nur in der App-Navigation")
-                }
             } footer: {
-                Text("Womit „Navigation starten“ öffnet. Die Radarwarnung gilt nur für „In der App“.")
+                Text("Womit „Navigation starten“ öffnet.")
             }
 
             // Under the navigation picker, because it is the same handover —
             // the same stop, the same maps app — just started by the car
             // instead of by a thumb.
             Section {
-                Toggle(isOn: carPlaySwitch) {
+                Toggle(isOn: $carPlayEnabled) {
                     SettingsRow(
                         icon: "car.fill", tint: .mint, title: "CarPlay-Navigation",
-                        detail: providerRaw == NavigationHandoff.Provider.inApp.rawValue
-                            ? "Aus bei App-Navigation" : "Beim Anstecken zum nächsten Stopp")
+                        detail: "Beim Anstecken zum nächsten Stopp")
                 }
-                .disabled(providerRaw == NavigationHandoff.Provider.inApp.rawValue)
             } footer: {
                 Text(
-                    providerRaw == NavigationHandoff.Provider.inApp.rawValue
-                        ? "Bei „In der App“ startet das Auto nichts von selbst — die lange Fahrt "
-                            + "zum ersten Stopp läuft mit Waze oder Apple Karten. Der Schalter "
-                            + "kommt so zurück, wie du ihn hattest, sobald du wieder eine "
-                            + "andere Navigation wählst."
-                        : "iOS lässt die App das nicht von selbst starten — das übernimmt eine "
+                    "iOS lässt die App das nicht von selbst starten — das übernimmt eine "
                         + "Automation in „Kurzbefehle“, die einmal eingerichtet wird. "
                         + "Dieser Schalter ist der Hauptschalter dafür.")
             }
@@ -221,9 +197,7 @@ struct MoreTab: View {
         // who turns it on and drives off tomorrow would find that out in the
         // van.
         .onChange(of: carPlayEnabled) { _, on in
-            if on, providerRaw != NavigationHandoff.Provider.inApp.rawValue {
-                showingCarPlaySetup = true
-            }
+            if on { showingCarPlaySetup = true }
         }
     }
 }

@@ -76,34 +76,6 @@ actor OSRMClient {
         return (route.distance, route.duration, Self.toPolyline(route.geometry))
     }
 
-    /// The turn-by-turn route from `a` to `b`, for the in-app guidance. The
-    /// same engine and the same profile as every other call here, so the line
-    /// the driver follows is the one the tour was planned and drawn with.
-    func guidanceRoute(
-        from a: (lat: Double, lon: Double),
-        to b: (lat: Double, lon: Double)
-    ) async throws -> GuidanceRoute {
-        let path = "/route/v1/driving/\(Self.coordString([a, b]))"
-            + "?overview=full&geometries=geojson&steps=true"
-        let resp: GuidanceResponse = try await get(path, waypoints: 2)
-        guard resp.code == "Ok" else { throw Self.failure(code: resp.code) }
-        guard let route = resp.routes.first else {
-            throw AppError.message("OSRM: keine Route gefunden")
-        }
-        let steps = route.legs.flatMap(\.steps).map { s in
-            GuidanceStep(
-                type: s.maneuver.type, modifier: s.maneuver.modifier, name: s.name,
-                exit: s.maneuver.exit, distance: s.distance,
-                geometry: Self.flip(s.geometry.coordinates),
-                lanes: (s.intersections?.first?.lanes ?? []).map {
-                    GuidanceLane(indications: $0.indications, valid: $0.valid)
-                })
-        }
-        return GuidanceRoute(
-            steps: steps, geometry: Self.toPolyline(route.geometry),
-            distance: route.distance, duration: route.duration)
-    }
-
     /// Distance, duration and geometry along `coords` in exactly the order
     /// given — for a tour the driver has put in order by hand, where nothing
     /// may be moved. Legs are in that order: `legs[i]` runs from `coords[i]`
@@ -581,39 +553,6 @@ actor OSRMClient {
         /// Only `routeThrough` reads these; `routeLeg` has one and uses the
         /// totals above.
         let legs: [Leg]?
-    }
-    private struct GuidanceResponse: Decodable {
-        let code: String
-        let routes: [GuidanceEntry]
-    }
-    private struct GuidanceEntry: Decodable {
-        let geometry: Geometry
-        let distance: Double
-        let duration: Double
-        let legs: [GuidanceLeg]
-    }
-    private struct GuidanceLeg: Decodable {
-        let steps: [WireStep]
-    }
-    private struct WireStep: Decodable {
-        let distance: Double
-        let name: String
-        let geometry: Geometry
-        let maneuver: WireManeuver
-        /// The first one is the junction of the manoeuvre itself.
-        let intersections: [WireIntersection]?
-    }
-    private struct WireIntersection: Decodable {
-        let lanes: [WireLane]?
-    }
-    private struct WireLane: Decodable {
-        let indications: [String]
-        let valid: Bool
-    }
-    private struct WireManeuver: Decodable {
-        let type: String
-        let modifier: String?
-        let exit: Int?
     }
     private struct TripResponse: Decodable {
         let code: String
