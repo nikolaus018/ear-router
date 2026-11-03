@@ -1342,6 +1342,30 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
+-- The other driver's side of a split tour, per route: stops the driver added
+-- or handed over by hand (ids from 1e9 up, far above any portal delivery id),
+-- and portal deliveries taken off that side.
+CREATE TABLE IF NOT EXISTS route_others (
+    route_id INTEGER NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+    id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    address TEXT NOT NULL,
+    plz TEXT NOT NULL,
+    notiz TEXT,
+    telefon TEXT,
+    lat REAL,
+    lon REAL,
+    paket TEXT,
+    paket_count INTEGER,
+    handed_over INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (route_id, id)
+);
+CREATE TABLE IF NOT EXISTS route_others_hidden (
+    route_id INTEGER NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+    delivery_id INTEGER NOT NULL,
+    PRIMARY KEY (route_id, delivery_id)
+);
+
 -- What a driver has said about the public toilets: marked as no good, and a
 -- note on any of them. By the toilet's own key (name and place), per account.
 CREATE TABLE IF NOT EXISTS restroom_marks (
@@ -1404,6 +1428,13 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     }
     if !route_cols.contains("ladeliste_mode") {
         conn.execute("ALTER TABLE routes ADD COLUMN ladeliste_mode TEXT", [])?;
+    }
+    if !route_cols.contains("portal_tour_id") {
+        conn.execute_batch(
+            "ALTER TABLE routes ADD COLUMN portal_tour_id INTEGER; \
+             ALTER TABLE routes ADD COLUMN portal_tour_name TEXT; \
+             ALTER TABLE routes ADD COLUMN portal_date TEXT;",
+        )?;
     }
     if !route_cols.contains("departed_at") {
         conn.execute("ALTER TABLE routes ADD COLUMN departed_at TEXT", [])?;
@@ -5852,6 +5883,318 @@ async fn put_restroom_mark(
     Ok(Json(json!({ "ok": true })))
 }
 
+// ---------------------------------------------------------------------
+// The other driver's stops -- the iOS app's `OtherStops` and
+// `ManualOtherStops`: the rest of the portal tour a route came from, for the
+// map to show so a split between two vans can be talked through.
+// ---------------------------------------------------------------------
+
+/// Where the ids of hand-added stops start, far above any portal delivery id.
+const MANUAL_OTHER_BASE: i64 = 1_000_000_000;
+
+#[derive(Clone)]
+struct OtherRow {
+    id: i64,
+    name: String,
+    address: String,
+    plz: String,
+    notiz: Option<String>,
+    telefon: Option<String>,
+    lat: Option<f64>,
+    lon: Option<f64>,
+    paket: Option<String>,
+    paket_count: Option<i64>,
+    handed_over: bool,
+}
+
+impl OtherRow {
+    fn json(&self) -> Value {
+        json!({
+            "id": self.id, "name": self.name, "address": self.address, "plz": self.plz,
+            "notiz": self.notiz, "telefon": self.telefon, "lat": self.lat, "lon": self.lon,
+            "paket": self.paket, "paket_count": self.paket_count,
+            "manual": self.id >= MANUAL_OTHER_BASE, "handed_over": self.handed_over,
+        })
+    }
+}
+
+fn other_address_key(strasse: &str, plz: &str) -> String {
+    let street = text::address_match_key(strasse);
+    if street.is_empty() { String::new() } else { format!("{street}|{}", plz.trim()) }
+}
+
+fn manual_others(conn: &Connection, route_id: i64) -> Result<Vec<OtherRow>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, address, plz, notiz, telefon, lat, lon, paket, paket_count, handed_over \
+         FROM route_others WHERE route_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map(params![route_id], |r| {
+            Ok(OtherRow {
+                id: r.get(0)?, name: r.get(1)?, address: r.get(2)?, plz: r.get(3)?, notiz: r.get(4)?,
+                telefon: r.get(5)?, lat: r.get(6)?, lon: r.get(7)?, paket: r.get(8)?, paket_count: r.get(9)?,
+                handed_over: r.get::<_, i64>(10)? != 0,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// The portal tour a route came from: the link made when it was imported or,
+/// for a route that has none, the one tour with the route's name that runs on
+/// the day it was made. Only when that is exactly one -- a guess between two
+/// tours would show somebody else's stops as the other driver's.
+async fn portal_link_of(
+    state: &AppState,
+    user: &AuthUser,
+    route_id: i64,
+) -> Result<Option<(i64, chrono::NaiveDate)>, AppError> {
+    let (tour_id, date, name, created): (Option<i64>, Option<String>, String, String) = {
+        let conn = state.db()?;
+        conn.query_row(
+            "SELECT portal_tour_id, portal_date, name, created_at FROM routes WHERE id = ?1",
+            params![route_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?
+    };
+    if let (Some(id), Some(date)) = (tour_id, date.as_deref().and_then(|d| parse_portal_date(d).ok())) {
+        return Ok(Some((id, date)));
+    }
+    let Some(day) = chrono::DateTime::parse_from_rfc3339(&created).ok().map(|d| d.date_naive()) else {
+        return Ok(None);
+    };
+    let token = portal_token(state, user).await?;
+    let tours: Vec<PortalTour> =
+        portal_json(portal_request(state, reqwest::Method::GET, "supplier/tours", Some(&token)), "Tourenliste").await?;
+    let weekday = german_weekday(day);
+    let name = name.trim().to_string();
+    let hits: Vec<&PortalTour> = tours
+        .iter()
+        .filter(|t| t.runs_on(weekday))
+        .filter(|t| {
+            let tn = t.name.trim();
+            name == tn || name.starts_with(&format!("{tn} –"))
+        })
+        .collect();
+    if hits.len() != 1 {
+        return Ok(None);
+    }
+    let tour = hits[0];
+    let conn = state.db()?;
+    conn.execute(
+        "UPDATE routes SET portal_tour_id = ?1, portal_tour_name = ?2, portal_date = ?3 WHERE id = ?4",
+        params![tour.id, tour.name.trim(), day.format("%Y-%m-%d").to_string(), route_id],
+    )?;
+    Ok(Some((tour.id, day)))
+}
+
+/// `GET /api/routes/:id/others`: the tour's open deliveries that are not this
+/// route's, placed on the map, with what the driver added or handed over by
+/// hand. The portal leaves delivered doors out of its list, so by the
+/// afternoon this is a picture of what is still to do.
+async fn get_others(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    AxPath(route_id): AxPath<i64>,
+) -> Result<Json<Value>, AppError> {
+    let Some((tour_id, date)) = portal_link_of(&state, &user, route_id).await? else {
+        return Err(AppError::BadRequest(
+            "Diese Tour stammt nicht aus dem Zusteller-Portal — die Stopps der anderen sind von dort.".into(),
+        ));
+    };
+    let (mine_names, mine_addresses, hidden, manual): (HashSet<String>, HashSet<String>, HashSet<i64>, Vec<OtherRow>) = {
+        let conn = state.db()?;
+        let mut names = HashSet::new();
+        let mut addresses = HashSet::new();
+        let mut stmt = conn.prepare("SELECT kunde, strasse, plz FROM stops WHERE route_id = ?1 AND kind = 'customer'")?;
+        for row in stmt.query_map(params![route_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })? {
+            let (kunde, strasse, plz) = row?;
+            let name = text::address_match_key(&kunde);
+            if !name.is_empty() {
+                names.insert(name);
+            }
+            let address = other_address_key(&strasse, &plz);
+            if !address.is_empty() {
+                addresses.insert(address);
+            }
+        }
+        let mut stmt = conn.prepare("SELECT delivery_id FROM route_others_hidden WHERE route_id = ?1")?;
+        let hidden = stmt.query_map(params![route_id], |r| r.get::<_, i64>(0))?.collect::<Result<HashSet<_>, _>>()?;
+        (names, addresses, hidden, manual_others(&conn, route_id)?)
+    };
+
+    let token = portal_token(&state, &user).await?;
+    let deliveries = portal_deliveries_of(&state, &token, tour_id, date).await?;
+    let rest: Vec<&PortalDelivery> = deliveries
+        .iter()
+        .filter(|d| {
+            let name = text::address_match_key(&d.kunde());
+            if !name.is_empty() && mine_names.contains(&name) {
+                return false;
+            }
+            let address = other_address_key(&d.strasse(), &d.plz());
+            address.is_empty() || !mine_addresses.contains(&address)
+        })
+        .collect();
+    let fetched = rest.len();
+    let kept: Vec<&PortalDelivery> = rest.into_iter().filter(|d| !hidden.contains(&d.id)).collect();
+    let hidden_count = fetched - kept.len();
+
+    // A stop handed over is still on the portal's list as open: showing it
+    // again would show it twice, once from the portal and once from the hand-over.
+    let held_names: HashSet<String> =
+        manual.iter().map(|m| text::address_match_key(&m.name)).filter(|k| !k.is_empty()).collect();
+    let held_addresses: HashSet<String> =
+        manual.iter().map(|m| other_address_key(&m.address, &m.plz)).filter(|k| !k.is_empty()).collect();
+    let kept: Vec<&PortalDelivery> = kept
+        .into_iter()
+        .filter(|d| {
+            let name = text::address_match_key(&d.kunde());
+            if !name.is_empty() && held_names.contains(&name) {
+                return false;
+            }
+            let address = other_address_key(&d.strasse(), &d.plz());
+            address.is_empty() || !held_addresses.contains(&address)
+        })
+        .collect();
+
+    // Placed through the geocoder, four at a time; one nobody can place is
+    // kept in the count and left off the map.
+    let semaphore = Arc::new(Semaphore::new(4));
+    let mut jobs: JoinSet<(usize, Option<(f64, f64)>)> = JoinSet::new();
+    let state_arc = Arc::clone(&state);
+    for (index, d) in kept.iter().enumerate() {
+        let (strasse, plz) = (d.strasse(), d.plz());
+        let semaphore = Arc::clone(&semaphore);
+        let state = Arc::clone(&state_arc);
+        jobs.spawn(async move {
+            let _permit = semaphore.acquire().await;
+            let hit = geocode_address_any(&state, &strasse, &plz).await.ok().map(|(lat, lon, _, _)| (lat, lon));
+            (index, hit)
+        });
+    }
+    let mut placed: Vec<Option<(f64, f64)>> = vec![None; kept.len()];
+    while let Some(joined) = jobs.join_next().await {
+        if let Ok((index, hit)) = joined {
+            placed[index] = hit;
+        }
+    }
+    let mut others: Vec<Value> = kept
+        .iter()
+        .zip(placed)
+        .map(|(d, hit)| {
+            let entry = d.entry();
+            json!({
+                "id": d.id,
+                "name": if d.kunde().is_empty() { "Ohne Namen".to_string() } else { d.kunde() },
+                "address": d.strasse(), "plz": d.plz(),
+                "notiz": entry["notiz"], "telefon": entry["telefon"],
+                "lat": hit.map(|h| h.0), "lon": hit.map(|h| h.1),
+                "paket": null, "paket_count": null, "manual": false, "handed_over": false,
+            })
+        })
+        .collect();
+    others.extend(manual.iter().map(OtherRow::json));
+    Ok(Json(json!({
+        "others": others,
+        "hidden": hidden_count,
+        "link": { "tour_id": tour_id, "date": date.format("%Y-%m-%d").to_string() },
+    })))
+}
+
+#[derive(Deserialize)]
+struct OtherAdd {
+    name: Option<String>,
+    address: String,
+    plz: String,
+    notiz: Option<String>,
+    telefon: Option<String>,
+    paket: Option<String>,
+    paket_count: Option<i64>,
+    #[serde(default)]
+    handed_over: bool,
+    lat: Option<f64>,
+    lon: Option<f64>,
+}
+
+/// `POST /api/routes/:id/others`: puts a stop on the other driver's side by
+/// hand -- a Nachlieferung, or one of this route's customers handed over. An
+/// address nobody can place is not added: a stop with no pin and no way to
+/// check it would only be a number.
+async fn add_other(
+    State(state): State<Arc<AppState>>,
+    AxPath(route_id): AxPath<i64>,
+    Json(p): Json<OtherAdd>,
+) -> Result<Json<Value>, AppError> {
+    let address = one_line(&p.address, MAX_STRASSE_LEN);
+    let plz = p.plz.trim().to_string();
+    if address.is_empty() || plz.is_empty() {
+        return Err(AppError::BadRequest("Adresse und PLZ werden gebraucht.".into()));
+    }
+    check_plz(&plz)?;
+    let name = one_line(p.name.as_deref().unwrap_or(""), MAX_KUNDE_LEN);
+    let name = if name.is_empty() { "Nachlieferung".to_string() } else { name };
+    let (lat, lon) = match (p.lat, p.lon) {
+        (Some(lat), Some(lon)) if lat.is_finite() && lon.is_finite() => (Some(lat), Some(lon)),
+        _ => {
+            let (lat, lon, _, _) = geocode_address_any(&state, &address, &plz)
+                .await
+                .map_err(|_| AppError::BadRequest("Die Adresse wurde nicht gefunden.".into()))?;
+            (Some(lat), Some(lon))
+        }
+    };
+    let notiz = p.notiz.as_deref().map(|n| clip_chars(&strip_control(n), MAX_NOTIZ_LEN)).filter(|n| !n.is_empty());
+    let telefon = p.telefon.as_deref().map(|t| one_line(t, MAX_TELEFON_LEN)).filter(|t| !t.is_empty());
+    let paket = p.paket.as_deref().map(|t| one_line(t, MAX_NOTIZ_LEN)).filter(|t| !t.is_empty());
+    let conn = state.db()?;
+    let id: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(id), ?2) + 1 FROM route_others WHERE route_id = ?1",
+        params![route_id, MANUAL_OTHER_BASE - 1],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO route_others (route_id, id, name, address, plz, notiz, telefon, lat, lon, paket, paket_count, handed_over) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![route_id, id, name, address, plz, notiz, telefon, lat, lon, paket, p.paket_count, p.handed_over as i64],
+    )?;
+    let row = OtherRow {
+        id, name, address, plz, notiz, telefon, lat, lon, paket, paket_count: p.paket_count, handed_over: p.handed_over,
+    };
+    Ok(Json(row.json()))
+}
+
+/// `DELETE /api/routes/:id/others/:other_id`: a stop the driver added is
+/// removed; a portal delivery is taken off the other driver's side (it goes
+/// to the Lager, say, and is neither van's to deliver) and stays off when the
+/// list is fetched again.
+async fn remove_other(
+    State(state): State<Arc<AppState>>,
+    AxPath((route_id, other_id)): AxPath<(i64, i64)>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db()?;
+    if other_id >= MANUAL_OTHER_BASE {
+        conn.execute("DELETE FROM route_others WHERE route_id = ?1 AND id = ?2", params![route_id, other_id])?;
+    } else {
+        conn.execute(
+            "INSERT OR IGNORE INTO route_others_hidden (route_id, delivery_id) VALUES (?1, ?2)",
+            params![route_id, other_id],
+        )?;
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// `POST /api/routes/:id/others/unhide`: the deliveries taken off come back.
+async fn unhide_others(
+    State(state): State<Arc<AppState>>,
+    AxPath(route_id): AxPath<i64>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db()?;
+    conn.execute("DELETE FROM route_others_hidden WHERE route_id = ?1", params![route_id])?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[derive(Deserialize)]
 struct PauseSwitch {
     on: bool,
@@ -7855,6 +8198,9 @@ struct PortalImport {
     entries: Vec<Value>,
     /// The route to load into. Absent makes a new one, named for the tour.
     route_id: Option<i64>,
+    /// The portal tour the entries came from, remembered on the route so the
+    /// map can show the rest of that tour -- the other driver's stops.
+    tour_id: Option<i64>,
 }
 
 /// `POST /api/portal/entries`: the chosen deliveries in full -- name,
@@ -8006,6 +8352,14 @@ async fn portal_import(
             insert_route(&state, user.id, &name)?
         }
     };
+
+    if let Some(tour_id) = payload.tour_id {
+        let conn = state.db()?;
+        conn.execute(
+            "UPDATE routes SET portal_tour_id = ?1, portal_tour_name = ?2, portal_date = ?3 WHERE id = ?4",
+            params![tour_id, payload.tour_name.trim(), date.format("%Y-%m-%d").to_string(), route_id],
+        )?;
+    }
 
     match import_entries(&state, route_id, &Value::Array(entries), true).await {
         Ok(result) => Ok(Json(result)),
@@ -8215,6 +8569,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/routes/:id/departed", post(mark_departed))
         .route("/api/routes/:id/order", put(set_stop_order))
         .route("/api/routes/:id/pause", post(set_pause))
+        .route("/api/routes/:id/others", get(get_others).post(add_other))
+        .route("/api/routes/:id/others/unhide", post(unhide_others))
+        .route("/api/routes/:id/others/:other_id", axum::routing::delete(remove_other))
         .route("/api/routes/:id/reset-delivered", post(reset_delivered))
         .route("/api/routes/:id/recheck-addresses", post(recheck_addresses))
         .route("/api/routes/:id/stops", post(add_stop))

@@ -5259,7 +5259,7 @@ async function applyReview() {
   const seq = nextSeq();
   try {
     const body = {
-      tour_name: tour.name, date, route_id: gourmet.routeId,
+      tour_name: tour.name, tour_id: tour.id, date, route_id: gourmet.routeId,
       entries: sending.map(({ failed, ...e }) => e),
     };
     const result = await api('/portal/import', { method: 'POST', body: JSON.stringify(body), timeoutMs: 8 * 60 * 1000, signal: importController.signal });
@@ -6229,9 +6229,12 @@ function renderMapTab() {
 
       ${r ? `
         <div class="absolute bottom-0 inset-x-0 z-10 px-4" style="pointer-events:none; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
-          <div class="flex" style="justify-content:flex-end; gap:.5rem; margin-bottom:.625rem">
+          <div class="flex" style="justify-content:space-between; align-items:flex-end; gap:.5rem; margin-bottom:.625rem">
+            <div data-split-card style="pointer-events:auto">${splitCardHtml()}</div>
+            <div class="flex" style="gap:.5rem">
             <button type="button" onclick="openMapOptions()" aria-label="Kartenoptionen" title="Kartenoptionen" class="map-fit press-95" style="pointer-events:auto">${ICONS.kebab}</button>
             <button type="button" onclick="fitMapToRoute()" aria-label="Ganze Route zeigen" title="Ganze Route zeigen" class="map-fit press-95" style="pointer-events:auto">${ICONS.expand}</button>
+            </div>
           </div>
           <div data-map-card style="pointer-events:auto">${mapCardHtml() || mapDockHtml()}</div>
         </div>
@@ -8586,7 +8589,7 @@ const AERIAL_LAYER_IDS = ['at-ortho', 'wien-lb', 'wien-labels'];
 // The route's own layers, in draw order (casing under line). Everything the
 // app adds to the style that is neither basemap nor imagery — so switching
 // basemaps has to leave both alone. See `mountAerialLayers`.
-const ROUTE_LAYER_IDS = ['entrance-links', 'route-line-casing', 'route-line', 'restrooms'];
+const ROUTE_LAYER_IDS = ['entrance-links', 'route-line-casing', 'route-line', 'restrooms', 'others'];
 
 // Where the nationwide overview imagery hands over to Vienna's own
 // high-resolution imagery. Street level: below this the driver is looking at
@@ -9371,7 +9374,25 @@ function ensureRouteLayers(map) {
       },
     });
   }
+  // The other driver's stops, pink, while the driver has them switched on.
+  if (!map.getSource('others')) {
+    map.addSource('others', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  }
+  if (!map.getLayer('others')) {
+    map.addLayer({
+      id: 'others',
+      type: 'circle',
+      source: 'others',
+      paint: {
+        'circle-color': '#FF2D55',
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 5, 14, 9, 17, 13],
+        'circle-stroke-color': '#fff',
+        'circle-stroke-width': 2,
+      },
+    });
+  }
   refreshRestroomLayer(map);
+  refreshOthersLayer(map);
 }
 
 function drawRouteOnMap(map, r, { fit = true } = {}) {
@@ -9593,11 +9614,15 @@ function initMapTabMap() {
     const map = newMap(mapTabEl, {});
     mapTabMap = map;
     map.on('click', (e) => {
-      const hit = map.getLayer('restrooms') ? map.queryRenderedFeatures(e.point, { layers: ['restrooms'] })[0] : null;
-      if (hit) openRestroomCard(hit.properties.key); else closeMapCard();
+      const layers = ['others', 'restrooms'].filter((id) => map.getLayer(id));
+      const hit = layers.length ? map.queryRenderedFeatures(e.point, { layers })[0] : null;
+      if (hit && hit.layer.id === 'others') openOtherCard(Number(hit.properties.id));
+      else if (hit) openRestroomCard(hit.properties.key);
+      else closeMapCard();
     });
     map.on('mousemove', (e) => {
-      const over = map.getLayer('restrooms') && map.queryRenderedFeatures(e.point, { layers: ['restrooms'] }).length;
+      const layers = ['others', 'restrooms'].filter((id) => map.getLayer(id));
+      const over = layers.length && map.queryRenderedFeatures(e.point, { layers }).length;
       map.getCanvas().style.cursor = over ? 'pointer' : '';
     });
     // The element's real size is still settling the tick it's inserted
@@ -9636,6 +9661,7 @@ function initMapTabMap() {
 
 function syncMapTabRoute() {
   const map = mapTabMap;
+  if (map) { refreshOthersLayer(map); paintSplitCard(); }
   if (map && showRestrooms() && !restroomData.list) loadRestrooms().then(() => refreshRestroomLayer(map)).catch(() => {});
   const r = state.currentRoute;
   if (!map || !r) return;
@@ -9756,6 +9782,271 @@ function mapDockHtml() {
 }
 
 // ---------------------------------------------------------------------
+// The other driver's stops -- the iOS app's map layer for a tour split
+// between two vans: the rest of the portal tour, pink, with a count of who has
+// how many, so the split can be talked through with the map in front of both.
+// Nothing here is stored on the device: the server keeps what the driver
+// added, handed over or took off, per tour.
+// ---------------------------------------------------------------------
+const othersState = { show: false, routeId: null, list: [], total: 0, hidden: 0, link: null, token: 0, taking: false };
+
+function othersShown() { return othersState.show && othersState.routeId === state.currentRoute?.id; }
+const getOther = (id) => othersState.list.find((o) => o.id === id);
+
+function refreshOthersLayer(map) {
+  const src = map && map.getSource && map.getSource('others');
+  if (!src) return;
+  const features = othersShown() ? othersState.list.filter((o) => Number.isFinite(o.lat) && Number.isFinite(o.lon)).map((o) => ({
+    type: 'Feature', properties: { id: o.id }, geometry: { type: 'Point', coordinates: [o.lon, o.lat] },
+  })) : [];
+  src.setData({ type: 'FeatureCollection', features });
+}
+
+function paintSplitCard() {
+  const slot = document.querySelector('[data-split-card]');
+  if (slot) slot.innerHTML = splitCardHtml();
+}
+
+/// How the tour is split at the moment: this route's own customers against the
+/// other driver's. Only the doors the van goes to count as mine -- one that is
+/// abbestellt, or whose meal goes to the Lager, is nobody's share of the work.
+function splitCardHtml() {
+  const r = state.currentRoute;
+  if (!r || !othersShown()) return '';
+  const mine = r.stops.filter((s) => s.kind === 'customer' && !skipsDoor(s)).length;
+  const row = (title, count, color) => `<p class="flex items-center gap-2 text-[14px] font-semibold" style="font-variant-numeric:tabular-nums"><span style="width:10px;height:10px;border-radius:50%;background:${color};display:inline-block"></span>${title}: ${count}</p>`;
+  return `<div class="bg-white/90 backdrop-blur-xl rounded-2xl shadow-lg" style="padding:.625rem .875rem; display:flex; flex-direction:column; gap:.375rem">
+    ${row('Meine Stopps', mine, '#007AFF')}${row('Andere Stopps', othersState.total, '#FF2D55')}
+  </div>`;
+}
+
+function fitMapToRouteAndOthers() {
+  const map = mapTabMap;
+  const r = state.currentRoute;
+  if (!map || !r) return;
+  const bounds = routeBounds(r);
+  for (const o of othersState.list) if (Number.isFinite(o.lat) && Number.isFinite(o.lon)) bounds.extend([o.lon, o.lat]);
+  if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 48, maxZoom: 16, duration: prefersReducedMotion() ? 0 : 450 });
+}
+
+/// Fetches the rest of the route's portal tour and puts it on the map. A
+/// failure switches the layer back off and says why, rather than leaving a
+/// switch on that shows nothing.
+async function loadOthers() {
+  const r = state.currentRoute;
+  if (!r) return;
+  const routeId = r.id;
+  const token = ++othersState.token;
+  showProgress('Stopps der anderen werden geladen …');
+  try {
+    const res = await api(`/routes/${routeId}/others`, { timeoutMs: 3 * 60 * 1000 });
+    if (token !== othersState.token) return;
+    Object.assign(othersState, { routeId, list: res.others, total: res.others.length, hidden: res.hidden, link: res.link, show: true });
+    if (!res.others.length) {
+      othersState.show = false;
+      toast('Auf dieser Tour gibt es keine weiteren offenen Stopps.', 'info');
+    }
+  } catch (err) {
+    if (token !== othersState.token) return;
+    othersState.show = false;
+    toast(err.message, 'error');
+  } finally {
+    if (token === othersState.token) hideProgress();
+    refreshOthersLayer(mapTabMap);
+    paintSplitCard();
+    if (othersShown()) fitMapToRouteAndOthers();
+  }
+}
+
+function setShowOthers(on) {
+  if (on) { othersState.show = true; loadOthers(); return; }
+  othersState.token++;
+  othersState.show = false;
+  if (mapCard?.other) closeMapCard();
+  refreshOthersLayer(mapTabMap);
+  paintSplitCard();
+}
+
+async function unhideOthers() {
+  const r = state.currentRoute;
+  if (!r) return;
+  try {
+    await api(`/routes/${r.id}/others/unhide`, { method: 'POST', retry: true });
+    loadOthers();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function openOtherCard(id) {
+  mapCard = { other: id };
+  paintMapCard();
+}
+
+function otherCardHtml() {
+  const o = getOther(mapCard.other);
+  if (!o) return '';
+  const status = o.handed_over ? 'Von dir an die anderen übergeben'
+    : o.manual ? 'Von dir eingetragen, nicht aus dem Portal' : 'Gehört zur Tour, aber nicht zu deiner Route';
+  const nav = MAPS_PROVIDERS[getMapsProvider()].point(o.lat.toFixed(NAV_COORD_DECIMALS), o.lon.toFixed(NAV_COORD_DECIMALS));
+  return `
+    <div class="map-card" data-bottom-dock>
+      <div class="flex items-start gap-3">
+        <span class="shrink-0 flex items-center justify-center text-white" style="width:28px;height:28px;border-radius:50%;background:#FF2D55;margin-top:.15rem">${ICONS.person}</span>
+        <div class="flex-1 min-w-0">
+          <p class="text-[19px] font-bold" style="line-height:1.25; overflow-wrap:anywhere">${escapeHtml(o.name)}</p>
+          <p class="text-[15px] text-black/55 mt-0.5" style="overflow-wrap:anywhere">${escapeHtml(`${o.address}, ${o.plz}`)}</p>
+          <p class="text-[13px] mt-0.5" style="color:#FF2D55">${status}</p>
+        </div>
+        <button type="button" onclick="closeMapCard()" aria-label="Schließen" title="Schließen" class="tap-target press-fade w-9 h-9 shrink-0 flex items-center justify-center text-black/55 text-lg" style="margin:-.375rem -.375rem 0 0">${ICONS.close}</button>
+      </div>
+      ${o.notiz ? `<p class="now-fact"><span>${ICONS.note}</span><span>${escapeHtml(o.notiz)}</span></p>` : ''}
+      ${o.telefon ? `<p class="now-fact"><span>${ICONS.phone}</span><span>${escapeHtml(o.telefon)}</span></p>` : ''}
+      <div style="margin-top:1rem">
+        <a href="${nav}" target="_blank" rel="noopener" class="press-98 wide-btn accent">${ICONS.arrowTurn} Navigation</a>
+        <button type="button" onclick="takeOverOther(${o.id})" class="press-98 wide-btn quiet" style="color:#007AFF">${ICONS.back} An mich übergeben</button>
+        <button type="button" onclick="removeOther(${o.id})" class="press-98 wide-btn quiet" style="color:#D70015">${o.manual ? ICONS.trash : ICONS.close} ${o.manual ? 'Entfernen' : 'Aus den anderen entfernen'}</button>
+      </div>
+    </div>`;
+}
+
+function dropOther(id) {
+  othersState.list = othersState.list.filter((o) => o.id !== id);
+  othersState.total = Math.max(0, othersState.total - 1);
+  refreshOthersLayer(mapTabMap);
+  paintSplitCard();
+}
+
+async function removeOther(id) {
+  const r = state.currentRoute;
+  const o = getOther(id);
+  if (!r || !o) return;
+  closeMapCard();
+  try {
+    await api(`/routes/${r.id}/others/${id}`, { method: 'DELETE', retry: true });
+    if (!o.manual) othersState.hidden++;
+    dropOther(id);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+/// Moves one of the other driver's stops onto this route: the way back from
+/// `handOverStop`. A portal stop is fetched with its Paket first, since the
+/// list the map shows carries no meals; if that call fails the stop is still
+/// taken, plainly, and the driver is told what is missing.
+async function takeOverOther(id) {
+  const r = state.currentRoute;
+  const o = getOther(id);
+  if (!r || !o || othersState.taking) return;
+  const routeId = r.id;
+  othersState.taking = true;
+  closeMapCard();
+  showProgress('Stopp wird übernommen …');
+  let entry = { kunde: o.name, strasse: o.address, plz: o.plz, paket: o.paket, notiz: o.notiz, telefon: o.telefon };
+  let missingPaket = false;
+  try {
+    if (!o.manual) {
+      try {
+        const link = othersState.link;
+        const res = await api('/portal/entries', { method: 'POST', body: JSON.stringify({ tour_id: link.tour_id, date: link.date, delivery_ids: [o.id] }) });
+        const detail = res.entries?.[0];
+        if (detail) entry = { ...detail, kunde: detail.kunde || o.name }; else missingPaket = true;
+      } catch (_) { missingPaket = true; }
+    }
+    const seq = nextSeq();
+    const updated = await api(`/routes/${routeId}/stops`, {
+      method: 'POST',
+      body: JSON.stringify({ kunde: entry.kunde, strasse: entry.strasse, plz: entry.plz, paket: entry.paket || null, notiz: entry.notiz || null, telefon: entry.telefon || null }),
+    });
+    if (o.manual) await api(`/routes/${routeId}/others/${id}`, { method: 'DELETE', retry: true }).catch(() => {});
+    if (applyRouteUpdate(seq, routeId, updated)) render(true);
+    if (othersState.routeId === routeId) dropOther(id);
+    if (missingPaket) toast(`„${o.name}“ ist jetzt bei dir, aber das Paket konnte nicht geladen werden. Es steht im Portal.`, 'error');
+  } catch (err) {
+    toast(err.message || 'Der Stopp konnte nicht übernommen werden.', 'error');
+  } finally {
+    othersState.taking = false;
+    hideProgress();
+  }
+}
+
+/// Moves one of the route's own customers to the other driver's side: off this
+/// tour, onto theirs, where it is counted and drawn like any other.
+async function handOverStop(stopId) {
+  const r = state.currentRoute;
+  const stop = r?.stops.find((s) => s.id === stopId);
+  if (!r || !stop) return;
+  const ok = await confirmSheet({
+    title: 'An anderen übergeben?',
+    message: `„${stop.kunde || 'Dieser Stopp'}“ wird aus deiner Tour genommen und zählt bei den anderen.`,
+    confirmLabel: 'An anderen übergeben', danger: true,
+  });
+  if (!ok) return;
+  const routeId = r.id;
+  const placed = Number.isFinite(stop.lat) && Number.isFinite(stop.lon) && (stop.lat !== 0 || stop.lon !== 0);
+  const body = {
+    name: stop.kunde || '', address: stop.strasse || '', plz: stop.plz || '', notiz: stop.notiz || null, telefon: stop.telefon || null,
+    paket: stop.paket || null, paket_count: stop.paket_count ?? null, handed_over: true,
+    lat: placed ? stop.lat : null, lon: placed ? stop.lon : null,
+  };
+  closeMapCard();
+  showProgress('Stopp wird übergeben …');
+  try {
+    // Off this tour and onto theirs in one go: waiting in between left the
+    // stop on neither side for as long as the answer took.
+    const seq = nextSeq();
+    const updated = await api(`/stops/${stopId}`, { method: 'DELETE' });
+    const given = await api(`/routes/${routeId}/others`, { method: 'POST', body: JSON.stringify(body) });
+    if (applyRouteUpdate(seq, routeId, updated)) render(true);
+    if (othersState.routeId === routeId) {
+      othersState.list.push(given);
+      othersState.total++;
+      refreshOthersLayer(mapTabMap);
+      paintSplitCard();
+    }
+  } catch (err) {
+    toast(err.message || 'Der Stopp konnte nicht übergeben werden.', 'error');
+  } finally {
+    hideProgress();
+  }
+}
+
+/// A delivery that is not in the portal -- a Nachlieferung, say. Placed through
+/// the same geocoder as every address; one it cannot place is not added.
+function openAddOtherSheet() {
+  renderSheetShell(`
+    <h2 class="sheet-title">Stopp der anderen</h2>
+    <p class="sheet-lead">Für eine Lieferung, die nicht im Portal steht, etwa eine Nachlieferung. Sie zählt bei den anderen mit.</p>
+    <div class="space-y-3">
+      <div><label class="${LABEL}" for="other-name">Name (optional)</label><input id="other-name" maxlength="${LIMITS.kunde}" autocomplete="off" class="${FIELD}" /></div>
+      <div><label class="${LABEL}" for="other-strasse">Adresse</label><input id="other-strasse" maxlength="${LIMITS.strasse}" autocomplete="off" placeholder="z. B. Hörlgasse 4" class="${FIELD}" /></div>
+      <div><label class="${LABEL}" for="other-plz">PLZ</label><input id="other-plz" inputmode="numeric" maxlength="4" autocomplete="off" class="${FIELD}" /></div>
+    </div>
+    <div class="pb-2" style="margin-top:1.25rem">
+      <button type="button" onclick="addOtherStop()" class="press-98 wide-btn accent">Hinzufügen</button>
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
+    </div>
+  `, { label: 'Stopp der anderen' });
+}
+
+async function addOtherStop() {
+  const r = state.currentRoute;
+  if (!r) return;
+  const val = (id) => document.getElementById(id)?.value.trim() || '';
+  const name = val('other-name'), address = val('other-strasse'), plz = val('other-plz');
+  if (!address || !plz) { toast('Adresse und PLZ werden gebraucht.', 'error'); return; }
+  closeSheet();
+  showProgress('Adresse wird gesucht …');
+  try {
+    const stop = await api(`/routes/${r.id}/others`, { method: 'POST', body: JSON.stringify({ name, address, plz }) });
+    if (othersState.routeId === r.id) {
+      othersState.list.push(stop);
+      othersState.total++;
+      refreshOthersLayer(mapTabMap);
+      paintSplitCard();
+    }
+  } catch (err) { toast(err.message, 'error'); }
+  finally { hideProgress(); }
+}
+
+// ---------------------------------------------------------------------
 // Public toilets on the map -- the iOS app's `Restroom`, `RestroomMarks` and
 // the card its pin opens. A layer and nothing more: the driver picks one on
 // the map. The list is the one the server ships with; the marks ("unbrauchbar")
@@ -9832,16 +10123,31 @@ function setShowRestrooms(on) {
   }
 }
 
-/// What the Karte tab's menu holds on iOS: the switch for the toilets.
-function openMapOptions() {
+/// What the Karte tab's menu holds on iOS: the toilets, and -- for a driver
+/// signed in to the portal -- the other driver's stops.
+async function openMapOptions() {
+  let portal = false;
+  try { portal = !!(await api('/portal/status')).logged_in; } catch (_) { /* the toilets are still here */ }
+  const r = state.currentRoute;
+  const shown = othersShown();
+  const row = (icon, label, checked, handler) => `
+      <label class="flex items-center gap-3 px-4 py-3.5 cursor-pointer">
+        <span class="w-5 flex shrink-0 text-black/55 text-lg">${icon}</span>
+        <span class="flex-1 min-w-0 text-[15px] font-medium">${label}</span>
+        <input type="checkbox" ${checked ? 'checked' : ''} onchange="${handler}" class="w-6 h-6 shrink-0 accent-brand-600" />
+      </label>`;
+  const item = (icon, label, onclick) => `
+      <button type="button" onclick="closeSheet(); ${onclick}" class="w-full flex items-center gap-3 text-left px-4 py-3.5 active:bg-black/5">
+        <span class="w-5 flex shrink-0 text-black/55 text-lg">${icon}</span>
+        <span class="flex-1 min-w-0 text-[15px] font-medium">${label}</span>
+      </button>`;
   renderSheetShell(`
     <h2 class="sheet-title">Karte</h2>
     <div class="${GROUP} mb-4">
-      <label class="flex items-center gap-3 px-4 py-3.5 cursor-pointer">
-        <span class="w-5 flex shrink-0 text-black/55 text-lg">${ICONS.toilet}</span>
-        <span class="flex-1 min-w-0 text-[15px] font-medium">WCs anzeigen</span>
-        <input type="checkbox" ${showRestrooms() ? 'checked' : ''} onchange="setShowRestrooms(this.checked)" class="w-6 h-6 shrink-0 accent-brand-600" />
-      </label>
+      ${row(ICONS.toilet, 'WCs anzeigen', showRestrooms(), 'setShowRestrooms(this.checked)')}
+      ${portal && r ? row(ICONS.person, shown ? `Stopps der anderen (${othersState.total})` : 'Stopps der anderen', shown, 'closeSheet(); setShowOthers(this.checked)') : ''}
+      ${portal && r && shown && othersState.hidden > 0 ? item(ICONS.refresh, `Entfernte Stopps zurückholen (${othersState.hidden})`, 'unhideOthers()') : ''}
+      ${portal && r && shown ? item(ICONS.plus, 'Stopp der anderen hinzufügen …', 'openAddOtherSheet()') : ''}
     </div>
     <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Fertig</button></div>
   `, { label: 'Karte' });
@@ -9922,6 +10228,7 @@ function restroomCardHtml() {
 
 function mapCardHtml() {
   if (mapCard?.restroom) return restroomCardHtml();
+  if (mapCard?.other != null) return otherCardHtml();
   const r = state.currentRoute;
   const stop = mapCard && r?.stops.find((s) => s.id === mapCard.id);
   if (!stop) return '';
@@ -9988,6 +10295,7 @@ function mapCardHtml() {
         <a href="${navUrl(stop)}" target="_blank" rel="noopener" onclick="noteDeparture(${stop.id})" class="press-98 wide-btn accent">${ICONS.arrowTurn} Navigation</a>
         <button type="button" onclick="showStopInList(${stop.id})" class="press-98 wide-btn quiet">${ICONS.list} In der Liste</button>
       </div>
+      ${othersShown() && stop.kind === 'customer' && !stop.outcome ? `<button type="button" onclick="handOverStop(${stop.id})" class="press-98 wide-btn quiet" style="margin-top:.625rem; color:#FF2D55">${ICONS.arrowTurn} An anderen übergeben</button>` : ''}
     </div>`;
 }
 
