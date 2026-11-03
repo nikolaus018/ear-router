@@ -1429,6 +1429,9 @@ fn init_db(path: &FsPath) -> Result<(), AppError> {
     if !route_cols.contains("ladeliste_mode") {
         conn.execute("ALTER TABLE routes ADD COLUMN ladeliste_mode TEXT", [])?;
     }
+    if !route_cols.contains("backup_id") {
+        conn.execute("ALTER TABLE routes ADD COLUMN backup_id TEXT", [])?;
+    }
     if !route_cols.contains("portal_tour_id") {
         conn.execute_batch(
             "ALTER TABLE routes ADD COLUMN portal_tour_id INTEGER; \
@@ -5823,9 +5826,22 @@ async fn put_home(
 /// built by `ios/Tools/MakeRestrooms.py`. Compiled in, like the address pack.
 static RESTROOMS_JSON: &[u8] = include_bytes!("../Restrooms.json");
 
+/// The list in use: the one fetched from Mehr → Erweitert when there is one,
+/// next to the database, and otherwise the one the server shipped with.
+fn restrooms_file(state: &AppState) -> PathBuf {
+    state.db_path.with_file_name("restrooms.json")
+}
+
+async fn restrooms_bytes(state: &AppState) -> Vec<u8> {
+    match tokio::fs::read(restrooms_file(state)).await {
+        Ok(bytes) if serde_json::from_slice::<Vec<Value>>(&bytes).map(|v| !v.is_empty()).unwrap_or(false) => bytes,
+        _ => RESTROOMS_JSON.to_vec(),
+    }
+}
+
 /// `GET /api/restrooms`.
-async fn restrooms(headers: HeaderMap) -> Response {
-    static_response(RESTROOMS_JSON.to_vec(), "application/json", "private, max-age=3600", &headers)
+async fn restrooms(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    static_response(restrooms_bytes(&state).await, "application/json", "private, no-cache", &headers)
 }
 
 const MAX_RESTROOM_NOTE_LEN: usize = 300;
@@ -6193,6 +6209,526 @@ async fn unhide_others(
     let conn = state.db()?;
     conn.execute("DELETE FROM route_others_hidden WHERE route_id = ?1", params![route_id])?;
     Ok(Json(json!({ "ok": true })))
+}
+
+// ---------------------------------------------------------------------
+// Sicherung -- the iOS app's `BackupArchive` and `BackupRestore`: the
+// account's tours as one JSON file, in the same shape the iOS app writes, so
+// a file from one reads in the other. The driven line is not in it; restored
+// tours are planned once more.
+// ---------------------------------------------------------------------
+const BACKUP_FORMAT: &str = "ear-router-backup";
+const BACKUP_VERSION: i64 = 1;
+const BACKUP_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+fn new_uuid() -> String {
+    use rand_core::RngCore;
+    let mut b = [0u8; 16];
+    rand_core::OsRng.fill_bytes(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02X}")).collect();
+    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+}
+
+/// A stored timestamp in the form Swift's `.iso8601` reads: whole seconds, `Z`.
+fn backup_date(stored: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(stored)
+        .map(|d| d.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_else(|_| stored.to_string())
+}
+
+/// `GET /api/backup`.
+async fn get_backup(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+) -> Result<Response, AppError> {
+    let conn = state.db()?;
+    // A tour carries one id for good, so a file written twice names it twice
+    // alike and a merge can tell it is already there.
+    let mut missing = conn.prepare("SELECT id FROM routes WHERE user_id = ?1 AND backup_id IS NULL")?;
+    let ids = missing.query_map(params![user.id], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?;
+    for id in ids {
+        conn.execute("UPDATE routes SET backup_id = ?1 WHERE id = ?2", params![new_uuid(), id])?;
+    }
+
+    let mut routes_stmt = conn.prepare(
+        "SELECT id, backup_id, name, status, created_at, completed_at, hand_ordered FROM routes WHERE user_id = ?1 ORDER BY created_at, id",
+    )?;
+    let route_rows = routes_stmt
+        .query_map(params![user.id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?, r.get::<_, Option<String>>(5)?, r.get::<_, i64>(6)? != 0))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut stops_stmt = conn.prepare(
+        "SELECT id, kind, kunde, strasse, plz, paket, paket_count, notiz, telefon, lat, lon, order_index, delivered, outcome, \
+         settled_at, next_leg_km, next_leg_min, created_at, excluded, pinned, location_precision, entrance_lat, entrance_lon \
+         FROM stops WHERE route_id = ?1 ORDER BY order_index, id",
+    )?;
+    let mut routes = Vec::new();
+    let mut total_stops = 0usize;
+    for (id, backup_id, name, status, created_at, completed_at, hand_ordered) in route_rows {
+        let stops = stops_stmt
+            .query_map(params![id], |r| {
+                let delivered = r.get::<_, i64>(12)? != 0;
+                let outcome: Option<String> = effective_outcome(r.get(13)?, delivered);
+                let settled: Option<String> = r.get(14)?;
+                let precision: Option<String> = r.get(20)?;
+                Ok(json!({
+                    "id": format!("00000000-0000-4000-8000-{:012X}", r.get::<_, i64>(0)?),
+                    "kind": r.get::<_, String>(1)?,
+                    "kunde": r.get::<_, Option<String>>(2)?,
+                    "strasse": r.get::<_, Option<String>>(3)?,
+                    "plz": r.get::<_, Option<String>>(4)?,
+                    "paket": r.get::<_, Option<String>>(5)?,
+                    "paketCount": r.get::<_, Option<i64>>(6)?,
+                    "notiz": r.get::<_, Option<String>>(7)?,
+                    "telefon": r.get::<_, Option<String>>(8)?,
+                    "lat": r.get::<_, f64>(9)?,
+                    "lon": r.get::<_, f64>(10)?,
+                    "orderIndex": r.get::<_, i64>(11)?,
+                    "delivered": delivered,
+                    "outcome": outcome,
+                    "settledAt": settled.as_deref().map(backup_date),
+                    "nextLegKm": r.get::<_, Option<f64>>(15)?,
+                    "nextLegMin": r.get::<_, Option<f64>>(16)?,
+                    "createdAt": backup_date(&r.get::<_, String>(17)?),
+                    "excluded": r.get::<_, i64>(18)? != 0,
+                    "pinned": r.get::<_, i64>(19)? != 0,
+                    "precision": precision,
+                    "entranceLat": r.get::<_, Option<f64>>(21)?,
+                    "entranceLon": r.get::<_, Option<f64>>(22)?,
+                }))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        total_stops += stops.len();
+        routes.push(json!({
+            "id": backup_id, "name": name, "status": status, "createdAt": backup_date(&created_at),
+            "completedAt": completed_at.as_deref().map(backup_date), "needsOptimize": true,
+            "stops": stops, "handOrdered": hand_ordered,
+        }));
+    }
+    let mut marks_stmt = conn.prepare("SELECT key, bad, note FROM restroom_marks WHERE user_id = ?1 ORDER BY key")?;
+    let restrooms = marks_stmt
+        .query_map(params![user.id], |r| {
+            Ok(json!({ "key": r.get::<_, String>(0)?, "bad": r.get::<_, i64>(1)? != 0, "note": r.get::<_, Option<String>>(2)? }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    tracing::info!(routes = routes.len(), stops = total_stops, "backup written");
+    let body = json!({
+        "format": BACKUP_FORMAT, "version": BACKUP_VERSION, "createdAt": backup_date(&now_iso()),
+        "app": format!("EAR Router Web {}", env!("CARGO_PKG_VERSION")),
+        "routes": routes, "stockwerke": [], "settings": {}, "restrooms": restrooms,
+    });
+    Ok(Json(body).into_response())
+}
+
+#[derive(Deserialize)]
+struct BackupRestore {
+    archive: Value,
+    /// `replace` removes this account's tours first; anything else adds.
+    mode: String,
+}
+
+fn backup_str(v: &Value, key: &str) -> Option<String> {
+    v.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+/// `POST /api/backup/restore`: a file read back in. Merging, a tour whose id
+/// is already here is left alone and a toilet marked on either stays marked;
+/// replacing, the file is the account.
+async fn restore_backup(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Json(payload): Json<BackupRestore>,
+) -> Result<Json<Value>, AppError> {
+    let not_a_backup = || AppError::BadRequest("Diese Datei ist keine EAR-Router-Sicherung.".into());
+    let a = &payload.archive;
+    if a.get("format").and_then(Value::as_str) != Some(BACKUP_FORMAT) {
+        return Err(not_a_backup());
+    }
+    if a.get("version").and_then(Value::as_i64).unwrap_or(0) > BACKUP_VERSION {
+        return Err(AppError::BadRequest(
+            "Diese Sicherung stammt aus einer neueren Version der App. Bitte zuerst die App aktualisieren.".into(),
+        ));
+    }
+    let routes = a.get("routes").and_then(Value::as_array).cloned().unwrap_or_default();
+    let marks = a.get("restrooms").and_then(Value::as_array).cloned().unwrap_or_default();
+    let replace = payload.mode == "replace";
+    let norm = |s: Option<String>| s.map(|d| chrono::DateTime::parse_from_rfc3339(&d).map(|x| x.with_timezone(&chrono::Utc).to_rfc3339()).unwrap_or(d));
+
+    let mut conn = state.db()?;
+    let tx = conn.transaction()?;
+    if replace {
+        tx.execute("DELETE FROM routes WHERE user_id = ?1", params![user.id])?;
+        tx.execute("DELETE FROM restroom_marks WHERE user_id = ?1", params![user.id])?;
+    }
+    let mut taken: HashSet<String> = {
+        let mut stmt = tx.prepare("SELECT backup_id FROM routes WHERE backup_id IS NOT NULL")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<HashSet<String>, _>>()?;
+        rows
+    };
+    let (mut added, mut skipped) = (0i64, 0i64);
+    for route in &routes {
+        let Some(id) = backup_str(route, "id").filter(|i| !i.is_empty()) else { skipped += 1; continue };
+        if !taken.insert(id.clone()) {
+            skipped += 1;
+            continue;
+        }
+        let name = clip_chars(backup_str(route, "name").unwrap_or_default().trim(), MAX_ROUTE_NAME_LEN);
+        let name = if name.is_empty() { "Tour".to_string() } else { name };
+        let status = if backup_str(route, "status").as_deref() == Some("completed") { "completed" } else { "active" };
+        let created = norm(backup_str(route, "createdAt")).unwrap_or_else(now_iso);
+        let completed = norm(backup_str(route, "completedAt"));
+        // The line is not in the file, so it is not current until planned again.
+        tx.execute(
+            "INSERT INTO routes (name, status, created_at, completed_at, needs_optimize, hand_ordered, user_id, backup_id) \
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)",
+            params![name, status, created, completed, route.get("handOrdered").and_then(Value::as_bool).unwrap_or(false) as i64, user.id, id],
+        )?;
+        let route_id = tx.last_insert_rowid();
+        for s in route.get("stops").and_then(Value::as_array).into_iter().flatten() {
+            let kind = match backup_str(s, "kind").as_deref() {
+                Some(k @ ("start" | "via" | "end" | "pause")) => k.to_string(),
+                _ => "customer".to_string(),
+            };
+            // The summary bit every count reads follows the answer, as it does
+            // when a door is ticked here.
+            let outcome = backup_str(s, "outcome").filter(|o| !o.is_empty());
+            let delivered = match &outcome {
+                Some(o) => outcome::handed_over(o),
+                None => s.get("delivered").and_then(Value::as_bool).unwrap_or(false),
+            };
+            let precision = backup_str(s, "precision").filter(|p| p == "street" || p == "district");
+            let num = |k: &str| s.get(k).and_then(Value::as_f64);
+            tx.execute(
+                "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, paket_count, notiz, telefon, lat, lon, order_index, \
+                 delivered, outcome, settled_at, next_leg_km, next_leg_min, created_at, excluded, pinned, location_precision, entrance_lat, entrance_lon) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                params![
+                    route_id, kind, backup_str(s, "kunde"), backup_str(s, "strasse"), backup_str(s, "plz"),
+                    backup_str(s, "paket"), s.get("paketCount").and_then(Value::as_i64), backup_str(s, "notiz"), backup_str(s, "telefon"),
+                    num("lat").unwrap_or(0.0), num("lon").unwrap_or(0.0), s.get("orderIndex").and_then(Value::as_i64).unwrap_or(0),
+                    delivered as i64, outcome, norm(backup_str(s, "settledAt")), num("nextLegKm"), num("nextLegMin"),
+                    norm(backup_str(s, "createdAt")).unwrap_or_else(now_iso),
+                    s.get("excluded").and_then(Value::as_bool).unwrap_or(false) as i64,
+                    s.get("pinned").and_then(Value::as_bool).unwrap_or(false) as i64,
+                    precision, num("entranceLat"), num("entranceLon"),
+                ],
+            )?;
+        }
+        added += 1;
+    }
+    let mut written = 0i64;
+    for m in &marks {
+        let Some(key) = backup_str(m, "key").filter(|k| !k.is_empty() && k.chars().count() <= MAX_RESTROOM_KEY_LEN) else { continue };
+        let bad = m.get("bad").and_then(Value::as_bool).unwrap_or(false);
+        let note = backup_str(m, "note").map(|n| clip_chars(n.trim(), MAX_RESTROOM_NOTE_LEN)).filter(|n| !n.is_empty());
+        if !bad && note.is_none() {
+            continue;
+        }
+        // Marked on either stays marked, and the note already here is the one
+        // being read now.
+        tx.execute(
+            "INSERT INTO restroom_marks (user_id, key, bad, note) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(user_id, key) DO UPDATE SET bad = MAX(bad, excluded.bad), note = COALESCE(note, excluded.note)",
+            params![user.id, key, bad as i64, note],
+        )?;
+        written += 1;
+    }
+    tx.commit()?;
+    Ok(Json(json!({ "routes_added": added, "routes_skipped": skipped, "restrooms": written })))
+}
+
+// ---------------------------------------------------------------------
+// Erweitert -- what the iOS screen of that name shows and does, for the
+// server this runs on: whether the routing server answers, how many
+// addresses are remembered, and the list of public toilets, fetched again
+// from the two places it comes from. The same rules as the iOS app's
+// `RestroomUpdater`: no pissoirs, no staffed toilets -- those are the ones
+// that charge -- and none whose opening hours cannot be read as a plain
+// timetable.
+// ---------------------------------------------------------------------
+const WC_CITY_URL: &str = "https://data.wien.gv.at/daten/geo?service=WFS&request=GetFeature&version=1.1.0&typeName=ogdwien:WCANLAGEOGD&srsName=EPSG:4326&outputFormat=json";
+const WC_OEKLO_URL: &str = "https://d90ejx0yw4gor.cloudfront.net/public-toilet-map/toilets.json";
+
+/// `GET /api/advanced`.
+async fn get_advanced(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+) -> Result<Json<Value>, AppError> {
+    let cache: i64 = {
+        let conn = state.db()?;
+        conn.query_row("SELECT COUNT(*) FROM geocode_cache", [], |r| r.get(0))?
+    };
+    let bytes = restrooms_bytes(&state).await;
+    let count = serde_json::from_slice::<Vec<Value>>(&bytes).map(|v| v.len()).unwrap_or(0);
+    let updated = tokio::fs::metadata(restrooms_file(&state))
+        .await
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+    let host = state.upstreams.osrm_base.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string();
+    Ok(Json(json!({
+        "osrm_host": host, "cache_count": cache, "restrooms": count, "restrooms_updated": updated,
+        "is_admin": user.is_admin,
+    })))
+}
+
+/// `POST /api/advanced/check`: "Verbindung testen" -- exactly the configured
+/// server, not whichever one answers in its place.
+async fn check_osrm(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    let url = format!(
+        "{}/route/v1/driving/16.373800,48.208200;16.373900,48.208300?overview=false",
+        state.upstreams.osrm_base.trim_end_matches('/')
+    );
+    let started = Instant::now();
+    let ok = state
+        .http
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, UPSTREAM_USER_AGENT)
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+    Ok(Json(json!({ "reachable": ok, "ms": started.elapsed().as_millis() as i64 })))
+}
+
+/// `DELETE /api/admin/cache`: the remembered addresses, looked up afresh next
+/// time. Shared by every account, so the administrator's.
+async fn clear_geocode_cache(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    let conn = state.db()?;
+    conn.execute("DELETE FROM geocode_cache", [])?;
+    conn.execute("DELETE FROM geocode_miss", [])?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+mod restroom_feed {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    use serde_json::{json, Value};
+
+    const DAYS: [&str; 7] = ["mo", "di", "mi", "do", "fr", "sa", "so"];
+    static PART: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(mo|di|mi|do|fr|sa|so)(?:\s*-\s*(mo|di|mi|do|fr|sa|so))?\s*:?\s*(\d{1,2})(?:[.:](\d{2}))?\s*-\s*(\d{1,2})(?:[.:](\d{2}))?").unwrap()
+    });
+    static MONTH: Lazy<Regex> = Lazy::new(|| Regex::new("jan|feb|mär|apr|mai|jun|jul|aug|sep|okt|nov|dez").unwrap());
+    static OEKLO_CITY: Lazy<Regex> = Lazy::new(|| Regex::new(r",\s*Wien$").unwrap());
+
+    /// One space between words and none around them: both lists carry names
+    /// with a stray double space, and a name is half of a toilet's key.
+    fn tidy(name: &str) -> String {
+        name.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The city's free-text opening hours as a table of minutes per weekday,
+    /// Monday first. `None` when the text is not a plain timetable; the inner
+    /// `None` when the toilet never closes.
+    pub fn hours(text: &str) -> Option<(Option<Vec<Option<[i64; 2]>>>, bool)> {
+        let lower = text.to_lowercase();
+        let mut t = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+        let winter = t.contains("wintersperre");
+        t = t.split('/').next().unwrap_or("").replace("uhr", " ");
+        if MONTH.is_match(&t) {
+            return None;
+        }
+        let mut table: Vec<Option<[i64; 2]>> = vec![None; 7];
+        let mut rest = t.clone();
+        for m in PART.captures_iter(&t) {
+            let group = |i: usize| m.get(i).map(|g| g.as_str());
+            let from = group(1).and_then(|d| DAYS.iter().position(|x| *x == d));
+            let open = group(3).and_then(|v| v.parse::<i64>().ok());
+            let close = group(5).and_then(|v| v.parse::<i64>().ok());
+            let (Some(from), Some(open), Some(close)) = (from, open, close) else { continue };
+            let to = group(2).and_then(|d| DAYS.iter().position(|x| *x == d)).unwrap_or(from);
+            let span = [
+                open * 60 + group(4).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0),
+                close * 60 + group(6).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0),
+            ];
+            if from <= to {
+                for day in from..=to {
+                    table[day] = Some(span);
+                }
+            }
+            if let Some(g) = group(0) {
+                rest = rest.replace(g, "");
+            }
+        }
+        // Anything left over that is not punctuation is a rule this cannot
+        // read -- "Lokalöffnungszeiten", "Gesperrt".
+        if !table.iter().any(Option::is_some) || !rest.chars().all(|c| c.is_whitespace() || c == ',' || c == '+') {
+            return None;
+        }
+        let always = table.iter().all(|d| *d == Some([0, 1440]));
+        Some((if always { None } else { Some(table) }, winter))
+    }
+
+    /// GeoJSON is `[lon, lat]`. Rounded as the shipped file is, and dropped
+    /// when it is not a place in Austria.
+    fn point(feature: &Value) -> Option<(f64, f64)> {
+        let c = feature.pointer("/geometry/coordinates")?.as_array()?;
+        let (lon, lat) = (c.first()?.as_f64()?, c.get(1)?.as_f64()?);
+        let (lat, lon) = ((lat * 1e6).round() / 1e6, (lon * 1e6).round() / 1e6);
+        ((46.3..=49.1).contains(&lat) && (9.4..=17.3).contains(&lon)).then_some((lat, lon))
+    }
+
+    fn loose_text(v: &Value) -> String {
+        match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            _ => String::new(),
+        }
+    }
+
+    pub fn parse_city(data: &Value) -> Vec<Value> {
+        data["features"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| {
+                let p = &f["properties"];
+                let kind = p["KATEGORIE"].as_str().unwrap_or("");
+                if kind == "Pissoir" || kind.contains("mit Wartepersonal") {
+                    return None;
+                }
+                let (lat, lon) = point(f)?;
+                let (table, winter) = hours(p["OEFFNUNGSZEIT"].as_str().unwrap_or(""))?;
+                let name = tidy(&format!("{} {}", p["STRASSE"].as_str().unwrap_or(""), loose_text(&p["ONR"])));
+                if name.is_empty() {
+                    return None;
+                }
+                let mut row = json!({ "name": name, "lat": lat, "lon": lon, "walk": 0 });
+                if let Some(table) = table {
+                    row["hours"] = json!(table);
+                }
+                if winter {
+                    row["winterClosed"] = json!(true);
+                }
+                Some(row)
+            })
+            .collect()
+    }
+
+    pub fn parse_oeklo(data: &Value) -> Vec<Value> {
+        data["features"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| {
+                let (lat, lon) = point(f)?;
+                let name = OEKLO_CITY.replace(&tidy(f["properties"]["address"].as_str().unwrap_or("")), "").to_string();
+                if name.is_empty() {
+                    return None;
+                }
+                Some(json!({ "name": name, "lat": lat, "lon": lon, "walk": 0, "oeklo": true }))
+            })
+            .collect()
+    }
+
+    /// What a toilet is remembered by across updates of the file: its name and
+    /// where it stands, not the hours or the walk.
+    pub fn key(row: &Value) -> String {
+        format!("{}|{:.5}|{:.5}", row["name"].as_str().unwrap_or(""), row["lat"].as_f64().unwrap_or(0.0), row["lon"].as_f64().unwrap_or(0.0))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn reads_plain_timetables_and_refuses_the_rest() {
+            let (table, winter) = hours("Mo-Fr 8-20 Uhr, Sa 9.30-18").unwrap();
+            let table = table.unwrap();
+            assert_eq!(table[0], Some([480, 1200]));
+            assert_eq!(table[4], Some([480, 1200]));
+            assert_eq!(table[5], Some([570, 1080]));
+            assert_eq!(table[6], None);
+            assert!(!winter);
+            assert_eq!(hours("Mo-So 0-24").unwrap().0, None);
+            assert!(hours("Lokalöffnungszeiten").is_none());
+            assert!(hours("Mo-Fr 8-20 / April bis Oktober").is_some());
+            assert!(hours("Mai bis September Mo-Fr 8-20").is_none());
+            assert!(hours("Mo-Fr 8-20 / Wintersperre Nov-März").unwrap().1);
+        }
+    }
+}
+
+/// `POST /api/admin/restrooms/refresh`: fetches both lists and puts them in
+/// use. Leaves the list as it was when either source cannot be read or comes
+/// back implausibly short -- half a list is a feed having a bad day, not a
+/// city that closed its toilets.
+async fn refresh_restrooms(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    let fetch = |url: &'static str| {
+        let state = Arc::clone(&state);
+        async move {
+            let res = state
+                .http
+                .get(url)
+                .header(reqwest::header::USER_AGENT, UPSTREAM_USER_AGENT)
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await
+                .map_err(|_| AppError::Internal("Die WC-Daten konnten nicht geladen werden.".into()))?;
+            if !res.status().is_success() {
+                return Err(AppError::Internal("Die WC-Daten konnten nicht geladen werden.".into()));
+            }
+            res.json::<Value>()
+                .await
+                .map_err(|_| AppError::Internal("Die WC-Daten konnten nicht geladen werden.".into()))
+        }
+    };
+    let (city, oeklo) = tokio::try_join!(fetch(WC_CITY_URL), fetch(WC_OEKLO_URL))?;
+    let city_rows = restroom_feed::parse_city(&city);
+    let oeklo_rows = restroom_feed::parse_oeklo(&oeklo);
+    if city_rows.len() < 100 || oeklo_rows.len() < 100 {
+        return Err(AppError::Internal("Die WC-Daten sind unvollständig angekommen. Bitte später noch einmal.".into()));
+    }
+
+    // The walk from the road is asked of OSRM only for a toilet that is new:
+    // the rest have theirs, and five hundred requests for a number that does
+    // not change is no way to treat a home server.
+    let known: HashMap<String, i64> = serde_json::from_slice::<Vec<Value>>(&restrooms_bytes(&state).await)
+        .unwrap_or_default()
+        .iter()
+        .map(|r| (restroom_feed::key(r), r["walk"].as_i64().unwrap_or(0)))
+        .collect();
+    #[derive(Deserialize)]
+    struct Nearest {
+        code: String,
+        waypoints: Vec<NearestWaypoint>,
+    }
+    #[derive(Deserialize)]
+    struct NearestWaypoint {
+        distance: f64,
+    }
+    let mut rows: Vec<Value> = Vec::new();
+    for mut row in city_rows.into_iter().chain(oeklo_rows) {
+        if let Some(walk) = known.get(&restroom_feed::key(&row)) {
+            row["walk"] = json!(walk);
+        } else {
+            let path = format!("/nearest/v1/driving/{:.6},{:.6}?number=1", row["lon"].as_f64().unwrap_or(0.0), row["lat"].as_f64().unwrap_or(0.0));
+            if let Ok(n) = osrm_get::<Nearest>(&state, &path).await {
+                if n.code == "Ok" {
+                    if let Some(w) = n.waypoints.first() {
+                        row["walk"] = json!(w.distance.round() as i64);
+                    }
+                }
+            }
+        }
+        rows.push(row);
+    }
+    rows.sort_by(|a, b| {
+        (a["name"].as_str().unwrap_or(""), a["lat"].as_f64().unwrap_or(0.0).to_bits())
+            .cmp(&(b["name"].as_str().unwrap_or(""), b["lat"].as_f64().unwrap_or(0.0).to_bits()))
+    });
+    let bytes = serde_json::to_vec(&rows).map_err(|_| AppError::Internal("Die WC-Daten konnten nicht gespeichert werden.".into()))?;
+    let path = restrooms_file(&state);
+    let tmp = path.with_extension("json.tmp");
+    tokio::fs::write(&tmp, &bytes).await.map_err(|_| AppError::Internal("Die WC-Daten konnten nicht gespeichert werden.".into()))?;
+    tokio::fs::rename(&tmp, &path).await.map_err(|_| AppError::Internal("Die WC-Daten konnten nicht gespeichert werden.".into()))?;
+    Ok(Json(json!({ "restrooms": rows.len() })))
 }
 
 #[derive(Deserialize)]
@@ -8590,6 +9126,12 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/routes/:id/departed", post(mark_departed))
         .route("/api/routes/:id/order", put(set_stop_order))
         .route("/api/routes/:id/pause", post(set_pause))
+        .route("/api/advanced", get(get_advanced))
+        .route("/api/advanced/check", post(check_osrm))
+        .route("/api/admin/cache", axum::routing::delete(clear_geocode_cache))
+        .route("/api/admin/restrooms/refresh", post(refresh_restrooms))
+        .route("/api/backup", get(get_backup))
+        .route("/api/backup/restore", post(restore_backup).layer(DefaultBodyLimit::max(BACKUP_BODY_BYTES)))
         .route("/api/routes/:id/import", post(import_list))
         .route("/api/routes/:id/others", get(get_others).post(add_other))
         .route("/api/routes/:id/others/unhide", post(unhide_others))

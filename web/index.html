@@ -2377,6 +2377,8 @@ const ICONS = {
   people: icon('<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6"/><path d="M17.5 14.3A6 6 0 0 1 21 20"/>'),
   phone: icon('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2Z"/>'),
   thermometer: icon('<path d="M10 14.8V5a2 2 0 0 1 4 0v9.8a4 4 0 1 1-4 0Z"/><path d="M12 9v7"/>'),
+  drive: icon('<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13l2.2-6.2A2 2 0 0 1 9.1 5.5h5.8a2 2 0 0 1 1.9 1.3L19 13"/><path d="M7 16.5h.01"/>'),
+  gear: icon('<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/>'),
   gauge: icon('<path d="M4.5 18a9 9 0 1 1 15 0"/><path d="M12 13l4-5"/><circle cx="12" cy="13" r="1.4" fill="currentColor" stroke="none"/>'),
   arrowUp: icon('<path d="M12 19V5"/><polyline points="6 11 12 5 18 11"/>', 'stroke-width="2"'),
   arrowDown: icon('<path d="M12 5v14"/><polyline points="6 13 12 19 18 13"/>', 'stroke-width="2"'),
@@ -8182,6 +8184,19 @@ function renderMoreTab() {
         </div>
         <p class="now-caption" style="padding:.5rem 1rem 0">Touren und Stopps liegen in deinem Konto auf dem Server, nicht auf diesem Gerät.</p>
 
+        <div class="${GROUP}" style="margin-top:1.5rem">
+          <button onclick="openBackupSheet()" class="${ROW}">
+            ${tile('#34C759', ICONS.drive)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Sicherung</p><p class="text-[13px] text-black/55">Alle Touren als Datei</p></div>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>
+          <button onclick="openAdvancedSheet()" class="${ROW}">
+            ${tile('#8E8E93', ICONS.gear)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Erweitert</p></div>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>
+        </div>
+
         <p class="${SECTION_LABEL}">Über diese App</p>
         <div class="${GROUP}">
           <div class="flex items-center gap-3 px-4 py-3.5">
@@ -10192,6 +10207,212 @@ async function addOtherStop() {
     }
   } catch (err) { toast(err.message, 'error'); }
   finally { hideProgress(); }
+}
+
+// ---------------------------------------------------------------------
+// Sicherung — the account's tours out to a file, and back in from one. The
+// iOS app's screen of the same name, and the same file: one written here
+// opens there and the other way round. The driven line is not in it;
+// restored tours are planned once more.
+// ---------------------------------------------------------------------
+let pendingBackup = null;
+
+function openBackupSheet() {
+  const tours = state.routes.length;
+  const stops = state.routes.reduce((n, r) => n + (r.customer_count || 0), 0);
+  const row = (label, value) => `<div class="flex items-center px-4 py-3"><span class="flex-1 text-[15px]">${label}</span><span class="text-[15px] text-black/55">${value}</span></div>`;
+  renderSheetShell(`
+    <h2 class="sheet-title">Sicherung</h2>
+    <p class="${SECTION_LABEL} !pt-0">In deinem Konto</p>
+    <div class="${GROUP} mb-4">${row('Touren', tours)}${row('Stopps', stops)}</div>
+    <div class="${GROUP}">
+      <button type="button" id="backup-create" onclick="createBackup()" class="${ROW}">
+        <span class="w-5 flex shrink-0 text-black/55 text-lg">${ICONS.download}</span>
+        <p class="flex-1 text-[15px] font-medium">Sicherung erstellen</p>
+      </button>
+    </div>
+    <p class="now-caption" style="padding:.5rem 1rem 1rem">Schreibt alles in eine JSON-Datei — Touren, Stopps, Lieferstatus und die WC-Markierungen — und teilt sie oder lädt sie herunter. Am besten irgendwohin, wo sie nicht nur auf diesem Gerät liegt.</p>
+    <div class="${GROUP}">
+      <label class="${ROW}" style="cursor:pointer">
+        <span class="w-5 flex shrink-0 text-black/55 text-lg">${ICONS.upload || ICONS.download}</span>
+        <p class="flex-1 text-[15px] font-medium">Sicherung laden</p>
+        <input type="file" accept="application/json,.json" onchange="loadBackupFile(this)" style="display:none" />
+      </label>
+    </div>
+    <p class="now-caption" style="padding:.5rem 1rem 1rem">Beim Laden wird gefragt, ob die Sicherung zu den vorhandenen Daten dazukommt oder alles ersetzt.</p>
+    <div class="sheet-note"><span>${ICONS.info || ICONS.note}</span><span>Die gefahrene Strecke wird nicht mitgesichert — wiederhergestellte Touren werden einmal neu optimiert.</span></div>
+    <div class="pb-2" style="margin-top:1rem"><button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Fertig</button></div>
+  `, { label: 'Sicherung' });
+}
+
+async function createBackup() {
+  const btn = document.getElementById('backup-create');
+  if (btn) btn.disabled = true;
+  try {
+    const archive = await api('/backup', { timeoutMs: 2 * 60 * 1000 });
+    const name = `EAR-Router-Sicherung-${isoDay(new Date())}.json`;
+    const file = new File([JSON.stringify(archive, null, 2)], name, { type: 'application/json' });
+    if (matchMedia('(pointer: coarse)').matches && navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); return; } catch (err) { if (err?.name === 'AbortError') return; }
+    }
+    const url = URL.createObjectURL(file);
+    const link = Object.assign(document.createElement('a'), { href: url, download: name });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    toast(`Die Sicherung konnte nicht erstellt werden. ${err.message}`, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function loadBackupFile(input) {
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  let archive;
+  try {
+    archive = JSON.parse(await file.text());
+    if (!archive || archive.format !== 'ear-router-backup') throw new Error('format');
+  } catch (_) { toast('Diese Datei ist keine EAR-Router-Sicherung.', 'error'); return; }
+  if ((archive.version || 0) > 1) { toast('Diese Sicherung stammt aus einer neueren Version der App. Bitte zuerst die App aktualisieren.', 'error'); return; }
+  pendingBackup = archive;
+  const routes = archive.routes || [];
+  const stops = routes.reduce((n, r) => n + (r.stops || []).length, 0);
+  const parts = [routes.length === 1 ? '1 Tour' : `${routes.length} Touren`, stops === 1 ? '1 Stopp' : `${stops} Stopps`];
+  renderSheetShell(`
+    <h2 class="sheet-title">Sicherung laden</h2>
+    <p class="sheet-lead">Die Datei enthält ${parts.join(' · ')}${archive.createdAt ? `, erstellt am ${escapeHtml(new Date(archive.createdAt).toLocaleDateString('de-AT'))}` : ''}. Dazu laden, oder alles ersetzen?</p>
+    <div class="pb-2">
+      <button type="button" onclick="applyBackup('merge')" class="press-98 wide-btn accent">Dazu laden</button>
+      ${routes.length ? `<button type="button" onclick="confirmReplaceBackup()" class="press-98 wide-btn quiet" style="color:#D70015">Alles ersetzen …</button>` : ''}
+      <button type="button" onclick="pendingBackup = null; closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
+    </div>
+  `, { label: 'Sicherung laden' });
+}
+
+async function confirmReplaceBackup() {
+  const tours = state.routes.length;
+  closeSheet();
+  const ok = await confirmSheet({
+    title: 'Wirklich alles ersetzen?',
+    message: `${tours === 1 ? '1 Tour' : `${tours} Touren`} in deinem Konto werden gelöscht und durch die Sicherung ersetzt. Das lässt sich nicht rückgängig machen.`,
+    confirmLabel: 'Alles ersetzen', danger: true,
+  });
+  if (ok) applyBackup('replace'); else pendingBackup = null;
+}
+
+async function applyBackup(mode) {
+  const archive = pendingBackup;
+  if (!archive) return;
+  pendingBackup = null;
+  closeSheet();
+  showProgress('Sicherung wird geladen …');
+  try {
+    const r = await api('/backup/restore', { method: 'POST', body: JSON.stringify({ archive, mode }), timeoutMs: 5 * 60 * 1000 });
+    state.currentRoute = null;
+    await loadRoutes();
+    const parts = [r.routes_added === 1 ? '1 Tour' : `${r.routes_added} Touren`];
+    if (r.routes_skipped > 0) parts.push(r.routes_skipped === 1 ? '1 bereits vorhandene übersprungen' : `${r.routes_skipped} bereits vorhandene übersprungen`);
+    renderSheetShell(`
+      <h2 class="sheet-title">Sicherung geladen</h2>
+      <p class="sheet-lead">${escapeHtml(parts.join(' · '))}${r.routes_added ? '<br>Die Touren werden beim ersten Öffnen neu optimiert.' : ''}</p>
+      <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn accent">OK</button></div>
+    `, { label: 'Sicherung geladen' });
+  } catch (err) {
+    toast(`Die Sicherung konnte nicht geladen werden. ${err.message}`, 'error');
+  } finally {
+    hideProgress();
+  }
+}
+
+// ---------------------------------------------------------------------
+// Erweitert — everything technical, on its own screen. A driver never has to
+// come here; it exists for the day the routing server moves. What the iOS
+// screen shows for the phone, this shows for the server the app runs on.
+// ---------------------------------------------------------------------
+async function openAdvancedSheet() {
+  renderSheetShell(`<div data-advanced><h2 class="sheet-title">Erweitert</h2>${sheetBusy('Einen Moment …')}</div>`, { label: 'Erweitert' });
+  try {
+    const info = await api('/advanced');
+    paintAdvanced(info);
+  } catch (err) {
+    const box = document.querySelector('[data-advanced]');
+    if (box) box.innerHTML = `<h2 class="sheet-title">Erweitert</h2>${sheetError(err.message, 'openAdvancedSheet()')}`;
+  }
+}
+
+function paintAdvanced(info, status = '') {
+  const box = document.querySelector('[data-advanced]');
+  if (!box) return;
+  const row = (label, value, color = '') => `<div class="flex items-center gap-3 px-4 py-3"><span class="text-[15px]">${label}</span><span class="flex-1 text-right text-[15px] truncate" style="color:${color || 'rgba(0,0,0,.55)'}">${value}</span></div>`;
+  const btn = (label, onclick, { danger = false, id = '' } = {}) => `<button type="button" ${id ? `id="${id}"` : ''} onclick="${onclick}" class="${ROW}" ${danger ? 'style="color:#D70015"' : ''}><p class="flex-1 text-[15px] font-medium">${label}</p></button>`;
+  const admin = !!info.is_admin;
+  const updated = info.restrooms_updated ? new Date(info.restrooms_updated).toLocaleDateString('de-AT') : 'Mit der App geliefert';
+  box.innerHTML = `
+    <h2 class="sheet-title">Erweitert</h2>
+    <p class="${SECTION_LABEL} !pt-0">Routenoptimierung</p>
+    <div class="${GROUP}">
+      ${row('Server', escapeHtml(info.osrm_host))}
+      ${status ? row('Status', status.text, status.color) : ''}
+      ${btn('Verbindung testen', 'checkOsrm()', { id: 'adv-check' })}
+    </div>
+    <p class="now-caption" style="padding:.5rem 1rem 1rem">Geprüft wird genau dieser Server. Ist er nicht erreichbar, weicht die App beim Routen automatisch auf den öffentlichen OSRM-Demoserver aus — die Routenoptimierung funktioniert also weiter.</p>
+
+    <p class="${SECTION_LABEL} !pt-0">Adressen</p>
+    <div class="${GROUP}">
+      ${row('Gespeicherte Adressen', info.cache_count)}
+      ${admin ? btn('Cache leeren', 'clearAddressCache()', { danger: true }) : ''}
+    </div>
+    <p class="now-caption" style="padding:.5rem 1rem 1rem">Gefundene Adressen werden dauerhaft gespeichert, damit dieselbe Tür nie zweimal gesucht werden muss. Nur leeren, wenn eine Adresse tatsächlich umgezogen ist.${admin ? '' : ' Das kann nur der Administrator.'}</p>
+
+    <p class="${SECTION_LABEL} !pt-0">WCs</p>
+    <div class="${GROUP}">
+      ${row('Standorte', info.restrooms)}
+      ${row('Stand', escapeHtml(updated))}
+      ${admin ? btn('WC-Daten aktualisieren', 'refreshRestroomData()', { id: 'adv-wc' }) : ''}
+    </div>
+    <p class="now-caption" style="padding:.5rem 1rem 1rem">Lädt die öffentlichen WCs der Stadt Wien und die öKlos neu. Einmal im Monat reicht – neue kommen selten dazu.${admin ? '' : ' Das kann nur der Administrator.'}</p>
+    <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Fertig</button></div>`;
+  box._info = info;
+}
+
+async function checkOsrm() {
+  const box = document.querySelector('[data-advanced]');
+  if (!box?._info) return;
+  const info = box._info;
+  paintAdvanced(info, { text: 'Wird geprüft …', color: '' });
+  try {
+    const r = await api('/advanced/check', { method: 'POST' });
+    paintAdvanced(info, r.reachable ? { text: `Erreichbar · ${r.ms} ms`, color: '#248A3D' } : { text: 'Nicht erreichbar', color: '#C93400' });
+  } catch (err) { paintAdvanced(info, { text: 'Nicht erreichbar', color: '#C93400' }); }
+}
+
+async function clearAddressCache() {
+  const box = document.querySelector('[data-advanced]');
+  const info = box?._info;
+  if (!info) return;
+  closeSheet();
+  const ok = await confirmSheet({ title: 'Cache leeren?', message: `${info.cache_count} Adressen werden beim nächsten Mal neu gesucht.`, confirmLabel: 'Leeren', danger: true });
+  if (ok) {
+    try { await api('/admin/cache', { method: 'DELETE' }); toast('Cache geleert.', 'success'); }
+    catch (err) { toast(err.message, 'error'); }
+  }
+  openAdvancedSheet();
+}
+
+async function refreshRestroomData() {
+  const b = document.getElementById('adv-wc');
+  if (b) { b.disabled = true; b.querySelector('p').textContent = 'Wird geladen …'; }
+  try {
+    await api('/admin/restrooms/refresh', { method: 'POST', timeoutMs: 5 * 60 * 1000 });
+    restroomData.list = null; restroomData.loading = null;
+    if (showRestrooms()) loadRestrooms().then(() => refreshRestroomLayer(mapTabMap)).catch(() => {});
+    toast('WC-Daten aktualisiert.', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+  openAdvancedSheet();
 }
 
 // ---------------------------------------------------------------------
