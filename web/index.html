@@ -215,16 +215,24 @@
      console). `#route-map .maplibregl-map` outguns a bare `.maplibregl-map`
      on specificity alone, so this holds regardless of load order. */
   #route-map .maplibregl-map { position: absolute; inset: 0; }
-  .maplibregl-ctrl-group { background: #fff !important; border: 1px solid rgba(0,0,0,.08); box-shadow: 0 1px 4px rgba(0,0,0,.12) !important; }
-  .maplibregl-ctrl-group button { background: transparent !important; }
+  .maplibregl-ctrl-group { background: rgba(255,255,255,.94) !important; -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border: 0; border-radius: 14px !important; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.18) !important; }
+  .maplibregl-ctrl-group button { background: transparent !important; width: 42px !important; height: 42px !important; }
+  .maplibregl-ctrl-group button + button { border-top: 1px solid rgba(0,0,0,.08) !important; }
+  .maplibregl-ctrl-attrib { background: rgba(255,255,255,.7) !important; border-radius: 8px 0 0 0; font-size: 10px; }
   /* Karte tab: controls sit top-right (not bottom-right) so the route-picker
      chip row up top and the delivered-count summary card at the bottom can
      never cover them. Pushed down below the chip row's own height. */
   #route-map .maplibregl-ctrl-top-right { margin-top: calc(env(safe-area-inset-top) + 3.75rem); margin-right: .5rem; }
   .maplibregl-popup-content { background: #fff; color: #111; border-radius: .75rem; font-size: 12px; line-height: 1.5; padding: 10px 12px; box-shadow: 0 4px 20px rgba(0,0,0,.18); }
   .maplibregl-popup-tip { border-top-color: #fff !important; border-bottom-color: #fff !important; }
-  .marker-badge { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; font-size: 12px; font-weight: 700; color: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); border: 2px solid #fff; }
-  .marker-fixed { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: #fff; color: #48484a; box-shadow: 0 1px 4px rgba(0,0,0,.35); border: 2px solid #48484a; }
+  .marker-badge { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; font-size: 13px; font-weight: 700; color: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.35); border: 2.5px solid #fff; font-variant-numeric: tabular-nums; transition: transform .15s ease; }
+  .marker-badge:active { transform: scale(.92); }
+  /* The next door: larger, with a halo that breathes, so it is the one thing
+     on the map that is never missed. */
+  .marker-badge.next { width: 36px; height: 36px; font-size: 15px; box-shadow: 0 0 0 0 rgba(237,22,57,.45), 0 2px 8px rgba(0,0,0,.4); animation: nextHalo 2.2s ease-out infinite; z-index: 2; }
+  @keyframes nextHalo { 0% { box-shadow: 0 0 0 0 rgba(237,22,57,.45), 0 2px 8px rgba(0,0,0,.4); } 70%, 100% { box-shadow: 0 0 0 14px rgba(237,22,57,0), 0 2px 8px rgba(0,0,0,.4); } }
+  @media (prefers-reduced-motion: reduce) { .marker-badge.next { animation: none; box-shadow: 0 0 0 5px rgba(237,22,57,.3), 0 2px 8px rgba(0,0,0,.4); } }
+  .marker-fixed { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: #fff; color: #3a3a3c; box-shadow: 0 2px 6px rgba(0,0,0,.35); border: 2.5px solid #3a3a3c; font-size: 15px; }
   /* The exact registered position of an address — see the dot marker in
      `drawRouteOnMap`. `pointer-events: none` because it sits under the
      badges' tap targets and has nothing of its own to tap. */
@@ -8535,7 +8543,10 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1, numb
 // src/main.rs); this is only the on-screen visualization. Used by both the
 // Karte tab (full-screen) and the pin-drop sheet (small, embedded).
 // ---------------------------------------------------------------------
-const MAP_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
+// The calm one: pale ground, thin grey streets, few labels. The busy Liberty
+// style put orange motorways and a name on every corner round the route, and
+// the route and the pins -- the only things the driver looks for -- drowned in it.
+const MAP_STYLE_URL = 'https://tiles.openfreemap.org/styles/positron';
 const VIENNA_CENTER = [16.3738, 48.2082]; // [lon, lat]
 
 // ---------------------------------------------------------------------
@@ -8759,7 +8770,7 @@ const AERIAL_LAYER_IDS = ['at-ortho', 'wien-lb', 'wien-labels'];
 // The route's own layers, in draw order (casing under line). Everything the
 // app adds to the style that is neither basemap nor imagery — so switching
 // basemaps has to leave both alone. See `mountAerialLayers`.
-const ROUTE_LAYER_IDS = ['entrance-links', 'route-line-casing', 'route-line', 'restrooms', 'others'];
+const ROUTE_LAYER_IDS = ['entrance-links', 'route-line-casing', 'route-line', 'route-arrows', 'restrooms', 'others'];
 
 // Where the nationwide overview imagery hands over to Vienna's own
 // high-resolution imagery. Street level: below this the driver is looking at
@@ -9333,7 +9344,7 @@ function routeMarkerSignature(r) {
   const stopsSig = r.stops
     .map(s => `${s.id}:${s.lat}:${s.lon}:${s.outcome || ''}:${s.excluded ? 1 : 0}:${s.location_precision || ''}:${s.kunde}:${s.strasse}:${s.plz}:${s.pinned ? 1 : 0}:${s.entrance_lat ?? ''}:${s.entrance_lon ?? ''}`)
     .join('|');
-  return `${r.id}|${r.total_km}|${r.total_min}|${stopsSig}`;
+  return `${r.id}|${r.total_km}|${r.total_min}|${r.geometry ? r.geometry.length : 0}|${stopsSig}`;
 }
 
 // How far apart (in degrees) two stops' coordinates may be and still get one
@@ -9500,7 +9511,7 @@ function ensureRouteLayers(map) {
       type: 'line',
       source: 'route-line',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#fff', 'line-width': 8, 'line-opacity': 0.75 },
+      paint: { 'line-color': '#fff', 'line-width': ['interpolate', ['linear'], ['zoom'], 9, 5, 14, 9, 18, 15], 'line-opacity': 0.9 },
     });
   }
   // Under the route line, and only from close in -- see `.marker-door`.
@@ -9523,7 +9534,22 @@ function ensureRouteLayers(map) {
       type: 'line',
       source: 'route-line',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ED1639', 'line-width': 4, 'line-opacity': 0.95 },
+      paint: { 'line-color': '#ED1639', 'line-width': ['interpolate', ['linear'], ['zoom'], 9, 3, 14, 5.5, 18, 9], 'line-opacity': 1 },
+    });
+  }
+  // Which way the van drives: small chevrons along the line, from street level.
+  if (!map.hasImage('route-arrow')) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 32;
+    const g = c.getContext('2d');
+    g.strokeStyle = '#fff'; g.lineWidth = 5; g.lineCap = 'round'; g.lineJoin = 'round';
+    g.beginPath(); g.moveTo(10, 8); g.lineTo(20, 16); g.lineTo(10, 24); g.stroke();
+    map.addImage('route-arrow', g.getImageData(0, 0, 32, 32), { pixelRatio: 2 });
+  }
+  if (!map.getLayer('route-arrows')) {
+    map.addLayer({
+      id: 'route-arrows', type: 'symbol', source: 'route-line', minzoom: 13,
+      layout: { 'symbol-placement': 'line', 'symbol-spacing': 90, 'icon-image': 'route-arrow', 'icon-size': ['interpolate', ['linear'], ['zoom'], 13, 0.55, 18, 0.9], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-rotation-alignment': 'map' },
     });
   }
   // The public toilets, when the driver has asked to see them: purple, red
@@ -9633,7 +9659,7 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
       const bg = s.delivered ? '#34C759' : s.outcome === 'notHome' ? '#FF9500' : skipped ? '#C7C7CC' : isNext ? '#ED1639' : '#8E8E93';
       const ring = s.location_precision ? 'box-shadow:0 0 0 3px #FF9500,0 1px 4px rgba(0,0,0,.4);' : '';
       const glyph = s.delivered ? '✓' : s.outcome === 'notHome' ? '!' : skipped ? '–' : customerNum;
-      el = elFromHtml(`<div class="marker-badge" style="background:${bg};${ring}">${glyph}</div>`);
+      el = elFromHtml(`<div class="marker-badge${isNext ? ' next' : ''}" style="background:${bg};${ring}">${glyph}</div>`);
       // Position in the tour, who it is, and its state — the three things
       // the marker's colour and number convey to someone who can see it.
       const status = s.outcome ? OUTCOMES[s.outcome]?.short || 'erledigt' : isNext ? 'nächster Stopp' : 'offen';
