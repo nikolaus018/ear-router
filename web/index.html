@@ -8951,6 +8951,21 @@ function applyBasemap(map, mode) {
   } else {
     stopAerialHandover(map);
     setVectorLayersVisible(map, true);
+    // Back from the photos the street map is blank until it is drawn again:
+    // its layers were off, their tiles are not asked for until the next render,
+    // and a map standing still has none coming. A one-pixel nudge and back
+    // makes it ask, now and once more for a slow connection.
+    const nudge = () => {
+      if (map._earBasemap !== 'map') return;
+      map.panBy([1, 0], { duration: 0 });
+      map.panBy([-1, 0], { duration: 0 });
+      map.triggerRepaint();
+      try { map.redraw(); } catch (_) { /* older library */ }
+    };
+    // Again for as long as the street map has not shown up: a slow connection
+    // answers after the first ask, and a nudge costs nothing.
+    for (const delay of [0, 250, 800, 2000, 4500]) setTimeout(nudge, delay);
+    map.once('idle', nudge);
   }
   // The background layer is the ground under both: a neutral dark grey
   // while the imagery loads (and outside its coverage), the style's own
@@ -9249,6 +9264,19 @@ function newMap(container, opts) {
     ...opts.extra,
   });
   map._earBasemap = basemap;
+  // Double-tap, hold, drag: up zooms in and down zooms out, as in Apple Maps
+  // and on the iOS app. MapLibre does it the other way round.
+  try {
+    const tapDrag = map.handlers?._handlersById?.tapDragZoom;
+    if (tapDrag) {
+      const touchmove = tapDrag.touchmove.bind(tapDrag);
+      tapDrag.touchmove = (e, points, mapTouches) => {
+        const r = touchmove(e, points, mapTouches);
+        if (r && typeof r.zoomDelta === 'number') r.zoomDelta = -r.zoomDelta;
+        return r;
+      };
+    }
+  } catch (_) { /* the library's own direction stays */ }
   mountBasemapRedraw(map);
   // A phone under memory pressure can have its WebGL context taken away by
   // the browser. MapLibre does not recover from that on its own: the canvas
