@@ -2377,6 +2377,8 @@ const ICONS = {
   people: icon('<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6"/><path d="M17.5 14.3A6 6 0 0 1 21 20"/>'),
   phone: icon('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2Z"/>'),
   thermometer: icon('<path d="M10 14.8V5a2 2 0 0 1 4 0v9.8a4 4 0 1 1-4 0Z"/><path d="M12 9v7"/>'),
+  lasso: icon('<path d="M12 4c4.4 0 8 2 8 4.6S16.4 13 12 13 4 11.1 4 8.6 7.6 4 12 4Z"/><path d="M7 12.4C5.6 14 6 16 8 17.2c1.5.9 2.5 1.4 2.5 2.8"/>'),
+  undo: icon('<path d="M9 7 4.5 11.5 9 16"/><path d="M5 11.5h9.5a4.5 4.5 0 0 1 0 9H12"/>'),
   drive: icon('<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13l2.2-6.2A2 2 0 0 1 9.1 5.5h5.8a2 2 0 0 1 1.9 1.3L19 13"/><path d="M7 16.5h.01"/>'),
   gear: icon('<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/>'),
   gauge: icon('<path d="M4.5 18a9 9 0 1 1 15 0"/><path d="M12 13l4-5"/><circle cx="12" cy="13" r="1.4" fill="currentColor" stroke="none"/>'),
@@ -8134,6 +8136,11 @@ function renderMoreTab() {
             <div class="flex-1 min-w-0"><p class="text-[15px]">Tour als PDF</p><p class="text-[13px] text-black/55">Stoppliste zum Ausdrucken</p></div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </button>
+          <button onclick="openSplitSheet()" class="${ROW}">
+            ${tile('#FF9500', ICONS.lasso)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Tour aufteilen</p><p class="text-[13px] text-black/55">Stopps auf der Karte verteilen</p></div>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>
           <button onclick="renderTurcodeSheet()" class="${ROW}">
             ${tile('#5856D6', ICONS.key)}
             <div class="flex-1 min-w-0"><p class="text-[15px]">Türcode</p><p class="text-[13px] text-black/55">Buchstaben in Ziffern</p></div>
@@ -9556,6 +9563,7 @@ function ensureRouteLayers(map) {
   }
   refreshRestroomLayer(map);
   refreshOthersLayer(map);
+  if (map._earSplit) ensureSplitLayers(map);
 }
 
 function drawRouteOnMap(map, r, { fit = true } = {}) {
@@ -10207,6 +10215,543 @@ async function addOtherStop() {
     }
   } catch (err) { toast(err.message, 'error'); }
   finally { hideProgress(); }
+}
+
+// ---------------------------------------------------------------------
+// Tour aufteilen — splits one Zusteller-Portal tour between several drivers by
+// drawing round their stops on a map. The iOS app's screen of the same name.
+//
+// Deliberately not a tour: nothing here is saved, no route is created until
+// a share is turned into one, and closing the screen forgets all of it. The
+// question it answers is "who takes which doors today", said out loud in the
+// depot in a minute.
+//
+// One person at a time. Whatever is circled goes to the person whose turn it
+// is, and stays grey under everyone after them, so the map always shows what
+// is still to hand out. The fair split and every person's "ca. 4 h 05" are
+// worked out on the server -- `split_planner`, the iOS `SplitPlanner` move for
+// move.
+// ---------------------------------------------------------------------
+const SPLIT_COLORS = ['#007AFF', '#FF9500', '#34C759', '#AF52DE', '#FF2D55', '#30B0C7', '#5856D6', '#FF3B30'];
+const SPLIT_MAX_PEOPLE = 8;
+const splitSetup = { date: null, tours: null, tourId: null, people: 2, loading: false };
+let split = null;
+
+async function openSplitSheet() {
+  splitSetup.date = splitSetup.date || isoDay(new Date());
+  renderSheetShell(`<div data-split-setup><h2 class="sheet-title">Tour aufteilen</h2>${sheetBusy('Einen Moment …')}</div>`, { label: 'Tour aufteilen' });
+  try {
+    const status = await api('/portal/status');
+    if (!status.logged_in) {
+      document.querySelector('[data-split-setup]').innerHTML = `
+        <h2 class="sheet-title">Tour aufteilen</h2>
+        <p class="sheet-lead">Zum Aufteilen wird die Tour aus dem Zusteller-Portal geladen. Bitte zuerst bei Gourmet anmelden.</p>
+        <div class="pb-2"><button type="button" onclick="closeSheet(); openGourmetAccount()" class="press-98 wide-btn accent">Bei Gourmet anmelden</button>
+        <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Schließen</button></div>`;
+      return;
+    }
+    await loadSplitTours();
+  } catch (err) {
+    document.querySelector('[data-split-setup]').innerHTML = `<h2 class="sheet-title">Tour aufteilen</h2>${sheetError(err.message, 'openSplitSheet()')}`;
+  }
+}
+
+async function loadSplitTours() {
+  splitSetup.loading = true;
+  paintSplitSetup();
+  try {
+    const { tours } = await api(`/portal/tours?date=${splitSetup.date}`);
+    splitSetup.tours = tours;
+    if (!tours.some((t) => t.id === splitSetup.tourId)) splitSetup.tourId = tours.length === 1 ? tours[0].id : null;
+  } catch (err) {
+    splitSetup.tours = [];
+    toast(err.message, 'error');
+  }
+  splitSetup.loading = false;
+  paintSplitSetup();
+}
+
+function paintSplitSetup() {
+  const box = document.querySelector('[data-split-setup]');
+  if (!box) return;
+  const tours = splitSetup.tours || [];
+  box.innerHTML = `
+    <h2 class="sheet-title">Tour aufteilen</h2>
+    <div class="${GROUP} mb-3">
+      <label class="flex items-center gap-3 px-4 py-3"><span class="flex-1 text-[15px]">Datum</span>
+        <input type="date" value="${splitSetup.date}" onchange="splitSetup.date = this.value || splitSetup.date; loadSplitTours()" class="text-[15px] bg-transparent text-right" /></label>
+      ${splitSetup.loading ? `<div class="px-4 py-3 text-[15px] text-black/55">Touren werden geladen …</div>`
+        : !tours.length ? `<div class="px-4 py-3 text-[15px] text-black/55">Keine Tour für diesen Tag gefunden.</div>`
+        : `<label class="flex items-center gap-3 px-4 py-3"><span class="flex-1 text-[15px]">Tour</span>
+        <select onchange="splitSetup.tourId = this.value ? Number(this.value) : null; paintSplitSetup()" class="text-[15px] text-black/55 bg-transparent text-right" style="max-width:60%">
+          <option value="">Bitte wählen</option>
+          ${tours.map((t) => `<option value="${t.id}" ${t.id === splitSetup.tourId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}
+        </select></label>`}
+    </div>
+    <div class="${GROUP}">
+      <div class="flex items-center gap-3 px-4 py-3"><span class="flex-1 text-[15px]">Personen: ${splitSetup.people}</span>
+        <button type="button" onclick="splitSetup.people = Math.max(2, splitSetup.people - 1); paintSplitSetup()" class="tap-target press-95 w-9 h-9 rounded-full bg-black/5 text-lg" aria-label="Weniger">−</button>
+        <button type="button" onclick="splitSetup.people = Math.min(SPLIT_MAX_PEOPLE, splitSetup.people + 1); paintSplitSetup()" class="tap-target press-95 w-9 h-9 rounded-full bg-black/5 text-lg" aria-label="Mehr">+</button></div>
+    </div>
+    <p class="now-caption" style="padding:.5rem 1rem 1rem">Wird nicht gespeichert — nur zum schnellen Aufteilen.</p>
+    <div class="pb-2">
+      <button type="button" onclick="startSplit()" ${splitSetup.tourId && !splitSetup.loading ? '' : 'disabled'} class="press-98 wide-btn accent">Auf der Karte aufteilen</button>
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Schließen</button>
+    </div>`;
+}
+
+async function startSplit() {
+  const tour = (splitSetup.tours || []).find((t) => t.id === splitSetup.tourId);
+  if (!tour) return;
+  const box = document.querySelector('[data-split-setup]');
+  box.innerHTML = `<h2 class="sheet-title">Tour aufteilen</h2>${sheetBusy('Lieferungen werden geladen und Adressen gesucht …')}<p class="sheet-lead" style="text-align:center">Das dauert bis zu einer Minute.</p>`;
+  try {
+    const res = await api('/split/load', { method: 'POST', body: JSON.stringify({ tour_id: tour.id, date: splitSetup.date }), timeoutMs: 5 * 60 * 1000 });
+    split = {
+      tour, date: splitSetup.date, people: splitSetup.people, stops: res.stops,
+      points: res.points, pointOf: res.point_of, seconds: res.seconds, estimated: res.estimated,
+      owner: {}, history: [], current: 0, days: null, plans: 0, lasso: false, map: null,
+    };
+    closeSheet();
+    await ensureMapLibre();
+    openSplitScreen();
+  } catch (err) {
+    box.innerHTML = `<h2 class="sheet-title">Tour aufteilen</h2>${sheetError(err.message, 'paintSplitSetup()')}`;
+  }
+}
+
+const splitStop = (id) => split.stops.find((s) => s.id === id);
+const splitPlaced = (s) => Number.isFinite(s.lat) && Number.isFinite(s.lon);
+const splitOwned = () => Object.keys(split.owner).length;
+const splitFree = () => split.stops.length - splitOwned();
+const splitStopsOf = (person) => split.stops.filter((s) => split.owner[s.id] === person);
+
+function splitPush() { split.history.push({ ...split.owner }); }
+function splitUndo() {
+  const last = split.history.pop();
+  if (!last) return;
+  split.owner = last;
+  splitChanged();
+}
+function splitReset() {
+  if (!splitOwned()) return;
+  splitPush();
+  split.owner = {};
+  splitChanged();
+}
+/// Gives every free stop among `ids` to the person whose turn it is.
+function splitClaim(ids) {
+  const free = ids.filter((id) => split.owner[id] == null);
+  if (!free.length) return 0;
+  splitPush();
+  for (const id of free) split.owner[id] = split.current;
+  splitChanged();
+  return free.length;
+}
+/// A tap: one of this person's stops is freed again, and any other -- free or
+/// someone else's -- becomes theirs. The precise way to fix up what a circle caught.
+function splitToggle(id) {
+  splitPush();
+  if (split.owner[id] === split.current) delete split.owner[id]; else split.owner[id] = split.current;
+  splitChanged();
+}
+
+function splitDoorMinutes() {
+  return paceHistory.door_by_tour?.[tourKey(split.tour.name)] ?? paceHistory.door_minutes ?? PACE.assumed;
+}
+function splitFixedMinutes() {
+  const lead = paceHistory.lead_minutes ?? (split.seconds[1]?.[0] || 0) / 60;
+  return lead + (paceHistory.lager_minutes ?? PACE.lager);
+}
+function splitCalcBody(mode) {
+  const minutes = splitDoorMinutes();
+  return JSON.stringify({
+    people: split.people, seconds: split.seconds, fixed_minutes: splitFixedMinutes(), mode,
+    stops: split.stops.map((s, i) => ({ s, point: split.pointOf[i] })).filter((x) => x.point != null).map(({ s, point }) => ({
+      id: s.id, point, lat: s.lat, lon: s.lon, exact: !!s.exact, address: s.door || s.address, plz: s.plz,
+      owner: split.owner[s.id] ?? null, minutes,
+    })),
+  });
+}
+
+/// What each person's day comes to, asked of the server whenever the shares change.
+let splitDaysTimer = null;
+function splitChanged() {
+  paintSplitMapData();
+  paintSplitPanel();
+  clearTimeout(splitDaysTimer);
+  splitDaysTimer = setTimeout(refreshSplitDays, 250);
+}
+async function refreshSplitDays() {
+  if (!split) return;
+  const mine = split;
+  const stamp = ++mine.plans;
+  try {
+    const { days } = await api('/split/calc', { method: 'POST', body: splitCalcBody('days'), timeoutMs: 60000 });
+    if (split !== mine || stamp !== mine.plans) return;
+    // Stops no address lookup could place still take their time at a door.
+    const minutes = splitDoorMinutes();
+    mine.days = days.map((d, person) => {
+      const unplaced = splitStopsOf(person).filter((s) => !splitPlaced(s));
+      if (!unplaced.length) return d;
+      const out = { ...d, stops: d.stops + unplaced.length, addresses: d.addresses + unplaced.length, door_minutes: d.door_minutes + unplaced.length * minutes };
+      out.total_minutes = splitFixedMinutes() + out.driving_minutes + out.door_minutes;
+      return out;
+    });
+    mine.order = Object.fromEntries(days.map((d, person) => [person, d.order]));
+    paintSplitPanel();
+  } catch (_) { /* the counts still show; only the clock is missing */ }
+}
+const splitClock = (min) => { const t = Math.round(min); return `${Math.floor(t / 60)} h ${String(t % 60).padStart(2, '0')}`; };
+const splitStopsWord = (n) => (n === 1 ? '1 Stopp' : `${n} Stopps`);
+function splitDayLine(day) {
+  if (!day || !day.stops) return '';
+  const stops = day.addresses > 0 && day.addresses < day.stops ? `${splitStopsWord(day.stops)} an ${day.addresses} Adressen` : splitStopsWord(day.stops);
+  return `${stops} · ca. ${splitClock(day.total_minutes)}`;
+}
+
+// --- the screen -------------------------------------------------------
+function openSplitScreen() {
+  document.getElementById('split-screen')?.remove();
+  const el = document.createElement('div');
+  el.id = 'split-screen';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', 'Tour aufteilen');
+  el.style.cssText = 'position:fixed;inset:0;z-index:45;background:#F2F2F7;display:flex;flex-direction:column';
+  el.innerHTML = `
+    <div style="position:relative;flex:1;min-height:0">
+      <div id="split-map" style="position:absolute;inset:0"></div>
+      <svg id="split-lasso" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;touch-action:none"><polygon id="split-lasso-shape" points="" fill="rgba(0,122,255,.15)" stroke="#007AFF" stroke-width="3" stroke-linejoin="round"/></svg>
+      <div id="split-catcher" style="position:absolute;inset:0;touch-action:none;display:none"></div>
+      <div style="position:absolute;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top) + .625rem) .75rem 0;display:flex;gap:.5rem;align-items:center;pointer-events:none">
+        <button type="button" onclick="closeSplitScreen()" class="press-98" style="pointer-events:auto;background:rgba(255,255,255,.94);border-radius:999px;padding:.5rem .9rem;font-weight:600;font-size:14px;box-shadow:0 2px 10px rgba(0,0,0,.2)">Schließen</button>
+        <p style="background:rgba(255,255,255,.94);border-radius:999px;padding:.5rem .9rem;font-weight:600;font-size:14px;box-shadow:0 2px 10px rgba(0,0,0,.2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(split.tour.name)}</p>
+      </div>
+      <div id="split-notice" style="position:absolute;top:calc(env(safe-area-inset-top) + 3.5rem);left:0;right:0;display:flex;justify-content:center;pointer-events:none"></div>
+    </div>
+    <div id="split-panel" style="background:#fff;border-radius:1.25rem 1.25rem 0 0;box-shadow:0 -4px 20px rgba(0,0,0,.12);padding:.875rem 1rem calc(env(safe-area-inset-bottom) + .875rem);max-height:48vh;overflow-y:auto"></div>`;
+  document.body.appendChild(el);
+  paintSplitPanel();
+
+  const map = newMap(document.getElementById('split-map'), {});
+  map._earSplit = true;
+  split.map = map;
+  const bounds = new maplibregl.LngLatBounds();
+  for (const s of split.stops) if (splitPlaced(s)) bounds.extend([s.lon, s.lat]);
+  if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 56, maxZoom: 15, duration: 0 }); else map.jumpTo({ center: VIENNA_CENTER, zoom: 11 });
+  map.on('click', (e) => {
+    const hit = map.getLayer('split-stops') ? map.queryRenderedFeatures([[e.point.x - 14, e.point.y - 14], [e.point.x + 14, e.point.y + 14]], { layers: ['split-stops'] })[0] : null;
+    if (hit) splitToggle(Number(hit.properties.id));
+  });
+  setupSplitLasso();
+  refreshSplitDays();
+}
+
+function ensureSplitLayers(map) {
+  if (!map.getSource('split-stops')) map.addSource('split-stops', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  if (!map.getLayer('split-stops')) {
+    map.addLayer({
+      id: 'split-stops', type: 'circle', source: 'split-stops',
+      paint: {
+        'circle-color': ['get', 'color'],
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 5, 14, 9, 17, 13],
+        'circle-stroke-color': '#fff', 'circle-stroke-width': 2,
+        'circle-opacity': ['case', ['get', 'free'], 0.55, 1],
+      },
+    });
+  }
+  paintSplitMapData();
+}
+
+function paintSplitMapData() {
+  const map = split?.map;
+  const src = map && map.getSource && map.getSource('split-stops');
+  if (!src) return;
+  src.setData({
+    type: 'FeatureCollection',
+    features: split.stops.filter(splitPlaced).map((s) => {
+      const o = split.owner[s.id];
+      return { type: 'Feature', properties: { id: s.id, free: o == null, color: o == null ? '#8E8E93' : SPLIT_COLORS[o % SPLIT_COLORS.length] }, geometry: { type: 'Point', coordinates: [s.lon, s.lat] } };
+    }),
+  });
+}
+
+/// A finger (or a mouse) drawing round stops: a polygon of screen points. A
+/// stop is caught when it is inside it, or within a thumb's width of its edge.
+function setupSplitLasso() {
+  const catcher = document.getElementById('split-catcher');
+  const shape = document.getElementById('split-lasso-shape');
+  let pts = [];
+  const rect = () => document.getElementById('split-map').getBoundingClientRect();
+  const at = (e) => { const r = rect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  const inside = (p, poly) => {
+    let c = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      if ((poly[i][1] > p[1]) !== (poly[j][1] > p[1]) && p[0] < ((poly[j][0] - poly[i][0]) * (p[1] - poly[i][1])) / (poly[j][1] - poly[i][1]) + poly[i][0]) c = !c;
+    }
+    return c;
+  };
+  const edgeDistance = (p, poly) => {
+    let best = Infinity;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [ax, ay] = poly[j], [bx, by] = poly[i];
+      const dx = bx - ax, dy = by - ay, len = dx * dx + dy * dy;
+      const t = len ? Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / len)) : 0;
+      best = Math.min(best, Math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy)));
+    }
+    return best;
+  };
+  catcher.addEventListener('pointerdown', (e) => { catcher.setPointerCapture(e.pointerId); pts = [at(e)]; shape.setAttribute('points', pts.join(' ')); });
+  catcher.addEventListener('pointermove', (e) => {
+    if (!pts.length) return;
+    pts.push(at(e));
+    shape.setAttribute('points', pts.map((p) => p.join(',')).join(' '));
+  });
+  const done = () => {
+    const poly = pts;
+    pts = [];
+    shape.setAttribute('points', '');
+    if (poly.length < 5) return;
+    const caught = split.stops.filter(splitPlaced).filter((s) => {
+      const q = split.map.project([s.lon, s.lat]);
+      const p = [q.x, q.y];
+      return inside(p, poly) || edgeDistance(p, poly) <= 12;
+    }).map((s) => s.id);
+    const n = splitClaim(caught);
+    splitNotice(n ? `${splitStopsWord(n)} an Person ${split.current + 1}` : 'Nichts Freies gefunden');
+    if (navigator.vibrate && n) navigator.vibrate(10);
+  };
+  catcher.addEventListener('pointerup', done);
+  catcher.addEventListener('pointercancel', () => { pts = []; shape.setAttribute('points', ''); });
+}
+
+function splitNotice(text) {
+  const slot = document.getElementById('split-notice');
+  if (!slot) return;
+  slot.innerHTML = `<span style="background:rgba(0,0,0,.78);color:#fff;border-radius:999px;padding:.4rem .9rem;font-size:13px;font-weight:600">${escapeHtml(text)}</span>`;
+  clearTimeout(splitNotice.t);
+  splitNotice.t = setTimeout(() => { slot.innerHTML = ''; }, 2200);
+}
+
+function splitSetLasso(on) {
+  split.lasso = on;
+  const catcher = document.getElementById('split-catcher');
+  if (catcher) catcher.style.display = on ? 'block' : 'none';
+  paintSplitPanel();
+}
+
+function splitSelectPerson(i) {
+  split.current = i;
+  paintSplitPanel();
+}
+
+function paintSplitPanel() {
+  const panel = document.getElementById('split-panel');
+  if (!panel || !split) return;
+  const free = splitFree();
+  const unplacedFree = split.stops.filter((s) => !splitPlaced(s) && split.owner[s.id] == null).length;
+  const chip = (i) => {
+    const mine = splitStopsOf(i).length;
+    const day = split.days?.[i];
+    const on = i === split.current;
+    const color = SPLIT_COLORS[i % SPLIT_COLORS.length];
+    return `<button type="button" onclick="splitSelectPerson(${i})" aria-pressed="${on}" class="press-98" style="flex:1;min-width:5.5rem;text-align:left;border-radius:.875rem;padding:.5rem .625rem;border:2px solid ${on ? color : 'transparent'};background:${on ? color + '1F' : 'rgba(120,120,128,.1)'}">
+      <span style="display:flex;align-items:center;gap:.375rem;font-weight:700;font-size:14px"><span style="width:10px;height:10px;border-radius:50%;background:${color}"></span>Person ${i + 1}</span>
+      <span style="display:block;font-size:12px;color:rgba(0,0,0,.6);margin-top:.125rem;font-variant-numeric:tabular-nums">${mine ? (day ? escapeHtml(splitDayLine(day)) : splitStopsWord(mine)) : 'keine Stopps'}</span></button>`;
+  };
+  const btn = (label, onclick, { primary = false, disabled = false, icon = '' } = {}) => `<button type="button" onclick="${onclick}" ${disabled ? 'disabled' : ''} class="press-98" style="flex:1;display:flex;align-items:center;justify-content:center;gap:.375rem;border-radius:.75rem;padding:.625rem .5rem;font-weight:600;font-size:14px;${primary ? 'background:#ED1639;color:#fff' : 'background:rgba(120,120,128,.12)'};${disabled ? 'opacity:.4' : ''}"><span style="display:flex">${icon}</span>${label}</button>`;
+  panel.innerHTML = `
+    <p style="font-size:13px;color:rgba(0,0,0,.6);margin-bottom:.5rem">${free ? `${splitStopsWord(free)} noch frei${unplacedFree ? ` · ${unplacedFree} ohne Ort` : ''}` : 'Alle Stopps sind verteilt.'} ${split.lasso ? 'Um Stopps ziehen — oder einen Punkt antippen.' : 'Punkt antippen, oder Lasso an und umkreisen.'}</p>
+    <div style="display:flex;gap:.5rem;overflow-x:auto;padding-bottom:.5rem">${Array.from({ length: split.people }, (_, i) => chip(i)).join('')}</div>
+    <div style="display:flex;gap:.5rem;margin-top:.25rem">
+      ${btn('Lasso', `splitSetLasso(${!split.lasso})`, { primary: split.lasso, icon: ICONS.lasso })}
+      ${btn('Rückgängig', 'splitUndo()', { disabled: !split.history.length, icon: ICONS.undo })}
+      ${btn('Zurücksetzen', 'splitReset()', { disabled: !splitOwned() })}
+    </div>
+    <div style="display:flex;gap:.5rem;margin-top:.5rem">
+      ${btn('Fair aufteilen', 'splitFair()', { disabled: !split.stops.some((s) => splitPlaced(s) && split.owner[s.id] == null) })}
+      ${btn('+ Stopp', 'openSplitAddSheet()')}
+      ${btn('Übersicht', 'openSplitOverview()')}
+    </div>
+    ${split.estimated ? '<p style="font-size:12px;color:#C93400;margin-top:.5rem">OSRM war nicht erreichbar — die Fahrzeiten sind nach Luftlinie geschätzt.</p>' : ''}`;
+}
+
+async function closeSplitScreen() {
+  if (split && splitOwned() && !(await confirmSheet({ title: 'Aufteilung verwerfen?', message: 'Sie wird nicht gespeichert.', confirmLabel: 'Verwerfen', danger: true }))) return;
+  try { split?.map?.remove(); } catch (_) { /* already gone */ }
+  document.getElementById('split-screen')?.remove();
+  split = null;
+}
+
+/// The fair split of everything still free: the answer is one step "Rückgängig" takes back whole.
+async function splitFair() {
+  if (!split) return;
+  const mine = split;
+  splitNotice('Wird berechnet …');
+  const panelBtns = document.querySelectorAll('#split-panel button');
+  panelBtns.forEach((b) => { b.disabled = true; });
+  try {
+    const res = await api('/split/calc', { method: 'POST', body: splitCalcBody('plan'), timeoutMs: 2 * 60 * 1000 });
+    if (split !== mine) return;
+    const changed = Object.entries(res.owners).filter(([id, p]) => mine.owner[id] !== p && p < mine.people);
+    if (changed.length) {
+      splitPush();
+      for (const [id, p] of changed) mine.owner[id] = p;
+    }
+    mine.days = null;
+    splitChanged();
+    const unplacedFree = mine.stops.filter((s) => !splitPlaced(s) && mine.owner[s.id] == null).length;
+    showFairSummary(res.days, unplacedFree);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+  paintSplitPanel();
+}
+
+function showFairSummary(days, unplacedFree) {
+  const lines = days.map((d, i) => (d.stops === 0 ? `Person ${i + 1}: keine Stopps` : `Person ${i + 1}: ${splitDayLine(d)}`));
+  const worked = days.filter((d) => d.stops > 0).map((d) => d.total_minutes);
+  if (worked.length > 1) {
+    const gap = Math.round(Math.max(...worked) - Math.min(...worked));
+    lines.push('', gap === 0 ? 'Alle Tage sind gleich lang.' : `Längster und kürzester Tag liegen ${gap} min auseinander.`);
+  }
+  if (split.estimated) lines.push('', 'OSRM war nicht erreichbar — die Fahrzeiten sind nach Luftlinie geschätzt.');
+  if (unplacedFree) lines.push('', unplacedFree === 1 ? '1 Stopp ohne Ort auf der Karte ist noch frei.' : `${unplacedFree} Stopps ohne Ort auf der Karte sind noch frei.`);
+  renderSheetShell(`
+    <h2 class="sheet-title">Fair aufgeteilt</h2>
+    <p class="sheet-lead" style="white-space:pre-line">${escapeHtml(lines.join('\n'))}</p>
+    <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn accent">OK</button></div>`, { label: 'Fair aufgeteilt' });
+}
+
+function openSplitAddSheet(prefill = {}) {
+  renderSheetShell(`
+    <h2 class="sheet-title">Stopp hinzufügen</h2>
+    <p class="sheet-lead">Für eine Lieferung, die nicht im Portal steht, etwa eine Nachlieferung.</p>
+    <div class="space-y-3">
+      <div><label class="${LABEL}" for="sp-name">Name (optional)</label><input id="sp-name" maxlength="${LIMITS.kunde}" autocomplete="off" value="${escapeAttr(prefill.name || '')}" class="${FIELD}" /></div>
+      <div><label class="${LABEL}" for="sp-strasse">Adresse</label><input id="sp-strasse" maxlength="${LIMITS.strasse}" autocomplete="off" placeholder="z. B. Hörlgasse 4" value="${escapeAttr(prefill.address || '')}" class="${FIELD}" /></div>
+      <div><label class="${LABEL}" for="sp-plz">PLZ</label><input id="sp-plz" inputmode="numeric" maxlength="4" autocomplete="off" value="${escapeAttr(prefill.plz || '')}" class="${FIELD}" /></div>
+    </div>
+    <div class="pb-2" style="margin-top:1.25rem">
+      <button type="button" onclick="addSplitStop()" class="press-98 wide-btn accent">Hinzufügen</button>
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
+    </div>`, { label: 'Stopp hinzufügen' });
+}
+
+async function addSplitStop() {
+  const val = (id) => document.getElementById(id)?.value.trim() || '';
+  const name = val('sp-name'), address = val('sp-strasse'), plz = val('sp-plz');
+  if (!address || !plz) { toast('Adresse und PLZ werden gebraucht.', 'error'); return; }
+  const mine = split;
+  closeSheet();
+  showProgress('Adresse wird gesucht …');
+  try {
+    const placed = await api('/split/place', { method: 'POST', body: JSON.stringify({ name, address, plz }) });
+    if (split !== mine) return;
+    const id = Math.min(-1, ...mine.stops.map((s) => s.id)) - 1;
+    mine.stops.push({ ...placed, id, typed: { kunde: placed.name, strasse: placed.address, plz: placed.plz, paket: null, notiz: null, telefon: null } });
+    await splitRefreshDurations();
+    splitChanged();
+    if (!splitPlaced(mine.stops[mine.stops.length - 1])) toast('Die Adresse wurde nicht gefunden — der Stopp steht ohne Ort in der Liste.', 'info');
+  } catch (err) { toast(err.message, 'error'); }
+  finally { hideProgress(); }
+}
+
+/// The table again, for a stop added since it was loaded.
+async function splitRefreshDurations() {
+  const res = await api('/split/durations', { method: 'POST', body: JSON.stringify({ coords: split.stops.map((s) => (splitPlaced(s) ? [s.lat, s.lon] : null)) }), timeoutMs: 60000 });
+  Object.assign(split, { points: res.points, pointOf: res.point_of, seconds: res.seconds, estimated: split.estimated || res.estimated });
+}
+
+// --- Übersicht, and turning a share into a tour ------------------------
+function splitOrdered(person) {
+  const mine = splitStopsOf(person);
+  const order = split.order?.[person];
+  if (!order) return mine;
+  const byId = new Map(mine.map((s) => [s.id, s]));
+  const ordered = order.map((id) => byId.get(id)).filter(Boolean);
+  const rest = mine.filter((s) => !order.includes(s.id));
+  return [...ordered, ...rest];
+}
+
+function openSplitOverview() {
+  if (!split) return;
+  const section = (person) => {
+    const stops = splitOrdered(person);
+    const color = SPLIT_COLORS[person % SPLIT_COLORS.length];
+    return `
+      <div style="margin-bottom:1.25rem">
+        <p class="flex items-center gap-2" style="font-weight:700;font-size:16px"><span style="width:12px;height:12px;border-radius:50%;background:${color};display:inline-block"></span>Person ${person + 1}</p>
+        <p class="now-caption" style="margin:.125rem 0 .5rem">${stops.length ? escapeHtml(splitDayLine(split.days?.[person]) || splitStopsWord(stops.length)) : 'keine Stopps'}</p>
+        ${stops.length ? `<div class="${GROUP}">${stops.map((s) => `<div class="px-4 py-2.5"><p class="text-[15px]">${escapeHtml(s.name)}</p><p class="text-[13px] text-black/55">${escapeHtml(`${s.address}, ${s.plz}`)}${splitPlaced(s) ? '' : ' · ohne Ort'}</p></div>`).join('')}</div>` : ''}
+        ${stops.length ? `<div class="flex gap-2" style="margin-top:.5rem">
+          <button type="button" onclick="splitShare(${person})" class="press-98 wide-btn quiet" style="margin:0">Teilen</button>
+          <button type="button" onclick="splitCreateTour(${person})" class="press-98 wide-btn accent" style="margin:0">Als Tour anlegen</button></div>` : ''}
+      </div>`;
+  };
+  const rest = splitStopsOf(undefined);
+  renderSheetShell(`
+    <h2 class="sheet-title">Übersicht</h2>
+    ${Array.from({ length: split.people }, (_, i) => section(i)).join('')}
+    ${rest.length ? `<div style="margin-bottom:1.25rem"><p style="font-weight:700;font-size:16px">Noch frei</p><p class="now-caption" style="margin:.125rem 0 .5rem">${splitStopsWord(rest.length)}</p>
+      <div class="${GROUP}">${rest.map((s) => `<div class="px-4 py-2.5"><p class="text-[15px]">${escapeHtml(s.name)}</p><p class="text-[13px] text-black/55">${escapeHtml(`${s.address}, ${s.plz}`)}${splitPlaced(s) ? '' : ' · ohne Ort'}</p></div>`).join('')}</div></div>` : ''}
+    <div class="pb-2"><button type="button" onclick="splitShare(null)" class="press-98 wide-btn quiet">Alle teilen</button>
+    <button type="button" onclick="closeSheet()" class="press-98 wide-btn accent">Fertig</button></div>`, { label: 'Übersicht' });
+}
+
+/// A JSON file of one person's share, or of everyone's: the customer and the address, nothing else.
+async function splitShare(person) {
+  const who = person == null ? Array.from({ length: split.people }, (_, i) => i) : [person];
+  const out = (stops) => stops.map((s) => ({ name: s.name, address: s.address }));
+  const body = { tour: split.tour.name.trim(), persons: who.map((p) => ({ person: p + 1, stops: out(splitOrdered(p)) })) };
+  if (person == null && splitStopsOf(undefined).length) body.unassigned = out(splitStopsOf(undefined));
+  const base = split.tour.name.trim().replace(/\//g, '-') || 'Tour';
+  const name = `${base}${person == null ? '' : `-P${person + 1}`}.json`;
+  const file = new File([JSON.stringify(body, null, 2)], name, { type: 'application/json' });
+  if (matchMedia('(pointer: coarse)').matches && navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); return; } catch (err) { if (err?.name === 'AbortError') return; }
+  }
+  const url = URL.createObjectURL(file);
+  const link = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+/// One share becomes a tour somebody drives. The Paket and the phone number are
+/// on the portal's detail call, one request per stop -- deliberately skipped
+/// while splitting, fetched here, for one share, at the moment it is about to
+/// be driven. A stop whose detail does not come falls back to the name and
+/// address already on screen.
+async function splitCreateTour(person) {
+  const mine = splitOrdered(person);
+  if (!mine.length) return;
+  const portalIds = mine.filter((s) => s.id > 0).map((s) => s.id);
+  const name = `${split.tour.name.trim()} · P${person + 1}`;
+  renderSheetShell(`${sheetBusy(`${splitStopsWord(mine.length)} werden übernommen …`)}<p class="sheet-lead" style="text-align:center">Pakete werden geholt, Adressen gesucht und die Tour wird sortiert. Das dauert etwa eine Minute — bitte die App offen lassen.</p>`, { label: 'Als Tour anlegen' });
+  try {
+    let details = new Map();
+    if (portalIds.length) {
+      try {
+        const { entries } = await api('/portal/entries', { method: 'POST', body: JSON.stringify({ tour_id: split.tour.id, date: split.date, delivery_ids: portalIds }), timeoutMs: 3 * 60 * 1000 });
+        portalIds.forEach((id, i) => { if (entries[i]) details.set(id, entries[i]); });
+      } catch (_) { /* plain entries below */ }
+    }
+    const entries = mine.map((s) => {
+      if (s.typed) return s.typed;
+      const d = details.get(s.id);
+      return d ? { ...d, kunde: d.kunde || s.name } : { kunde: s.name, strasse: s.address, plz: s.plz, paket: null, notiz: null, telefon: null };
+    });
+    const result = await api('/portal/import', { method: 'POST', body: JSON.stringify({ tour_name: name, tour_id: split.tour.id, date: split.date, entries }), timeoutMs: 8 * 60 * 1000 });
+    closeSheet();
+    adoptRoute(nextSeq(), result);
+    await loadRoutes();
+    toast(`„${result.name}“ ist angelegt — unter Touren.`, 'success');
+  } catch (err) {
+    closeSheet();
+    toast(err.message || 'Die Tour konnte nicht angelegt werden.', 'error');
+  }
 }
 
 // ---------------------------------------------------------------------

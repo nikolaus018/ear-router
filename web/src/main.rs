@@ -3192,7 +3192,7 @@ mod tour_polish {
 
     /// Makes improving moves on `o[lo..hi]` until there are none, and
     /// returns what the tour then costs.
-    fn settle(o: &mut Vec<usize>, m: &[Vec<f64>], lo: usize, hi: usize) -> f64 {
+    pub fn settle(o: &mut Vec<usize>, m: &[Vec<f64>], lo: usize, hi: usize) -> f64 {
         let n = o.len();
         let at = |o: &[usize], i: isize| -> Option<usize> { (i >= 0 && (i as usize) < n).then(|| o[i as usize]) };
 
@@ -3278,9 +3278,9 @@ mod tour_polish {
     }
 
     /// A fixed-seed generator, so one tour never comes back in two orders.
-    struct SplitMix(u64);
+    pub struct SplitMix(pub u64);
     impl SplitMix {
-        fn next(&mut self) -> u64 {
+        pub fn next(&mut self) -> u64 {
             self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
             let mut z = self.0;
             z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6731,6 +6731,853 @@ async fn refresh_restrooms(State(state): State<Arc<AppState>>) -> Result<Json<Va
     Ok(Json(json!({ "restrooms": rows.len() })))
 }
 
+// ---------------------------------------------------------------------
+// Tour aufteilen -- the iOS app's `SplitPlanner` and `ParkingStops`, move for
+// move: shares a tour's doors out between several drivers so that nobody's
+// day is longer than it has to be. Fair is counted in what the day takes,
+// not in doors: the drive from the Lager round a person's doors and back to
+// the Ziel, plus what every door takes. Deterministic: the same tour and the
+// same doors come back split the same way, unless the deadline cut it short.
+// ---------------------------------------------------------------------
+mod split_planner {
+    use super::tour_polish::{self, SplitMix};
+    use std::collections::BTreeSet;
+    use std::time::{Duration, Instant};
+
+    pub const LAGER_POINT: usize = 0;
+    pub const ZIEL_POINT: usize = 1;
+    /// What a minute off the gap between the longest and the shortest day is
+    /// worth in minutes altogether: one.
+    const GAP_WEIGHT: f64 = 1.0;
+    const NEIGHBOURS: usize = 12;
+
+    #[derive(Clone)]
+    pub struct Door {
+        pub point: usize,
+        pub seconds: f64,
+        pub owner: Option<usize>,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct Day {
+        pub doors: Vec<usize>,
+        pub driving: f64,
+        pub door: f64,
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    pub enum Objective {
+        FairAndEfficient,
+        LeastTotal,
+    }
+
+    #[derive(Clone)]
+    struct Split {
+        routes: Vec<Vec<usize>>,
+        work: Vec<f64>,
+        cost: f64,
+    }
+
+    pub struct Engine {
+        m: Vec<Vec<f64>>,
+        service: Vec<f64>,
+        owner: Vec<Option<usize>>,
+        people: usize,
+        objective: Objective,
+        free: Vec<usize>,
+        neighbours: Vec<Vec<usize>>,
+    }
+
+    pub fn plan(doors: &[Door], people: usize, durations: &[Vec<f64>], rounds: usize, budget: Duration) -> Vec<Day> {
+        if people == 0 {
+            return vec![];
+        }
+        let now = Instant::now();
+        let deadline = now + budget;
+        let first = std::cmp::min(deadline, now + std::cmp::max(Duration::from_millis(200), budget.mul_f64(0.35)));
+        let efficient = Engine::new(doors, people, durations, Objective::LeastTotal).solve(rounds, first, None);
+        let given: Vec<Vec<usize>> = efficient.into_iter().map(|d| d.doors).collect();
+        Engine::new(doors, people, durations, Objective::FairAndEfficient).solve(rounds, deadline, Some(given))
+    }
+
+    /// What a split made by hand comes to: each person's doors in the shortest
+    /// order found, and how long their day is.
+    pub fn evaluate(shares: &[Vec<usize>], doors: &[Door], durations: &[Vec<f64>]) -> Vec<Day> {
+        let engine = Engine::new(doors, shares.len(), durations, Objective::FairAndEfficient);
+        shares.iter().map(|s| engine.day(&engine.polished(&engine.ordered(s)))).collect()
+    }
+
+    impl Engine {
+        pub fn new(doors: &[Door], people: usize, durations: &[Vec<f64>], objective: Objective) -> Self {
+            let points: Vec<usize> = [LAGER_POINT, ZIEL_POINT].into_iter().chain(doors.iter().map(|d| d.point)).collect();
+            let m: Vec<Vec<f64>> = points
+                .iter()
+                .map(|&a| points.iter().map(|&b| if a == b { 0.0 } else { durations[a][b].max(0.0) }).collect())
+                .collect();
+            let service: Vec<f64> = doors.iter().map(|d| d.seconds.max(0.0)).collect();
+            let owner: Vec<Option<usize>> = doors.iter().map(|d| d.owner.filter(|&o| o < people)).collect();
+            let free: Vec<usize> = (0..doors.len()).filter(|&i| owner[i].is_none()).collect();
+            let neighbours: Vec<Vec<usize>> = (0..doors.len())
+                .map(|d| {
+                    let mut others: Vec<usize> = (0..doors.len()).filter(|&o| o != d).collect();
+                    others.sort_by(|&a, &b| {
+                        let da = m[d + 2][a + 2] + m[a + 2][d + 2];
+                        let db = m[d + 2][b + 2] + m[b + 2][d + 2];
+                        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    others.truncate(NEIGHBOURS);
+                    others
+                })
+                .collect();
+            Engine { m, service, owner, people, objective, free, neighbours }
+        }
+
+        fn drive(&self, r: &[usize]) -> f64 {
+            let (Some(&first), Some(&last)) = (r.first(), r.last()) else { return self.m[0][1] };
+            let mut s = self.m[0][first + 2] + self.m[last + 2][1];
+            for k in 1..r.len() {
+                s += self.m[r[k - 1] + 2][r[k] + 2];
+            }
+            s
+        }
+
+        pub fn day(&self, r: &[usize]) -> Day {
+            Day { doors: r.to_vec(), driving: self.drive(r), door: r.iter().map(|&d| self.service[d]).sum() }
+        }
+
+        fn seconds(&self, r: &[usize]) -> f64 {
+            self.drive(r) + r.iter().map(|&d| self.service[d]).sum::<f64>()
+        }
+
+        /// The cheapest place for `d` in `r`, and what it adds to the drive.
+        fn insertion(&self, d: usize, r: &[usize]) -> (f64, usize) {
+            let x = d + 2;
+            let mut best = (f64::INFINITY, 0);
+            let mut prev = 0;
+            for k in 0..=r.len() {
+                let next = if k < r.len() { r[k] + 2 } else { 1 };
+                let delta = self.m[prev][x] + self.m[x][next] - self.m[prev][next];
+                if delta < best.0 {
+                    best = (delta, k);
+                }
+                prev = next;
+            }
+            best
+        }
+
+        fn removal(&self, i: usize, r: &[usize]) -> f64 {
+            let x = r[i] + 2;
+            let prev = if i > 0 { r[i - 1] + 2 } else { 0 };
+            let next = if i + 1 < r.len() { r[i + 1] + 2 } else { 1 };
+            self.m[prev][x] + self.m[x][next] - self.m[prev][next]
+        }
+
+        fn settled(&self, r: &[usize]) -> Vec<usize> {
+            if r.len() < 2 {
+                return r.to_vec();
+            }
+            let mut o: Vec<usize> = std::iter::once(0).chain(r.iter().map(|d| d + 2)).chain(std::iter::once(1)).collect();
+            let hi = o.len() - 1;
+            tour_polish::settle(&mut o, &self.m, 1, hi);
+            o[1..o.len() - 1].iter().map(|d| d - 2).collect()
+        }
+
+        pub fn ordered(&self, doors: &[usize]) -> Vec<usize> {
+            let mut r: Vec<usize> = vec![];
+            for &d in doors {
+                let at = self.insertion(d, &r).1;
+                r.insert(at, d);
+            }
+            self.settled(&r)
+        }
+
+        pub fn polished(&self, r: &[usize]) -> Vec<usize> {
+            if r.len() < 3 {
+                return r.to_vec();
+            }
+            let o: Vec<usize> = std::iter::once(0).chain(r.iter().map(|d| d + 2)).chain(std::iter::once(1)).collect();
+            let better = tour_polish::improve(&o, &self.m, true, true);
+            better[1..better.len() - 1].iter().map(|d| d - 2).collect()
+        }
+
+        fn cost(&self, work: &[f64]) -> f64 {
+            // A person with nothing is a split into fewer people: priced above
+            // anything else, while there are doors enough to go round.
+            let idle = if self.free.len() >= self.people {
+                work.iter().filter(|&&w| w <= self.m[0][1] + 1e-6).count() as f64 * 1e15
+            } else {
+                0.0
+            };
+            match self.objective {
+                Objective::LeastTotal => work.iter().sum::<f64>() + idle,
+                Objective::FairAndEfficient => {
+                    let (mut total, mut longest, mut shortest, mut squares) = (0.0, f64::NEG_INFINITY, f64::INFINITY, 0.0);
+                    for &w in work {
+                        total += w;
+                        longest = longest.max(w);
+                        shortest = shortest.min(w);
+                        squares += w * w;
+                    }
+                    total + GAP_WEIGHT * (longest - shortest) + squares * 1e-9 + idle
+                }
+            }
+        }
+
+        fn split(&self, routes: Vec<Vec<usize>>) -> Split {
+            let work: Vec<f64> = routes.iter().map(|r| self.seconds(r)).collect();
+            let cost = self.cost(&work);
+            Split { routes, work, cost }
+        }
+
+        fn construct(&self, seed: u64) -> Split {
+            let mut random = SplitMix(seed);
+            let mut routes: Vec<Vec<usize>> = vec![vec![]; self.people];
+            for d in 0..self.owner.len() {
+                if let Some(p) = self.owner[d] {
+                    let at = self.insertion(d, &routes[p]).1;
+                    routes[p].insert(at, d);
+                }
+            }
+            routes = routes.iter().map(|r| self.settled(r)).collect();
+
+            let mut left: BTreeSet<usize> = self.free.iter().copied().collect();
+            for p in 0..self.people {
+                if !routes[p].is_empty() || left.is_empty() {
+                    continue;
+                }
+                let taken: Vec<usize> = routes.iter().flatten().copied().collect();
+                let spread = |d: usize| -> f64 {
+                    if taken.is_empty() {
+                        return self.m[0][d + 2] + self.m[d + 2][1];
+                    }
+                    taken.iter().map(|&t| self.m[t + 2][d + 2] + self.m[d + 2][t + 2]).fold(f64::INFINITY, f64::min)
+                };
+                let mut ranked: Vec<usize> = left.iter().copied().collect();
+                ranked.sort_by(|&a, &b| spread(b).partial_cmp(&spread(a)).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b)));
+                let pick = if seed == 0 { ranked[0] } else { ranked[(random.next() % std::cmp::min(3, ranked.len()) as u64) as usize] };
+                routes[p] = vec![pick];
+                left.remove(&pick);
+            }
+
+            let mut work: Vec<f64> = routes.iter().map(|r| self.seconds(r)).collect();
+            // Regret: the door with most to lose by not going to its best
+            // person goes first, while that person still has room.
+            while !left.is_empty() {
+                let base = self.cost(&work);
+                let mut chosen: Option<(usize, usize, usize, f64, f64)> = None;
+                for &d in left.iter() {
+                    let mut best = (f64::INFINITY, 0usize, 0usize);
+                    let mut second = f64::INFINITY;
+                    for p in 0..self.people {
+                        let (delta, at) = self.insertion(d, &routes[p]);
+                        let mut w = work.clone();
+                        w[p] += delta + self.service[d];
+                        let c = self.cost(&w) - base;
+                        if c < best.0 {
+                            second = best.0;
+                            best = (c, p, at);
+                        } else if c < second {
+                            second = c;
+                        }
+                    }
+                    let regret = if second.is_finite() { second - best.0 } else { 0.0 };
+                    let better = match &chosen {
+                        None => true,
+                        Some(c) => regret > c.3 + 1e-9 || ((regret - c.3).abs() <= 1e-9 && best.0 < c.4),
+                    };
+                    if better {
+                        chosen = Some((d, best.1, best.2, regret, best.0));
+                    }
+                }
+                let Some((door, person, at, _, _)) = chosen else { break };
+                routes[person].insert(at, door);
+                routes[person] = self.settled(&routes[person]);
+                work[person] = self.seconds(&routes[person]);
+                left.remove(&door);
+            }
+            self.split(routes)
+        }
+
+        fn apply(&self, s: &mut Split, touched: &[usize]) {
+            let mut seen: Vec<usize> = touched.to_vec();
+            seen.sort_unstable();
+            seen.dedup();
+            for p in seen {
+                s.routes[p] = self.settled(&s.routes[p]);
+                s.work[p] = self.seconds(&s.routes[p]);
+            }
+            s.cost = self.cost(&s.work);
+        }
+
+        fn improve(&self, s: &mut Split, deadline: Instant) {
+            let mut improved = true;
+            let mut passes = 0;
+            while improved && passes < 200 && Instant::now() < deadline {
+                improved = false;
+                passes += 1;
+                let mut whose: Vec<isize> = vec![-1; self.owner.len()];
+                for (p, r) in s.routes.iter().enumerate() {
+                    for &d in r {
+                        whose[d] = p as isize;
+                    }
+                }
+
+                // One door to somebody else.
+                for &d in &self.free {
+                    let a = whose[d];
+                    if a < 0 {
+                        continue;
+                    }
+                    let a = a as usize;
+                    let Some(i) = s.routes[a].iter().position(|&x| x == d) else { continue };
+                    let saved = self.removal(i, &s.routes[a]) + self.service[d];
+                    let mut best: Option<(usize, usize, f64)> = None;
+                    for b in 0..self.people {
+                        if b == a {
+                            continue;
+                        }
+                        let (delta, at) = self.insertion(d, &s.routes[b]);
+                        let mut w = s.work.clone();
+                        w[a] -= saved;
+                        w[b] += delta + self.service[d];
+                        let c = self.cost(&w);
+                        if c < best.map(|x| x.2).unwrap_or(s.cost) - 1.0 {
+                            best = Some((b, at, c));
+                        }
+                    }
+                    let Some((person, at, _)) = best else { continue };
+                    s.routes[a].remove(i);
+                    s.routes[person].insert(at, d);
+                    self.apply(s, &[a, person]);
+                    whose[d] = person as isize;
+                    improved = true;
+                }
+
+                // Two neighbouring doors trade places.
+                for &d in &self.free {
+                    let a = whose[d];
+                    if a < 0 {
+                        continue;
+                    }
+                    let a = a as usize;
+                    for &e in &self.neighbours[d] {
+                        if self.owner[e].is_some() {
+                            continue;
+                        }
+                        let b = whose[e];
+                        if b < 0 || b as usize == a {
+                            continue;
+                        }
+                        let b = b as usize;
+                        let (Some(i), Some(j)) = (s.routes[a].iter().position(|&x| x == d), s.routes[b].iter().position(|&x| x == e)) else { continue };
+                        let mut ra = s.routes[a].clone();
+                        let mut rb = s.routes[b].clone();
+                        let da = self.drive(&ra) - self.removal(i, &ra);
+                        let db = self.drive(&rb) - self.removal(j, &rb);
+                        ra.remove(i);
+                        rb.remove(j);
+                        let ia = self.insertion(e, &ra);
+                        let ib = self.insertion(d, &rb);
+                        let mut w = s.work.clone();
+                        w[a] = da + ia.0 + ra.iter().map(|&x| self.service[x]).sum::<f64>() + self.service[e];
+                        w[b] = db + ib.0 + rb.iter().map(|&x| self.service[x]).sum::<f64>() + self.service[d];
+                        let c = self.cost(&w);
+                        if c >= s.cost - 1.0 {
+                            continue;
+                        }
+                        ra.insert(ia.1, e);
+                        rb.insert(ib.1, d);
+                        s.routes[a] = ra;
+                        s.routes[b] = rb;
+                        self.apply(s, &[a, b]);
+                        whose[d] = b as isize;
+                        whose[e] = a as isize;
+                        improved = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        fn shaken(&self, s: &Split, random: &mut SplitMix) -> Split {
+            let mut routes = s.routes.clone();
+            if self.free.is_empty() {
+                return s.clone();
+            }
+            let count = std::cmp::min(self.free.len(), 2 + (random.next() % std::cmp::max(1, self.free.len() / 8) as u64) as usize);
+            let mut loose: Vec<usize> = vec![];
+            let centre = self.free[(random.next() % self.free.len() as u64) as usize];
+            for &d in std::iter::once(&centre).chain(self.neighbours[centre].iter()) {
+                if self.owner[d].is_none() && loose.len() < count {
+                    loose.push(d);
+                }
+            }
+            for r in routes.iter_mut() {
+                r.retain(|x| !loose.contains(x));
+            }
+            let target = (random.next() % self.people as u64) as usize;
+            for &d in &loose {
+                let p = if random.next() % 4 == 0 { (random.next() % self.people as u64) as usize } else { target };
+                let at = self.insertion(d, &routes[p]).1;
+                routes[p].insert(at, d);
+            }
+            let settled = routes.iter().map(|r| self.settled(r)).collect();
+            self.split(settled)
+        }
+
+        pub fn solve(&self, rounds: usize, deadline: Instant, given: Option<Vec<Vec<usize>>>) -> Vec<Day> {
+            if self.free.is_empty() {
+                return (0..self.people)
+                    .map(|p| {
+                        let mine: Vec<usize> = (0..self.owner.len()).filter(|&d| self.owner[d] == Some(p)).collect();
+                        self.day(&self.ordered(&mine))
+                    })
+                    .collect();
+            }
+            let starts = 4usize;
+            let mut best: Option<Split> = None;
+            let mut random = SplitMix(0x5350_4C49_54);
+            for start in 0..starts {
+                if best.is_some() && Instant::now() >= deadline {
+                    break;
+                }
+                // A split handed in is the first start, as it is.
+                let mut current = match (&given, start) {
+                    (Some(g), 0) if g.len() == self.people => self.split(g.clone()),
+                    _ => self.construct(start as u64),
+                };
+                self.improve(&mut current, deadline);
+                if best.as_ref().map_or(true, |b| current.cost < b.cost) {
+                    best = Some(current.clone());
+                }
+                for _ in 0..(rounds / starts) {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    let mut trial = self.shaken(&current, &mut random);
+                    self.improve(&mut trial, deadline);
+                    let b = best.as_ref().expect("set above");
+                    if trial.cost < b.cost - 1.0 {
+                        best = Some(trial.clone());
+                    }
+                    let b = best.as_ref().expect("set above");
+                    // Carried on from even when a little worse than the best,
+                    // so the search can walk across a ridge to a better one.
+                    if trial.cost < b.cost * 1.01 {
+                        current = trial;
+                    }
+                }
+            }
+            best.expect("at least one start").routes.iter().map(|r| self.day(&self.polished(r))).collect()
+        }
+    }
+}
+
+mod parking_stops {
+    use super::split_planner::Door as PlanDoor;
+    use std::collections::HashMap;
+
+    /// Of the minutes every door after the first one at a parking stop takes,
+    /// how much is still spent: the walk from the van, not a drive.
+    const WALK_ON_SHARE: f64 = 0.68;
+    /// And the second household at one door.
+    const SAME_DOOR_SHARE: f64 = 0.2;
+    /// How far a walk from the van may be, in metres.
+    pub const REACH: f64 = 100.0;
+
+    #[derive(Clone)]
+    pub struct Customer {
+        pub id: i64,
+        pub address: String,
+        pub point: usize,
+        pub lat: f64,
+        pub lon: f64,
+        pub exact: bool,
+        pub owner: Option<usize>,
+        pub minutes: f64,
+    }
+
+    struct Door {
+        ids: Vec<i64>,
+        point: usize,
+        lat: f64,
+        lon: f64,
+        exact: bool,
+        owner: Option<usize>,
+        minutes: f64,
+    }
+
+    pub fn metres(a: (f64, f64), b: (f64, f64)) -> f64 {
+        let r = 6_371_000.0_f64;
+        let (p1, p2) = (a.0.to_radians(), b.0.to_radians());
+        let (dp, dl) = ((b.0 - a.0).to_radians(), (b.1 - a.1).to_radians());
+        let h = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
+        2.0 * r * h.sqrt().asin()
+    }
+
+    fn doors(customers: &[Customer]) -> Vec<Door> {
+        let mut parent: Vec<usize> = (0..customers.len()).collect();
+        fn find(parent: &mut Vec<usize>, i: usize) -> usize {
+            let mut r = i;
+            while parent[r] != r {
+                r = parent[r];
+            }
+            r
+        }
+        let mut by_address: HashMap<&str, usize> = HashMap::new();
+        let mut by_point: HashMap<usize, usize> = HashMap::new();
+        for (i, c) in customers.iter().enumerate() {
+            if !c.address.is_empty() {
+                if let Some(&first) = by_address.get(c.address.as_str()) {
+                    let (a, b) = (find(&mut parent, i), find(&mut parent, first));
+                    parent[a] = b;
+                } else {
+                    by_address.insert(&c.address, i);
+                }
+            }
+            if c.exact {
+                if let Some(&first) = by_point.get(&c.point) {
+                    let (a, b) = (find(&mut parent, i), find(&mut parent, first));
+                    parent[a] = b;
+                } else {
+                    by_point.insert(c.point, i);
+                }
+            }
+        }
+        let mut groups: HashMap<usize, Vec<&Customer>> = HashMap::new();
+        let mut order: Vec<usize> = vec![];
+        for i in 0..customers.len() {
+            let root = find(&mut parent, i);
+            if !groups.contains_key(&root) {
+                order.push(root);
+            }
+            groups.entry(root).or_default().push(&customers[i]);
+        }
+        let mut out = vec![];
+        for root in order {
+            let members = &groups[&root];
+            let first_owner = members.iter().find_map(|c| c.owner);
+            let mut by_owner: Vec<(Option<usize>, Vec<&Customer>)> = vec![];
+            for c in members {
+                let who = c.owner.or(first_owner);
+                match by_owner.iter_mut().find(|(o, _)| *o == who) {
+                    Some((_, v)) => v.push(c),
+                    None => by_owner.push((who, vec![c])),
+                }
+            }
+            for (who, share) in by_owner {
+                let Some(first) = share.first() else { continue };
+                // Where the door is: an exactly known household's point when
+                // there is one.
+                let placed = share.iter().find(|c| c.exact).unwrap_or(first);
+                let mut times: Vec<f64> = share.iter().map(|c| c.minutes).collect();
+                times.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+                let minutes: f64 = times.iter().enumerate().map(|(i, t)| t * if i == 0 { 1.0 } else { SAME_DOOR_SHARE }).sum();
+                out.push(Door {
+                    ids: share.iter().map(|c| c.id).collect(), point: placed.point, lat: placed.lat, lon: placed.lon,
+                    exact: placed.exact, owner: who, minutes,
+                });
+            }
+        }
+        out
+    }
+
+    /// Households that are a walk apart become one parking stop. Returns the
+    /// units (stop ids of each), the doors the planner is given, and how many
+    /// addresses each parking stop covers.
+    pub fn build(customers: &[Customer]) -> (Vec<Vec<i64>>, Vec<PlanDoor>, Vec<usize>) {
+        let doors = doors(customers);
+        let compatible = |a: Option<usize>, b: Option<usize>| a.is_none() || b.is_none() || a == b;
+        let dist = |a: &Door, b: &Door| metres((a.lat, a.lon), (b.lat, b.lon));
+        let near: Vec<Vec<usize>> = (0..doors.len())
+            .map(|i| {
+                if !doors[i].exact {
+                    return vec![];
+                }
+                (0..doors.len())
+                    .filter(|&j| j != i && doors[j].exact && compatible(doors[i].owner, doors[j].owner) && dist(&doors[i], &doors[j]) <= REACH)
+                    .collect()
+            })
+            .collect();
+
+        // The door with most neighbours first, so a Hof is one parking stop
+        // round its middle rather than cut up from one corner.
+        let mut by_crowd: Vec<usize> = (0..doors.len()).collect();
+        by_crowd.sort_by(|&a, &b| near[b].len().cmp(&near[a].len()).then(a.cmp(&b)));
+        let mut taken = vec![false; doors.len()];
+        let (mut units, mut out, mut addresses) = (vec![], vec![], vec![]);
+        for anchor in by_crowd {
+            if taken[anchor] {
+                continue;
+            }
+            taken[anchor] = true;
+            let mut members = vec![anchor];
+            let mut owner = doors[anchor].owner;
+            let mut candidates: Vec<usize> = near[anchor].iter().copied().filter(|&c| !taken[c]).collect();
+            candidates.sort_by(|&a, &b| {
+                dist(&doors[anchor], &doors[a]).partial_cmp(&dist(&doors[anchor], &doors[b])).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b))
+            });
+            for c in candidates {
+                if compatible(owner, doors[c].owner) && members.iter().all(|&m| dist(&doors[m], &doors[c]) <= REACH) {
+                    taken[c] = true;
+                    members.push(c);
+                    owner = owner.or(doors[c].owner);
+                }
+            }
+            // The longest door is where the van is parked for; every other is
+            // a walk from there.
+            let mut times: Vec<f64> = members.iter().map(|&m| doors[m].minutes).collect();
+            times.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+            let minutes: f64 = times.iter().enumerate().map(|(i, t)| t * if i == 0 { 1.0 } else { WALK_ON_SHARE }).sum();
+            units.push(members.iter().flat_map(|&m| doors[m].ids.clone()).collect());
+            addresses.push(members.len());
+            out.push(PlanDoor { point: doors[anchor].point, seconds: minutes * 60.0, owner });
+        }
+        (units, out, addresses)
+    }
+}
+
+#[derive(Deserialize)]
+struct SplitLoad {
+    tour_id: i64,
+    date: String,
+}
+
+/// `POST /api/split/load`: a portal tour's open deliveries, each placed
+/// through the geocoder (which serves the regular doors from its cache), and
+/// the drive between every two places. Only the list data -- names and
+/// addresses are all a split needs, so the slow one-request-per-stop Paket
+/// fetch is skipped entirely. Never fails for want of OSRM: without it the
+/// times are the straight line, and the answer says so.
+async fn split_load(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Json(p): Json<SplitLoad>,
+) -> Result<Json<Value>, AppError> {
+    let date = parse_portal_date(&p.date)?;
+    let token = portal_token(&state, &user).await?;
+    let deliveries = portal_deliveries_of(&state, &token, p.tour_id, date).await?;
+    if deliveries.is_empty() {
+        return Err(AppError::BadRequest("Für diese Tour wurden an diesem Tag keine offenen Lieferungen gefunden.".into()));
+    }
+    if deliveries.len() > MAX_BULK_STOPS {
+        return Err(AppError::BadRequest(format!("Diese Tour hat {} Lieferungen, mehr als sich aufteilen lassen.", deliveries.len())));
+    }
+    let stops = place_split_stops(&state, &deliveries).await;
+    let mut out = split_durations(&state, stops.iter().map(|s| s["lat"].as_f64().zip(s["lon"].as_f64())).collect()).await;
+    out["stops"] = Value::Array(stops);
+    Ok(Json(out))
+}
+
+/// Each delivery placed, four at a time. One nobody can place is kept,
+/// without a pin, rather than dropped.
+async fn place_split_stops(state: &Arc<AppState>, deliveries: &[PortalDelivery]) -> Vec<Value> {
+    let semaphore = Arc::new(Semaphore::new(4));
+    let mut jobs: JoinSet<(usize, Option<(f64, f64, bool)>)> = JoinSet::new();
+    for (i, d) in deliveries.iter().enumerate() {
+        let (strasse, plz) = (d.strasse(), d.plz());
+        let state = Arc::clone(state);
+        let semaphore = Arc::clone(&semaphore);
+        jobs.spawn(async move {
+            let _permit = semaphore.acquire().await;
+            let hit = geocode_address_any(&state, &strasse, &plz).await.ok().map(|(lat, lon, _, precision)| (lat, lon, matches!(precision, Precision::Exact)));
+            (i, hit)
+        });
+    }
+    let mut placed: Vec<Option<(f64, f64, bool)>> = vec![None; deliveries.len()];
+    while let Some(Ok((i, hit))) = jobs.join_next().await {
+        placed[i] = hit;
+    }
+    deliveries
+        .iter()
+        .zip(placed)
+        .map(|(d, hit)| {
+            let a = &d.delivery_address;
+            // The address without the flat: households with the same one share a door.
+            let door = [non_empty(&a.street), non_empty(&a.street2), non_empty(&a.staircase)].into_iter().flatten().collect::<Vec<_>>().join("/");
+            json!({
+                "id": d.id,
+                "name": if d.kunde().is_empty() { "Ohne Namen".to_string() } else { d.kunde() },
+                "address": d.strasse(), "plz": d.plz(), "door": door,
+                "lat": hit.map(|h| h.0), "lon": hit.map(|h| h.1), "exact": hit.map(|h| h.2).unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
+/// The drive between every two places of a split: index 0 the Lager, 1 the
+/// Ziel, then each distinct place of `coords` (`None` is a stop with no pin).
+/// `point_of[i]` says which row stop `i` is.
+async fn split_durations(state: &Arc<AppState>, coords: Vec<Option<(f64, f64)>>) -> Value {
+    let mut points: Vec<(f64, f64)> = vec![(VIA_LAT, VIA_LON), (START_LAT, START_LON)];
+    let mut by_key: HashMap<(i64, i64), usize> = HashMap::new();
+    let mut point_of: Vec<Option<usize>> = vec![];
+    for c in &coords {
+        match c {
+            Some((lat, lon)) => {
+                let key = ((lat * 100_000.0).round() as i64, (lon * 100_000.0).round() as i64);
+                let idx = *by_key.entry(key).or_insert_with(|| {
+                    points.push((*lat, *lon));
+                    points.len() - 1
+                });
+                point_of.push(Some(idx));
+            }
+            None => point_of.push(None),
+        }
+    }
+    let table = if points.len() <= OSRM_MAX_TRIP_COORDS { osrm_table(state, &points).await.ok() } else { None };
+    let estimated = table.is_none();
+    let seconds = table.unwrap_or_else(|| {
+        points
+            .iter()
+            .map(|a| {
+                points
+                    .iter()
+                    .map(|b| {
+                        let m = parking_stops::metres(*a, *b);
+                        if m < 1.0 { 0.0 } else { 30.0 + m * 1.35 / (25.0 / 3.6) }
+                    })
+                    .collect()
+            })
+            .collect()
+    });
+    json!({ "points": points, "point_of": point_of, "seconds": seconds, "estimated": estimated })
+}
+
+#[derive(Deserialize)]
+struct SplitPlace {
+    name: Option<String>,
+    address: String,
+    plz: String,
+}
+
+/// `POST /api/split/place`: a stop typed in on the split screen, placed the
+/// same way -- left without a pin where nobody can place it.
+async fn split_place(State(state): State<Arc<AppState>>, Json(p): Json<SplitPlace>) -> Result<Json<Value>, AppError> {
+    let address = one_line(&p.address, MAX_STRASSE_LEN);
+    let plz = p.plz.trim().to_string();
+    if address.is_empty() || plz.is_empty() {
+        return Err(AppError::BadRequest("Adresse und PLZ werden gebraucht.".into()));
+    }
+    check_plz(&plz)?;
+    let hit = geocode_address_any(&state, &address, &plz).await.ok();
+    let name = one_line(p.name.as_deref().unwrap_or(""), MAX_KUNDE_LEN);
+    Ok(Json(json!({
+        "name": if name.is_empty() { "Nachlieferung".to_string() } else { name },
+        "address": address, "plz": plz, "door": null,
+        "lat": hit.as_ref().map(|h| h.0), "lon": hit.as_ref().map(|h| h.1),
+        "exact": hit.as_ref().map(|h| matches!(h.3, Precision::Exact)).unwrap_or(false),
+    })))
+}
+
+#[derive(Deserialize)]
+struct SplitDurationsIn {
+    coords: Vec<Option<(f64, f64)>>,
+}
+
+/// `POST /api/split/durations`: the table again, for a stop typed in or moved.
+async fn split_durations_handler(State(state): State<Arc<AppState>>, Json(p): Json<SplitDurationsIn>) -> Json<Value> {
+    Json(split_durations(&state, p.coords).await)
+}
+
+#[derive(Deserialize)]
+struct SplitStopIn {
+    id: i64,
+    point: usize,
+    lat: f64,
+    lon: f64,
+    #[serde(default)]
+    exact: bool,
+    address: String,
+    plz: String,
+    owner: Option<usize>,
+    minutes: f64,
+}
+
+#[derive(Deserialize)]
+struct SplitCalc {
+    people: usize,
+    seconds: Vec<Vec<f64>>,
+    stops: Vec<SplitStopIn>,
+    /// The minutes before the first door and after the loading, that no share
+    /// can avoid: the drive to the Lager and the loading.
+    fixed_minutes: f64,
+    /// "plan" shares out everything free; "days" only says what each share comes to.
+    mode: String,
+}
+
+fn split_customers(stops: &[SplitStopIn], only: Option<usize>) -> Vec<parking_stops::Customer> {
+    stops
+        .iter()
+        .filter(|s| only.is_none() || s.owner == only)
+        .map(|s| parking_stops::Customer {
+            id: s.id,
+            address: {
+                let street = text::address_match_key(&s.address);
+                if street.is_empty() { String::new() } else { format!("{street}|{}", s.plz.trim()) }
+            },
+            point: s.point,
+            lat: s.lat,
+            lon: s.lon,
+            exact: s.exact,
+            owner: s.owner,
+            minutes: s.minutes,
+        })
+        .collect()
+}
+
+fn split_day_json(day: &split_planner::Day, units: &[Vec<i64>], addresses: &[usize], fixed: f64) -> Value {
+    let stops: usize = day.doors.iter().map(|&d| units[d].len()).sum();
+    let (driving, door) = (day.driving / 60.0, day.door / 60.0);
+    json!({
+        "stops": stops, "driving_minutes": driving, "door_minutes": door,
+        "total_minutes": if stops == 0 { 0.0 } else { fixed + driving + door },
+        "addresses": day.doors.iter().map(|&d| addresses[d]).sum::<usize>(),
+        "order": day.doors.iter().flat_map(|&d| units[d].clone()).collect::<Vec<i64>>(),
+    })
+}
+
+/// `POST /api/split/calc`: what each share comes to, or the fair split itself.
+async fn split_calc(Json(p): Json<SplitCalc>) -> Result<Json<Value>, AppError> {
+    if p.people == 0 || p.people > 8 {
+        return Err(AppError::BadRequest("Ungültige Personenzahl.".into()));
+    }
+    if p.seconds.iter().any(|r| r.len() != p.seconds.len()) || p.stops.iter().any(|s| s.point >= p.seconds.len() || s.point < 2) {
+        return Err(AppError::BadRequest("Ungültige Fahrzeiten.".into()));
+    }
+    let fixed = p.fixed_minutes;
+    let out = tokio::task::spawn_blocking(move || {
+        if p.mode == "plan" {
+            let customers = split_customers(&p.stops, None);
+            let (units, doors, addresses) = parking_stops::build(&customers);
+            let planned = split_planner::plan(&doors, p.people, &p.seconds, 600, std::time::Duration::from_secs(4));
+            let mut owners = serde_json::Map::new();
+            for (person, day) in planned.iter().enumerate() {
+                for &d in &day.doors {
+                    for id in &units[d] {
+                        owners.insert(id.to_string(), json!(person));
+                    }
+                }
+            }
+            json!({ "owners": owners, "days": planned.iter().map(|d| split_day_json(d, &units, &addresses, fixed)).collect::<Vec<_>>() })
+        } else {
+            let days: Vec<Value> = (0..p.people)
+                .map(|person| {
+                    let customers = split_customers(&p.stops, Some(person));
+                    let (units, doors, addresses) = parking_stops::build(&customers);
+                    let all: Vec<usize> = (0..doors.len()).collect();
+                    let day = split_planner::evaluate(&[all], &doors, &p.seconds).remove(0);
+                    split_day_json(&day, &units, &addresses, fixed)
+                })
+                .collect();
+            json!({ "days": days })
+        }
+    })
+    .await
+    .map_err(|_| AppError::Internal("Abgebrochen.".into()))?;
+    Ok(Json(out))
+}
+
 #[derive(Deserialize)]
 struct PauseSwitch {
     on: bool,
@@ -9126,6 +9973,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/routes/:id/departed", post(mark_departed))
         .route("/api/routes/:id/order", put(set_stop_order))
         .route("/api/routes/:id/pause", post(set_pause))
+        .route("/api/split/load", post(split_load))
+        .route("/api/split/place", post(split_place))
+        .route("/api/split/durations", post(split_durations_handler))
+        .route("/api/split/calc", post(split_calc))
         .route("/api/advanced", get(get_advanced))
         .route("/api/advanced/check", post(check_osrm))
         .route("/api/admin/cache", axum::routing::delete(clear_geocode_cache))
@@ -9356,6 +10207,40 @@ async fn main() {
 // ---------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn the_split_gives_each_cluster_to_one_person_and_everyone_a_day() {
+        // The Lager and the Ziel, then two clusters of five doors far apart.
+        let mut pts: Vec<(f64, f64)> = vec![(0.0, 0.0), (0.0, 1.0)];
+        for i in 0..5 {
+            pts.push((10.0 + i as f64 * 0.1, 0.0));
+        }
+        for i in 0..5 {
+            pts.push((-10.0 - i as f64 * 0.1, 0.0));
+        }
+        let n = pts.len();
+        let m: Vec<Vec<f64>> = (0..n)
+            .map(|a| (0..n).map(|b| ((pts[a].0 - pts[b].0).powi(2) + (pts[a].1 - pts[b].1).powi(2)).sqrt() * 60.0).collect())
+            .collect();
+        let doors: Vec<split_planner::Door> = (2..n).map(|p| split_planner::Door { point: p, seconds: 300.0, owner: None }).collect();
+        let days = split_planner::plan(&doors, 2, &m, 100, std::time::Duration::from_millis(800));
+        assert_eq!(days.len(), 2);
+        let a: std::collections::HashSet<usize> = days[0].doors.iter().copied().collect();
+        assert_eq!(days[0].doors.len() + days[1].doors.len(), 10);
+        // Each person's doors are one cluster.
+        assert!(a == (0..5).collect() || a == (5..10).collect());
+    }
+
+    #[test]
+    fn households_a_walk_apart_share_a_parking_stop() {
+        let c = |id, lat, owner| parking_stops::Customer { id, address: format!("a{id}"), point: id as usize + 2, lat, lon: 16.0, exact: true, owner, minutes: 7.0 };
+        // Two doors 40 m apart, one 2 km away.
+        let (units, doors, addresses) = parking_stops::build(&[c(1, 48.0, None), c(2, 48.00036, None), c(3, 48.02, None)]);
+        assert_eq!(units.len(), 2);
+        assert_eq!(doors.len(), 2);
+        assert!(addresses.contains(&2));
+    }
     use super::text::{normalize_strasse_text, simplify_housenumber, street_name_only};
     use super::*;
 
