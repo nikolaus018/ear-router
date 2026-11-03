@@ -4877,7 +4877,7 @@ function openNewTourSheet() {
 /// Opens the Gourmet flow — for a new tour, or with `routeId` to add a
 /// tour's stops to the one that is open.
 async function openGourmetSheet(routeId = null, pdf = false) {
-  Object.assign(gourmet, { routeId, pdf, date: isoDay(new Date()), tours: null, tour: null, deliveries: null, picked: null, entries: null, loaded: 0 });
+  Object.assign(gourmet, { routeId, pdf, json: false, date: isoDay(new Date()), tours: null, tour: null, deliveries: null, picked: null, entries: null, loaded: 0 });
   renderSheetShell(`<div data-gourmet><h2 class="sheet-title">${gourmetTitle()}</h2>${sheetBusy('Einen Moment …')}</div>`, { label: gourmetTitle() });
   try {
     const status = await api('/portal/status');
@@ -4889,7 +4889,7 @@ async function openGourmetSheet(routeId = null, pdf = false) {
 
 /// The same two steps — sign in, pick the day's tour — lead either to a
 /// tour's stops or, from Mehr, to its list as a PDF.
-const gourmetTitle = () => (gourmet.pdf ? 'Tour als PDF' : 'Von Gourmet laden');
+const gourmetTitle = () => (gourmet.json ? 'JSON' : gourmet.pdf ? 'Tour als PDF' : 'Von Gourmet laden');
 
 /// Replaces everything under the sheet's title, if the sheet is still the
 /// Gourmet one — the driver may have closed it while a request was out.
@@ -5146,6 +5146,136 @@ async function loadGourmetEntries() {
 // the tour — and an address that is then not found stays right here, marked,
 // to be corrected and tried again, instead of being lost in a summary.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// JSON einsetzen — the bulk editor: a whole day's customer list pasted at
+// once, then looked over on Prüfen like any other list. The same shape the
+// iOS app takes, so a list pastes straight in.
+// ---------------------------------------------------------------------
+const JSON_EXAMPLE = `[
+  {
+    "kunde": "Fam. Gruber",
+    "strasse": "Gentzgasse 129/1",
+    "plz": "1180",
+    "paket": "2x Menü",
+    "notiz": "Stiege 1, bitte laut klingeln"
+  },
+  {
+    "kunde": "Hr. Novak",
+    "strasse": "Alser Straße 21",
+    "plz": "1080"
+  }
+]`;
+const jsonEditor = { text: '', loaded: '' };
+
+/// The route's customers in the pasted-list shape.
+function exportRouteJson(r) {
+  const rows = r.stops.filter((s) => s.kind === 'customer').map((s) => {
+    const row = { kunde: s.kunde || '', notiz: s.notiz || '', paket: s.paket || '' };
+    if (s.paket_count != null) row.paket_count = s.paket_count;
+    return Object.assign(row, { plz: s.plz || '', strasse: s.strasse || '', telefon: s.telefon || '' });
+  });
+  return JSON.stringify(rows, null, 2);
+}
+
+function openJsonSheet() {
+  const r = state.currentRoute;
+  if (!r) return;
+  Object.assign(gourmet, { routeId: r.id, pdf: false, json: true, date: isoDay(new Date()), tours: null, tour: { id: null, name: r.name }, deliveries: null, picked: null, entries: null, loaded: 0 });
+  // A tour with no stops yet opens empty, on the example, not on "[]".
+  const text = r.customer_count === 0 ? '' : exportRouteJson(r);
+  jsonEditor.text = text;
+  jsonEditor.loaded = text;
+  renderSheetShell(`<div data-gourmet></div>`, { label: 'JSON' });
+  paintJsonEditor();
+}
+
+function paintJsonEditor(message = '') {
+  gourmetBody(`
+    <p class="sheet-lead">Die Tagesliste hier einsetzen — „kunde“, „strasse“ und „plz“ muss jeder Eintrag haben, „paket“ und „notiz“ sind freiwillig.</p>
+    ${message ? `<div class="sheet-note warn"><span>${ICONS.warning}</span><span>${escapeHtml(message)}</span></div>` : ''}
+    <textarea id="json-text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" rows="12" placeholder="${escapeAttr(JSON_EXAMPLE)}" oninput="jsonEditor.text = this.value; updateJsonButtons()" class="${FIELD} resize-none" style="font-family:ui-monospace,Menlo,monospace; font-size:12.5px; line-height:1.45; min-height:46vh">${escapeHtml(jsonEditor.text)}</textarea>
+    <div class="flex gap-2" style="margin:.625rem 0 1rem">
+      <button type="button" id="json-copy" onclick="copyJsonText()" class="press-98 wide-btn quiet" style="margin:0">Kopieren</button>
+      <button type="button" onclick="pasteJsonText()" class="press-98 wide-btn quiet" style="margin:0">Einsetzen</button>
+      <button type="button" id="json-clear" onclick="clearJsonText()" class="press-98 wide-btn quiet" style="margin:0; color:#D70015">Leeren</button>
+    </div>
+    <div class="sheet-actions">
+      <button type="button" id="json-next" onclick="jsonNext()" class="press-98 wide-btn accent">Weiter</button>
+      <button type="button" onclick="closeJsonSheet()" class="press-98 wide-btn quiet">Schließen</button>
+    </div>
+  `, 'JSON');
+  updateJsonButtons();
+}
+
+function updateJsonButtons() {
+  const empty = !jsonEditor.text.trim();
+  const set = (id, off) => { const b = document.getElementById(id); if (b) b.disabled = off; };
+  set('json-next', empty);
+  set('json-copy', !jsonEditor.text);
+  set('json-clear', !jsonEditor.text);
+}
+
+async function closeJsonSheet() {
+  if (jsonEditor.text !== jsonEditor.loaded && !(await confirmSheet({ title: 'Änderungen verwerfen?', message: 'Die Liste wird nicht übernommen.', confirmLabel: 'Änderungen verwerfen', danger: true }))) return;
+  closeSheet();
+}
+
+async function copyJsonText() {
+  try { await navigator.clipboard.writeText(jsonEditor.text); toast('Kopiert.', 'success'); }
+  catch (_) { toast('Kopieren nicht möglich — Text markieren und kopieren.', 'error'); }
+}
+
+async function pasteJsonText() {
+  try {
+    jsonEditor.text = await navigator.clipboard.readText();
+    paintJsonEditor();
+  } catch (_) { toast('Einsetzen nicht möglich — Text in das Feld einfügen.', 'error'); }
+}
+
+function clearJsonText() {
+  jsonEditor.text = '';
+  paintJsonEditor();
+  document.getElementById('json-text')?.focus();
+}
+
+/// Reads the paste into entries for Prüfen. A missing key is a missing field
+/// on one entry, not a malformed document: it reaches Prüfen and is marked
+/// there, where it can be corrected.
+function parseJsonList(text) {
+  const bad = 'Ungültiges JSON: erwarte eine Liste von Kundenstopps.';
+  let data;
+  try { data = JSON.parse(text); } catch (_) { throw new Error(bad); }
+  const list = Array.isArray(data) ? data : Array.isArray(data?.stops) ? data.stops : null;
+  if (!list || list.some((e) => e === null || typeof e !== 'object' || Array.isArray(e))) throw new Error(bad);
+  const str = (v) => (v == null ? '' : String(v));
+  return list.map((e) => ({
+    kunde: str(e.kunde), strasse: str(e.strasse), plz: str(e.plz), paket: str(e.paket), notiz: str(e.notiz),
+    telefon: str(e.telefon), paket_count: Number.isInteger(e.paket_count ?? e.paketCount) ? (e.paket_count ?? e.paketCount) : null,
+  }));
+}
+
+function jsonNext() {
+  try {
+    gourmet.entries = parseJsonList(jsonEditor.text);
+    gourmet.loaded = 0;
+    paintReview();
+  } catch (err) {
+    paintJsonEditor(err.message);
+  }
+}
+
+/// The open customers the pasted list leaves out, by the names they have now:
+/// a stop is the list's by the same name or the same address, as on the server.
+function droppedByList(r, entries) {
+  const loose = (s) => String(s || '').toLowerCase().replace(/ß/g, 'ss').replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/[^a-z0-9]+/g, '');
+  const names = new Set(entries.map((e) => loose(e.kunde)).filter(Boolean));
+  const addresses = new Set(entries.map((e) => `${loose(e.strasse)}|${(e.plz || '').trim()}`));
+  return r.stops
+    .filter((s) => s.kind === 'customer' && !s.outcome)
+    .filter((s) => !names.has(loose(s.kunde)) && !addresses.has(`${loose(s.strasse)}|${(s.plz || '').trim()}`))
+    .map((s) => s.kunde);
+}
+
 /// Why this entry cannot become a stop as it stands, or `null`.
 function reviewProblem(e) {
   if (!e.kunde.trim()) return 'Kein Name';
@@ -5207,6 +5337,7 @@ function removeReviewEntry(i) {
 /// to the tour itself once part of the list is on it.
 function leaveReview() {
   if (gourmet.loaded) { closeSheet(); return; }
+  if (gourmet.json) { paintJsonEditor(); return; }
   paintGourmetDeliveries();
 }
 
@@ -5250,6 +5381,21 @@ async function applyReview() {
   const held = entries.filter((e) => reviewProblem(e) && !e.failed);
   if (!sending.length) return;
   const n = sending.length;
+  // The pasted list is the whole tour: say who it takes away, before it does.
+  // After a first pass the list is only what was left over, which adds.
+  const replacing = !!gourmet.json && !gourmet.loaded;
+  if (replacing) {
+    const names = droppedByList(state.currentRoute, sending);
+    if (names.length && !(await confirmSheet({
+      title: names.length === 1 ? '1 Kunde wird entfernt' : `${names.length} Kunden werden entfernt`,
+      message: `${sending.length ? 'Diese Kunden stehen nicht mehr in der Liste und werden aus der Tour gelöscht' : 'Die Liste ist leer — damit werden alle offenen Kundenstopps dieser Tour gelöscht'}: ${names.slice(0, 5).join(', ')}${names.length > 5 ? ` und ${names.length - 5} weitere` : ''}. Paket und Notizen gehen mit.`,
+      confirmLabel: 'Übernehmen', danger: true,
+    }))) {
+      renderSheetShell(`<div data-gourmet></div>`, { label: 'Prüfen' });
+      paintReview();
+      return;
+    }
+  }
   gourmetBody(`
     ${sheetBusy(`${n === 1 ? '1 Stopp wird' : `${n} Stopps werden`} übernommen …`)}
     <p class="sheet-lead" style="text-align:center">Adressen werden gesucht und die Tour wird sortiert. Das dauert etwa eine Minute — bitte die App offen lassen.</p>
@@ -5262,7 +5408,9 @@ async function applyReview() {
       tour_name: tour.name, tour_id: tour.id, date, route_id: gourmet.routeId,
       entries: sending.map(({ failed, ...e }) => e),
     };
-    const result = await api('/portal/import', { method: 'POST', body: JSON.stringify(body), timeoutMs: 8 * 60 * 1000, signal: importController.signal });
+    const result = gourmet.json
+      ? await api(`/routes/${gourmet.routeId}/import`, { method: 'POST', body: JSON.stringify({ entries: body.entries, replace: replacing }), timeoutMs: 8 * 60 * 1000, signal: importController.signal })
+      : await api('/portal/import', { method: 'POST', body: JSON.stringify(body), timeoutMs: 8 * 60 * 1000, signal: importController.signal });
     importController = null;
     // From here on the tour exists: a second "Übernehmen" adds to it.
     gourmet.routeId = result.id;
@@ -10875,6 +11023,7 @@ function renderRouteMenu() {
       ${gap}
       ${item("renderLadeliste()", ICONS.box, "Ladeliste")}
       ${item(`openGourmetSheet(${r.id})`, ICONS.download, "Stopps vom Zusteller-Portal laden")}
+      ${item("openJsonSheet()", ICONS.doc, "JSON einsetzen")}
       ${gap}
       ${item("reoptimizeAfresh()", ICONS.refresh, "Neu optimieren")}
       ${r.customer_count < 2 && r.stops.filter((s) => s.kind === 'customer').length < 2 ? off(ICONS.sort, "Reihenfolge ändern") : item("openReorderSheet()", ICONS.sort, "Reihenfolge ändern")}

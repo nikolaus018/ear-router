@@ -8304,6 +8304,27 @@ async fn in_driving_order(state: &Arc<AppState>, entries: Vec<Value>) -> Result<
     Ok(order.into_iter().filter_map(|i| slots[i].take()).collect())
 }
 
+#[derive(Deserialize)]
+struct ListImport {
+    entries: Vec<Value>,
+    /// The list is the whole tour: open customers it does not mention are
+    /// removed. Off adds the list to what is there.
+    #[serde(default)]
+    replace: bool,
+}
+
+/// `POST /api/routes/:id/import`: a pasted list of customers -- the JSON
+/// editor's "Übernehmen", after the driver has looked the list over.
+async fn import_list(
+    State(state): State<Arc<AppState>>,
+    AxPath(route_id): AxPath<i64>,
+    Json(payload): Json<ListImport>,
+) -> Result<Json<BulkJsonResult>, AppError> {
+    // No lock held here: `import_entries` takes the route's own when it plans.
+    let result = import_entries(&state, route_id, &Value::Array(payload.entries), !payload.replace).await?;
+    Ok(Json(result))
+}
+
 /// `POST /api/portal/import`: puts the entries the driver has looked over
 /// onto a tour -- a new one, or one that is already there, where stops added
 /// by hand are left alone and stops already on it are recognised rather
@@ -8569,6 +8590,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/routes/:id/departed", post(mark_departed))
         .route("/api/routes/:id/order", put(set_stop_order))
         .route("/api/routes/:id/pause", post(set_pause))
+        .route("/api/routes/:id/import", post(import_list))
         .route("/api/routes/:id/others", get(get_others).post(add_other))
         .route("/api/routes/:id/others/unhide", post(unhide_others))
         .route("/api/routes/:id/others/:other_id", axum::routing::delete(remove_other))
