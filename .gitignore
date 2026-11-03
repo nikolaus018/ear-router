@@ -24,3 +24,6 @@ rerouter.db-shm
 
 # Day exports from the Zusteller-Portal (customer data)
 TP_AST_*.json
+
+# Local helper for pulling a day's tour from the Zusteller-Portal by hand
+scripts/fetch_tour.py
