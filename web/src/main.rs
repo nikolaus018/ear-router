@@ -1341,6 +1341,16 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- What a driver has said about the public toilets: marked as no good, and a
+-- note on any of them. By the toilet's own key (name and place), per account.
+CREATE TABLE IF NOT EXISTS restroom_marks (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    bad INTEGER NOT NULL DEFAULT 0,
+    note TEXT,
+    PRIMARY KEY (user_id, key)
+);
 "#;
 
 fn init_db(path: &FsPath) -> Result<(), AppError> {
@@ -5778,6 +5788,70 @@ async fn put_home(
     Ok(Json(home_json(&load_home(&conn, user.id)?)))
 }
 
+/// The public toilets the app ships with -- `ios/EarRouter/Resources/Restrooms.json`,
+/// built by `ios/Tools/MakeRestrooms.py`. Compiled in, like the address pack.
+static RESTROOMS_JSON: &[u8] = include_bytes!("../Restrooms.json");
+
+/// `GET /api/restrooms`.
+async fn restrooms(headers: HeaderMap) -> Response {
+    static_response(RESTROOMS_JSON.to_vec(), "application/json", "private, max-age=3600", &headers)
+}
+
+const MAX_RESTROOM_NOTE_LEN: usize = 300;
+const MAX_RESTROOM_KEY_LEN: usize = 300;
+
+/// `GET /api/restroom-marks`: `{ marks: [{ key, bad, note }] }`.
+async fn get_restroom_marks(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db()?;
+    let mut stmt = conn.prepare("SELECT key, bad, note FROM restroom_marks WHERE user_id = ?1 ORDER BY key")?;
+    let marks = stmt
+        .query_map(params![user.id], |r| {
+            Ok(json!({ "key": r.get::<_, String>(0)?, "bad": r.get::<_, i64>(1)? != 0, "note": r.get::<_, Option<String>>(2)? }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Json(json!({ "marks": marks })))
+}
+
+#[derive(Deserialize)]
+struct RestroomMarkUpdate {
+    key: String,
+    bad: bool,
+    note: Option<String>,
+}
+
+/// `PUT /api/restroom-marks`: one toilet's mark and note, replaced. Neither
+/// marked nor noted removes the row.
+async fn put_restroom_mark(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Json(payload): Json<RestroomMarkUpdate>,
+) -> Result<Json<Value>, AppError> {
+    let key = payload.key.trim().to_string();
+    if key.is_empty() {
+        return Err(AppError::BadRequest("WC fehlt.".into()));
+    }
+    check_len(&key, "WC", MAX_RESTROOM_KEY_LEN)?;
+    let note = payload.note.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+    if let Some(n) = &note {
+        check_len(n, "Notiz", MAX_RESTROOM_NOTE_LEN)?;
+        check_no_control_chars(n, "Notiz", false)?;
+    }
+    let conn = state.db()?;
+    if !payload.bad && note.is_none() {
+        conn.execute("DELETE FROM restroom_marks WHERE user_id = ?1 AND key = ?2", params![user.id, key])?;
+    } else {
+        conn.execute(
+            "INSERT INTO restroom_marks (user_id, key, bad, note) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(user_id, key) DO UPDATE SET bad = excluded.bad, note = excluded.note",
+            params![user.id, key, payload.bad as i64, note],
+        )?;
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[derive(Deserialize)]
 struct PauseSwitch {
     on: bool,
@@ -8167,6 +8241,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
         .route("/api/home", get(get_home).put(put_home))
+        .route("/api/restrooms", get(restrooms))
+        .route("/api/restroom-marks", get(get_restroom_marks).put(put_restroom_mark))
         .route("/api/admin/users", get(admin_list_users).post(admin_create_user))
         .route("/api/admin/users/:id", patch(admin_update_user).delete(admin_delete_user))
         .route("/api/pace", get(pace_history))

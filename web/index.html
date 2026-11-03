@@ -2367,6 +2367,8 @@ const ICONS = {
   plus: icon('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>', 'stroke-width="2"'),
   back: icon('<polyline points="15 18 9 12 15 6"/>', 'stroke-width="2.25"'),
   chevron: icon('<polyline points="9 18 15 12 9 6"/>', 'stroke-width="2.25"'),
+  toilet: icon('<path d="M7 3h10v6H7z"/><path d="M5 11h14c0 4-2 6-5 6v4h-4v-4c-3 0-5-2-5-6Z"/>'),
+  thumbDown: icon('<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>'),
   kebab: '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="12" cy="5" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="12" cy="19" r="1.9"/></svg>',
   tabRoutes: icon('<circle cx="4" cy="6" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="6" x2="20" y2="6"/><circle cx="4" cy="12" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="12" x2="20" y2="12"/><circle cx="4" cy="18" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="18" x2="20" y2="18"/>'),
   tabNow: icon('<path d="M13 4h3a2 2 0 0 1 2 2v14"/><path d="M2 20h3"/><path d="M13 20h9"/><path d="M10 12v.01"/><path d="M13 4.562v16.157a1 1 0 0 1-1.242.97L5 20V5.562a2 2 0 0 1 1.515-1.94l4-1A2 2 0 0 1 13 4.561Z"/>'),
@@ -6227,7 +6229,8 @@ function renderMapTab() {
 
       ${r ? `
         <div class="absolute bottom-0 inset-x-0 z-10 px-4" style="pointer-events:none; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3.75rem)">
-          <div class="flex" style="justify-content:flex-end; margin-bottom:.625rem">
+          <div class="flex" style="justify-content:flex-end; gap:.5rem; margin-bottom:.625rem">
+            <button type="button" onclick="openMapOptions()" aria-label="Kartenoptionen" title="Kartenoptionen" class="map-fit press-95" style="pointer-events:auto">${ICONS.kebab}</button>
             <button type="button" onclick="fitMapToRoute()" aria-label="Ganze Route zeigen" title="Ganze Route zeigen" class="map-fit press-95" style="pointer-events:auto">${ICONS.expand}</button>
           </div>
           <div data-map-card style="pointer-events:auto">${mapCardHtml() || mapDockHtml()}</div>
@@ -8583,7 +8586,7 @@ const AERIAL_LAYER_IDS = ['at-ortho', 'wien-lb', 'wien-labels'];
 // The route's own layers, in draw order (casing under line). Everything the
 // app adds to the style that is neither basemap nor imagery — so switching
 // basemaps has to leave both alone. See `mountAerialLayers`.
-const ROUTE_LAYER_IDS = ['entrance-links', 'route-line-casing', 'route-line'];
+const ROUTE_LAYER_IDS = ['entrance-links', 'route-line-casing', 'route-line', 'restrooms'];
 
 // Where the nationwide overview imagery hands over to Vienna's own
 // high-resolution imagery. Street level: below this the driver is looking at
@@ -9350,6 +9353,25 @@ function ensureRouteLayers(map) {
       paint: { 'line-color': '#ED1639', 'line-width': 4, 'line-opacity': 0.95 },
     });
   }
+  // The public toilets, when the driver has asked to see them: purple, red
+  // once marked as no good.
+  if (!map.getSource('restrooms')) {
+    map.addSource('restrooms', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  }
+  if (!map.getLayer('restrooms')) {
+    map.addLayer({
+      id: 'restrooms',
+      type: 'circle',
+      source: 'restrooms',
+      paint: {
+        'circle-color': ['case', ['get', 'bad'], '#FF3B30', '#AF52DE'],
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 4, 14, 7, 17, 11],
+        'circle-stroke-color': '#fff',
+        'circle-stroke-width': 2,
+      },
+    });
+  }
+  refreshRestroomLayer(map);
 }
 
 function drawRouteOnMap(map, r, { fit = true } = {}) {
@@ -9570,7 +9592,14 @@ function initMapTabMap() {
   if (!mapTabMap) {
     const map = newMap(mapTabEl, {});
     mapTabMap = map;
-    map.on('click', () => closeMapCard());
+    map.on('click', (e) => {
+      const hit = map.getLayer('restrooms') ? map.queryRenderedFeatures(e.point, { layers: ['restrooms'] })[0] : null;
+      if (hit) openRestroomCard(hit.properties.key); else closeMapCard();
+    });
+    map.on('mousemove', (e) => {
+      const over = map.getLayer('restrooms') && map.queryRenderedFeatures(e.point, { layers: ['restrooms'] }).length;
+      map.getCanvas().style.cursor = over ? 'pointer' : '';
+    });
     // The element's real size is still settling the tick it's inserted
     // (safe-area values resolve, layout lands) — and it's detached and re-attached on
     // every tab switch from then on. A ResizeObserver keeps the canvas in
@@ -9607,6 +9636,7 @@ function initMapTabMap() {
 
 function syncMapTabRoute() {
   const map = mapTabMap;
+  if (map && showRestrooms() && !restroomData.list) loadRestrooms().then(() => refreshRestroomLayer(map)).catch(() => {});
   const r = state.currentRoute;
   if (!map || !r) return;
   // Nothing to add sources or layers to until the style is parsed. Waiting
@@ -9725,7 +9755,173 @@ function mapDockHtml() {
     </button>`;
 }
 
+// ---------------------------------------------------------------------
+// Public toilets on the map -- the iOS app's `Restroom`, `RestroomMarks` and
+// the card its pin opens. A layer and nothing more: the driver picks one on
+// the map. The list is the one the server ships with; the marks ("unbrauchbar")
+// and notes are the account's own.
+// ---------------------------------------------------------------------
+const RESTROOM_NOTE_MAX = 300;
+const restroomData = { list: null, byKey: new Map(), marks: new Map(), loading: null };
+
+function restroomKey(r) { return `${r.name}|${r.lat.toFixed(5)}|${r.lon.toFixed(5)}`; }
+function showRestrooms() {
+  try { return localStorage.getItem('map.showRestrooms') === '1'; } catch (_) { return false; }
+}
+function restroomLabel(r) { return r.oeklo ? 'öKlo' : 'WC'; }
+
+/// Month, weekday (Monday = 0) and minute of the day in Vienna.
+function viennaParts(date) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Vienna', month: 'numeric', weekday: 'short', hour: 'numeric', minute: 'numeric', hourCycle: 'h23',
+  }).formatToParts(date).map((p) => [p.type, p.value]));
+  return {
+    month: Number(parts.month),
+    day: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(parts.weekday),
+    minute: Number(parts.hour) * 60 + Number(parts.minute),
+  };
+}
+function restroomOpenExactly(r, date) {
+  const t = viennaParts(date);
+  if (r.winterClosed && (t.month >= 11 || t.month <= 3)) return false;
+  if (!r.hours) return true;
+  const span = r.hours[t.day];
+  return !!span && span.length === 2 && t.minute >= span[0] && t.minute < span[1];
+}
+/// Open now, and still twenty minutes on -- nearer to when the driver gets there.
+function restroomIsOpen(r, date = new Date()) {
+  return restroomOpenExactly(r, date) && restroomOpenExactly(r, new Date(date.getTime() + 20 * 60000));
+}
+
+function loadRestrooms() {
+  if (restroomData.list) return Promise.resolve();
+  if (!restroomData.loading) {
+    restroomData.loading = Promise.all([api('/restrooms'), api('/restroom-marks')]).then(([list, marks]) => {
+      restroomData.list = list;
+      restroomData.byKey = new Map(list.map((r) => [restroomKey(r), r]));
+      restroomData.marks = new Map((marks.marks || []).map((m) => [m.key, { bad: !!m.bad, note: m.note || '' }]));
+    }).catch((err) => {
+      restroomData.loading = null;
+      toast('WCs konnten nicht geladen werden.', 'error');
+      throw err;
+    });
+  }
+  return restroomData.loading;
+}
+
+function refreshRestroomLayer(map) {
+  const src = map && map.getSource && map.getSource('restrooms');
+  if (!src) return;
+  const features = showRestrooms() && restroomData.list ? restroomData.list.map((r) => {
+    const key = restroomKey(r);
+    return {
+      type: 'Feature',
+      properties: { key, bad: !!restroomData.marks.get(key)?.bad },
+      geometry: { type: 'Point', coordinates: [r.lon, r.lat] },
+    };
+  }) : [];
+  src.setData({ type: 'FeatureCollection', features });
+}
+
+function setShowRestrooms(on) {
+  try { localStorage.setItem('map.showRestrooms', on ? '1' : '0'); } catch (_) { /* not kept */ }
+  if (on) loadRestrooms().then(() => refreshRestroomLayer(mapTabMap)).catch(() => {});
+  else {
+    refreshRestroomLayer(mapTabMap);
+    if (mapCard?.restroom) closeMapCard();
+  }
+}
+
+/// What the Karte tab's menu holds on iOS: the switch for the toilets.
+function openMapOptions() {
+  renderSheetShell(`
+    <h2 class="sheet-title">Karte</h2>
+    <div class="${GROUP} mb-4">
+      <label class="flex items-center gap-3 px-4 py-3.5 cursor-pointer">
+        <span class="w-5 flex shrink-0 text-black/55 text-lg">${ICONS.toilet}</span>
+        <span class="flex-1 min-w-0 text-[15px] font-medium">WCs anzeigen</span>
+        <input type="checkbox" ${showRestrooms() ? 'checked' : ''} onchange="setShowRestrooms(this.checked)" class="w-6 h-6 shrink-0 accent-brand-600" />
+      </label>
+    </div>
+    <div class="pb-2"><button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Fertig</button></div>
+  `, { label: 'Karte' });
+}
+
+function openRestroomCard(key) {
+  mapCard = { restroom: key };
+  paintMapCard();
+}
+
+async function saveRestroomMark(key, bad, note) {
+  const before = restroomData.marks.get(key);
+  const clean = String(note || '').trim().slice(0, RESTROOM_NOTE_MAX);
+  if (bad || clean) restroomData.marks.set(key, { bad, note: clean }); else restroomData.marks.delete(key);
+  refreshRestroomLayer(mapTabMap);
+  paintMapCard();
+  try {
+    await api('/restroom-marks', { method: 'PUT', body: JSON.stringify({ key, bad, note: clean || null }), retry: true });
+  } catch (_) {
+    if (before) restroomData.marks.set(key, before); else restroomData.marks.delete(key);
+    refreshRestroomLayer(mapTabMap);
+    paintMapCard();
+    toast('Konnte das nicht speichern.', 'error');
+  }
+}
+
+function toggleRestroomBad(key) {
+  const m = restroomData.marks.get(key) || { bad: false, note: '' };
+  saveRestroomMark(key, !m.bad, m.note);
+}
+
+function openRestroomNoteSheet(key) {
+  const r = restroomData.byKey.get(key);
+  if (!r) return;
+  const m = restroomData.marks.get(key) || { bad: false, note: '' };
+  renderSheetShell(`
+    <h2 class="sheet-title">Notiz</h2>
+    <p class="sheet-lead">Nur für dich, zu diesem WC. Leer sichern entfernt sie.</p>
+    <input id="restroom-note" maxlength="${RESTROOM_NOTE_MAX}" autocomplete="off" placeholder="z. B. Code, Zustand, Zugang" value="${escapeAttr(m.note)}" class="${FIELD}" />
+    <div class="pb-2" style="margin-top:1.25rem">
+      <button type="button" onclick="const v = document.getElementById('restroom-note').value; closeSheet(); saveRestroomMark(${escapeAttr(JSON.stringify(key))}, ${m.bad}, v)" class="press-98 wide-btn accent">Sichern</button>
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Abbrechen</button>
+    </div>
+  `, { label: 'Notiz zum WC' });
+}
+
+function restroomCardHtml() {
+  const key = mapCard.restroom;
+  const r = restroomData.byKey.get(key);
+  if (!r) return '';
+  const m = restroomData.marks.get(key) || { bad: false, note: '' };
+  const open = restroomIsOpen(r);
+  const state = m.bad ? 'Als unbrauchbar markiert' : open ? 'Geöffnet' : 'Jetzt geschlossen';
+  const facts = r.walk >= 30 ? `${state} · ${r.walk} m zu Fuß` : state;
+  const color = m.bad ? '#FF3B30' : '#AF52DE';
+  const factColor = m.bad ? '#FF3B30' : open ? 'rgba(0,0,0,.55)' : '#FF9500';
+  const k = escapeAttr(JSON.stringify(key));
+  const nav = MAPS_PROVIDERS[getMapsProvider()].point(r.lat.toFixed(NAV_COORD_DECIMALS), r.lon.toFixed(NAV_COORD_DECIMALS));
+  return `
+    <div class="map-card" data-bottom-dock>
+      <div class="flex items-start gap-3">
+        <span class="shrink-0 flex items-center justify-center text-white" style="width:28px;height:28px;border-radius:50%;background:${color};margin-top:.15rem">${ICONS.toilet}</span>
+        <div class="flex-1 min-w-0">
+          <p class="text-[19px] font-bold" style="line-height:1.25">${restroomLabel(r)}</p>
+          <p class="text-[15px] text-black/55 mt-0.5" style="overflow-wrap:anywhere">${escapeHtml(r.name)}</p>
+          <p class="text-[13px] mt-0.5" style="color:${factColor}">${escapeHtml(facts)}</p>
+        </div>
+        <button type="button" onclick="closeMapCard()" aria-label="Schließen" title="Schließen" class="tap-target press-fade w-9 h-9 shrink-0 flex items-center justify-center text-black/55 text-lg" style="margin:-.375rem -.375rem 0 0">${ICONS.close}</button>
+      </div>
+      ${m.note ? `<p class="now-fact"><span>${ICONS.note}</span><span>${escapeHtml(m.note)}</span></p>` : ''}
+      <div style="margin-top:1rem">
+        <a href="${nav}" target="_blank" rel="noopener" class="press-98 wide-btn accent">${ICONS.arrowTurn} Navigation</a>
+        <button type="button" onclick="toggleRestroomBad(${k})" class="press-98 wide-btn quiet" ${m.bad ? '' : 'style="color:#D70015"'}>${m.bad ? ICONS.refresh : ICONS.thumbDown} ${m.bad ? 'Doch brauchbar' : 'Als unbrauchbar markieren'}</button>
+        <button type="button" onclick="openRestroomNoteSheet(${k})" class="press-98 wide-btn quiet">${ICONS.pencil} ${m.note ? 'Notiz ändern' : 'Notiz hinzufügen'}</button>
+      </div>
+    </div>`;
+}
+
 function mapCardHtml() {
+  if (mapCard?.restroom) return restroomCardHtml();
   const r = state.currentRoute;
   const stop = mapCard && r?.stops.find((s) => s.id === mapCard.id);
   if (!stop) return '';
