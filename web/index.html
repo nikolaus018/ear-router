@@ -435,7 +435,16 @@
      on every single render. Compiling once moves all of that off the device.
 
      Position is load-bearing: this must stay *after* the hand-written
-     <style>
+     style tag above, because that is where the CDN used to inject it and a
+     few rules up there are written expecting to lose to an equal-specificity
+     utility class (see the safe-area note).
+
+     To regenerate after adding/removing classes in this file:
+         npx tailwindcss@3 -c tailwind.config.js -i input.css -o out.css
+     with `input.css` holding the three @tailwind directives, then paste the
+     result in below. Adding a one-off utility by hand is fine too — these
+     are plain rules with nothing generated about them at runtime. -->
+<style>
 /* Input for the ahead-of-time utility build — see tailwind.config.js. */
 
 *, ::before, ::after {
