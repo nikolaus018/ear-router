@@ -646,6 +646,15 @@
     .basemap-toggle {
       color: #FFFFFF !important;
     }
+    .maplibregl-popup-content {
+      background: #1C1C1E !important;
+      color: #FFFFFF !important;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
+    }
+    .maplibregl-popup-tip {
+      border-top-color: #1C1C1E !important;
+      border-bottom-color: #1C1C1E !important;
+    }
     .marker-fixed {
       background: #1C1C1E !important;
       color: #E5E5EA !important;
@@ -2500,6 +2509,11 @@ video {
 .text-success {
   --tw-text-opacity: 1;
   color: rgb(52 199 89 / var(--tw-text-opacity, 1));
+}
+
+.text-warn {
+  --tw-text-opacity: 1;
+  color: rgb(255 149 0 / var(--tw-text-opacity, 1));
 }
 
 .text-warnText {
@@ -9385,20 +9399,10 @@ function applyBasemap(map, mode) {
     stopAerialHandover(map);
     setVectorLayersVisible(map, true);
     // Back from the photos the street map is blank until it is drawn again:
-    // its layers were off, their tiles are not asked for until the next render,
-    // and a map standing still has none coming. A one-pixel nudge and back
-    // makes it ask, now and once more for a slow connection.
-    const nudge = () => {
-      if (map._earBasemap !== 'map') return;
-      map.panBy([1, 0], { duration: 0 });
-      map.panBy([-1, 0], { duration: 0 });
-      map.triggerRepaint();
-      try { map.redraw(); } catch (_) { /* older library */ }
-    };
-    // Again for as long as the street map has not shown up: a slow connection
-    // answers after the first ask, and a nudge costs nothing.
-    for (const delay of [0, 250, 800, 2000, 4500]) setTimeout(nudge, delay);
-    map.once('idle', nudge);
+    // its layers were off, their tiles are not asked for until the next render.
+    // Triggering repaint asks immediately without shaking the camera.
+    map.triggerRepaint();
+    try { map.redraw(); } catch (_) { /* older library */ }
   }
   // The background layer is the ground under both: a neutral dark grey
   // while the imagery loads (and outside its coverage), the style's own
@@ -9454,8 +9458,14 @@ function mountBasemapRedraw(map) {
     // itself beneath and the Luftbild can never be painted over the route.
     // They are also what `drawRouteOnMap` now updates rather than rebuilds
     // (see `ensureRouteLayers`), so they exist from the moment the style is
-    // parsed — before a route has even been chosen.
-    try { ensureRouteLayers(map); } catch (err) { console.warn('route layers not ready', err); }
+    // parsed — before a route has even been chosen. Only mounted once per
+    // parsed style rather than re-running on every tile's styledata event.
+    if (!map._earRouteLayersMounted || !map.getLayer('route-line')) {
+      try {
+        ensureRouteLayers(map);
+        map._earRouteLayersMounted = true;
+      } catch (err) { console.warn('route layers not ready', err); }
+    }
 
     // Mounts the imagery and, on a map that opens straight into Luftbild,
     // switches the vector layers off in the same pass — but only once.
@@ -9710,6 +9720,15 @@ function newMap(container, opts) {
       };
     }
   } catch (_) { /* the library's own direction stays */ }
+  // OpenFreeMap vector styles reference patterns (e.g. 'wood-pattern') that
+  // are not provided in their sprite assets. MapLibre fires 'styleimagemissing'
+  // continuously on tile boundaries. Providing a 1x1 transparent RGBA texture
+  // satisfies the pattern fill without console spam or stutter.
+  map.on('styleimagemissing', (e) => {
+    if (!map.hasImage(e.id)) {
+      map.addImage(e.id, { width: 1, height: 1, data: new Uint8Array(4) });
+    }
+  });
   mountBasemapRedraw(map);
   // A phone under memory pressure can have its WebGL context taken away by
   // the browser. MapLibre does not recover from that on its own: the canvas
@@ -9962,10 +9981,7 @@ function ensureRouteLayers(map) {
   if (!map.getSource('route-line')) {
     map.addSource('route-line', { type: 'geojson', data: EMPTY_LINE });
   }
-  // A white casing under the red line. On the vector basemap it's a subtle
-  // outline; on the aerial one it's what keeps the route visible at all,
-  // since red-on-dark-asphalt at 4px is nearly invisible from arm's length
-  // in daylight.
+  // A dark casing in dark mode, white in light mode under the route line.
   if (!map.getLayer('route-line-casing')) {
     map.addLayer({
       id: 'route-line-casing',
@@ -9978,6 +9994,8 @@ function ensureRouteLayers(map) {
         'line-opacity': 0.9,
       },
     });
+  } else {
+    map.setPaintProperty('route-line-casing', 'line-color', isDarkMode() ? '#000000' : '#ffffff');
   }
   // Under the route line, and only from close in -- see `.marker-door`.
   if (!map.getSource('entrance-links')) {
@@ -10005,6 +10023,8 @@ function ensureRouteLayers(map) {
         'line-opacity': 1,
       },
     });
+  } else {
+    map.setPaintProperty('route-line', 'line-color', isDarkMode() ? '#0A84FF' : '#007AFF');
   }
   // Which way the van drives: small chevrons along the line, from street level.
   if (!map.hasImage('route-arrow')) {
@@ -10328,10 +10348,13 @@ function initMapTabMap() {
     return;
   }
 
-  // Re-attached from a previous tab visit: the element had no layout box
-  // while it was detached, so the canvas needs one explicit nudge before
-  // the ResizeObserver takes over again.
-  mapTabMap.resize();
+  // Re-attached from a previous tab visit: defer resize to the next animation
+  // frame so the container's layout box has settled and isn't resized with 0 dimensions.
+  requestAnimationFrame(() => {
+    if (mapTabMap && mapTabEl && mapTabEl.parentElement && mapTabEl.clientWidth > 0 && mapTabEl.clientHeight > 0) {
+      mapTabMap.resize();
+    }
+  });
   syncMapTabRoute();
 }
 
@@ -12359,11 +12382,33 @@ window.addEventListener('pageshow', refreshOnResume);
 // Follow iOS system settings changes between light and dark mode live
 if (window.matchMedia) {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if (mapTabMap && !mapTabMap._earAerialMounted) {
-      mapTabMap.setStyle(mapStyleUrl());
-      mapTabMap.once('style.load', () => {
-        if (state.currentRoute) drawRouteOnMap(mapTabMap, state.currentRoute);
-      });
+    if (mapTabMap) {
+      if (mapTabMap._earBasemap === 'aerial') {
+        if (mapTabMap.getLayer('route-line-casing')) {
+          mapTabMap.setPaintProperty('route-line-casing', 'line-color', isDarkMode() ? '#000000' : '#ffffff');
+        }
+        if (mapTabMap.getLayer('route-line')) {
+          mapTabMap.setPaintProperty('route-line', 'line-color', isDarkMode() ? '#0A84FF' : '#007AFF');
+        }
+      } else {
+        mapTabMap._earStyleReady = false;
+        mapTabMap._earBasemapMounted = false;
+        mapTabMap._earRouteLayersMounted = false;
+        mapTabMap._earRouteDrawn = false;
+        mapTabMap._earLastSignature = null;
+        mapTabMap._earVectorLayers = null;
+        mapTabMap._earBackgroundLayer = null;
+        mapTabMap._earBackgroundColor = null;
+        mapTabMap.setStyle(mapStyleUrl());
+      }
+    }
+    if (typeof pinDropMap !== 'undefined' && pinDropMap && pinDropMap._earBasemap !== 'aerial') {
+      pinDropMap._earStyleReady = false;
+      pinDropMap._earBasemapMounted = false;
+      pinDropMap._earVectorLayers = null;
+      pinDropMap._earBackgroundLayer = null;
+      pinDropMap._earBackgroundColor = null;
+      pinDropMap.setStyle(mapStyleUrl());
     }
   });
 }
