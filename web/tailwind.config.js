@@ -21,11 +21,20 @@ module.exports = {
         sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Text"', 'Inter', 'system-ui', 'sans-serif'],
       },
       colors: {
-        // Sampled directly from the ASBÖ logo (see icon.png): the "S"/
-        // circle red is exactly #ED1639. Used sparingly — as the app's tint
-        // color (tab bar selection, primary buttons, FAB) and for
-        // destructive actions — not as a dominant background.
-        brand: { 50: '#FFF1F2', 100: '#FFE0E4', 300: '#F57A8E', 400: '#F14B66', 500: '#ED1639', 600: '#ED1639', 700: '#B4102B', 800: '#970C22' },
+        // Apple's own semantic system colors, matching the iOS app's palette
+        // (see ios/EarRouter/Support/Theme.swift). The interactive accent is
+        // Apple system blue (#007AFF), matching Color.accentColor.
+        brand: {
+          50: '#F0F6FF',
+          100: '#E1EFFF',
+          200: '#BAE0FF',
+          300: '#7CC4FA',
+          400: '#38A3F8',
+          500: '#007AFF',
+          600: '#007AFF',
+          700: '#0062CC',
+          800: '#004FB3',
+        },
         // Apple's own semantic system colors (light values — this app is
         // light-mode only, see the module doc comment in src/main.rs).
         success: '#34C759',
@@ -40,7 +49,7 @@ module.exports = {
         warnText: '#8A4B00',
       },
       boxShadow: {
-        fab: '0 8px 20px -4px rgba(237, 22, 57, 0.45)',
+        fab: '0 8px 20px -4px rgba(0, 122, 255, 0.45)',
         sheet: '0 -12px 40px -10px rgba(0, 0, 0, 0.35)',
       },
     },

@@ -33,7 +33,7 @@
      Light mode only, and deliberately so rather than by omission: this is a
      daylight tool. It is read at arm's length through a windscreen and in a
      van doorway, where a light ground at full brightness is the legible
-     one, and its whole visual language — the ASBÖ red on white, the grouped
+     one, and its whole visual language — the Apple system blue on white, the grouped
      iOS-settings lists — is built for that. `color-scheme: light` above is
      what makes the choice real: without it a phone in dark mode renders the
      form controls, the select's popup and the scrollbars dark against this
@@ -180,7 +180,7 @@
   .toast-enter-up { animation: toastInUp .25s cubic-bezier(.32,.72,0,1); }
   @keyframes toastInUp { from { opacity: 0; transform: translateY(14px) scale(.98) } to { opacity: 1; transform: translateY(0) scale(1) } }
 
-  .spinner { border: 3px solid rgba(120,120,128,.25); border-top-color: #ED1639; border-radius: 50%; width: 22px; height: 22px; animation: spin .7s linear infinite; }
+  .spinner { border: 3px solid rgba(120,120,128,.25); border-top-color: #007AFF; border-radius: 50%; width: 22px; height: 22px; animation: spin .7s linear infinite; }
   .spinner-sm { display: inline-block; border: 2px solid rgba(120,120,128,.25); border-top-color: currentColor; border-radius: 50%; width: 13px; height: 13px; animation: spin .7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg) } }
 
@@ -229,14 +229,14 @@
   .marker-badge:active { transform: scale(.92); }
   /* The next door: larger, with a halo that breathes, so it is the one thing
      on the map that is never missed. */
-  .marker-badge.next { width: 36px; height: 36px; font-size: 15px; box-shadow: 0 0 0 0 rgba(237,22,57,.45), 0 2px 8px rgba(0,0,0,.4); animation: nextHalo 2.2s ease-out infinite; z-index: 2; }
-  @keyframes nextHalo { 0% { box-shadow: 0 0 0 0 rgba(237,22,57,.45), 0 2px 8px rgba(0,0,0,.4); } 70%, 100% { box-shadow: 0 0 0 14px rgba(237,22,57,0), 0 2px 8px rgba(0,0,0,.4); } }
-  @media (prefers-reduced-motion: reduce) { .marker-badge.next { animation: none; box-shadow: 0 0 0 5px rgba(237,22,57,.3), 0 2px 8px rgba(0,0,0,.4); } }
+  .marker-badge.next { width: 36px; height: 36px; font-size: 15px; box-shadow: 0 0 0 0 rgba(0,122,255,.45), 0 2px 8px rgba(0,0,0,.4); animation: nextHalo 2.2s ease-out infinite; z-index: 2; }
+  @keyframes nextHalo { 0% { box-shadow: 0 0 0 0 rgba(0,122,255,.45), 0 2px 8px rgba(0,0,0,.4); } 70%, 100% { box-shadow: 0 0 0 14px rgba(0,122,255,0), 0 2px 8px rgba(0,0,0,.4); } }
+  @media (prefers-reduced-motion: reduce) { .marker-badge.next { animation: none; box-shadow: 0 0 0 5px rgba(0,122,255,.3), 0 2px 8px rgba(0,0,0,.4); } }
   .marker-fixed { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: #fff; color: #3a3a3c; box-shadow: 0 2px 6px rgba(0,0,0,.35); border: 2.5px solid #3a3a3c; font-size: 15px; }
   /* The exact registered position of an address — see the dot marker in
      `drawRouteOnMap`. `pointer-events: none` because it sits under the
      badges' tap targets and has nothing of its own to tap. */
-  .marker-dot { width: 9px; height: 9px; border-radius: 50%; background: #ED1639; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.35); pointer-events: none; }
+  .marker-dot { width: 9px; height: 9px; border-radius: 50%; background: #007AFF; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.35); pointer-events: none; }
   /* Basemap switch (Karte ⇄ Luftbild). Text, not an icon: "which view am I
      about to get" is not something a pictogram says unambiguously, and this
      control is used mid-delivery with one hand. */
@@ -280,7 +280,7 @@
      and there is no compiler on hand to add to it, so what these screens
      need beyond it is written out here by name. */
   .now-card { background: #fff; border-radius: 1rem; box-shadow: 0 1px 2px rgba(0,0,0,.05); padding: 1.25rem; }
-  .now-badge { flex: none; width: 1.75rem; height: 1.75rem; border-radius: 50%; background: #ED1639; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .now-badge { flex: none; width: 1.75rem; height: 1.75rem; border-radius: 50%; background: #007AFF; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .now-name { font-size: 22px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
   .now-address { font-size: 16px; color: rgba(0,0,0,.75); margin-top: .375rem; overflow-wrap: anywhere; }
   .now-fact { display: flex; align-items: flex-start; gap: .5rem; font-size: 15px; line-height: 1.35; margin-top: .625rem; overflow-wrap: anywhere; white-space: pre-line; }
@@ -289,7 +289,7 @@
   .now-fact.warn > span:first-child { color: #9A5B00; }
   .wide-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: .5rem; padding: .875rem 1rem; border-radius: .875rem; font-size: 16px; font-weight: 600; text-decoration: none; }
   .wide-btn.primary { background: #34C759; color: #fff; }
-  .wide-btn.accent { background: #ED1639; color: #fff; }
+  .wide-btn.accent { background: #007AFF; color: #fff; }
   .wide-btn.quiet { background: rgba(120,120,128,.14); color: #000; }
   .km-field { display: flex; align-items: center; gap: .75rem; background: #fff; border-radius: .875rem; padding: .25rem 1rem; }
   .km-field label { width: 2.25rem; font-size: 15px; color: rgba(0,0,0,.55); }
@@ -302,11 +302,11 @@
      beside the filled Navigation -- the pairing the iOS app uses. */
   .wide-btn.done { background: rgba(52,199,89,.18); color: #1B7A35; }
   .now-carry { margin-top: .875rem; }
-  .now-carry-title { display: flex; align-items: center; gap: .375rem; font-size: 15px; font-weight: 600; color: #ED1639; }
+  .now-carry-title { display: flex; align-items: center; gap: .375rem; font-size: 15px; font-weight: 600; color: #007AFF; }
   .now-carry p { font-size: 15px; line-height: 1.35; margin-top: .25rem; overflow-wrap: anywhere; }
   .now-carry p b { font-weight: 500; }
   .now-carry p span { color: rgba(0,0,0,.55); }
-  .copy-btn { flex: none; width: 2.75rem; height: 2.75rem; margin: -.5rem -.5rem -.5rem 0; display: flex; align-items: center; justify-content: center; font-size: 19px; color: #ED1639; }
+  .copy-btn { flex: none; width: 2.75rem; height: 2.75rem; margin: -.5rem -.5rem -.5rem 0; display: flex; align-items: center; justify-content: center; font-size: 19px; color: #007AFF; }
   .copy-btn.copied { color: #34C759; }
   /* A house's street door, where that is not where its pin is. Only from
      close in: over a whole tour it is the same dot as the pin. */
@@ -322,7 +322,7 @@
   .now-follow > span:first-child { flex: none; display: flex; margin-top: .2em; color: #FF9500; }
   .tab-grid { display: grid; }
   .row-num { display: inline-flex; align-items: center; justify-content: center; min-width: 1.375rem; height: 1.375rem; padding: 0 .3rem; margin-right: .4rem; border-radius: 999px; background: rgba(120,120,128,.18); color: rgba(0,0,0,.7); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; vertical-align: 1px; }
-  .row-num.next { background: #ED1639; color: #fff; }
+  .row-num.next { background: #007AFF; color: #fff; }
   .row-num.done { background: rgba(120,120,128,.12); color: rgba(0,0,0,.4); }
   .blocker { background: #D70015; color: #fff; border-radius: 1rem; padding: .875rem 1rem 1rem; margin-bottom: 1rem; }
   .blocker-title { display: flex; align-items: center; gap: .5rem; font-size: 16px; font-weight: 700; }
@@ -335,15 +335,15 @@
   .review-fact > span:first-child { flex: none; display: flex; margin-top: .15em; color: rgba(0,0,0,.45); }
   .review-fact.warn, .review-fact.warn > span:first-child { color: #B26A00; font-weight: 600; }
   .review-x { flex: none; width: 2.75rem; height: 2.75rem; margin: .375rem .25rem 0 0; display: flex; align-items: center; justify-content: center; font-size: 18px; color: rgba(0,0,0,.4); }
-  .lade-parcels { flex: none; padding: .25rem .5rem; border-radius: .5rem; background: rgba(237,22,57,.1); color: #C4102E; font-size: 13px; font-weight: 700; white-space: nowrap; }
-  .lade-parcels.many { background: #ED1639; color: #fff; }
+  .lade-parcels { flex: none; padding: .25rem .5rem; border-radius: .5rem; background: rgba(0,122,255,.1); color: #0062CC; font-size: 13px; font-weight: 700; white-space: nowrap; }
+  .lade-parcels.many { background: #007AFF; color: #fff; }
   .seg { display: flex; background: rgba(120,120,128,.16); border-radius: .625rem; padding: 2px; margin: .5rem 0 .75rem; }
   .seg-btn { flex: 1; padding: .4375rem 0; border-radius: .5rem; font-size: 14px; font-weight: 600; color: rgba(0,0,0,.6); }
   .seg-btn.on { background: #fff; color: #000; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
-  .preflight-action { margin-top: .5rem; padding: .4375rem .875rem; border-radius: 999px; background: #ED1639; color: #fff; font-size: 14px; font-weight: 600; }
+  .preflight-action { margin-top: .5rem; padding: .4375rem .875rem; border-radius: 999px; background: #007AFF; color: #fff; font-size: 14px; font-weight: 600; }
   .reorder-row { display: flex; align-items: center; gap: .625rem; padding: .5rem .625rem .5rem 1rem; }
   .reorder-num { flex: none; width: 1.625rem; height: 1.625rem; border-radius: 50%; background: rgba(120,120,128,.16); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .reorder-btn { flex: none; width: 2.75rem; height: 2.75rem; border-radius: 50%; background: rgba(120,120,128,.12); color: #ED1639; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+  .reorder-btn { flex: none; width: 2.75rem; height: 2.75rem; border-radius: 50%; background: rgba(120,120,128,.12); color: #007AFF; display: flex; align-items: center; justify-content: center; font-size: 20px; }
   .reorder-btn:disabled { opacity: .25; }
   .reorder-btn:active { transform: scale(.94); }
   .sheet-title { font-size: 22px; font-weight: 700; margin-bottom: .25rem; overflow-wrap: anywhere; }
@@ -366,8 +366,8 @@
   .sheet-actions { position: sticky; bottom: 0; padding: .75rem 0 .5rem; background: linear-gradient(to bottom, rgba(242,242,247,0), #F2F2F7 22%); }
   .wide-btn:disabled { opacity: .4; }
   .choice { width: 100%; display: flex; align-items: center; gap: .875rem; text-align: left; background: #fff; border-radius: 1rem; padding: 1rem; margin-bottom: .625rem; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
-  .choice.primary { background: #ED1639; color: #fff; padding: 1.125rem 1rem; }
-  .choice-icon { flex: none; width: 2.5rem; height: 2.5rem; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; background: rgba(120,120,128,.12); color: #ED1639; }
+  .choice.primary { background: #007AFF; color: #fff; padding: 1.125rem 1rem; }
+  .choice-icon { flex: none; width: 2.5rem; height: 2.5rem; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; background: rgba(120,120,128,.12); color: #007AFF; }
   .choice.primary .choice-icon { background: rgba(255,255,255,.22); color: #fff; }
   .choice > span:nth-child(2) { flex: 1; min-width: 0; }
   .choice-title { display: block; font-size: 17px; font-weight: 600; }
@@ -375,10 +375,10 @@
   .choice-chevron { flex: none; display: flex; font-size: 18px; opacity: .45; }
   .day-row { display: flex; gap: .5rem; overflow-x: auto; margin-bottom: 1rem; padding-bottom: .125rem; }
   .day-chip { position: relative; flex: none; padding: .5rem .875rem; border-radius: 999px; background: #fff; font-size: 14px; font-weight: 600; color: rgba(0,0,0,.7); white-space: nowrap; }
-  .day-chip.on { background: #ED1639; color: #fff; }
+  .day-chip.on { background: #007AFF; color: #fff; }
   .day-chip input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; }
   .pick-bar { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 500; color: rgba(0,0,0,.55); padding: 0 .25rem .5rem; }
-  .pick-bar button { font-weight: 600; color: #ED1639; padding: .25rem .5rem; }
+  .pick-bar button { font-weight: 600; color: #007AFF; padding: .25rem .5rem; }
   .pick-row { width: 100%; display: flex; align-items: center; gap: .75rem; text-align: left; padding: .75rem 1rem; }
   .pick-row.on { opacity: 1; }
   .pick-num { flex: none; width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid rgba(0,0,0,.3); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: #fff; }
@@ -390,7 +390,7 @@
   #undo-banner .who { flex: 1; min-width: 0; display: flex; }
   #undo-banner .who > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #undo-banner .who > span:last-child { flex: none; white-space: nowrap; }
-  #undo-banner button { flex: none; font-weight: 600; color: #ED1639; }
+  #undo-banner button { flex: none; font-weight: 600; color: #007AFF; }
   .tap-target { position: relative; }
   .tap-target::after {
     content: ''; position: absolute; top: 50%; left: 50%;
@@ -435,16 +435,9 @@
      on every single render. Compiling once moves all of that off the device.
 
      Position is load-bearing: this must stay *after* the hand-written
-     <style> above, because that is where the CDN used to inject it and a
-     few rules up there are written expecting to lose to an equal-specificity
-     utility class (see the safe-area note).
+     <style>
+/* Input for the ahead-of-time utility build — see tailwind.config.js. */
 
-     To regenerate after adding/removing classes in this file:
-         npx tailwindcss@3 -c tailwind.config.js -i input.css -o out.css
-     with `input.css` holding the three @tailwind directives, then paste the
-     result in below. Adding a one-off utility by hand is fine too — these
-     are plain rules with nothing generated about them at runtime. -->
-<style>
 *, ::before, ::after {
   --tw-border-spacing-x: 0;
   --tw-border-spacing-y: 0;
@@ -553,9 +546,7 @@
   --tw-contain-style:  ;
 }
 
-/*
-! tailwindcss v3.4.19 | MIT License | https://tailwindcss.com
-*/
+/* ! tailwindcss v3.4.19 | MIT License | https://tailwindcss.com */
 
 /*
 1. Prevent padding and border from affecting element width. (https://github.com/mozdevs/cssremedy/issues/4)
@@ -1144,6 +1135,10 @@ video {
   top: 0px;
 }
 
+.top-1 {
+  top: 0.25rem;
+}
+
 .top-1\/2 {
   top: 50%;
 }
@@ -1225,6 +1220,10 @@ video {
   margin-bottom: 1.25rem;
 }
 
+.mt-0 {
+  margin-top: 0px;
+}
+
 .mt-0\.5 {
   margin-top: 0.125rem;
 }
@@ -1249,6 +1248,10 @@ video {
   display: block;
 }
 
+.inline-block {
+  display: inline-block;
+}
+
 .inline {
   display: inline;
 }
@@ -1259,6 +1262,10 @@ video {
 
 .inline-flex {
   display: inline-flex;
+}
+
+.table {
+  display: table;
 }
 
 .grid {
@@ -1285,6 +1292,10 @@ video {
   height: 2.5rem;
 }
 
+.h-11 {
+  height: 2.75rem;
+}
+
 .h-16 {
   height: 4rem;
 }
@@ -1309,10 +1320,6 @@ video {
   height: 2.25rem;
 }
 
-.h-\[38vh\] {
-  height: 38vh;
-}
-
 .h-\[3px\] {
   height: 3px;
 }
@@ -1329,12 +1336,16 @@ video {
   min-height: 0px;
 }
 
-.w-1\.5 {
-  width: 0.375rem;
+.w-1 {
+  width: 0.25rem;
 }
 
 .w-10 {
   width: 2.5rem;
+}
+
+.w-11 {
+  width: 2.75rem;
 }
 
 .w-12 {
@@ -1401,6 +1412,10 @@ video {
   flex: 1 1 0%;
 }
 
+.flex-shrink {
+  flex-shrink: 1;
+}
+
 .shrink {
   flex-shrink: 1;
 }
@@ -1409,12 +1424,25 @@ video {
   flex-shrink: 0;
 }
 
+.flex-grow {
+  flex-grow: 1;
+}
+
 .grow {
   flex-grow: 1;
 }
 
+.border-collapse {
+  border-collapse: collapse;
+}
+
 .origin-left {
   transform-origin: left;
+}
+
+.-translate-y-1 {
+  --tw-translate-y: -0.25rem;
+  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
 }
 
 .-translate-y-1\/2 {
@@ -1489,6 +1517,10 @@ video {
   justify-content: space-between;
 }
 
+.gap-0 {
+  gap: 0px;
+}
+
 .gap-0\.5 {
   gap: 0.125rem;
 }
@@ -1523,6 +1555,11 @@ video {
   --tw-divide-y-reverse: 0;
   border-top-width: calc(1px * calc(1 - var(--tw-divide-y-reverse)));
   border-bottom-width: calc(1px * var(--tw-divide-y-reverse));
+}
+
+.divide-black > :not([hidden]) ~ :not([hidden]) {
+  --tw-divide-opacity: 1;
+  border-color: rgb(0 0 0 / var(--tw-divide-opacity, 1));
 }
 
 .divide-black\/10 > :not([hidden]) ~ :not([hidden]) {
@@ -1600,6 +1637,11 @@ video {
   border-top-width: 1px;
 }
 
+.border-black {
+  --tw-border-opacity: 1;
+  border-color: rgb(0 0 0 / var(--tw-border-opacity, 1));
+}
+
 .border-black\/10 {
   border-color: rgb(0 0 0 / 0.1);
 }
@@ -1619,6 +1661,11 @@ video {
 
 .bg-\[\#F2F2F7\]\/85 {
   background-color: rgb(242 242 247 / 0.85);
+}
+
+.bg-black {
+  --tw-bg-opacity: 1;
+  background-color: rgb(0 0 0 / var(--tw-bg-opacity, 1));
 }
 
 .bg-black\/10 {
@@ -1651,16 +1698,21 @@ video {
 
 .bg-brand-50 {
   --tw-bg-opacity: 1;
-  background-color: rgb(255 241 242 / var(--tw-bg-opacity, 1));
+  background-color: rgb(240 246 255 / var(--tw-bg-opacity, 1));
 }
 
 .bg-brand-50\/60 {
-  background-color: rgb(255 241 242 / 0.6);
+  background-color: rgb(240 246 255 / 0.6);
 }
 
 .bg-brand-600 {
   --tw-bg-opacity: 1;
-  background-color: rgb(237 22 57 / var(--tw-bg-opacity, 1));
+  background-color: rgb(0 122 255 / var(--tw-bg-opacity, 1));
+}
+
+.bg-emerald-50 {
+  --tw-bg-opacity: 1;
+  background-color: rgb(236 253 245 / var(--tw-bg-opacity, 1));
 }
 
 .bg-emerald-50\/95 {
@@ -1776,9 +1828,19 @@ video {
   padding-right: 2rem;
 }
 
+.py-0 {
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
 .py-0\.5 {
   padding-top: 0.125rem;
   padding-bottom: 0.125rem;
+}
+
+.py-1 {
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
 }
 
 .py-1\.5 {
@@ -1853,6 +1915,10 @@ video {
   padding-left: 2.5rem;
 }
 
+.pl-2 {
+  padding-left: 0.5rem;
+}
+
 .pl-2\.5 {
   padding-left: 0.625rem;
 }
@@ -1863,6 +1929,10 @@ video {
 
 .pr-4 {
   padding-right: 1rem;
+}
+
+.pt-0 {
+  padding-top: 0px;
 }
 
 .pt-0\.5 {
@@ -1974,6 +2044,11 @@ video {
   line-height: 1.25rem;
 }
 
+.text-xl {
+  font-size: 1.25rem;
+  line-height: 1.75rem;
+}
+
 .text-xs {
   font-size: 0.75rem;
   line-height: 1rem;
@@ -2041,6 +2116,10 @@ video {
   color: rgb(0 0 0 / 0.4);
 }
 
+.text-black\/45 {
+  color: rgb(0 0 0 / 0.45);
+}
+
 .text-black\/55 {
   color: rgb(0 0 0 / 0.55);
 }
@@ -2059,12 +2138,12 @@ video {
 
 .text-brand-600 {
   --tw-text-opacity: 1;
-  color: rgb(237 22 57 / var(--tw-text-opacity, 1));
+  color: rgb(0 122 255 / var(--tw-text-opacity, 1));
 }
 
 .text-brand-700 {
   --tw-text-opacity: 1;
-  color: rgb(180 16 43 / var(--tw-text-opacity, 1));
+  color: rgb(0 98 204 / var(--tw-text-opacity, 1));
 }
 
 .text-emerald-700 {
@@ -2115,7 +2194,7 @@ video {
 }
 
 .accent-brand-600 {
-  accent-color: #ED1639;
+  accent-color: #007AFF;
 }
 
 .opacity-0 {
@@ -2175,12 +2254,22 @@ video {
   filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
 }
 
+.grayscale {
+  --tw-grayscale: grayscale(100%);
+  filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
+}
+
 .filter {
   filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
 }
 
 .backdrop-blur-xl {
   --tw-backdrop-blur: blur(24px);
+  -webkit-backdrop-filter: var(--tw-backdrop-blur) var(--tw-backdrop-brightness) var(--tw-backdrop-contrast) var(--tw-backdrop-grayscale) var(--tw-backdrop-hue-rotate) var(--tw-backdrop-invert) var(--tw-backdrop-opacity) var(--tw-backdrop-saturate) var(--tw-backdrop-sepia);
+  backdrop-filter: var(--tw-backdrop-blur) var(--tw-backdrop-brightness) var(--tw-backdrop-contrast) var(--tw-backdrop-grayscale) var(--tw-backdrop-hue-rotate) var(--tw-backdrop-invert) var(--tw-backdrop-opacity) var(--tw-backdrop-saturate) var(--tw-backdrop-sepia);
+}
+
+.backdrop-filter {
   -webkit-backdrop-filter: var(--tw-backdrop-blur) var(--tw-backdrop-brightness) var(--tw-backdrop-contrast) var(--tw-backdrop-grayscale) var(--tw-backdrop-hue-rotate) var(--tw-backdrop-invert) var(--tw-backdrop-opacity) var(--tw-backdrop-saturate) var(--tw-backdrop-sepia);
   backdrop-filter: var(--tw-backdrop-blur) var(--tw-backdrop-brightness) var(--tw-backdrop-contrast) var(--tw-backdrop-grayscale) var(--tw-backdrop-hue-rotate) var(--tw-backdrop-invert) var(--tw-backdrop-opacity) var(--tw-backdrop-saturate) var(--tw-backdrop-sepia);
 }
@@ -2232,7 +2321,7 @@ video {
 
 .focus\:ring-brand-600:focus {
   --tw-ring-opacity: 1;
-  --tw-ring-color: rgb(237 22 57 / var(--tw-ring-opacity, 1));
+  --tw-ring-color: rgb(0 122 255 / var(--tw-ring-opacity, 1));
 }
 
 .focus-visible\:ring-2:focus-visible {
@@ -2243,15 +2332,15 @@ video {
 
 .focus-visible\:ring-brand-600:focus-visible {
   --tw-ring-opacity: 1;
-  --tw-ring-color: rgb(237 22 57 / var(--tw-ring-opacity, 1));
+  --tw-ring-color: rgb(0 122 255 / var(--tw-ring-opacity, 1));
 }
 
 .active\:bg-black\/5:active {
   background-color: rgb(0 0 0 / 0.05);
 }
 
-.disabled\:opacity-50:disabled {
-  opacity: 0.5;
+.disabled\:opacity-40:disabled {
+  opacity: 0.4;
 }
 </style>
 </head>
@@ -5871,7 +5960,7 @@ function openPinDropSheet(data, current = null) {
         const centerLngLat = [center[1], center[0]];
         const map = newMap(container, { center: centerLngLat, zoom });
         pinDropMap = map;
-        const marker = new maplibregl.Marker({ color: '#ED1639', draggable: true }).setLngLat(centerLngLat).addTo(map);
+        const marker = new maplibregl.Marker({ color: '#007AFF', draggable: true }).setLngLat(centerLngLat).addTo(map);
         pinDropMarker = marker;
         // Confirming is only possible once the pin has been put somewhere.
         // It starts in the middle of the district (or wherever the stop was
@@ -6108,7 +6197,7 @@ function renderCrashScreen(err) {
     // not what this script was written against). One last resort that needs
     // nothing but `document.body`.
     console.error('crash screen failed', fatal);
-    document.body.innerHTML = '<div style="padding:2rem;font:15px system-ui;text-align:center">Die App konnte nicht geladen werden.<br><br><a href="/" style="color:#ED1639">Neu laden</a></div>';
+    document.body.innerHTML = '<div style="padding:2rem;font:15px system-ui;text-align:center">Die App konnte nicht geladen werden.<br><br><a href="/" style="color:#007AFF">Neu laden</a></div>';
   }
 }
 
@@ -7371,7 +7460,7 @@ function moveReorder(id, by) {
   paintReorder();
   // The row just moved, flashed, so the eye follows it to where it went.
   document.querySelector(`[data-reorder-row="${id}"]`)?.animate(
-    [{ backgroundColor: 'rgba(237,22,57,0.16)' }, { backgroundColor: 'rgba(237,22,57,0)' }],
+    [{ backgroundColor: 'rgba(0,122,255,0.16)' }, { backgroundColor: 'rgba(0,122,255,0)' }],
     { duration: 700, easing: 'ease-out' });
   if (navigator.vibrate) navigator.vibrate(8);
 }
@@ -9562,7 +9651,7 @@ function ensureRouteLayers(map) {
       type: 'line',
       source: 'route-line',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ED1639', 'line-width': ['interpolate', ['linear'], ['zoom'], 9, 3, 14, 5.5, 18, 9], 'line-opacity': 1 },
+      paint: { 'line-color': '#007AFF', 'line-width': ['interpolate', ['linear'], ['zoom'], 9, 3, 14, 5.5, 18, 9], 'line-opacity': 1 },
     });
   }
   // Which way the van drives: small chevrons along the line, from street level.
@@ -9684,7 +9773,7 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
       const skipped = skipsDoor(s);
       if (!skipped) customerNum++;
       const isNext = i === firstOpenIdx;
-      const bg = s.delivered ? '#34C759' : s.outcome === 'notHome' ? '#FF9500' : skipped ? '#C7C7CC' : isNext ? '#ED1639' : '#8E8E93';
+      const bg = s.delivered ? '#34C759' : s.outcome === 'notHome' ? '#FF9500' : skipped ? '#C7C7CC' : isNext ? '#007AFF' : '#8E8E93';
       const ring = s.location_precision ? 'box-shadow:0 0 0 3px #FF9500,0 1px 4px rgba(0,0,0,.4);' : '';
       const glyph = s.delivered ? '✓' : s.outcome === 'notHome' ? '!' : skipped ? '–' : customerNum;
       el = elFromHtml(`<div class="marker-badge${isNext ? ' next' : ''}" style="background:${bg};${ring}">${glyph}</div>`);
@@ -10613,7 +10702,7 @@ function paintSplitPanel() {
       <span style="display:flex;align-items:center;gap:.375rem;font-weight:700;font-size:14px"><span style="width:10px;height:10px;border-radius:50%;background:${color}"></span>Person ${i + 1}</span>
       <span style="display:block;font-size:12px;color:rgba(0,0,0,.6);margin-top:.125rem;font-variant-numeric:tabular-nums">${mine ? (day ? escapeHtml(splitDayLine(day)) : splitStopsWord(mine)) : 'keine Stopps'}</span></button>`;
   };
-  const btn = (label, onclick, { primary = false, disabled = false, icon = '' } = {}) => `<button type="button" onclick="${onclick}" ${disabled ? 'disabled' : ''} class="press-98" style="flex:1;display:flex;align-items:center;justify-content:center;gap:.375rem;border-radius:.75rem;padding:.625rem .5rem;font-weight:600;font-size:14px;${primary ? 'background:#ED1639;color:#fff' : 'background:rgba(120,120,128,.12)'};${disabled ? 'opacity:.4' : ''}"><span style="display:flex">${icon}</span>${label}</button>`;
+  const btn = (label, onclick, { primary = false, disabled = false, icon = '' } = {}) => `<button type="button" onclick="${onclick}" ${disabled ? 'disabled' : ''} class="press-98" style="flex:1;display:flex;align-items:center;justify-content:center;gap:.375rem;border-radius:.75rem;padding:.625rem .5rem;font-weight:600;font-size:14px;${primary ? 'background:#007AFF;color:#fff' : 'background:rgba(120,120,128,.12)'};${disabled ? 'opacity:.4' : ''}"><span style="display:flex">${icon}</span>${label}</button>`;
   panel.innerHTML = `
     <p style="font-size:13px;color:rgba(0,0,0,.6);margin-bottom:.5rem">${free ? `${splitStopsWord(free)} noch frei${unplacedFree ? ` · ${unplacedFree} ohne Ort` : ''}` : 'Alle Stopps sind verteilt.'} ${split.lasso ? 'Um Stopps ziehen — oder einen Punkt antippen.' : 'Punkt antippen, oder Lasso an und umkreisen.'}</p>
     <div style="display:flex;gap:.5rem;overflow-x:auto;padding-bottom:.5rem">${Array.from({ length: split.people }, (_, i) => chip(i)).join('')}</div>
@@ -11277,7 +11366,7 @@ function showStopInList(stopId) {
     if (!row) return;
     row.scrollIntoView({ block: 'center', behavior: 'auto' });
     row.animate(
-      [{ backgroundColor: 'rgba(237,22,57,0.22)' }, { backgroundColor: 'rgba(237,22,57,0)' }],
+      [{ backgroundColor: 'rgba(0,122,255,0.22)' }, { backgroundColor: 'rgba(0,122,255,0)' }],
       { duration: 1600, easing: 'ease-out' }
     );
   });
@@ -11471,7 +11560,7 @@ function scrollToNextStop() {
   // A brief highlight so the eye lands on the right row rather than on
   // wherever the scroll happened to stop.
   row.animate(
-    [{ backgroundColor: 'rgba(237,22,57,0.22)' }, { backgroundColor: 'rgba(237,22,57,0)' }],
+    [{ backgroundColor: 'rgba(0,122,255,0.22)' }, { backgroundColor: 'rgba(0,122,255,0)' }],
     { duration: 1200, easing: 'ease-out' }
   );
 }
