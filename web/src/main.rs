@@ -6365,8 +6365,8 @@ async fn restore_backup(
         tx.execute("DELETE FROM restroom_marks WHERE user_id = ?1", params![user.id])?;
     }
     let mut taken: HashSet<String> = {
-        let mut stmt = tx.prepare("SELECT backup_id FROM routes WHERE backup_id IS NOT NULL")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<HashSet<String>, _>>()?;
+        let mut stmt = tx.prepare("SELECT backup_id FROM routes WHERE user_id = ?1 AND backup_id IS NOT NULL")?;
+        let rows = stmt.query_map(params![user.id], |r| r.get::<_, String>(0))?.collect::<Result<HashSet<String>, _>>()?;
         rows
     };
     let (mut added, mut skipped) = (0i64, 0i64);

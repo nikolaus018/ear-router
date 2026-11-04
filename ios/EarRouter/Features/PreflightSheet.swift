@@ -167,7 +167,6 @@ struct PreflightSheet: View {
                     dismiss()
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.small)
             }
         }
         .padding(.vertical, 2)

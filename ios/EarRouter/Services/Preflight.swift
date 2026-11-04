@@ -106,11 +106,16 @@ struct Preflight {
                     id: "pins", severity: .ok, symbol: "mappin.circle",
                     title: "Alle Adressen gefunden", detail: nil, action: nil))
         } else {
+            let names = approximate.prefix(3).compactMap(\.kunde)
+            let rest = approximate.count - names.count
+            let who = rest > 0
+                ? "\(names.joined(separator: ", ")) und \(rest) weitere"
+                : names.joined(separator: ", ")
             findings.append(
                 Finding(
                     id: "pins", severity: .problem, symbol: "exclamationmark.triangle.fill",
                     title: "\(approximate.count) ungenaue \(approximate.count == 1 ? "Adresse" : "Adressen")",
-                    detail: approximate.prefix(3).compactMap(\.kunde).joined(separator: ", "),
+                    detail: who,
                     action: .recheckAddresses))
         }
 

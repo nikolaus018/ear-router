@@ -377,10 +377,16 @@ struct NowTab: View {
     /// skipped on the screen the driver was actually standing on.
     private func finish(_ route: Route) {
         do {
+            // Set `reportRoute` before `toggleStatus` changes the route's
+            // status.  SwiftData's @Query drops the route from `active` on
+            // the next run-loop cycle; if `reportRoute` is not already set by
+            // then, `route` turns nil and `noTour` flashes for one frame
+            // before the report sheet arrives.
+            reportRoute = route
             try RouteStore.toggleStatus(route, in: context)
             PaceHistory.refresh(in: context)
-            reportRoute = route
         } catch {
+            reportRoute = nil
             self.error = AppError.message("Die Tour konnte nicht abgeschlossen werden.")
         }
     }

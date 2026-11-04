@@ -341,7 +341,11 @@ struct StopEditorSheet: View {
     private var plzField: some View {
         LabeledContent("PLZ") {
             HStack(spacing: 10) {
-                if let name = Districts.name(for: plz) {
+                // While the field is focused it holds "" so the driver can
+                // type without backspacing first.  Read the saved value so
+                // the district name label does not vanish on tap.
+                let displayPlz = focusedField == .plz && plz.isEmpty ? plzBeforeEditing : plz
+                if let name = Districts.name(for: displayPlz) {
                     Text(name)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -362,6 +366,9 @@ struct StopEditorSheet: View {
                     // first. Clearing on focus is what a stepper-sized numeric
                     // field does everywhere else; restoring on an untouched
                     // blur is what keeps a stray tap from wiping the district.
+                    //
+                    // `plzBeforeEditing` is what the district label reads while
+                    // the field is focused and empty, so the label stays put.
                     .onChange(of: focusedField) { was, now in
                         if now == .plz {
                             plzBeforeEditing = plz

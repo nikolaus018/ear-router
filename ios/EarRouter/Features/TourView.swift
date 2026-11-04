@@ -65,6 +65,7 @@ struct TourView: View {
     /// about the same tour at its two ends.
     @State private var showingReport = false
     @State private var showingPreflight = false
+    @State private var pendingLadeliste = false
     /// "Reihenfolge ändern" — see `ReorderSheet`.
     @State private var reordering = false
     /// "Neu optimieren" on a hand-sorted tour, waiting to be confirmed.
@@ -173,7 +174,15 @@ struct TourView: View {
         .sheet(isPresented: $showingReport) {
             TourReportSheet(route: route)
         }
-        .sheet(isPresented: $showingPreflight) {
+        .sheet(
+            isPresented: $showingPreflight,
+            onDismiss: {
+                if pendingLadeliste {
+                    pendingLadeliste = false
+                    showingLadeliste = true
+                }
+            }
+        ) {
             PreflightSheet(
                 route: route,
                 onOptimize: { startLongJob { await optimize() } },
@@ -183,7 +192,7 @@ struct TourView: View {
                         try RouteStore.resetDelivered(route, in: context)
                     }
                 },
-                onLadeliste: { showingLadeliste = true })
+                onLadeliste: { pendingLadeliste = true })
         }
         .sheet(isPresented: $showingJSON) {
             JSONEditorSheet(route: route)
