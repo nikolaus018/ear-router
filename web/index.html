@@ -480,10 +480,46 @@
       color: rgba(235, 235, 245, 0.6) !important;
     }
     .text-black\/40, .text-black\/35, .text-black\/30 {
-      color: rgba(235, 235, 245, 0.38) !important;
+      color: rgba(235, 235, 245, 0.55) !important;
     }
     .text-black\/25, .text-black\/20, .text-black\/15 {
-      color: rgba(235, 235, 245, 0.22) !important;
+      color: rgba(235, 235, 245, 0.35) !important;
+    }
+    .border-black\/45 {
+      border-color: rgba(255, 255, 255, 0.38) !important;
+    }
+    .text-warnText, .text-warn {
+      color: #FF9F0A !important;
+    }
+    .bg-warn\/10, .bg-warn\/15 {
+      background-color: rgba(255, 159, 10, 0.16) !important;
+    }
+    .text-brand-700 {
+      color: #0A84FF !important;
+    }
+    .text-emerald-700 {
+      color: #30D158 !important;
+    }
+    .bg-emerald-50\/95, .bg-emerald-50 {
+      background-color: rgba(48, 209, 88, 0.18) !important;
+    }
+    .text-red-700, .text-red-600 {
+      color: #FF453A !important;
+    }
+    .bg-red-50\/95, .bg-red-50 {
+      background-color: rgba(255, 69, 58, 0.18) !important;
+    }
+    [style*="color:#1B6B32"], [style*="color:#248A3D"] {
+      color: #30D158 !important;
+    }
+    [style*="background:rgba(52,199,89"] {
+      background-color: rgba(48, 209, 88, 0.18) !important;
+    }
+    [style*="color:#D70015"] {
+      color: #FF453A !important;
+    }
+    [style*="color:#C93400"], [style*="color:#FF9500"] {
+      color: #FF9F0A !important;
     }
     .bg-black\/5 {
       background-color: rgba(255, 255, 255, 0.08) !important;
@@ -496,7 +532,7 @@
       background-color: #1C1C1E !important;
     }
     input::placeholder, textarea::placeholder {
-      color: rgba(235, 235, 245, 0.38) !important;
+      color: rgba(235, 235, 245, 0.55) !important;
     }
     .now-card, .map-card, .choice, .km-field, .sheet-note:not(.warn), [data-gourmet] {
       background: #1C1C1E !important;
@@ -660,28 +696,33 @@
       color: #FFFFFF !important;
     }
     .text-black\/55, .text-black\/60, .text-black\/70 {
-      color: rgba(235, 235, 245, 0.6) !important;
+      color: rgba(235, 235, 245, 0.65) !important;
     }
-    .text-black\/80 {
-      color: rgba(235, 235, 245, 0.85) !important;
+    .text-black\/80, .text-black\/75 {
+      color: rgba(235, 235, 245, 0.88) !important;
     }
-    .text-black\/25, .text-black\/35, .text-black\/45 {
-      color: rgba(235, 235, 245, 0.3) !important;
+    .text-black\/25, .text-black\/35, .text-black\/45, .text-black\/40 {
+      color: rgba(235, 235, 245, 0.5) !important;
     }
     .bg-black\/5, .bg-black\/\[0\.06\], .bg-black\/10 {
       background-color: rgba(255, 255, 255, 0.08) !important;
     }
-    .divide-black\/10 > :not([hidden]) ~ :not([hidden]) {
+    .divide-black\/10 > :not([hidden]) ~ :not([hidden]),
+    .divide-black\/5 > :not([hidden]) ~ :not([hidden]) {
       border-color: rgba(255, 255, 255, 0.12) !important;
     }
     .border-black\/5, .border-black\/10 {
       border-color: rgba(255, 255, 255, 0.12) !important;
     }
+    .border-black\/45 {
+      border-color: rgba(255, 255, 255, 0.38) !important;
+    }
     input, select, textarea {
       color: #FFFFFF !important;
+      background-color: #1C1C1E !important;
     }
     input::placeholder, textarea::placeholder {
-      color: rgba(235, 235, 245, 0.35) !important;
+      color: rgba(235, 235, 245, 0.55) !important;
     }
     /* Floating progress pill */
     #progress-pill {
@@ -691,12 +732,25 @@
     #progress-pill-text {
       color: #FFFFFF !important;
     }
-    .sheet-lead, .sheet-foot, .sheet-busy {
-      color: rgba(235, 235, 245, 0.6) !important;
+    .sheet-lead, .sheet-foot, .sheet-busy, .eta-line, .pick-bar {
+      color: rgba(235, 235, 245, 0.65) !important;
+    }
+    .review-fact {
+      color: rgba(235, 235, 245, 0.88) !important;
+    }
+    .review-fact > span:first-child, .review-x {
+      color: rgba(235, 235, 245, 0.55) !important;
     }
     .sheet-note.warn {
       background: rgba(255, 159, 10, 0.16) !important;
       color: #FF9F0A !important;
+    }
+    #split-panel {
+      background: #1C1C1E !important;
+      color: #FFFFFF !important;
+    }
+    #split-panel p, #split-panel span:not([style*="background"]) {
+      color: rgba(235, 235, 245, 0.75) !important;
     }
   }
 </style>
@@ -7887,7 +7941,9 @@ function openPreflightSheet() {
   const findings = preflightFindings(r);
   const ready = !findings.some((f) => f.level === 'problem');
   preflightStart = null;
-  const tone = { ok: '#248A3D', note: 'rgba(0,0,0,.45)', problem: '#B26A00' };
+  const tone = isDarkMode()
+    ? { ok: '#30D158', note: 'rgba(235,235,245,.6)', problem: '#FF9F0A' }
+    : { ok: '#248A3D', note: 'rgba(0,0,0,.45)', problem: '#B26A00' };
   renderSheetShell(`
     <h2 class="sheet-title">Tour vorbereiten</h2>
     <p class="sheet-lead">${ready ? 'Alles bereit — gute Fahrt.' : 'Vor der Abfahrt ist noch etwas zu tun.'}</p>
@@ -11341,7 +11397,7 @@ async function openAdvancedSheet() {
 function paintAdvanced(info, status = '') {
   const box = document.querySelector('[data-advanced]');
   if (!box) return;
-  const row = (label, value, color = '') => `<div class="flex items-center gap-3 px-4 py-3"><span class="text-[15px]">${label}</span><span class="flex-1 text-right text-[15px] truncate" style="color:${color || 'rgba(0,0,0,.55)'}">${value}</span></div>`;
+  const row = (label, value, color = '') => `<div class="flex items-center gap-3 px-4 py-3"><span class="text-[15px]">${label}</span><span class="flex-1 text-right text-[15px] truncate" style="color:${color || (isDarkMode() ? 'rgba(235,235,245,.65)' : 'rgba(0,0,0,.55)')}">${value}</span></div>`;
   const btn = (label, onclick, { danger = false, id = '' } = {}) => `<button type="button" ${id ? `id="${id}"` : ''} onclick="${onclick}" class="${ROW}" ${danger ? 'style="color:#D70015"' : ''}><p class="flex-1 text-[15px] font-medium">${label}</p></button>`;
   const admin = !!info.is_admin;
   const updated = info.restrooms_updated ? new Date(info.restrooms_updated).toLocaleDateString('de-AT') : 'Mit der App geliefert';
@@ -11566,7 +11622,7 @@ function restroomCardHtml() {
   const state = m.bad ? 'Als unbrauchbar markiert' : open ? 'Geöffnet' : 'Jetzt geschlossen';
   const facts = r.walk >= 30 ? `${state} · ${r.walk} m zu Fuß` : state;
   const color = m.bad ? '#FF3B30' : '#AF52DE';
-  const factColor = m.bad ? '#FF3B30' : open ? 'rgba(0,0,0,.55)' : '#FF9500';
+  const factColor = m.bad ? '#FF453A' : open ? (isDarkMode() ? 'rgba(235,235,245,.65)' : 'rgba(0,0,0,.55)') : '#FF9F0A';
   const k = escapeAttr(JSON.stringify(key));
   const nav = MAPS_PROVIDERS[getMapsProvider()].point(r.lat.toFixed(NAV_COORD_DECIMALS), r.lon.toFixed(NAV_COORD_DECIMALS));
   return `

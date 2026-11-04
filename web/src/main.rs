@@ -10242,7 +10242,6 @@ mod tests {
         assert!(addresses.contains(&2));
     }
     use super::text::{normalize_strasse_text, simplify_housenumber, street_name_only};
-    use super::*;
 
     /// Driving times that differ by direction, like a city of one-way
     /// streets -- the generator the iOS app's `TourPolishTests` uses.
