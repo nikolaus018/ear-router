@@ -26,28 +26,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>EAR Routing</title>
 <meta name="description" content="Essen auf Rädern – Routenplanung für Zusteller des Arbeiter-Samariter-Bundes Österreichs" />
-<meta name="color-scheme" content="light" />
+<meta name="color-scheme" content="light dark" />
 
 <!-- PWA / "add to home screen".
-
-     Light mode only, and deliberately so rather than by omission: this is a
-     daylight tool. It is read at arm's length through a windscreen and in a
-     van doorway, where a light ground at full brightness is the legible
-     one, and its whole visual language — the Apple system blue on white, the grouped
-     iOS-settings lists — is built for that. `color-scheme: light` above is
-     what makes the choice real: without it a phone in dark mode renders the
-     form controls, the select's popup and the scrollbars dark against this
-     app's light surfaces, which is the worst of both.
-
-     Recorded here because it is a decision, not an oversight. Adding a dark
-     palette is a real piece of work (every colour in the app is a literal,
-     and the map's own basemap style and marker colours would need a dark
-     variant too), not a flag to flip.
-
-     theme-color matches the app's actual grouped background;
-     apple-mobile-web-app-status-bar-style is "default" (dark status-bar
-     icons), which reads correctly against that light background. -->
-<meta name="theme-color" content="#F2F2F7" />
+     System settings-based dark mode, matching the iOS native app.
+     theme-color matches the grouped background (#F2F2F7 light / #000000 dark);
+     apple-mobile-web-app-status-bar-style is "default", which lets iOS Safari
+     switch between dark and light status bar text automatically. -->
+<meta name="theme-color" content="#F2F2F7" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="EAR Routing" />
@@ -67,8 +54,8 @@
     scope: "/",
     display: "standalone",
     orientation: "portrait",
-    background_color: "#F2F2F7",
-    theme_color: "#F2F2F7",
+    background_color: window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? "#000000" : "#F2F2F7",
+    theme_color: window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? "#000000" : "#F2F2F7",
     icons: [
       { src: APP_LOGO, sizes: "512x512", type: "image/png", purpose: "any" },
       { src: APP_LOGO, sizes: "512x512", type: "image/png", purpose: "maskable" },
@@ -425,6 +412,292 @@
     .large-title, .compact-title { transition-duration: .01ms !important; }
     .press-98:active, .press-95:active { transform: none; }
     html { scroll-behavior: auto !important; }
+  }
+
+  /* ------------------------------------------------------------------
+     Dark Mode — follows iOS system settings (Settings > Display & Brightness).
+     Mirrors the native iOS app (see Theme.swift & Apple HIG):
+     - #000000 grouped background (System Grouped Background)
+     - #1C1C1E card and row surfaces (Secondary System Grouped Background)
+     - #2C2C2E elevated tertiary surfaces / pressed / segmented controls
+     - #0A84FF Apple dark mode system blue accent (see AccentColor.colorset)
+     - #30D158 Apple dark mode system green (delivered)
+     - #FF9F0A Apple dark mode system orange (attention/exceptions)
+     - #FF453A Apple dark mode system red (destructive/danger)
+     - #8E8E93 Apple dark mode system gray (fixtures/secondary)
+     - White and translucent white typography matching Apple HIG
+     ------------------------------------------------------------------ */
+  @media (prefers-color-scheme: dark) {
+    html, body {
+      background: #000000 !important;
+      color: #FFFFFF !important;
+    }
+    #splash {
+      background: #000000 !important;
+      color: #FFFFFF !important;
+    }
+    .sticky.top-0,
+    .bg-\[\#F2F2F7\]\/85 {
+      background-color: rgba(0, 0, 0, 0.82) !important;
+      border-color: rgba(255, 255, 255, 0.12) !important;
+      -webkit-backdrop-filter: blur(20px);
+      backdrop-filter: blur(20px);
+    }
+    .bg-\[\#F2F2F7\] {
+      background-color: #000000 !important;
+    }
+    .sheet-panel, .alert-panel {
+      background: #1C1C1E !important;
+      color: #FFFFFF !important;
+    }
+    .sheet-actions {
+      background: linear-gradient(to bottom, rgba(28,28,30,0), #1C1C1E 22%) !important;
+    }
+    .bg-white {
+      background-color: #1C1C1E !important;
+      color: #FFFFFF !important;
+    }
+    nav.fixed.bottom-0 {
+      background-color: rgba(28, 28, 30, 0.88) !important;
+      border-color: rgba(255, 255, 255, 0.12) !important;
+      -webkit-backdrop-filter: blur(20px);
+      backdrop-filter: blur(20px);
+    }
+    .border-black\/10, .border-black\/5, .border-black\/15, .border-black\/20 {
+      border-color: rgba(255, 255, 255, 0.12) !important;
+    }
+    .divide-black\/5 > :not([hidden]) ~ :not([hidden]),
+    .divide-black\/10 > :not([hidden]) ~ :not([hidden]) {
+      border-color: rgba(255, 255, 255, 0.12) !important;
+    }
+    .text-black {
+      color: #FFFFFF !important;
+    }
+    .text-black\/90, .text-black\/80, .text-black\/75, .text-black\/70 {
+      color: rgba(255, 255, 255, 0.88) !important;
+    }
+    .text-black\/60, .text-black\/55, .text-black\/50 {
+      color: rgba(235, 235, 245, 0.6) !important;
+    }
+    .text-black\/40, .text-black\/35, .text-black\/30 {
+      color: rgba(235, 235, 245, 0.38) !important;
+    }
+    .text-black\/25, .text-black\/20, .text-black\/15 {
+      color: rgba(235, 235, 245, 0.22) !important;
+    }
+    .bg-black\/5 {
+      background-color: rgba(255, 255, 255, 0.08) !important;
+    }
+    .bg-black\/10 {
+      background-color: rgba(255, 255, 255, 0.14) !important;
+    }
+    input, textarea, select {
+      color: #FFFFFF !important;
+      background-color: #1C1C1E !important;
+    }
+    input::placeholder, textarea::placeholder {
+      color: rgba(235, 235, 245, 0.38) !important;
+    }
+    .now-card, .map-card, .choice, .km-field, .sheet-note:not(.warn), [data-gourmet] {
+      background: #1C1C1E !important;
+      color: #FFFFFF !important;
+    }
+    .now-name {
+      color: #FFFFFF !important;
+    }
+    .now-address {
+      color: rgba(235, 235, 245, 0.75) !important;
+    }
+    .now-fact > span:first-child, .now-caption, .now-carry p span {
+      color: rgba(235, 235, 245, 0.6) !important;
+    }
+    .now-carry-title {
+      color: #0A84FF !important;
+    }
+    .now-fact.warn, .now-fact.warn > span:first-child {
+      color: #FF9F0A !important;
+    }
+    .copy-btn {
+      color: #0A84FF !important;
+    }
+    .copy-btn.copied {
+      color: #30D158 !important;
+    }
+    .wide-btn.quiet {
+      background: rgba(120, 120, 128, 0.28) !important;
+      color: #FFFFFF !important;
+    }
+    .wide-btn.done {
+      background: rgba(48, 209, 88, 0.22) !important;
+      color: #30D158 !important;
+    }
+    .wide-btn.accent, .now-badge, .row-num.next, .day-chip.on,
+    .lade-parcels.many, .preflight-action, .choice.primary,
+    .bg-brand-600 {
+      background-color: #0A84FF !important;
+      color: #FFFFFF !important;
+    }
+    .text-brand-600, #undo-banner button, .pick-bar button {
+      color: #0A84FF !important;
+    }
+    .bg-brand-50 {
+      background-color: rgba(10, 132, 255, 0.18) !important;
+      color: #0A84FF !important;
+    }
+    .bg-brand-50\/60 {
+      background-color: rgba(10, 132, 255, 0.14) !important;
+    }
+    .focus\:ring-brand-600:focus, .focus-visible\:ring-brand-600:focus-visible {
+      --tw-ring-color: #0A84FF !important;
+    }
+    .choice-icon, .reorder-btn {
+      background: rgba(120, 120, 128, 0.24) !important;
+      color: #0A84FF !important;
+    }
+    .choice-sub {
+      color: rgba(235, 235, 245, 0.7) !important;
+    }
+    .day-chip:not(.on) {
+      background: #1C1C1E !important;
+      color: rgba(235, 235, 245, 0.8) !important;
+    }
+    .seg {
+      background: rgba(120, 120, 128, 0.28) !important;
+    }
+    .seg-btn {
+      color: rgba(235, 235, 245, 0.6) !important;
+    }
+    .seg-btn.on {
+      background: #2C2C2E !important;
+      color: #FFFFFF !important;
+      box-shadow: 0 1px 3px rgba(0,0,0,.4) !important;
+    }
+    #undo-banner > div {
+      background: rgba(28, 28, 30, 0.94) !important;
+      color: #FFFFFF !important;
+      border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    }
+    .maplibregl-popup-content {
+      background: #1C1C1E !important;
+      color: #FFFFFF !important;
+      box-shadow: 0 4px 20px rgba(0,0,0,.5) !important;
+    }
+    .maplibregl-popup-tip {
+      border-top-color: #1C1C1E !important;
+      border-bottom-color: #1C1C1E !important;
+    }
+    .maplibregl-ctrl-group {
+      background: rgba(28, 28, 30, 0.94) !important;
+      box-shadow: 0 2px 12px rgba(0,0,0,.5) !important;
+    }
+    .maplibregl-ctrl-group button svg path {
+      fill: #FFFFFF !important;
+    }
+    .maplibregl-ctrl-group button + button {
+      border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
+    }
+    .maplibregl-ctrl-attrib {
+      background: rgba(28, 28, 30, 0.7) !important;
+      color: rgba(235, 235, 245, 0.6) !important;
+    }
+    .maplibregl-ctrl-attrib a {
+      color: rgba(235, 235, 245, 0.8) !important;
+    }
+    .map-fit {
+      background: rgba(28, 28, 30, 0.92) !important;
+      color: #FFFFFF !important;
+    }
+    .basemap-toggle {
+      color: #FFFFFF !important;
+    }
+    .marker-fixed {
+      background: #1C1C1E !important;
+      color: #E5E5EA !important;
+      border-color: #636366 !important;
+    }
+    .marker-door {
+      background: #1C1C1E !important;
+      color: #E5E5EA !important;
+      border-color: #636366 !important;
+    }
+    .marker-badge.next {
+      box-shadow: 0 0 0 0 rgba(10, 132, 255, .45), 0 2px 8px rgba(0,0,0,.6);
+    }
+    @keyframes nextHalo {
+      0% { box-shadow: 0 0 0 0 rgba(10, 132, 255, .45), 0 2px 8px rgba(0,0,0,.6); }
+      70%, 100% { box-shadow: 0 0 0 14px rgba(10, 132, 255, 0), 0 2px 8px rgba(0,0,0,.6); }
+    }
+    .row-num {
+      background: rgba(120, 120, 128, 0.28) !important;
+      color: rgba(235, 235, 245, 0.85) !important;
+    }
+    .row-num.done {
+      background: rgba(120, 120, 128, 0.18) !important;
+      color: rgba(235, 235, 245, 0.4) !important;
+    }
+    .reorder-num {
+      background: rgba(120, 120, 128, 0.28) !important;
+      color: #FFFFFF !important;
+    }
+    .lade-parcels {
+      background: rgba(10, 132, 255, 0.18) !important;
+      color: #7CC4FA !important;
+    }
+    .spinner {
+      border-top-color: #0A84FF !important;
+    }
+    #route-map, #pin-map {
+      background: #121214 !important;
+    }
+    /* Native list groups, cards, inputs */
+    .bg-white {
+      background-color: #1C1C1E !important;
+    }
+    .bg-white\/90, .bg-white\/95 {
+      background-color: rgba(28, 28, 30, 0.95) !important;
+    }
+    .text-black {
+      color: #FFFFFF !important;
+    }
+    .text-black\/55, .text-black\/60, .text-black\/70 {
+      color: rgba(235, 235, 245, 0.6) !important;
+    }
+    .text-black\/80 {
+      color: rgba(235, 235, 245, 0.85) !important;
+    }
+    .text-black\/25, .text-black\/35, .text-black\/45 {
+      color: rgba(235, 235, 245, 0.3) !important;
+    }
+    .bg-black\/5, .bg-black\/\[0\.06\], .bg-black\/10 {
+      background-color: rgba(255, 255, 255, 0.08) !important;
+    }
+    .divide-black\/10 > :not([hidden]) ~ :not([hidden]) {
+      border-color: rgba(255, 255, 255, 0.12) !important;
+    }
+    .border-black\/5, .border-black\/10 {
+      border-color: rgba(255, 255, 255, 0.12) !important;
+    }
+    input, select, textarea {
+      color: #FFFFFF !important;
+    }
+    input::placeholder, textarea::placeholder {
+      color: rgba(235, 235, 245, 0.35) !important;
+    }
+    /* Floating progress pill */
+    #progress-pill {
+      background: rgba(28, 28, 30, 0.95) !important;
+      border-color: rgba(255, 255, 255, 0.12) !important;
+    }
+    #progress-pill-text {
+      color: #FFFFFF !important;
+    }
+    .sheet-lead, .sheet-foot, .sheet-busy {
+      color: rgba(235, 235, 245, 0.6) !important;
+    }
+    .sheet-note.warn {
+      background: rgba(255, 159, 10, 0.16) !important;
+      color: #FF9F0A !important;
+    }
   }
 </style>
 
@@ -8641,10 +8914,16 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1, numb
 // src/main.rs); this is only the on-screen visualization. Used by both the
 // Karte tab (full-screen) and the pin-drop sheet (small, embedded).
 // ---------------------------------------------------------------------
-// The calm one: pale ground, thin grey streets, few labels. The busy Liberty
-// style put orange motorways and a name on every corner round the route, and
-// the route and the pins -- the only things the driver looks for -- drowned in it.
-const MAP_STYLE_URL = 'https://tiles.openfreemap.org/styles/positron';
+// The calm vector style: Positron (light) or Dark, matching system settings.
+const MAP_STYLE_POSITRON = 'https://tiles.openfreemap.org/styles/positron';
+const MAP_STYLE_DARK = 'https://tiles.openfreemap.org/styles/dark';
+function isDarkMode() {
+  return typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+function mapStyleUrl() {
+  return isDarkMode() ? MAP_STYLE_DARK : MAP_STYLE_POSITRON;
+}
+const MAP_STYLE_URL = mapStyleUrl();
 const VIENNA_CENTER = [16.3738, 48.2082]; // [lon, lat]
 
 // ---------------------------------------------------------------------
@@ -9319,9 +9598,9 @@ function newMap(container, opts) {
   const basemap = getBasemap();
   const map = new maplibregl.Map({
     container,
-    // One style for the life of the map. The Luftbild is layers inside it,
-    // not a style of its own — see `mountAerialLayers`.
-    style: MAP_STYLE_URL,
+    // Style matches system color scheme (Positron in light mode, Dark in dark mode).
+    // The Luftbild is layers inside it, not a style of its own — see `mountAerialLayers`.
+    style: mapStyleUrl(),
     center: opts.center || VIENNA_CENTER,
     zoom: opts.zoom || 12,
     // The aerial imagery stops at zoom 21 but is worth overzooming a
@@ -9637,7 +9916,11 @@ function ensureRouteLayers(map) {
       type: 'line',
       source: 'route-line',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#fff', 'line-width': ['interpolate', ['linear'], ['zoom'], 9, 5, 14, 9, 18, 15], 'line-opacity': 0.9 },
+      paint: {
+        'line-color': isDarkMode() ? '#000000' : '#ffffff',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 9, 5, 14, 9, 18, 15],
+        'line-opacity': 0.9,
+      },
     });
   }
   // Under the route line, and only from close in -- see `.marker-door`.
@@ -9660,7 +9943,11 @@ function ensureRouteLayers(map) {
       type: 'line',
       source: 'route-line',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#007AFF', 'line-width': ['interpolate', ['linear'], ['zoom'], 9, 3, 14, 5.5, 18, 9], 'line-opacity': 1 },
+      paint: {
+        'line-color': isDarkMode() ? '#0A84FF' : '#007AFF',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 9, 3, 14, 5.5, 18, 9],
+        'line-opacity': 1,
+      },
     });
   }
   // Which way the van drives: small chevrons along the line, from street level.
@@ -9782,8 +10069,18 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
       const skipped = skipsDoor(s);
       if (!skipped) customerNum++;
       const isNext = i === firstOpenIdx;
-      const bg = s.delivered ? '#34C759' : s.outcome === 'notHome' ? '#FF9500' : skipped ? '#C7C7CC' : isNext ? '#007AFF' : '#8E8E93';
-      const ring = s.location_precision ? 'box-shadow:0 0 0 3px #FF9500,0 1px 4px rgba(0,0,0,.4);' : '';
+      const bg = s.delivered
+        ? (isDarkMode() ? '#30D158' : '#34C759')
+        : s.outcome === 'notHome'
+        ? (isDarkMode() ? '#FF9F0A' : '#FF9500')
+        : skipped
+        ? (isDarkMode() ? '#636366' : '#C7C7CC')
+        : isNext
+        ? (isDarkMode() ? '#0A84FF' : '#007AFF')
+        : '#8E8E93';
+      const ring = s.location_precision
+        ? (isDarkMode() ? 'box-shadow:0 0 0 3px #FF9F0A,0 1px 4px rgba(0,0,0,.6);' : 'box-shadow:0 0 0 3px #FF9500,0 1px 4px rgba(0,0,0,.4);')
+        : '';
       const glyph = s.delivered ? '✓' : s.outcome === 'notHome' ? '!' : skipped ? '–' : customerNum;
       el = elFromHtml(`<div class="marker-badge${isNext ? ' next' : ''}" style="background:${bg};${ring}">${glyph}</div>`);
       // Position in the tour, who it is, and its state — the three things
@@ -12002,6 +12299,18 @@ document.addEventListener('visibilitychange', refreshOnResume);
 // which in some versions skips visibilitychange entirely — pageshow is the
 // event that always fires there.
 window.addEventListener('pageshow', refreshOnResume);
+
+// Follow iOS system settings changes between light and dark mode live
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (mapTabMap && !mapTabMap._earAerialMounted) {
+      mapTabMap.setStyle(mapStyleUrl());
+      mapTabMap.once('style.load', () => {
+        if (state.currentRoute) drawRouteOnMap(mapTabMap, state.currentRoute);
+      });
+    }
+  });
+}
 
 document.addEventListener('click', (e) => {
   const menu = document.getElementById('route-menu');
