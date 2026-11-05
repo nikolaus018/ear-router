@@ -12020,7 +12020,7 @@ function mapCardHtml() {
   const r = state.currentRoute;
   const stop = mapCard && r?.stops.find((s) => s.id === mapCard.id);
   if (!stop) return '';
-  const close = `<button type="button" onclick="closeMapCard()" aria-label="Schließen" title="Schließen" class="tap-target press-fade w-9 h-9 shrink-0 flex items-center justify-center text-black/55 text-lg" style="margin:-.375rem -.375rem 0 0">${ICONS.close}</button>`;
+  const close = `<button type="button" onclick="closeMapCard()" aria-label="Schließen" title="Schließen" class="tap-target press-fade w-10 h-10 shrink-0 flex items-center justify-center text-black/55 text-lg" style="margin:0 -.375rem 0 0">${ICONS.close}</button>`;
   const badge = (s) => {
     const n = stopNumber(s, r);
     return n == null ? '' : `<span class="row-num ${s.outcome ? 'done' : ''}" aria-hidden="true" style="margin-right:0">${n}</span>`;
