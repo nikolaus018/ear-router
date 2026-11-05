@@ -35,6 +35,7 @@ see [web](#web).
 ios/            The app. Open ios/EarRouter.xcodeproj in Xcode.
 ios/Tools/      Draws the app icon. Not part of the build.
 web/            The web version: a Rust server and the PWA it serves.
+scripts/        Deployment (ship.py) and tour helper scripts.
 ```
 
 ## The app
@@ -118,12 +119,15 @@ version does the same.
 |---|---|
 | Touren | Active tours and, under them, the finished ones. "+" asks where the stops come from: *Von Gourmet laden* (sign in once, pick the day's tour, untick anybody not driven, look the list over in *Prüfen*) or *Leere Tour* |
 | An address that is not found | Never becomes a stop at the middle of its district. The form comes back saying so, to be corrected; the map, to put the pin on the house by hand, is the second way out. A tour that still has such a stop from before is not planned and not driven until it is fixed |
-| A tour | The stops in driving order with their arrival times; tap one for *Nicht angetroffen*, *Ins Lager mitnehmen*, *Bearbeiten*, *Aus der Tour entfernen*. *Tour vorbereiten* checks it over before the yard is left |
-| Jetzt | The stop the driver is at: Navigation (a hand-placed pin, else the house entrance from the city's register, else the address), Geliefert, Anrufen, and a banner that takes the last answer back |
-| Ladeliste | VM sums the Pakete; TK lists the customers, last door first. Everybody but the abbestellt customers is loaded — a customer taken *ins Lager* is not driven to, but the parcels still go in the van |
-| Karte | The tour on the map |
-| Mehr | Tour as PDF, Türcode, Kilometerstand, Temperaturen, Pause zu Hause |
-| Closing a tour | The Tagesabschluss, ready to send to the office |
+| A tour | The stops in driving order with arrival times (ETA), floor/parcel/note badges, and customer status. Tap one for *Nicht angetroffen*, *Ins Lager mitnehmen*, *Bearbeiten*, *Aus der Tour entfernen*. *Tour vorbereiten* checks the tour over before leaving the yard |
+| Jetzt | The stop the driver is at: Navigation handoff (Apple Maps, Waze, Google Maps), Geliefert, Anrufen, floor & note facts, and a banner that takes the last answer back |
+| Ladeliste | VM sums the Pakete; TK lists the customers, last door first, with a total package count and check-off state. Everybody but the abbestellt customers is loaded — a customer taken *ins Lager* is not driven to, but the parcels still go in the van |
+| Karte | Interactive MapLibre map with vector tiles and City of Vienna orthophoto aerial imagery (*Wien-Luftbild* 10 cm), Apple Maps teardrop pins, street doors, public restrooms with driver usability notes, and other drivers' stops on shared portal tours |
+| Tour aufteilen | Split tours interactively on the map using freehand lasso selection or fair stop balancing, with shareable links and direct tour generation |
+| Globale Infos | Customer floors (*Stockwerk*) and access notes kept across tours, with CSV upload and inspector |
+| Sicherung & JSON | Full backup/restore compatible with iOS backup archives, and JSON list insertion/editing |
+| Mehr & Admin | Tour report as PDF, Türcode, Kilometerstand, Temperaturen, Pause zu Hause, and user administration |
+| Dark Mode & PWA | Automatic dark mode matching iOS system settings and Apple HIG palette, installable PWA prompt, and offline caching via Service Worker |
 
 Everybody signs in. Each account has its own tours and its own portal login,
 kept on its row in `users`; the server does the talking to `odoo.gourmet.at`,
@@ -137,10 +141,10 @@ same copy of the register the app ships with (made by
 `ios/Tools/MakeAddressPack.py`), answers in its place when the city cannot be
 reached.
 
-Not in the web version, on purpose: the JSON editor, Globale Infos, the
-other driver's stops, the toilets, backups, splitting a tour on the map.
 Not possible in a browser: Siri, the lock-screen card, CarPlay, saving a
-contact.
+contact directly to iOS Contacts.
+
+### Running locally
 
 ```bash
 cd web
@@ -149,6 +153,14 @@ cargo run --release
 
 Serves on port 8000 (`EAR_PORT`). The database, `rerouter.db`, is created next
 to the binary. `cargo test` covers the rules the server decides.
+
+### Deploying to Venvy
+
+```bash
+python3 scripts/ship.py
+```
+
+Deploys the web version to [ear.ringtwo.win](https://ear.ringtwo.win) via Venvy.
 
 ## License
 
