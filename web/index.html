@@ -8944,7 +8944,7 @@ function nowStopCard(r, stop) {
         ${!meta && dialOf(stop.telefon) ? `<a href="tel:${dialOf(stop.telefon)}" class="press-98 wide-btn quiet">${ICONS.phone} Anrufen</a>` : ''}
         ${meta ? '' : phonesInNote(stop.notiz, stop.telefon).map((ph) => `<a href="tel:${ph.dial}" class="press-98 wide-btn quiet">${ICONS.phone} ${escapeHtml(ph.display)} anrufen</a>`).join('')}
       </div>
-      <p class="eta-line" data-eta-finish style="margin-top:.875rem; font-size:13px"></p>
+      <p class="eta-line text-center" data-eta-finish style="margin-top:.875rem; font-size:13px; text-align:center"></p>
     </div>`;
 }
 
