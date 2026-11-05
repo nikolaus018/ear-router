@@ -2520,8 +2520,8 @@ video {
   .text-black\/60, .text-black\/55, .text-black\/50 {
     color: rgba(235, 235, 245, 0.62) !important;
   }
-  .text-black\/40, .text-black\/35, .text-black\/30 {
-    color: rgba(235, 235, 245, 0.5) !important;
+  .text-black\/45, .text-black\/40, .text-black\/35, .text-black\/30 {
+    color: rgba(235, 235, 245, 0.52) !important;
   }
   .text-black\/25, .text-black\/20, .text-black\/15 {
     color: rgba(235, 235, 245, 0.35) !important;
@@ -2574,6 +2574,12 @@ video {
   .bg-black\/10 {
     background-color: rgba(118, 118, 128, 0.32) !important;
   }
+  .bg-black\/15 {
+    background-color: rgba(235, 235, 245, 0.3) !important;
+  }
+  .sheet-backdrop.bg-black\/30 {
+    background-color: rgba(0, 0, 0, 0.55) !important;
+  }
   .active\:bg-black\/5:active {
     background-color: rgba(255, 255, 255, 0.08) !important;
   }
@@ -2614,9 +2620,11 @@ video {
   }
   input::placeholder,
   textarea::placeholder,
-  .placeholder\:text-black\/55::placeholder,
+  .placeholder\:text-black\/55::placeholder {
+    color: rgba(235, 235, 245, 0.48) !important;
+  }
   .placeholder\:text-black\/55::-moz-placeholder {
-    color: rgba(235, 235, 245, 0.45) !important;
+    color: rgba(235, 235, 245, 0.48) !important;
   }
   .now-name {
     color: #FFFFFF !important;
@@ -2644,6 +2652,15 @@ video {
     background: rgba(120, 120, 128, 0.28) !important;
     color: #FFFFFF !important;
   }
+  .wide-btn.quiet[style*="color:#D70015"] {
+    color: #FF453A !important;
+  }
+  .wide-btn.quiet[style*="color:#007AFF"] {
+    color: #0A84FF !important;
+  }
+  .wide-btn.quiet[style*="color:#FF2D55"] {
+    color: #FF375F !important;
+  }
   .wide-btn.done {
     background: rgba(48, 209, 88, 0.22) !important;
     color: #30D158 !important;
@@ -2664,9 +2681,16 @@ video {
   .focus\:ring-brand-600:focus, .focus-visible\:ring-brand-600:focus-visible {
     --tw-ring-color: #0A84FF !important;
   }
-  .choice-icon, .reorder-btn {
+  .choice:not(.primary) .choice-icon, .reorder-btn {
     background: rgba(120, 120, 128, 0.24) !important;
     color: #0A84FF !important;
+  }
+  .choice.primary .choice-icon {
+    background: rgba(255, 255, 255, 0.22) !important;
+    color: #FFFFFF !important;
+  }
+  .sheet-note:not(.warn) > span:first-child {
+    color: rgba(235, 235, 245, 0.6) !important;
   }
   .choice-sub {
     color: rgba(235, 235, 245, 0.72) !important;
@@ -2702,6 +2726,9 @@ video {
   }
   .maplibregl-ctrl-group button svg path {
     fill: #FFFFFF !important;
+  }
+  .maplibregl-ctrl-group button:not(.maplibregl-ctrl-geolocate-active):not(.maplibregl-ctrl-geolocate-background) .maplibregl-ctrl-icon {
+    filter: invert(1) brightness(1.8);
   }
   .maplibregl-ctrl-group button + button {
     border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
@@ -7384,7 +7411,7 @@ const fmtClock = (ms) => {
   const d = new Date(ms);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
-const fmtKm = (km) => `${km.toFixed(1).replace('.', ',')} km`;
+const fmtKm = (km) => `${Number(km || 0).toFixed(1).replace('.', ',')} km`;
 
 /// Fills every arrival time on screen. Separate from the rows' own markup on
 /// purpose: one tick moves the estimate for every door after it, and the
@@ -10608,7 +10635,12 @@ function initMapTabMap() {
   if (mapTabEl.parentElement !== slot) slot.appendChild(mapTabEl);
 
   if (!mapTabMap) {
-    const map = newMap(mapTabEl, {});
+    let map;
+    try {
+      map = newMap(mapTabEl, {});
+    } catch (_) {
+      return;
+    }
     mapTabMap = map;
     map.on('click', (e) => {
       const layers = ['others', 'restrooms'].filter((id) => map.getLayer(id));
@@ -11271,16 +11303,18 @@ function openSplitScreen() {
   document.body.appendChild(el);
   paintSplitPanel();
 
-  const map = newMap(document.getElementById('split-map'), {});
-  map._earSplit = true;
-  split.map = map;
-  const bounds = new maplibregl.LngLatBounds();
-  for (const s of split.stops) if (splitPlaced(s)) bounds.extend([s.lon, s.lat]);
-  if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 56, maxZoom: 15, duration: 0 }); else map.jumpTo({ center: VIENNA_CENTER, zoom: 11 });
-  map.on('click', (e) => {
-    const hit = map.getLayer('split-stops') ? map.queryRenderedFeatures([[e.point.x - 14, e.point.y - 14], [e.point.x + 14, e.point.y + 14]], { layers: ['split-stops'] })[0] : null;
-    if (hit) splitToggle(Number(hit.properties.id));
-  });
+  try {
+    const map = newMap(document.getElementById('split-map'), {});
+    map._earSplit = true;
+    split.map = map;
+    const bounds = new maplibregl.LngLatBounds();
+    for (const s of split.stops) if (splitPlaced(s)) bounds.extend([s.lon, s.lat]);
+    if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 56, maxZoom: 15, duration: 0 }); else map.jumpTo({ center: VIENNA_CENTER, zoom: 11 });
+    map.on('click', (e) => {
+      const hit = map.getLayer('split-stops') ? map.queryRenderedFeatures([[e.point.x - 14, e.point.y - 14], [e.point.x + 14, e.point.y + 14]], { layers: ['split-stops'] })[0] : null;
+      if (hit) splitToggle(Number(hit.properties.id));
+    });
+  } catch (_) { /* WebGL unavailable */ }
   setupSplitLasso();
   updateHistoryGuard();
   refreshSplitDays();
