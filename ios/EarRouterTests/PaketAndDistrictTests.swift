@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import SwiftData
 @testable import EarRouter
@@ -465,6 +466,35 @@ struct LadelisteModeTests {
 
         let items = PaketParser.items(for: r)
         #expect(items.contains { $0.label == "Suppe" && $0.qty == 2 })
+    }
+
+    @Test func progressLabelIncludesTotalPaketeForTK() {
+        let stops = [
+            LadungStop(id: UUID(), position: 1, name: "A", address: "Gasse 1", paketCount: 2),
+            LadungStop(id: UUID(), position: 2, name: "B", address: "Gasse 2", paketCount: 3),
+        ]
+        let ladung = Ladung.kunden(stops)
+        #expect(LadelisteView.progressLabel(ladung, checked: []) == "0 von 2 geladen · 5 Pakete")
+        #expect(LadelisteView.progressLabel(ladung, checked: [stops[0].key]) == "1 von 2 geladen · 5 Pakete")
+        #expect(LadelisteView.progressLabel(ladung, checked: [stops[0].key, stops[1].key]) == "Alles geladen · 5 Pakete")
+    }
+
+    @Test func progressLabelSingularPaketForTK() {
+        let stops = [
+            LadungStop(id: UUID(), position: 1, name: "A", address: "Gasse 1", paketCount: 1),
+        ]
+        let ladung = Ladung.kunden(stops)
+        #expect(LadelisteView.progressLabel(ladung, checked: []) == "0 von 1 geladen · 1 Paket")
+        #expect(LadelisteView.progressLabel(ladung, checked: [stops[0].key]) == "Alles geladen · 1 Paket")
+    }
+
+    @Test func progressLabelOmitsTotalWhenNoPaketCountForTK() {
+        let stops = [
+            LadungStop(id: UUID(), position: 1, name: "A", address: "Gasse 1", paketCount: nil),
+        ]
+        let ladung = Ladung.kunden(stops)
+        #expect(LadelisteView.progressLabel(ladung, checked: []) == "0 von 1 geladen")
+        #expect(LadelisteView.progressLabel(ladung, checked: [stops[0].key]) == "Alles geladen")
     }
 }
 

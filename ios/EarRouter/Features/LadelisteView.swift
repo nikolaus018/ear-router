@@ -151,7 +151,7 @@ struct LadelisteView: View {
                 .frame(maxHeight: .infinity)
             }
             .navigationTitle("Ladeliste")
-            .navigationSubtitle(progressLabel(ladung))
+            .navigationSubtitle(Self.progressLabel(ladung, checked: checked))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 // "Fertig" trailing, where every other sheet in this app — and
@@ -316,7 +316,7 @@ struct LadelisteView: View {
     /// lines on a phone — and the words it spent that second line on ("
     /// Positionen", "gesamt") were the ones carrying no information. It sits
     /// under the screen's title now, the same place the tour's progress does.
-    private func progressLabel(_ ladung: Ladung) -> String {
+    static func progressLabel(_ ladung: Ladung, checked: Set<String>) -> String {
         let keys = ladung.keys
         guard !keys.isEmpty else { return "" }
         let done = keys.count { checked.contains($0) }
@@ -326,11 +326,11 @@ struct LadelisteView: View {
             let total = pieces > 0 ? " · \(pieces) Stück" : ""
             if done >= keys.count { return "Alles abgehakt\(total)" }
             return "\(done) von \(keys.count) abgehakt\(total)"
-        case .kunden:
-            // No piece count here either — see `LadungStop`. A TK tour's
-            // Ladeliste counts doors, because doors are what it loads by.
-            if done >= keys.count { return "Alles geladen" }
-            return "\(done) von \(keys.count) geladen"
+        case .kunden(let stops):
+            let parcels = stops.compactMap(\.paketCount).reduce(0, +)
+            let total = parcels > 0 ? " · \(parcels == 1 ? "1 Paket" : "\(parcels) Pakete")" : ""
+            if done >= keys.count { return "Alles geladen\(total)" }
+            return "\(done) von \(keys.count) geladen\(total)"
         }
     }
 

@@ -1375,6 +1375,21 @@ CREATE TABLE IF NOT EXISTS restroom_marks (
     note TEXT,
     PRIMARY KEY (user_id, key)
 );
+
+-- "Globale Infos": what is kept about a customer across every tour — which
+-- floor they live on, and standing customer notes. In the web version,
+-- these are read-only for drivers and managed by the administrator uploading
+-- a JSON export.
+CREATE TABLE IF NOT EXISTS globale_infos (
+    key TEXT PRIMARY KEY,
+    kunde TEXT,
+    strasse TEXT,
+    plz TEXT,
+    stockwerk TEXT,
+    notiz TEXT,
+    dont_ask INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT
+);
 "#;
 
 fn init_db(path: &FsPath) -> Result<(), AppError> {
@@ -5193,6 +5208,161 @@ async fn admin_delete_user(
 }
 
 // ---------------------------------------------------------------------
+// Globale Infos — stockwerke & customer notes across tours.
+// Read-only for drivers; updated by admin uploading a JSON export.
+// ---------------------------------------------------------------------
+
+/// `GET /api/globale-infos`: the stored floor and customer notes, mapped by key.
+async fn get_globale_infos(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Value>, AppError> {
+    let conn = state.db()?;
+    let updated_at: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'globale_infos_updated_at'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mut stmt = conn.prepare(
+        "SELECT key, kunde, strasse, plz, stockwerk, notiz FROM globale_infos",
+    )?;
+    let mut map = serde_json::Map::new();
+    let mut count = 0usize;
+    let rows = stmt.query_map([], |r| {
+        let key: String = r.get(0)?;
+        let kunde: Option<String> = r.get(1)?;
+        let strasse: Option<String> = r.get(2)?;
+        let plz: Option<String> = r.get(3)?;
+        let stockwerk: Option<String> = r.get(4)?;
+        let notiz: Option<String> = r.get(5)?;
+        Ok((key, kunde, strasse, plz, stockwerk, notiz))
+    })?;
+    for row in rows {
+        let (key, kunde, strasse, plz, stockwerk, notiz) = row?;
+        count += 1;
+        let mut obj = serde_json::Map::new();
+        if let Some(s) = stockwerk {
+            if !s.trim().is_empty() {
+                obj.insert("stockwerk".into(), json!(s.trim()));
+            }
+        }
+        if let Some(n) = notiz {
+            if !n.trim().is_empty() {
+                obj.insert("notiz".into(), json!(n.trim()));
+            }
+        }
+        if let Some(k) = kunde {
+            if !k.trim().is_empty() {
+                obj.insert("kunde".into(), json!(k.trim()));
+            }
+        }
+        if let Some(st) = strasse {
+            if !st.trim().is_empty() {
+                obj.insert("strasse".into(), json!(st.trim()));
+            }
+        }
+        if let Some(p) = plz {
+            if !p.trim().is_empty() {
+                obj.insert("plz".into(), json!(p.trim()));
+            }
+        }
+        map.insert(key, Value::Object(obj));
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "updated_at": updated_at,
+        "count": count,
+        "infos": Value::Object(map),
+    })))
+}
+
+/// `POST /api/admin/globale-infos`: replaces the whole table with the uploaded JSON export.
+async fn upload_globale_infos(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, AppError> {
+    if !user.is_admin {
+        return Err(AppError::Forbidden("Nur Administratoren können globale Infos hochladen.".into()));
+    }
+    let list = if let Some(arr) = payload.get("stockwerke").and_then(Value::as_array) {
+        arr
+    } else if let Some(arr) = payload.as_array() {
+        arr
+    } else {
+        return Err(AppError::BadRequest("Ungültiges JSON-Format: Array oder Objekt mit 'stockwerke' erwartet.".into()));
+    };
+
+    let updated_at = payload.get("createdAt")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(now_iso);
+
+    let count = {
+        let mut conn = state.db()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM globale_infos", [])?;
+
+        let mut count = 0usize;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO globale_infos (key, kunde, strasse, plz, stockwerk, notiz, dont_ask, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+
+            for item in list {
+                let kunde = item.get("kunde").and_then(Value::as_str).unwrap_or("").trim();
+                let strasse = item.get("strasse").and_then(Value::as_str).unwrap_or("").trim();
+                let plz = item.get("plz").and_then(Value::as_str).unwrap_or("").trim();
+                let raw_key = item.get("key").and_then(Value::as_str).map(str::trim);
+
+                let key = match raw_key {
+                    Some(k) if !k.is_empty() => k.to_string(),
+                    _ => {
+                        let c_street = text::address_match_key(strasse);
+                        if c_street.is_empty() {
+                            continue;
+                        }
+                        let c_name = text::address_match_key(kunde);
+                        format!("{c_name}|{c_street}|{plz}")
+                    }
+                };
+
+                let stockwerk = item.get("stockwerk").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+                let notiz = item.get("notiz").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+                let dont_ask = item.get("dontAsk").and_then(Value::as_bool).unwrap_or(false) as i64;
+                let item_updated_at = item.get("updatedAt").and_then(Value::as_str).map(str::trim);
+
+                insert.execute(params![
+                    key,
+                    if kunde.is_empty() { None } else { Some(kunde) },
+                    if strasse.is_empty() { None } else { Some(strasse) },
+                    if plz.is_empty() { None } else { Some(plz) },
+                    stockwerk,
+                    notiz,
+                    dont_ask,
+                    item_updated_at
+                ])?;
+                count += 1;
+            }
+        }
+
+        tx.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('globale_infos_updated_at', ?1)",
+            params![updated_at],
+        )?;
+
+        tx.commit()?;
+        count
+    };
+
+    tracing::info!(count = count, "globale infos updated");
+
+    get_globale_infos(State(state)).await
+}
+
+// ---------------------------------------------------------------------
 // Request bodies
 // ---------------------------------------------------------------------
 
@@ -6315,11 +6485,34 @@ async fn get_backup(
             Ok(json!({ "key": r.get::<_, String>(0)?, "bad": r.get::<_, i64>(1)? != 0, "note": r.get::<_, Option<String>>(2)? }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    tracing::info!(routes = routes.len(), stops = total_stops, "backup written");
+    let mut stock_stmt = conn.prepare("SELECT key, kunde, strasse, plz, stockwerk, notiz, dont_ask, updated_at FROM globale_infos ORDER BY key")?;
+    let stockwerke = stock_stmt
+        .query_map([], |r| {
+            let key: String = r.get(0)?;
+            let kunde: Option<String> = r.get(1)?;
+            let strasse: Option<String> = r.get(2)?;
+            let plz: Option<String> = r.get(3)?;
+            let stockwerk: Option<String> = r.get(4)?;
+            let notiz: Option<String> = r.get(5)?;
+            let dont_ask: i64 = r.get(6)?;
+            let updated_at: Option<String> = r.get(7)?;
+            Ok(json!({
+                "key": key,
+                "kunde": kunde,
+                "strasse": strasse,
+                "plz": plz,
+                "stockwerk": stockwerk,
+                "notiz": notiz,
+                "dontAsk": dont_ask != 0,
+                "updatedAt": updated_at
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    tracing::info!(routes = routes.len(), stops = total_stops, stockwerke = stockwerke.len(), "backup written");
     let body = json!({
         "format": BACKUP_FORMAT, "version": BACKUP_VERSION, "createdAt": backup_date(&now_iso()),
         "app": format!("EAR Router Web {}", env!("CARGO_PKG_VERSION")),
-        "routes": routes, "stockwerke": [], "settings": {}, "restrooms": restrooms,
+        "routes": routes, "stockwerke": stockwerke, "settings": {}, "restrooms": restrooms,
     });
     Ok(Json(body).into_response())
 }
@@ -9981,6 +10174,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/advanced/check", post(check_osrm))
         .route("/api/admin/cache", axum::routing::delete(clear_geocode_cache))
         .route("/api/admin/restrooms/refresh", post(refresh_restrooms))
+        .route("/api/globale-infos", get(get_globale_infos))
+        .route("/api/admin/globale-infos", post(upload_globale_infos).layer(DefaultBodyLimit::max(BACKUP_BODY_BYTES)))
         .route("/api/backup", get(get_backup))
         .route("/api/backup/restore", post(restore_backup).layer(DefaultBodyLimit::max(BACKUP_BODY_BYTES)))
         .route("/api/routes/:id/import", post(import_list))
@@ -11522,5 +11717,78 @@ mod tests {
         assert!(check_no_control_chars("Fam.\u{0}Gruber", "Kunde", false).is_err());
         assert!(check_no_control_chars("Zeile 1\nZeile 2", "Notiz", false).is_err());
         assert!(check_no_control_chars("Zeile 1\nZeile 2", "Notiz", true).is_ok());
+    }
+
+    #[tokio::test]
+    async fn globale_infos_upload_and_retrieval() {
+        let db_path = std::env::temp_dir().join(format!("ear_test_{}.db", new_uuid()));
+        init_db(&db_path).expect("init_db");
+
+        let state = Arc::new(AppState {
+            db_path: db_path.clone(),
+            db_pool: Arc::new(StdMutex::new(Vec::new())),
+            assets: PathBuf::new(),
+            http: reqwest::Client::new(),
+            nominatim_last: AsyncMutex::new(None),
+            rate_limit: AsyncMutex::new(HashMap::new()),
+            trust_proxy: false,
+            upstreams: Upstreams::from_env(),
+            city: CityHealth::default(),
+            route_locks: AsyncMutex::new(HashMap::new()),
+            osrm_primary_down_since: StdMutex::new(None),
+        });
+
+        let admin = AuthUser { id: 1, username: "admin".into(), is_admin: true };
+        let driver = AuthUser { id: 2, username: "driver".into(), is_admin: false };
+
+        let payload = json!({
+            "createdAt": "2026-11-05T16:25:00Z",
+            "stockwerke": [
+                {
+                    "kunde": "Alexander Dungler",
+                    "strasse": "Alaudagasse 5/35/5",
+                    "plz": "1100",
+                    "stockwerk": "1",
+                    "notiz": null
+                },
+                {
+                    "key": "alexander schneider siemssen|hagenmuellergasse 34|1030",
+                    "kunde": "Alexander Schneider-Siemssen",
+                    "strasse": "Hagenmüllergasse 34",
+                    "plz": "1030",
+                    "notiz": "Irgendeinen Sozialarbeiter finden zum abgeben"
+                }
+            ]
+        });
+
+        // Non-admin upload rejected
+        let res = upload_globale_infos(
+            State(state.clone()),
+            axum::Extension(driver),
+            Json(payload.clone()),
+        ).await;
+        assert!(res.is_err());
+
+        // Admin upload succeeds
+        let res = upload_globale_infos(
+            State(state.clone()),
+            axum::Extension(admin),
+            Json(payload),
+        ).await.expect("upload").0;
+        assert_eq!(res["count"], 2);
+
+        // Fetching globale infos works for any client
+        let res = get_globale_infos(State(state.clone())).await.expect("get").0;
+        assert_eq!(res["count"], 2);
+        assert_eq!(res["updated_at"], "2026-11-05T16:25:00Z");
+        let dungler = &res["infos"]["alexander dungler|alaudagasse 5 35 5|1100"];
+        assert_eq!(dungler["stockwerk"], "1");
+        assert!(dungler.get("notiz").is_none());
+
+        let schneider = &res["infos"]["alexander schneider siemssen|hagenmuellergasse 34|1030"];
+        assert_eq!(schneider["notiz"], "Irgendeinen Sozialarbeiter finden zum abgeben");
+        assert!(schneider.get("stockwerk").is_none());
+
+        let _ = std::fs::remove_file(db_path);
     }
 }

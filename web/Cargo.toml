@@ -8,7 +8,7 @@ rust-version = "1.85"
 default-run = "ear_routing"
 
 [dependencies]
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.7", features = ["json", "macros"] }
 tokio = { version = "1", features = ["full"] }
 # Body-size capping uses axum's own `DefaultBodyLimit`, not tower-http's
 # `limit` feature — that feature is deliberately not enabled.

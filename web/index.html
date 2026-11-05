@@ -188,7 +188,7 @@
      higher Tailwind z-index but lives in a different, unisolated stacking
      context. Isolating the map contains its internals to their own layer
      so this can't happen. ---- */
-  #route-map, #pin-map { background: #e5e3df; }
+  #route-map, #pin-map { background: #f8f4f0; overflow: hidden; touch-action: none; }
   .maplibregl-map { font-family: inherit; z-index: 0; isolation: isolate; }
   /* The Karte tab's map div is positioned via Tailwind's `.absolute
      inset-0` (see `initMapTabMap`) so it fills `#route-map` — but
@@ -212,18 +212,78 @@
   #route-map .maplibregl-ctrl-top-right { margin-top: calc(env(safe-area-inset-top) + 3.75rem); margin-right: .5rem; }
   .maplibregl-popup-content { background: #fff; color: #111; border-radius: .75rem; font-size: 12px; line-height: 1.5; padding: 10px 12px; box-shadow: 0 4px 20px rgba(0,0,0,.18); }
   .maplibregl-popup-tip { border-top-color: #fff !important; border-bottom-color: #fff !important; }
-  .marker-badge { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; font-size: 13px; font-weight: 700; color: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.35); border: 2.5px solid #fff; font-variant-numeric: tabular-nums; transition: transform .15s ease; }
-  .marker-badge:active { transform: scale(.92); }
-  /* The next door: larger, with a halo that breathes, so it is the one thing
-     on the map that is never missed. */
-  .marker-badge.next { width: 36px; height: 36px; font-size: 15px; box-shadow: 0 0 0 0 rgba(0,122,255,.45), 0 2px 8px rgba(0,0,0,.4); animation: nextHalo 2.2s ease-out infinite; z-index: 2; }
-  @keyframes nextHalo { 0% { box-shadow: 0 0 0 0 rgba(0,122,255,.45), 0 2px 8px rgba(0,0,0,.4); } 70%, 100% { box-shadow: 0 0 0 14px rgba(0,122,255,0), 0 2px 8px rgba(0,0,0,.4); } }
-  @media (prefers-reduced-motion: reduce) { .marker-badge.next { animation: none; box-shadow: 0 0 0 5px rgba(0,122,255,.3), 0 2px 8px rgba(0,0,0,.4); } }
-  .marker-fixed { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: #fff; color: #3a3a3c; box-shadow: 0 2px 6px rgba(0,0,0,.35); border: 2.5px solid #3a3a3c; font-size: 15px; }
-  /* The exact registered position of an address — see the dot marker in
-     `drawRouteOnMap`. `pointer-events: none` because it sits under the
-     badges' tap targets and has nothing of its own to tap. */
-  .marker-dot { width: 9px; height: 9px; border-radius: 50%; background: #007AFF; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.35); pointer-events: none; }
+
+  /* Apple Maps style teardrop pins */
+  .apple-pin-wrap {
+    position: relative;
+    width: 30px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    filter: drop-shadow(0 2.5px 3.5px rgba(0,0,0,0.35));
+    transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
+    cursor: pointer;
+    user-select: none;
+  }
+  .apple-pin-wrap:active {
+    transform: scale(0.9);
+  }
+  .apple-pin-shape {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  .apple-pin-content {
+    position: absolute;
+    top: 1px;
+    left: 0;
+    width: 30px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    color: #FFFFFF;
+    text-align: center;
+    line-height: 1;
+    pointer-events: none;
+  }
+  .apple-pin-content svg {
+    width: 15px;
+    height: 15px;
+    color: #FFFFFF;
+    stroke: #FFFFFF;
+  }
+  .apple-pin-wrap.next {
+    width: 36px;
+    height: 46px;
+    filter: drop-shadow(0 0 8px rgba(0, 122, 255, 0.75)) drop-shadow(0 3px 5px rgba(0,0,0,0.45));
+    z-index: 10;
+    animation: nextApplePin 2s infinite ease-in-out;
+  }
+  .apple-pin-wrap.next .apple-pin-content {
+    width: 36px;
+    height: 34px;
+    font-size: 15px;
+  }
+  .apple-pin-wrap.next .apple-pin-content svg {
+    width: 17px;
+    height: 17px;
+  }
+  @keyframes nextApplePin {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .apple-pin-wrap.next { animation: none; transform: scale(1.05); }
+  }
+  .marker-door { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: #fff; color: #8E8E93; border: 1.5px solid #8E8E93; box-shadow: 0 1px 4px rgba(0,0,0,.25); font-size: 11px; }
   /* Basemap switch (Karte ⇄ Luftbild). Text, not an icon: "which view am I
      about to get" is not something a pictogram says unambiguously, and this
      control is used mid-delivery with one hand. */
@@ -450,8 +510,19 @@
       background: #1C1C1E !important;
       color: #FFFFFF !important;
     }
+    .sheet-panel .bg-white {
+      background-color: #2C2C2E !important;
+      border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    }
+    .sheet-panel input, .sheet-panel select, .sheet-panel textarea {
+      background-color: #3A3A3C !important;
+      border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    }
     .sheet-actions {
       background: linear-gradient(to bottom, rgba(28,28,30,0), #1C1C1E 22%) !important;
+    }
+    .w-9.h-1\.5.bg-black\/15 {
+      background-color: rgba(255, 255, 255, 0.32) !important;
     }
     .bg-white {
       background-color: #1C1C1E !important;
@@ -529,10 +600,15 @@
     }
     input, textarea, select {
       color: #FFFFFF !important;
-      background-color: #1C1C1E !important;
+      background-color: #2C2C2E !important;
+      border: 1px solid rgba(255, 255, 255, 0.14) !important;
+    }
+    input:focus, textarea:focus, select:focus {
+      border-color: #0A84FF !important;
+      outline: none !important;
     }
     input::placeholder, textarea::placeholder {
-      color: rgba(235, 235, 245, 0.55) !important;
+      color: rgba(235, 235, 245, 0.45) !important;
     }
     .now-card, .map-card, .choice, .km-field, .sheet-note:not(.warn), [data-gourmet] {
       background: #1C1C1E !important;
@@ -692,46 +768,26 @@
       border-top-color: #0A84FF !important;
     }
     #route-map, #pin-map {
-      background: #121214 !important;
+      background: #f8f4f0 !important;
     }
-    /* Native list groups, cards, inputs */
-    .bg-white {
-      background-color: #1C1C1E !important;
+    [data-map-loading] {
+      background-color: #f8f4f0 !important;
+    }
+    [data-map-loading] p {
+      color: rgba(0, 0, 0, 0.6) !important;
     }
     .bg-white\/90, .bg-white\/95 {
-      background-color: rgba(28, 28, 30, 0.95) !important;
+      background-color: rgba(44, 44, 46, 0.92) !important;
+      color: rgba(255, 255, 255, 0.88) !important;
     }
-    .text-black {
-      color: #FFFFFF !important;
+    .bg-amber-50, .bg-amber-100 {
+      background-color: rgba(255, 159, 10, 0.16) !important;
     }
-    .text-black\/55, .text-black\/60, .text-black\/70 {
-      color: rgba(235, 235, 245, 0.65) !important;
+    .border-amber-200, .border-amber-300 {
+      border-color: rgba(255, 159, 10, 0.35) !important;
     }
-    .text-black\/80, .text-black\/75 {
-      color: rgba(235, 235, 245, 0.88) !important;
-    }
-    .text-black\/25, .text-black\/35, .text-black\/45, .text-black\/40 {
-      color: rgba(235, 235, 245, 0.5) !important;
-    }
-    .bg-black\/5, .bg-black\/\[0\.06\], .bg-black\/10 {
-      background-color: rgba(255, 255, 255, 0.08) !important;
-    }
-    .divide-black\/10 > :not([hidden]) ~ :not([hidden]),
-    .divide-black\/5 > :not([hidden]) ~ :not([hidden]) {
-      border-color: rgba(255, 255, 255, 0.12) !important;
-    }
-    .border-black\/5, .border-black\/10 {
-      border-color: rgba(255, 255, 255, 0.12) !important;
-    }
-    .border-black\/45 {
-      border-color: rgba(255, 255, 255, 0.38) !important;
-    }
-    input, select, textarea {
-      color: #FFFFFF !important;
-      background-color: #1C1C1E !important;
-    }
-    input::placeholder, textarea::placeholder {
-      color: rgba(235, 235, 245, 0.55) !important;
+    .text-amber-800, .text-amber-900, .text-amber-700 {
+      color: #FF9F0A !important;
     }
     /* Floating progress pill */
     #progress-pill {
@@ -753,6 +809,7 @@
     .sheet-note.warn {
       background: rgba(255, 159, 10, 0.16) !important;
       color: #FF9F0A !important;
+      border: 1px solid rgba(255, 159, 10, 0.3) !important;
     }
     #split-panel {
       background: #1C1C1E !important;
@@ -2743,7 +2800,7 @@ video {
 // it" — so browsing the map never leaves a stray detail screen behind in
 // Routen/Mehr. (Not the string 'map': see `switchTab`'s comment for why
 // that value in particular would do the opposite of what it looks like.)
-const state = { tab: 'routes', routes: [], currentRoute: null, detailOrigin: null, user: null };
+const state = { tab: 'routes', routes: [], currentRoute: null, detailOrigin: null, user: null, globaleInfos: {}, globaleInfosCount: 0, globaleInfosUpdatedAt: null };
 
 const GROUP = 'bg-white rounded-2xl overflow-hidden divide-y divide-black/10 shadow-sm';
 // A single-row card (no `divide-y`) — GROUP's divider is a sibling
@@ -2870,6 +2927,8 @@ const ICONS = {
   door: icon('<path d="M13 4h3a2 2 0 0 1 2 2v14"/><path d="M2 20h3"/><path d="M13 20h9"/><path d="M10 12v.01"/><path d="M13 4.562v16.157a1 1 0 0 1-1.242.97L5 20V5.562a2 2 0 0 1 1.515-1.94l4-1A2 2 0 0 1 13 4.561Z"/>', 'stroke-width="2"'),
   list: icon('<circle cx="4" cy="6" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="6" x2="20" y2="6"/><circle cx="4" cy="12" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="12" x2="20" y2="12"/><circle cx="4" cy="18" r="1.3" fill="currentColor" stroke="none"/><line x1="8.5" y1="18" x2="20" y2="18"/>'),
   expand: icon('<polyline points="14 4 20 4 20 10"/><line x1="20" y1="4" x2="13.5" y2="10.5"/><polyline points="10 20 4 20 4 14"/><line x1="4" y1="20" x2="10.5" y2="13.5"/>', 'stroke-width="2"'),
+  stairs: icon('<path d="M4 19h4v-4h4v-4h4V7h4"/>', 'stroke-width="2"'),
+  customerNote: icon('<path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z"/><circle cx="9" cy="10" r="2"/><path d="M6 16c0-1.5 1.5-2.5 3-2.5s3 1 3 2.5"/><line x1="14" y1="10" x2="18" y2="10"/><line x1="14" y1="14" x2="18" y2="14"/>'),
 };
 
 // A stalled mobile connection never rejects a `fetch` on its own — the
@@ -3954,6 +4013,7 @@ async function refreshOnResume() {
       // overwrite a tick the driver made while it was in flight.
       applyRouteUpdate(seq, current.id, fresh);
     }
+    if (state.user) loadGlobaleInfos().catch(() => {});
     // The most frequent render in the app — every resume, every
     // `visibilitychange`, every reconnect — and on the detail screen it
     // almost always paints the same list it just painted. Patching in place
@@ -4057,6 +4117,50 @@ function normalizeMatchText(str) {
 // remains the authority on what actually matches what.
 function addrKey(strasse, plz) {
   return `${normalizeMatchText(strasse)}|${String(plz || '').trim()}`;
+}
+
+/// Identifies a customer across tours and exports for Globale Infos (floor & standing notes).
+/// Matches `StockwerkKey.make` on iOS and `text::address_match_key` in src/main.rs.
+function stockwerkKey(kunde, strasse, plz) {
+  const street = normalizeMatchText(strasse);
+  if (!street) return null;
+  const cust = normalizeMatchText(kunde);
+  return `${cust}|${street}|${String(plz || '').trim()}`;
+}
+
+function formatFloor(text) {
+  const t = String(text || '').trim();
+  if (!t) return '';
+  return /^\d+$/.test(t) ? `${t}. Stock` : t;
+}
+
+function fmtDateTime(iso) {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return 'Nie';
+  return d.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function getGlobaleInfo(stop) {
+  if (!stop) return null;
+  const kunde = stop.kunde || stop.name || '';
+  const strasse = stop.strasse || stop.address || '';
+  const plz = stop.plz || '';
+  const key = stockwerkKey(kunde, strasse, plz);
+  if (!key) return null;
+  return state.globaleInfos?.[key] || null;
+}
+
+async function loadGlobaleInfos() {
+  try {
+    const res = await api('/globale-infos');
+    if (res?.ok) {
+      state.globaleInfos = res.infos || {};
+      state.globaleInfosCount = res.count || 0;
+      state.globaleInfosUpdatedAt = res.updated_at || null;
+    }
+  } catch (_) {
+    // Keep existing state on transient failure
+  }
 }
 
 async function submitStop(form, stopId) {
@@ -4760,9 +4864,13 @@ function openStopMenu(stop) {
     </a>`;
   const o = stop.outcome || null;
   const onMap = !stop.excluded && Number.isFinite(stop.lat) && Number.isFinite(stop.lon);
+  const info = getGlobaleInfo(stop);
+  const floorText = info?.stockwerk ? formatFloor(info.stockwerk) : '';
+  const subAddress = [stopAddress(stop), floorText, o ? OUTCOMES[o]?.short : null].filter(Boolean).join(' · ');
   renderSheetShell(`
     <h2 class="text-[22px] font-bold mb-1 truncate">${escapeHtml(stop.kunde)}</h2>
-    <p class="text-[13px] text-black/55 mb-4 leading-snug">${escapeHtml(stopAddress(stop))}${o ? ` · ${OUTCOMES[o]?.short || ''}` : ''}</p>
+    <p class="text-[13px] text-black/55 mb-4 leading-snug">${escapeHtml(subAddress)}</p>
+    ${info?.notiz ? `<div class="${GROUP} mb-3 px-4 py-3 bg-amber-50 text-warnText text-[13px] italic flex items-center gap-2"><span class="flex shrink-0 text-warn not-italic text-base">${ICONS.customerNote}</span><span>${escapeHtml(info.notiz)}</span></div>` : ''}
     <div class="${GROUP} mb-3">
       ${link(navUrl(stop), 'target="_blank" rel="noopener"', ICONS.arrowTurn, 'Navigation starten')}
       ${onMap ? item(`showStopOnMap(${stop.id})`, ICONS.tabMap, 'Auf der Karte zeigen') : ''}
@@ -6820,9 +6928,9 @@ function renderMapTab() {
       <div id="route-map" class="absolute inset-0"></div>
       ${mapTabReady ? '' : mapLoadingOverlay()}
 
-      <div class="absolute top-0 inset-x-0 z-10 momentum overflow-x-auto flex gap-2 px-4" style="padding-top: calc(env(safe-area-inset-top) + 0.75rem); padding-bottom: 0.75rem;">
+      <div class="absolute top-0 inset-x-0 z-10 momentum overflow-x-auto flex gap-2 px-4" style="pointer-events:none; padding-top: calc(env(safe-area-inset-top) + 0.75rem); padding-bottom: 0.75rem;">
         ${chips.map(p => `
-          <button onclick="selectMapRoute(${p.id})" ${r && r.id === p.id ? 'data-route-chip-active aria-current="true"' : ''} class="press-98 shrink-0 px-3.5 py-2 rounded-full text-[13px] font-semibold shadow-lg backdrop-blur-xl ${r && r.id === p.id ? 'bg-brand-600 text-white' : 'bg-white/90 text-black/70'}" ${p.status === 'completed' && !(r && r.id === p.id) ? 'style="opacity:.75"' : ''}>${p.status === 'completed' ? '✓ ' : ''}${escapeHtml(p.name)}</button>
+          <button onclick="selectMapRoute(${p.id})" ${r && r.id === p.id ? 'data-route-chip-active aria-current="true"' : ''} class="press-98 shrink-0 px-3.5 py-2 rounded-full text-[13px] font-semibold shadow-lg backdrop-blur-xl ${r && r.id === p.id ? 'bg-brand-600 text-white' : 'bg-white/90 text-black/70'}" style="pointer-events:auto;${p.status === 'completed' && !(r && r.id === p.id) ? ' opacity:.75;' : ''}">${p.status === 'completed' ? '✓ ' : ''}${escapeHtml(p.name)}</button>
         `).join('')}
       </div>
 
@@ -7576,14 +7684,15 @@ const TOUR_PDF = {
   page: [842, 595], left: 40, top: 62, bottom: 540, padding: 3,
   headerHeight: 30, rowHeight: 34, size: 10, leading: 12,
   columns: [
-    { title: 'Tour', width: 72, bold: true },
+    { title: 'Tour', width: 62, bold: true },
     { title: 'Stopp', width: 40, bold: true, align: 'right' },
     { title: 'Datum', width: 66, bold: true },
-    { title: 'KD', width: 112 },
-    { title: 'Straße', width: 132 },
+    { title: 'KD', width: 104 },
+    { title: 'Straße', width: 126 },
     { title: 'Plz', width: 36, align: 'right' },
-    { title: 'Paket', width: 124, bold: true },
-    { title: 'Hinweis', width: 180, bold: true },
+    { title: 'Stock', width: 54 },
+    { title: 'Paket', width: 120, bold: true },
+    { title: 'Hinweis', width: 154, bold: true },
   ],
 };
 
@@ -7592,10 +7701,14 @@ const TOUR_PDF = {
 /// `{ name, date, entries }` — the day as "2026-10-09".
 function tourPdfRows(tour) {
   const day = fmtDate(`${tour.date}T12:00:00`);
-  return tour.entries.map((e, i) => [
-    tour.name || '', String(i + 1), day, (e.kunde || '').trim(), (e.strasse || '').trim(),
-    (e.plz || '').trim(), displayPaket(e, tour).trim(), (e.notiz || '').trim(),
-  ]);
+  return tour.entries.map((e, i) => {
+    const info = getGlobaleInfo(e);
+    const floor = info?.stockwerk ? formatFloor(info.stockwerk) : '';
+    return [
+      tour.name || '', String(i + 1), day, (e.kunde || '').trim(), (e.strasse || '').trim(),
+      (e.plz || '').trim(), floor, displayPaket(e, tour).trim(), (e.notiz || '').trim(),
+    ];
+  });
 }
 
 /// The whole file, as bytes.
@@ -8044,7 +8157,7 @@ async function signedIn(user) {
   state.routes = [];
   state.currentRoute = null;
   state.detailOrigin = null;
-  await loadRoutes();
+  await Promise.all([loadRoutes(), loadGlobaleInfos()]);
   loadPaceHistory();
   loadHome();
 }
@@ -8057,6 +8170,9 @@ function signedOut() {
   state.routes = [];
   state.currentRoute = null;
   state.detailOrigin = null;
+  state.globaleInfos = {};
+  state.globaleInfosCount = 0;
+  state.globaleInfosUpdatedAt = null;
   state.tab = 'routes';
   pendingDelivered.clear();
   pendingDeliveredGen.clear();
@@ -8140,8 +8256,122 @@ function renderAdminTab() {
         ${adminUsers === null ? sheetBusy('Benutzer werden geladen …') : `
           <div class="${GROUP}">${users.map(row).join('')}</div>
           <button onclick="openNewUserSheet()" class="press-98 wide-btn accent" style="margin-top:1rem">${ICONS.plus} Neuer Benutzer</button>`}
+        <div class="pt-6 pb-6">
+          <p class="${SECTION_LABEL}" style="padding-left:0; padding-top:0">Globale Infos</p>
+          <div class="${CARD} p-4">
+            <div class="flex items-start gap-3">
+              <span class="w-9 h-9 shrink-0 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-lg">${ICONS.stairs}</span>
+              <div class="flex-1 min-w-0">
+                <p class="font-medium">Globale Kundeninfos</p>
+                <p class="text-[13px] text-black/55 mt-0.5">${state.globaleInfosCount} Einträge hinterlegt · Stand: ${fmtDateTime(state.globaleInfosUpdatedAt)}</p>
+                <p class="text-[12px] text-black/50 mt-1">Stockwerke und Notizen zu Kunden für alle Benutzer. Werden durch Hochladen einer Sicherungsdatei (.json) aktualisiert.</p>
+              </div>
+            </div>
+            <div class="mt-4 flex flex-col gap-2">
+              <input type="file" id="globale-infos-input" accept=".json,application/json" class="hidden" onchange="handleGlobaleInfosFileSelect(event)" />
+              <button type="button" onclick="document.getElementById('globale-infos-input').click()" class="press-98 wide-btn accent">${ICONS.download} Globale Infos (.json) hochladen</button>
+              ${state.globaleInfosCount > 0 ? `<button type="button" onclick="openGlobaleInfosListSheet()" class="press-98 wide-btn quiet">${ICONS.list} Alle Einträge ansehen (${state.globaleInfosCount})</button>` : ''}
+            </div>
+          </div>
+        </div>
       </div>
     </div>`;
+}
+
+async function handleGlobaleInfosFileSelect(event) {
+  const file = event.target?.files?.[0];
+  if (!file) return;
+  event.target.value = '';
+
+  showProgress('Globale Infos werden hochgeladen …');
+  try {
+    const text = await file.text();
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (_) {
+      throw new Error('Die Datei ist keine gültige JSON-Datei.');
+    }
+    const res = await api('/admin/globale-infos', {
+      method: 'POST',
+      body: JSON.stringify(json),
+      timeoutMs: API_TIMEOUT_LONG_MS,
+    });
+    if (res?.ok) {
+      state.globaleInfos = res.infos || {};
+      state.globaleInfosCount = res.count || 0;
+      state.globaleInfosUpdatedAt = res.updated_at || null;
+      toast(`${res.count} Kundeninfos aktualisiert ✓`, 'success');
+      render(true);
+    } else {
+      throw new Error('Upload fehlgeschlagen.');
+    }
+  } catch (err) {
+    toast(err.message || 'Fehler beim Hochladen der globalen Infos.', 'error');
+  } finally {
+    hideProgress();
+  }
+}
+
+function openGlobaleInfosListSheet() {
+  const items = Object.values(state.globaleInfos || {}).sort((a, b) =>
+    (a.kunde || '').localeCompare(b.kunde || '', 'de-AT')
+  );
+
+  const renderItems = (filtered) => {
+    if (!filtered.length) {
+      return `<p class="text-[14px] text-black/55 text-center py-8">Keine Einträge gefunden.</p>`;
+    }
+    return `<div class="${GROUP}">
+      ${filtered.map((item) => `
+        <div class="px-4 py-3 flex items-start gap-3">
+          <span class="w-8 h-8 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center shrink-0 mt-0.5 text-base">${item.stockwerk ? ICONS.stairs : ICONS.customerNote}</span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-2 flex-wrap">
+              <p class="font-medium truncate">${escapeHtml(item.kunde || 'Kunde')}</p>
+              ${item.stockwerk ? `<span class="inline-flex items-center gap-1 text-[12px] font-semibold text-black/75 bg-black/5 px-2 py-0.5 rounded shrink-0"><span class="flex text-black/50">${ICONS.stairs}</span>${escapeHtml(formatFloor(item.stockwerk))}</span>` : ''}
+            </div>
+            <p class="text-[13px] text-black/55 mt-0.5">${escapeHtml([item.strasse, item.plz].filter(Boolean).join(', '))}</p>
+            ${item.notiz ? `<p class="text-[12px] text-warnText italic flex items-center gap-1 mt-1 bg-warn/10 px-2 py-1 rounded"><span class="flex not-italic text-warn">${ICONS.customerNote}</span><span>${escapeHtml(item.notiz)}</span></p>` : ''}
+          </div>
+        </div>
+      `).join('')}
+    </div>`;
+  };
+
+  renderSheetShell(`
+    <div class="flex items-start justify-between mb-2">
+      <div>
+        <h2 class="text-[22px] font-bold">Globale Infos</h2>
+        <p class="text-[13px] text-black/55 leading-snug">${state.globaleInfosCount} Kunden hinterlegt · Stand: ${fmtDateTime(state.globaleInfosUpdatedAt)}</p>
+      </div>
+      <button type="button" onclick="closeSheet()" aria-label="Schließen" class="tap-target press-fade w-8 h-8 flex items-center justify-center text-black/45 text-lg">${ICONS.close}</button>
+    </div>
+    <p class="text-[12px] text-black/45 mb-3 leading-snug">Vom Administrator bereitgestellte Stockwerke und Notizen. Nur zur Ansicht.</p>
+    <div class="mb-3">
+      <input id="globale-infos-filter" type="search" placeholder="Suchen nach Name, Straße, PLZ, Notiz …" class="w-full bg-black/5 rounded-xl px-3 py-2 text-[15px] focus:outline-none focus:ring-2 focus:ring-brand-600" />
+    </div>
+    <div id="globale-infos-list" class="max-h-[60vh] overflow-y-auto momentum">
+      ${renderItems(items)}
+    </div>
+    <div class="mt-4 pb-2">
+      <button type="button" onclick="closeSheet()" class="press-98 wide-btn quiet">Schließen</button>
+    </div>
+  `, { label: 'Globale Infos' });
+
+  const filterInput = document.getElementById('globale-infos-filter');
+  const listEl = document.getElementById('globale-infos-list');
+  if (filterInput && listEl) {
+    filterInput.addEventListener('input', () => {
+      const q = filterInput.value.trim();
+      const tokens = q ? normalizeMatchText(q).split(' ').filter(Boolean) : [];
+      const filtered = !tokens.length ? items : items.filter((it) => {
+        const hay = `${normalizeMatchText(it.kunde)} ${normalizeMatchText(it.strasse)} ${String(it.plz || '').trim()} ${normalizeMatchText(it.stockwerk)} ${normalizeMatchText(it.notiz)}`;
+        return tokens.every((t) => hay.includes(t));
+      });
+      listEl.innerHTML = renderItems(filtered);
+    });
+  }
 }
 
 function openNewUserSheet(prefill = {}, message = '') {
@@ -8411,6 +8641,7 @@ async function copyAddress(stopId, button) {
 /// The card for the stop the driver is at.
 function nowStopCard(r, stop) {
   const meta = stopKindMeta(stop);
+  const info = meta ? null : getGlobaleInfo(stop);
   // The number the map's pin wears: its place among the doors the van drives.
   const number = meta ? null : r.stops.filter((s) => s.kind === 'customer' && !skipsDoor(s)).findIndex((s) => s.id === stop.id) + 1;
   const sameDoor = meta ? 1 : (sameDoorGroups(r.stops).get(stop.id)?.length || 1);
@@ -8447,6 +8678,8 @@ function nowStopCard(r, stop) {
         </div>
         ${more}
       </div>
+      ${info?.stockwerk && !meta ? `<p class="now-fact"><span>${ICONS.stairs}</span><span style="font-weight:600">${escapeHtml(formatFloor(info.stockwerk))}</span></p>` : ''}
+      ${info?.notiz && !meta ? `<p class="now-fact warn"><span>${ICONS.customerNote}</span><span style="font-style:italic">${escapeHtml(info.notiz)}</span></p>` : ''}
       ${displayPaket(stop, r) && !meta ? `<p class="now-fact"><span>${ICONS.box}</span><span style="font-weight:600">${escapeHtml(displayPaket(stop, r))}</span></p>` : ''}
       ${stop.notiz && !meta ? `<p class="now-fact"><span>${ICONS.note}</span><span>${escapeHtml(stop.notiz)}</span></p>` : ''}
       ${precision ? `<p class="now-fact warn"><span>${ICONS.warning}</span><span>${precision}</span></p>` : ''}
@@ -8583,6 +8816,11 @@ function renderMoreTab() {
           <button onclick="openTourPdfSheet()" class="${ROW}">
             ${tile('#FF3B30', ICONS.doc)}
             <div class="flex-1 min-w-0"><p class="text-[15px]">Tour als PDF</p><p class="text-[13px] text-black/55">Stoppliste zum Ausdrucken</p></div>
+            <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
+          </button>
+          <button onclick="openGlobaleInfosListSheet()" class="${ROW}">
+            ${tile('#5856D6', ICONS.stairs)}
+            <div class="flex-1 min-w-0"><p class="text-[15px]">Globale Infos</p><p class="text-[13px] text-black/55">${state.globaleInfosCount} Kunden hinterlegt</p></div>
             <span class="text-black/25 text-lg flex shrink-0">${ICONS.chevron}</span>
           </button>
           <button onclick="openSplitSheet()" class="${ROW}">
@@ -8921,6 +9159,13 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1, numb
   const duplicateBadge = duplicateCount > 1
     ? `<span class="text-[10px] font-semibold uppercase tracking-wide text-white bg-warn px-1.5 py-0.5 rounded flex items-center gap-1" title="Insgesamt ${duplicateCount} Stopps an dieser Adresse — alle Pakete mitnehmen."><span class="flex">${ICONS.warning}</span>${duplicateCount}× an dieser Adresse</span>`
     : '';
+  const info = getGlobaleInfo(s);
+  const floorBadge = info?.stockwerk
+    ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] font-medium mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-black/75 bg-black/5'}"><span class="flex shrink-0 text-black/50">${ICONS.stairs}</span><span class="truncate">${escapeHtml(formatFloor(info.stockwerk))}</span></p>`
+    : '';
+  const customerNoteBadge = info?.notiz
+    ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic text-warn">${ICONS.customerNote}</span><span class="truncate">${escapeHtml(info.notiz)}</span></p>`
+    : '';
   const { cls: animClass, style: animStyle } = rowAnimAttrs(animIndex);
 
   return `
@@ -8948,6 +9193,8 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1, numb
         </div>
         <p class="font-medium ${delivered ? 'text-black/55' : ''}">${number != null ? `<span class="row-num ${delivered ? 'done' : isNext ? 'next' : ''}" aria-hidden="true">${number}</span>` : ''}<span class="${struck ? 'line-through' : ''}">${escapeHtml(s.kunde)}</span></p>
         <p class="text-[13px] ${delivered ? 'text-black/55' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)}</p>
+        ${floorBadge}
+        ${customerNoteBadge}
         ${displayPaket(s) ? (() => {
           const qty = isTkTour(state.currentRoute) ? (parcelCount(s) || 1) : paketQty(s.paket);
           // (TK: the parcels to carry up. VM: the pieces in the Paket.)
@@ -8985,15 +9232,15 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1, numb
 // Karte tab (full-screen) and the pin-drop sheet (small, embedded).
 // ---------------------------------------------------------------------
 // The calm vector style: Positron (light) or Dark, matching system settings.
-const MAP_STYLE_POSITRON = 'https://tiles.openfreemap.org/styles/positron';
-const MAP_STYLE_DARK = 'https://tiles.openfreemap.org/styles/dark';
+// The Apple Maps vector style: OpenFreeMap Liberty style (beige land, soft blue water, crisp roads).
+const MAP_STYLE_LIBERTY = 'https://tiles.openfreemap.org/styles/liberty';
 function isDarkMode() {
   return typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
 function mapStyleUrl() {
-  return isDarkMode() ? MAP_STYLE_DARK : MAP_STYLE_POSITRON;
+  return MAP_STYLE_LIBERTY;
 }
-const MAP_STYLE_URL = mapStyleUrl();
+const MAP_STYLE_URL = MAP_STYLE_LIBERTY;
 const VIENNA_CENTER = [16.3738, 48.2082]; // [lon, lat]
 
 // ---------------------------------------------------------------------
@@ -9692,14 +9939,6 @@ function newMap(container, opts) {
     // on it. This is the vector basemap's equivalent of the
     // `raster-fade-duration: 0` already set on the aerial layers.
     fadeDuration: 0,
-    // Roughly a phone screen's worth of tiles at three zoom levels. The
-    // default is derived from the viewport and is smaller than a driver's
-    // actual working set — zooming out to check the route and back in to
-    // the next house evicted the tiles for the house, so coming back
-    // re-fetched them. Holding them costs memory this app has (a few MB of
-    // decoded raster) and saves the one thing it doesn't have, which is
-    // bandwidth on a moving van.
-    maxTileCacheSize: 400,
     // A tap on a marker should not also be a tap on the map underneath it.
     // MapLibre's default 3px slop is tuned for a mouse; a thumb on a phone
     // moves further than that while pressing.
@@ -9707,19 +9946,6 @@ function newMap(container, opts) {
     ...opts.extra,
   });
   map._earBasemap = basemap;
-  // Double-tap, hold, drag: up zooms in and down zooms out, as in Apple Maps
-  // and on the iOS app. MapLibre does it the other way round.
-  try {
-    const tapDrag = map.handlers?._handlersById?.tapDragZoom;
-    if (tapDrag) {
-      const touchmove = tapDrag.touchmove.bind(tapDrag);
-      tapDrag.touchmove = (e, points, mapTouches) => {
-        const r = touchmove(e, points, mapTouches);
-        if (r && typeof r.zoomDelta === 'number') r.zoomDelta = -r.zoomDelta;
-        return r;
-      };
-    }
-  } catch (_) { /* the library's own direction stays */ }
   // OpenFreeMap vector styles reference patterns (e.g. 'wood-pattern') that
   // are not provided in their sprite assets. MapLibre fires 'styleimagemissing'
   // continuously on tile boundaries. Providing a 1x1 transparent RGBA texture
@@ -9849,7 +10075,7 @@ function pointKey(s) {
 // Badges that would land on top of each other fan out evenly around the
 // group's shared centre.
 function badgeOffset(i, n) {
-  if (n <= 1) return [0, -22];
+  if (n <= 1) return [0, 0];
   // Grows with the group so five-plus badges don't crowd each other back
   // into the clump the fan exists to break up.
   const radius = n <= 4 ? 26 : 26 + (n - 4) * 4;
@@ -9859,31 +10085,25 @@ function badgeOffset(i, n) {
   return [Math.cos(angle) * radius, Math.sin(angle) * radius];
 }
 
+// Apple Maps teardrop marker pin with vector balloon shape and centered glyph/icon.
+function applePinHtml(bg, glyph, isNext = false, isWarn = false) {
+  const strokeColor = isWarn ? '#FF9500' : '#FFFFFF';
+  const strokeWidth = isWarn ? '2.5' : '2';
+  return `
+    <div class="apple-pin-wrap${isNext ? ' next' : ''}">
+      <svg class="apple-pin-shape" viewBox="0 0 30 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M 15 36.5 C 14 35 2.5 22 2.5 14.5 A 12.5 12.5 0 1 1 27.5 14.5 C 27.5 22 16 35 15 36.5 Z" fill="${bg}" stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-linejoin="round"/>
+      </svg>
+      <div class="apple-pin-content">${glyph}</div>
+    </div>
+  `.trim();
+}
+
 // How close two badges have to be, on screen, to be fanned apart instead of
 // left to overlap.
 const FAN_CLUSTER_PX = 34;
-// Below street level, only *exactly* coincident stops are fanned. Two
-// entries for one door overlap at every zoom there is and must always be
-// separated; two neighbouring houses only overlap when the map is zoomed
-// out, and pulling their badges apart there would just scatter numbers away
-// from the streets they belong to for no gain — at that zoom the driver is
-// reading the shape of the route, not picking out a door.
 const FAN_MIN_ZOOM = 15;
 
-// Fans out every group of badges that would otherwise sit on top of each
-// other *at the current zoom*.
-//
-// Grouping by identical coordinates (which is what this used to do) only
-// caught two orders at one address. It did nothing for the case that
-// actually hides a stop just as thoroughly: two doors a few metres apart —
-// neighbouring houses, or two Stiegen of one Gemeindebau, 30 m and therefore
-// a couple of pixels apart on an overview. Clustering in projected screen
-// space catches both, and re-running on zoom means a fan opens up as the
-// driver zooms in rather than being decided once at whatever zoom the route
-// happened to be drawn at.
-//
-// The dots never move: each stays on its own registered point, so the
-// precise locations stay readable underneath whatever the badges do.
 function relayoutStopMarkers(map) {
   const badges = map._earBadges || [];
   if (!badges.length) return;
@@ -9897,16 +10117,14 @@ function relayoutStopMarkers(map) {
     // `seed` is still untaken here, so it heads its own cluster.
     const cluster = pts.filter((q) => !q.taken && Math.hypot(q.x - seed.x, q.y - seed.y) <= radius);
     for (const q of cluster) q.taken = true;
+    if (cluster.length === 1) {
+      cluster[0].b.marker.setOffset([0, 0]);
+      continue;
+    }
     const cx = cluster.reduce((sum, q) => sum + q.x, 0) / cluster.length;
     const cy = cluster.reduce((sum, q) => sum + q.y, 0) / cluster.length;
     cluster.forEach((q, idx) => {
       const [fx, fy] = badgeOffset(idx, cluster.length);
-      // Offsets are relative to each marker's *own* coordinate, so the fan
-      // is built around the cluster's centre by first cancelling out how far
-      // this marker sits from it.
-      // Rounded: these end up as CSS translate values, and a whole pixel
-      // renders a 26px badge crisply where 25.9999 makes the browser
-      // resample it.
       const off = [Math.round(cx - q.x + fx), Math.round(cy - q.y + fy)];
       q.b.marker.setOffset(off);
     });
@@ -10108,9 +10326,6 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
   const firstOpenIdx = firstOpenIndex(r.stops);
   let customerNum = 0;
 
-  // One dot per distinct registered point, and every badge collected for
-  // `relayoutStopMarkers` to fan out once they're all placed.
-  const dotsPlaced = new Set();
   map._earBadges = [];
 
   r.stops.forEach((s, i) => {
@@ -10136,7 +10351,7 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
     // the label that reachability was missing.
     let label;
     if (meta) {
-      el = elFromHtml(`<div class="marker-fixed">${meta.icon}</div>`);
+      el = elFromHtml(applePinHtml('#3A3A3C', meta.icon, false, false));
       label = `${meta.title}: ${meta.subtitle}`;
     } else {
       // A door the van does not go to takes no number: it is not a stop of
@@ -10146,42 +10361,23 @@ function drawRouteOnMap(map, r, { fit = true } = {}) {
       if (!skipped) customerNum++;
       const isNext = i === firstOpenIdx;
       const bg = s.delivered
-        ? (isDarkMode() ? '#30D158' : '#34C759')
+        ? '#34C759'
         : s.outcome === 'notHome'
-        ? (isDarkMode() ? '#FF9F0A' : '#FF9500')
+        ? '#FF9500'
         : skipped
-        ? (isDarkMode() ? '#636366' : '#C7C7CC')
-        : isNext
-        ? (isDarkMode() ? '#0A84FF' : '#007AFF')
-        : '#8E8E93';
-      const ring = s.location_precision
-        ? (isDarkMode() ? 'box-shadow:0 0 0 3px #FF9F0A,0 1px 4px rgba(0,0,0,.6);' : 'box-shadow:0 0 0 3px #FF9500,0 1px 4px rgba(0,0,0,.4);')
-        : '';
+        ? '#8E8E93'
+        : '#007AFF';
+      const isWarn = Boolean(s.location_precision);
       const glyph = s.delivered ? '✓' : s.outcome === 'notHome' ? '!' : skipped ? '–' : customerNum;
-      el = elFromHtml(`<div class="marker-badge${isNext ? ' next' : ''}" style="background:${bg};${ring}">${glyph}</div>`);
+      el = elFromHtml(applePinHtml(bg, glyph, isNext, isWarn));
       // Position in the tour, who it is, and its state — the three things
       // the marker's colour and number convey to someone who can see it.
       const status = s.outcome ? OUTCOMES[s.outcome]?.short || 'erledigt' : isNext ? 'nächster Stopp' : 'offen';
       label = `${skipped ? 'Stopp' : `Stopp ${customerNum}`}: ${s.kunde}, ${s.strasse}, ${s.plz} — ${status}`;
     }
     el.classList.add('ear-route-marker');
-    // One dot per address, drawn once for the whole group and marking the
-    // registered position of the door itself. The badge is 26px wide and
-    // would otherwise sit *on* the building it's pointing at, hiding the
-    // one thing the driver zoomed in to look at; offsetting the badge and
-    // leaving a 9px dot behind is what makes "exactly this house, this
-    // entrance" readable on the aerial imagery. `pointer-events: none` (see
-    // the CSS) keeps the dot from swallowing taps meant for the badge.
-    const key = pointKey(s);
-    if (!dotsPlaced.has(key)) {
-      dotsPlaced.add(key);
-      const dot = new maplibregl.Marker({ element: elFromHtml('<div class="marker-dot"></div>'), anchor: 'center' })
-        .setLngLat([s.lon, s.lat])
-        .addTo(map);
-      map._earMarkers.push(dot);
-    }
 
-    const marker = new maplibregl.Marker({ element: el, anchor: 'center', offset: [0, -22] })
+    const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
       .setLngLat([s.lon, s.lat])
       .addTo(map);
     // A tap opens the stop's card. Stopped here, so the map underneath does
@@ -11706,6 +11902,7 @@ function mapCardHtml() {
   }
 
   const meta = stopKindMeta(stop);
+  const info = meta ? null : getGlobaleInfo(stop);
   const settled = !!stop.outcome;
   const ticks = stop.kind === 'customer' || isCheckpoint(stop);
   const tickLabel = settled ? 'Stopp wieder öffnen' : meta ? 'Als erledigt markieren' : 'Als geliefert markieren';
@@ -11729,6 +11926,8 @@ function mapCardHtml() {
         ${ticks ? `<button type="button" onclick="toggleDelivered(${stop.id}, ${!settled})" aria-pressed="${settled}" aria-label="${tickLabel}" title="${tickLabel}" class="tap-target press-95 shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-[20px] shadow-sm ${tickClass}">${tickIcon}</button>` : ''}
         ${close}
       </div>
+      ${info?.stockwerk && !meta ? `<p class="now-fact"><span>${ICONS.stairs}</span><span style="font-weight:600">${escapeHtml(formatFloor(info.stockwerk))}</span></p>` : ''}
+      ${info?.notiz && !meta ? `<p class="now-fact warn"><span>${ICONS.customerNote}</span><span style="font-style:italic">${escapeHtml(info.notiz)}</span></p>` : ''}
       ${outcome ? `<p class="now-fact warn"><span>${stop.outcome === 'notHome' ? ICONS.bellOff : ICONS.box}</span><span>${escapeHtml(outcome)}</span></p>` : ''}
       ${paket ? `<p class="now-fact"><span>${ICONS.box}</span><span style="font-weight:600">${escapeHtml(paket)}</span></p>` : ''}
       ${stop.notiz && !meta ? `<p class="now-fact"><span>${ICONS.note}</span><span>${escapeHtml(stop.notiz)}</span></p>` : ''}
@@ -12383,32 +12582,12 @@ window.addEventListener('pageshow', refreshOnResume);
 if (window.matchMedia) {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (mapTabMap) {
-      if (mapTabMap._earBasemap === 'aerial') {
-        if (mapTabMap.getLayer('route-line-casing')) {
-          mapTabMap.setPaintProperty('route-line-casing', 'line-color', isDarkMode() ? '#000000' : '#ffffff');
-        }
-        if (mapTabMap.getLayer('route-line')) {
-          mapTabMap.setPaintProperty('route-line', 'line-color', isDarkMode() ? '#0A84FF' : '#007AFF');
-        }
-      } else {
-        mapTabMap._earStyleReady = false;
-        mapTabMap._earBasemapMounted = false;
-        mapTabMap._earRouteLayersMounted = false;
-        mapTabMap._earRouteDrawn = false;
-        mapTabMap._earLastSignature = null;
-        mapTabMap._earVectorLayers = null;
-        mapTabMap._earBackgroundLayer = null;
-        mapTabMap._earBackgroundColor = null;
-        mapTabMap.setStyle(mapStyleUrl());
+      if (mapTabMap.getLayer('route-line-casing')) {
+        mapTabMap.setPaintProperty('route-line-casing', 'line-color', isDarkMode() ? '#000000' : '#ffffff');
       }
-    }
-    if (typeof pinDropMap !== 'undefined' && pinDropMap && pinDropMap._earBasemap !== 'aerial') {
-      pinDropMap._earStyleReady = false;
-      pinDropMap._earBasemapMounted = false;
-      pinDropMap._earVectorLayers = null;
-      pinDropMap._earBackgroundLayer = null;
-      pinDropMap._earBackgroundColor = null;
-      pinDropMap.setStyle(mapStyleUrl());
+      if (mapTabMap.getLayer('route-line')) {
+        mapTabMap.setPaintProperty('route-line', 'line-color', isDarkMode() ? '#0A84FF' : '#007AFF');
+      }
     }
   });
 }

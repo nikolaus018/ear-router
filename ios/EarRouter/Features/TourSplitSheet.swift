@@ -460,8 +460,7 @@ struct SplitState: Identifiable {
         if !rest.isEmpty { parts.append("\"unassigned\" : \(try json(sharedStops(rest)))") }
         let body = "{\n" + parts.joined(separator: ",\n") + "\n}\n"
 
-        let dir = URL.temporaryDirectory.appending(path: "TourTeilen", directoryHint: .isDirectory)
-        try? FileManager.default.removeItem(at: dir)
+        let dir = URL.temporaryDirectory.appending(path: "TourTeilen-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         let base = tourName.trimmed.replacingOccurrences(of: "/", with: "-")
