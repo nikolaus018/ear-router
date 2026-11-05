@@ -2811,8 +2811,13 @@ video {
     color: #FF9F0A !important;
     border: 1px solid rgba(255, 159, 10, 0.3) !important;
   }
-  #route-menu [aria-hidden="true"] {
+  #route-menu .route-menu-divider,
+  #route-menu div[aria-hidden="true"] {
     background: rgba(255, 255, 255, 0.08) !important;
+  }
+  #route-menu svg,
+  #route-menu [role="menuitem"] span {
+    background: transparent !important;
   }
   /* Tour aufteilen (#split-screen) */
   #split-screen {
@@ -10351,18 +10356,16 @@ function pointKey(s) {
 // a marker `offset`, so it holds its distance at every zoom instead of
 // drifting as the map scales.
 //
-// A lone badge gets pushed straight up, clear of the dot marking the door.
-// Badges that would land on top of each other fan out evenly around the
-// group's shared centre.
+// Teardrop pins are anchored at their bottom tip (`anchor: 'bottom'`).
+// When multiple customers share an address or building entrance, pins fan
+// out horizontally side-by-side (`y = 0`) so every pin's tip remains
+// aligned with the building baseline rather than shifting vertically
+// onto neighbor lots or streets.
 function badgeOffset(i, n) {
   if (n <= 1) return [0, 0];
-  // Grows with the group so five-plus badges don't crowd each other back
-  // into the clump the fan exists to break up.
-  const radius = n <= 4 ? 26 : 26 + (n - 4) * 4;
-  // Starts at 12 o'clock and goes clockwise, so a pair reads as one above
-  // and one below the door rather than an arbitrary diagonal.
-  const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n;
-  return [Math.cos(angle) * radius, Math.sin(angle) * radius];
+  const spacing = n <= 2 ? 22 : n <= 4 ? 18 : 14;
+  const x = Math.round((i - (n - 1) / 2) * spacing);
+  return [x, 0];
 }
 
 // Apple Maps teardrop marker pin with vector balloon shape and centered glyph/icon.
@@ -10392,7 +10395,13 @@ const FAN_MIN_ZOOM = 15;
 function relayoutStopMarkers(map) {
   const badges = map._earBadges || [];
   if (!badges.length) return;
-  const radius = map.getZoom() >= FAN_MIN_ZOOM ? FAN_CLUSTER_PX : 0.5;
+  // Below street level, keep pins cleanly stacked at [0, 0] at their exact
+  // coordinates. Fanning out while zoomed out scatters pins across whole
+  // districts and makes them appear misaligned.
+  if (map.getZoom() < FAN_MIN_ZOOM) {
+    for (const b of badges) b.marker.setOffset([0, 0]);
+    return;
+  }
   const pts = badges.map((b) => {
     const p = map.project(b.lngLat);
     return { b, x: p.x, y: p.y, taken: false };
@@ -10400,17 +10409,16 @@ function relayoutStopMarkers(map) {
   for (const seed of pts) {
     if (seed.taken) continue;
     // `seed` is still untaken here, so it heads its own cluster.
-    const cluster = pts.filter((q) => !q.taken && Math.hypot(q.x - seed.x, q.y - seed.y) <= radius);
+    const cluster = pts.filter((q) => !q.taken && Math.hypot(q.x - seed.x, q.y - seed.y) <= FAN_CLUSTER_PX);
     for (const q of cluster) q.taken = true;
     if (cluster.length === 1) {
       cluster[0].b.marker.setOffset([0, 0]);
       continue;
     }
     const cx = cluster.reduce((sum, q) => sum + q.x, 0) / cluster.length;
-    const cy = cluster.reduce((sum, q) => sum + q.y, 0) / cluster.length;
     cluster.forEach((q, idx) => {
       const [fx, fy] = badgeOffset(idx, cluster.length);
-      const off = [Math.round(cx - q.x + fx), Math.round(cy - q.y + fy)];
+      const off = [Math.round(cx - q.x + fx), fy];
       q.b.marker.setOffset(off);
     });
   }
@@ -12812,7 +12820,7 @@ function renderRouteMenu() {
   const off = (iconSvg, label) => `<button disabled role="menuitem" aria-disabled="true" class="w-full flex items-center gap-3 text-left px-4 py-3 text-[15px]" style="opacity:.35">
     <span class="w-5 flex shrink-0 text-black/55">${iconSvg}</span>${label}
   </button>`;
-  const gap = `<div aria-hidden="true" style="height:6px; background:rgba(0,0,0,.06)"></div>`;
+  const gap = `<div class="route-menu-divider" aria-hidden="true" style="height:6px; background:rgba(0,0,0,.06)"></div>`;
   const settled = r.stops.some((s) => s.outcome);
   return `
     <div id="route-menu" role="menu" aria-label="Weitere Aktionen" style="width: 17rem; max-height: 75vh; overflow-y: auto" class="hidden absolute right-0 top-10 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl z-30 divide-y divide-black/10">
