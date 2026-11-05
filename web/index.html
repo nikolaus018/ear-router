@@ -213,7 +213,21 @@
   .maplibregl-popup-content { background: #fff; color: #111; border-radius: .75rem; font-size: 12px; line-height: 1.5; padding: 10px 12px; box-shadow: 0 4px 20px rgba(0,0,0,.18); }
   .maplibregl-popup-tip { border-top-color: #fff !important; border-bottom-color: #fff !important; }
 
-  /* Apple Maps style teardrop pins */
+  /* Apple Maps style teardrop pins.
+     MapLibre positions the root marker element (`.ear-pin-host`) via inline
+     `style="transform: translate(-50%, -100%) translate(Xpx, Ypx)"`.
+     All scale animations and `:active` transitions MUST live on the inner
+     `.apple-pin-wrap` child so they never overwrite or transition MapLibre's
+     own `transform` on `.ear-pin-host` (which would pin `.next` or pressed
+     markers at top-left `(0, 0)` and make markers lag behind map pans). */
+  .ear-pin-host {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+  .ear-pin-host.is-next {
+    z-index: 10;
+  }
   .apple-pin-wrap {
     position: relative;
     width: 30px;
@@ -222,6 +236,7 @@
     align-items: center;
     justify-content: center;
     filter: drop-shadow(0 2.5px 3.5px rgba(0,0,0,0.35));
+    transform-origin: bottom center;
     transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
     cursor: pointer;
     user-select: none;
@@ -471,352 +486,6 @@
     .large-title, .compact-title { transition-duration: .01ms !important; }
     .press-98:active, .press-95:active { transform: none; }
     html { scroll-behavior: auto !important; }
-  }
-
-  /* ------------------------------------------------------------------
-     Dark Mode — follows iOS system settings (Settings > Display & Brightness).
-     Mirrors the native iOS app (see Theme.swift & Apple HIG):
-     - #000000 grouped background (System Grouped Background)
-     - #1C1C1E card and row surfaces (Secondary System Grouped Background)
-     - #2C2C2E elevated tertiary surfaces / pressed / segmented controls
-     - #0A84FF Apple dark mode system blue accent (see AccentColor.colorset)
-     - #30D158 Apple dark mode system green (delivered)
-     - #FF9F0A Apple dark mode system orange (attention/exceptions)
-     - #FF453A Apple dark mode system red (destructive/danger)
-     - #8E8E93 Apple dark mode system gray (fixtures/secondary)
-     - White and translucent white typography matching Apple HIG
-     ------------------------------------------------------------------ */
-  @media (prefers-color-scheme: dark) {
-    html, body {
-      background: #000000 !important;
-      color: #FFFFFF !important;
-    }
-    #splash {
-      background: #000000 !important;
-      color: #FFFFFF !important;
-    }
-    .sticky.top-0,
-    .bg-\[\#F2F2F7\]\/85 {
-      background-color: rgba(0, 0, 0, 0.82) !important;
-      border-color: rgba(255, 255, 255, 0.12) !important;
-      -webkit-backdrop-filter: blur(20px);
-      backdrop-filter: blur(20px);
-    }
-    .bg-\[\#F2F2F7\] {
-      background-color: #000000 !important;
-    }
-    .sheet-panel, .alert-panel {
-      background: #1C1C1E !important;
-      color: #FFFFFF !important;
-    }
-    .sheet-panel .bg-white {
-      background-color: #2C2C2E !important;
-      border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    }
-    .sheet-panel input, .sheet-panel select, .sheet-panel textarea {
-      background-color: #3A3A3C !important;
-      border: 1px solid rgba(255, 255, 255, 0.18) !important;
-    }
-    .sheet-actions {
-      background: linear-gradient(to bottom, rgba(28,28,30,0), #1C1C1E 22%) !important;
-    }
-    .w-9.h-1\.5.bg-black\/15 {
-      background-color: rgba(255, 255, 255, 0.32) !important;
-    }
-    .bg-white {
-      background-color: #1C1C1E !important;
-      color: #FFFFFF !important;
-    }
-    nav.fixed.bottom-0 {
-      background-color: rgba(28, 28, 30, 0.88) !important;
-      border-color: rgba(255, 255, 255, 0.12) !important;
-      -webkit-backdrop-filter: blur(20px);
-      backdrop-filter: blur(20px);
-    }
-    .border-black\/10, .border-black\/5, .border-black\/15, .border-black\/20 {
-      border-color: rgba(255, 255, 255, 0.12) !important;
-    }
-    .divide-black\/5 > :not([hidden]) ~ :not([hidden]),
-    .divide-black\/10 > :not([hidden]) ~ :not([hidden]) {
-      border-color: rgba(255, 255, 255, 0.12) !important;
-    }
-    .text-black {
-      color: #FFFFFF !important;
-    }
-    .text-black\/90, .text-black\/80, .text-black\/75, .text-black\/70 {
-      color: rgba(255, 255, 255, 0.88) !important;
-    }
-    .text-black\/60, .text-black\/55, .text-black\/50 {
-      color: rgba(235, 235, 245, 0.6) !important;
-    }
-    .text-black\/40, .text-black\/35, .text-black\/30 {
-      color: rgba(235, 235, 245, 0.55) !important;
-    }
-    .text-black\/25, .text-black\/20, .text-black\/15 {
-      color: rgba(235, 235, 245, 0.35) !important;
-    }
-    .border-black\/45 {
-      border-color: rgba(255, 255, 255, 0.38) !important;
-    }
-    .text-warnText, .text-warn {
-      color: #FF9F0A !important;
-    }
-    .bg-warn\/10, .bg-warn\/15 {
-      background-color: rgba(255, 159, 10, 0.16) !important;
-    }
-    .text-brand-700 {
-      color: #0A84FF !important;
-    }
-    .text-emerald-700 {
-      color: #30D158 !important;
-    }
-    .bg-emerald-50\/95, .bg-emerald-50 {
-      background-color: rgba(48, 209, 88, 0.18) !important;
-    }
-    .text-red-700, .text-red-600 {
-      color: #FF453A !important;
-    }
-    .bg-red-50\/95, .bg-red-50 {
-      background-color: rgba(255, 69, 58, 0.18) !important;
-    }
-    [style*="color:#1B6B32"], [style*="color:#248A3D"] {
-      color: #30D158 !important;
-    }
-    [style*="background:rgba(52,199,89"] {
-      background-color: rgba(48, 209, 88, 0.18) !important;
-    }
-    [style*="color:#D70015"] {
-      color: #FF453A !important;
-    }
-    [style*="color:#C93400"], [style*="color:#FF9500"] {
-      color: #FF9F0A !important;
-    }
-    .bg-black\/5 {
-      background-color: rgba(255, 255, 255, 0.08) !important;
-    }
-    .bg-black\/10 {
-      background-color: rgba(255, 255, 255, 0.14) !important;
-    }
-    input, textarea, select {
-      color: #FFFFFF !important;
-      background-color: #2C2C2E !important;
-      border: 1px solid rgba(255, 255, 255, 0.14) !important;
-    }
-    input:focus, textarea:focus, select:focus {
-      border-color: #0A84FF !important;
-      outline: none !important;
-    }
-    input::placeholder, textarea::placeholder {
-      color: rgba(235, 235, 245, 0.45) !important;
-    }
-    .now-card, .map-card, .choice, .km-field, .sheet-note:not(.warn), [data-gourmet] {
-      background: #1C1C1E !important;
-      color: #FFFFFF !important;
-    }
-    .now-name {
-      color: #FFFFFF !important;
-    }
-    .now-address {
-      color: rgba(235, 235, 245, 0.75) !important;
-    }
-    .now-fact > span:first-child, .now-caption, .now-carry p span {
-      color: rgba(235, 235, 245, 0.6) !important;
-    }
-    .now-carry-title {
-      color: #0A84FF !important;
-    }
-    .now-fact.warn, .now-fact.warn > span:first-child {
-      color: #FF9F0A !important;
-    }
-    .copy-btn {
-      color: #0A84FF !important;
-    }
-    .copy-btn.copied {
-      color: #30D158 !important;
-    }
-    .wide-btn.quiet {
-      background: rgba(120, 120, 128, 0.28) !important;
-      color: #FFFFFF !important;
-    }
-    .wide-btn.done {
-      background: rgba(48, 209, 88, 0.22) !important;
-      color: #30D158 !important;
-    }
-    .wide-btn.accent, .now-badge, .row-num.next, .day-chip.on,
-    .lade-parcels.many, .preflight-action, .choice.primary,
-    .bg-brand-600 {
-      background-color: #0A84FF !important;
-      color: #FFFFFF !important;
-    }
-    .text-brand-600, #undo-banner button, .pick-bar button {
-      color: #0A84FF !important;
-    }
-    .bg-brand-50 {
-      background-color: rgba(10, 132, 255, 0.18) !important;
-      color: #0A84FF !important;
-    }
-    .bg-brand-50\/60 {
-      background-color: rgba(10, 132, 255, 0.14) !important;
-    }
-    .focus\:ring-brand-600:focus, .focus-visible\:ring-brand-600:focus-visible {
-      --tw-ring-color: #0A84FF !important;
-    }
-    .choice-icon, .reorder-btn {
-      background: rgba(120, 120, 128, 0.24) !important;
-      color: #0A84FF !important;
-    }
-    .choice-sub {
-      color: rgba(235, 235, 245, 0.7) !important;
-    }
-    .day-chip:not(.on) {
-      background: #1C1C1E !important;
-      color: rgba(235, 235, 245, 0.8) !important;
-    }
-    .seg {
-      background: rgba(120, 120, 128, 0.28) !important;
-    }
-    .seg-btn {
-      color: rgba(235, 235, 245, 0.6) !important;
-    }
-    .seg-btn.on {
-      background: #2C2C2E !important;
-      color: #FFFFFF !important;
-      box-shadow: 0 1px 3px rgba(0,0,0,.4) !important;
-    }
-    #undo-banner > div {
-      background: rgba(28, 28, 30, 0.94) !important;
-      color: #FFFFFF !important;
-      border: 1px solid rgba(255, 255, 255, 0.12) !important;
-    }
-    .maplibregl-popup-content {
-      background: #1C1C1E !important;
-      color: #FFFFFF !important;
-      box-shadow: 0 4px 20px rgba(0,0,0,.5) !important;
-    }
-    .maplibregl-popup-tip {
-      border-top-color: #1C1C1E !important;
-      border-bottom-color: #1C1C1E !important;
-    }
-    .maplibregl-ctrl-group {
-      background: rgba(28, 28, 30, 0.94) !important;
-      box-shadow: 0 2px 12px rgba(0,0,0,.5) !important;
-    }
-    .maplibregl-ctrl-group button svg path {
-      fill: #FFFFFF !important;
-    }
-    .maplibregl-ctrl-group button + button {
-      border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
-    }
-    .maplibregl-ctrl-attrib {
-      background: rgba(28, 28, 30, 0.7) !important;
-      color: rgba(235, 235, 245, 0.6) !important;
-    }
-    .maplibregl-ctrl-attrib a {
-      color: rgba(235, 235, 245, 0.8) !important;
-    }
-    .map-fit {
-      background: rgba(28, 28, 30, 0.92) !important;
-      color: #FFFFFF !important;
-    }
-    .basemap-toggle {
-      color: #FFFFFF !important;
-    }
-    .maplibregl-popup-content {
-      background: #1C1C1E !important;
-      color: #FFFFFF !important;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
-    }
-    .maplibregl-popup-tip {
-      border-top-color: #1C1C1E !important;
-      border-bottom-color: #1C1C1E !important;
-    }
-    .marker-fixed {
-      background: #1C1C1E !important;
-      color: #E5E5EA !important;
-      border-color: #636366 !important;
-    }
-    .marker-door {
-      background: #1C1C1E !important;
-      color: #E5E5EA !important;
-      border-color: #636366 !important;
-    }
-    .marker-badge.next {
-      box-shadow: 0 0 0 0 rgba(10, 132, 255, .45), 0 2px 8px rgba(0,0,0,.6);
-    }
-    @keyframes nextHalo {
-      0% { box-shadow: 0 0 0 0 rgba(10, 132, 255, .45), 0 2px 8px rgba(0,0,0,.6); }
-      70%, 100% { box-shadow: 0 0 0 14px rgba(10, 132, 255, 0), 0 2px 8px rgba(0,0,0,.6); }
-    }
-    .row-num {
-      background: rgba(120, 120, 128, 0.28) !important;
-      color: rgba(235, 235, 245, 0.85) !important;
-    }
-    .row-num.done {
-      background: rgba(120, 120, 128, 0.18) !important;
-      color: rgba(235, 235, 245, 0.4) !important;
-    }
-    .reorder-num {
-      background: rgba(120, 120, 128, 0.28) !important;
-      color: #FFFFFF !important;
-    }
-    .lade-parcels {
-      background: rgba(10, 132, 255, 0.18) !important;
-      color: #7CC4FA !important;
-    }
-    .spinner {
-      border-top-color: #0A84FF !important;
-    }
-    #route-map, #pin-map {
-      background: #f8f4f0 !important;
-    }
-    [data-map-loading] {
-      background-color: #f8f4f0 !important;
-    }
-    [data-map-loading] p {
-      color: rgba(0, 0, 0, 0.6) !important;
-    }
-    .bg-white\/90, .bg-white\/95 {
-      background-color: rgba(44, 44, 46, 0.92) !important;
-      color: rgba(255, 255, 255, 0.88) !important;
-    }
-    .bg-amber-50, .bg-amber-100 {
-      background-color: rgba(255, 159, 10, 0.16) !important;
-    }
-    .border-amber-200, .border-amber-300 {
-      border-color: rgba(255, 159, 10, 0.35) !important;
-    }
-    .text-amber-800, .text-amber-900, .text-amber-700 {
-      color: #FF9F0A !important;
-    }
-    /* Floating progress pill */
-    #progress-pill {
-      background: rgba(28, 28, 30, 0.95) !important;
-      border-color: rgba(255, 255, 255, 0.12) !important;
-    }
-    #progress-pill-text {
-      color: #FFFFFF !important;
-    }
-    .sheet-lead, .sheet-foot, .sheet-busy, .eta-line, .pick-bar {
-      color: rgba(235, 235, 245, 0.65) !important;
-    }
-    .review-fact {
-      color: rgba(235, 235, 245, 0.88) !important;
-    }
-    .review-fact > span:first-child, .review-x {
-      color: rgba(235, 235, 245, 0.55) !important;
-    }
-    .sheet-note.warn {
-      background: rgba(255, 159, 10, 0.16) !important;
-      color: #FF9F0A !important;
-      border: 1px solid rgba(255, 159, 10, 0.3) !important;
-    }
-    #split-panel {
-      background: #1C1C1E !important;
-      color: #FFFFFF !important;
-    }
-    #split-panel p, #split-panel span:not([style*="background"]) {
-      color: rgba(235, 235, 245, 0.75) !important;
-    }
   }
 </style>
 
@@ -2747,6 +2416,398 @@ video {
 
 .disabled\:opacity-40:disabled {
   opacity: 0.4;
+}
+
+/* ------------------------------------------------------------------
+   Dark Mode — follows iOS system settings (Settings > Display & Brightness).
+   Placed AFTER the compiled Tailwind utilities so dark-mode overrides
+   cleanly win the cascade.
+   Mirrors the native iOS app (see Theme.swift & Apple HIG):
+   - #000000 grouped background (systemGroupedBackground)
+   - #1C1C1E card / row / sheet background (secondarySystemGroupedBackground)
+   - #2C2C2E elevated card / group / field inside sheets (tertiarySystemGroupedBackground)
+   - #0A84FF Apple dark mode system blue accent
+   - #30D158 Apple dark mode system green (delivered)
+   - #FF9F0A Apple dark mode system orange (attention/exceptions)
+   - #FF453A Apple dark mode system red (destructive/danger)
+   ------------------------------------------------------------------ */
+@media (prefers-color-scheme: dark) {
+  html, body {
+    color-scheme: dark;
+    background: #000000 !important;
+    color: #FFFFFF !important;
+  }
+  #splash {
+    background: #000000 !important;
+    color: #FFFFFF !important;
+  }
+  .sticky.top-0,
+  .bg-\[\#F2F2F7\]\/85 {
+    background-color: rgba(0, 0, 0, 0.82) !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+  }
+  .bg-\[\#F2F2F7\] {
+    background-color: #000000 !important;
+  }
+  .sheet-backdrop,
+  .bg-black\/30 {
+    background-color: rgba(0, 0, 0, 0.6) !important;
+  }
+  .sheet-panel {
+    background: #1C1C1E !important;
+    color: #FFFFFF !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .alert-panel {
+    background: #2C2C2E !important;
+    color: #FFFFFF !important;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .bg-white {
+    background-color: #1C1C1E !important;
+  }
+  .bg-white\/90, .bg-white\/95 {
+    background-color: rgba(44, 44, 46, 0.94) !important;
+  }
+  .now-card, .map-card, .choice:not(.primary), .km-field, .sheet-note:not(.warn) {
+    background-color: #1C1C1E !important;
+    color: #FFFFFF !important;
+  }
+  .map-card {
+    background-color: rgba(28, 28, 30, 0.94) !important;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  /* Elevated surfaces inside bottom sheets (#2C2C2E on #1C1C1E sheet-panel) */
+  .sheet-panel .bg-white,
+  .sheet-panel .now-card,
+  .sheet-panel .choice:not(.primary),
+  .sheet-panel .km-field,
+  .sheet-panel .sheet-note:not(.warn) {
+    background-color: #2C2C2E !important;
+  }
+  .day-chip:not(.on) {
+    background-color: #2C2C2E !important;
+    color: rgba(235, 235, 245, 0.85) !important;
+  }
+  .sheet-actions {
+    background: linear-gradient(to bottom, rgba(28, 28, 30, 0), #1C1C1E 22%) !important;
+  }
+  .bg-black\/15,
+  .w-9.h-1\.5.bg-black\/15 {
+    background-color: rgba(255, 255, 255, 0.32) !important;
+  }
+  nav.fixed.bottom-0 {
+    background-color: rgba(28, 28, 30, 0.88) !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+  }
+  .border-black\/10, .border-black\/5, .border-black\/15, .border-black\/20 {
+    border-color: rgba(255, 255, 255, 0.12) !important;
+  }
+  .divide-black\/5 > :not([hidden]) ~ :not([hidden]),
+  .divide-black\/10 > :not([hidden]) ~ :not([hidden]) {
+    border-color: rgba(255, 255, 255, 0.12) !important;
+  }
+  .text-black {
+    color: #FFFFFF !important;
+  }
+  .text-black\/90, .text-black\/80, .text-black\/75, .text-black\/70 {
+    color: rgba(255, 255, 255, 0.88) !important;
+  }
+  .text-black\/60, .text-black\/55, .text-black\/50 {
+    color: rgba(235, 235, 245, 0.62) !important;
+  }
+  .text-black\/40, .text-black\/35, .text-black\/30 {
+    color: rgba(235, 235, 245, 0.5) !important;
+  }
+  .text-black\/25, .text-black\/20, .text-black\/15 {
+    color: rgba(235, 235, 245, 0.35) !important;
+  }
+  .border-black\/45 {
+    border-color: rgba(255, 255, 255, 0.42) !important;
+  }
+  .pick-num:not(.on) {
+    border-color: rgba(255, 255, 255, 0.38) !important;
+  }
+  .text-warnText, .text-warn {
+    color: #FF9F0A !important;
+  }
+  .bg-warn\/10, .bg-warn\/15 {
+    background-color: rgba(255, 159, 10, 0.18) !important;
+  }
+  .text-brand-700, .text-brand-600, #undo-banner button, .pick-bar button {
+    color: #0A84FF !important;
+  }
+  .text-emerald-700 {
+    color: #30D158 !important;
+  }
+  .bg-emerald-50\/95, .bg-emerald-50 {
+    background-color: rgba(48, 209, 88, 0.18) !important;
+  }
+  .text-red-700, .text-red-600 {
+    color: #FF453A !important;
+  }
+  .bg-red-50\/95, .bg-red-50 {
+    background-color: rgba(255, 69, 58, 0.18) !important;
+  }
+  [style*="color:#1B6B32"], [style*="color:#248A3D"] {
+    color: #30D158 !important;
+  }
+  [style*="background:rgba(52,199,89"] {
+    background-color: rgba(48, 209, 88, 0.18) !important;
+  }
+  [style*="color:#D70015"] {
+    color: #FF453A !important;
+  }
+  [style*="color:#C93400"], [style*="color:#FF9500"] {
+    color: #FF9F0A !important;
+  }
+  .bg-black\/5,
+  .bg-black\/\[0\.06\],
+  .bg-black\/\[0\.07\],
+  .bg-black\/\[0\.08\] {
+    background-color: rgba(118, 118, 128, 0.24) !important;
+  }
+  .bg-black\/10 {
+    background-color: rgba(118, 118, 128, 0.32) !important;
+  }
+  .active\:bg-black\/5:active {
+    background-color: rgba(255, 255, 255, 0.08) !important;
+  }
+  /* Form controls — keep inline transparent pickers, `.km-field input`,
+     `.day-chip input`, and checkboxes unboxed. */
+  input:not([type="checkbox"]):not(.bg-transparent):not(.km-field input):not(.day-chip input),
+  textarea,
+  select:not(.bg-transparent) {
+    color: #FFFFFF !important;
+    background-color: #2C2C2E !important;
+    border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  }
+  .sheet-panel input:not([type="checkbox"]):not(.bg-transparent):not(.km-field input):not(.day-chip input),
+  .sheet-panel textarea,
+  .sheet-panel select:not(.bg-transparent) {
+    background-color: #3A3A3C !important;
+    border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  }
+  .km-field input,
+  input.bg-transparent,
+  select.bg-transparent {
+    color: #FFFFFF !important;
+    background-color: transparent !important;
+    border: 0 !important;
+  }
+  .km-field label,
+  .km-field span {
+    color: rgba(235, 235, 245, 0.6) !important;
+  }
+  input[type="checkbox"] {
+    accent-color: #0A84FF;
+  }
+  input:not([type="checkbox"]):not(.bg-transparent):not(.km-field input):not(.day-chip input):focus,
+  textarea:focus,
+  select:not(.bg-transparent):focus {
+    border-color: #0A84FF !important;
+    outline: none !important;
+  }
+  input::placeholder,
+  textarea::placeholder,
+  .placeholder\:text-black\/55::placeholder,
+  .placeholder\:text-black\/55::-moz-placeholder {
+    color: rgba(235, 235, 245, 0.45) !important;
+  }
+  .now-name {
+    color: #FFFFFF !important;
+  }
+  .now-address {
+    color: rgba(235, 235, 245, 0.78) !important;
+  }
+  .now-fact > span:first-child, .now-caption, .now-carry p span {
+    color: rgba(235, 235, 245, 0.6) !important;
+  }
+  .now-carry-title {
+    color: #0A84FF !important;
+  }
+  .now-fact.warn, .now-fact.warn > span:first-child,
+  .review-fact.warn, .review-fact.warn > span:first-child {
+    color: #FF9F0A !important;
+  }
+  .copy-btn {
+    color: #0A84FF !important;
+  }
+  .copy-btn.copied {
+    color: #30D158 !important;
+  }
+  .wide-btn.quiet {
+    background: rgba(120, 120, 128, 0.28) !important;
+    color: #FFFFFF !important;
+  }
+  .wide-btn.done {
+    background: rgba(48, 209, 88, 0.22) !important;
+    color: #30D158 !important;
+  }
+  .wide-btn.accent, .now-badge, .row-num.next, .day-chip.on,
+  .lade-parcels.many, .preflight-action, .choice.primary,
+  .bg-brand-600 {
+    background-color: #0A84FF !important;
+    color: #FFFFFF !important;
+  }
+  .bg-brand-50 {
+    background-color: rgba(10, 132, 255, 0.18) !important;
+    color: #0A84FF !important;
+  }
+  .bg-brand-50\/60 {
+    background-color: rgba(10, 132, 255, 0.14) !important;
+  }
+  .focus\:ring-brand-600:focus, .focus-visible\:ring-brand-600:focus-visible {
+    --tw-ring-color: #0A84FF !important;
+  }
+  .choice-icon, .reorder-btn {
+    background: rgba(120, 120, 128, 0.24) !important;
+    color: #0A84FF !important;
+  }
+  .choice-sub {
+    color: rgba(235, 235, 245, 0.72) !important;
+  }
+  .seg {
+    background: rgba(120, 120, 128, 0.28) !important;
+  }
+  .seg-btn {
+    color: rgba(235, 235, 245, 0.65) !important;
+  }
+  .seg-btn.on {
+    background: #3A3A3C !important;
+    color: #FFFFFF !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4) !important;
+  }
+  #undo-banner > div {
+    background: rgba(28, 28, 30, 0.94) !important;
+    color: #FFFFFF !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  }
+  .maplibregl-popup-content {
+    background: #1C1C1E !important;
+    color: #FFFFFF !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
+  }
+  .maplibregl-popup-tip {
+    border-top-color: #1C1C1E !important;
+    border-bottom-color: #1C1C1E !important;
+  }
+  .maplibregl-ctrl-group {
+    background: rgba(28, 28, 30, 0.94) !important;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5) !important;
+  }
+  .maplibregl-ctrl-group button svg path {
+    fill: #FFFFFF !important;
+  }
+  .maplibregl-ctrl-group button + button {
+    border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
+  }
+  .maplibregl-ctrl-attrib {
+    background: rgba(28, 28, 30, 0.7) !important;
+    color: rgba(235, 235, 245, 0.6) !important;
+  }
+  .maplibregl-ctrl-attrib a {
+    color: rgba(235, 235, 245, 0.8) !important;
+  }
+  .map-fit {
+    background: rgba(28, 28, 30, 0.92) !important;
+    color: #FFFFFF !important;
+  }
+  .basemap-toggle {
+    color: #FFFFFF !important;
+  }
+  .marker-fixed,
+  .marker-door {
+    background: #1C1C1E !important;
+    color: #E5E5EA !important;
+    border-color: #636366 !important;
+  }
+  .row-num {
+    background: rgba(120, 120, 128, 0.28) !important;
+    color: rgba(235, 235, 245, 0.85) !important;
+  }
+  .row-num.done {
+    background: rgba(120, 120, 128, 0.18) !important;
+    color: rgba(235, 235, 245, 0.4) !important;
+  }
+  .reorder-num {
+    background: rgba(120, 120, 128, 0.28) !important;
+    color: #FFFFFF !important;
+  }
+  .lade-parcels:not(.many) {
+    background: rgba(10, 132, 255, 0.18) !important;
+    color: #7CC4FA !important;
+  }
+  .spinner {
+    border-top-color: #0A84FF !important;
+  }
+  #route-map, #pin-map {
+    background: #1C1C1E !important;
+  }
+  [data-map-loading] {
+    background-color: #1C1C1E !important;
+  }
+  [data-map-loading] p {
+    color: rgba(235, 235, 245, 0.6) !important;
+  }
+  .bg-amber-50, .bg-amber-100 {
+    background-color: rgba(255, 159, 10, 0.16) !important;
+  }
+  .border-amber-200, .border-amber-300 {
+    border-color: rgba(255, 159, 10, 0.35) !important;
+  }
+  .text-amber-800, .text-amber-900, .text-amber-700 {
+    color: #FF9F0A !important;
+  }
+  #progress-pill {
+    background: rgba(28, 28, 30, 0.95) !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+  }
+  #progress-pill-text {
+    color: #FFFFFF !important;
+  }
+  .sheet-lead, .sheet-foot, .sheet-busy, .eta-line, .pick-bar {
+    color: rgba(235, 235, 245, 0.65) !important;
+  }
+  .review-fact {
+    color: rgba(235, 235, 245, 0.88) !important;
+  }
+  .review-fact > span:first-child, .review-x {
+    color: rgba(235, 235, 245, 0.55) !important;
+  }
+  .sheet-note.warn {
+    background: rgba(255, 159, 10, 0.16) !important;
+    color: #FF9F0A !important;
+    border: 1px solid rgba(255, 159, 10, 0.3) !important;
+  }
+  #route-menu [aria-hidden="true"] {
+    background: rgba(255, 255, 255, 0.08) !important;
+  }
+  /* Tour aufteilen (#split-screen) */
+  #split-screen {
+    background: #000000 !important;
+  }
+  #split-screen [style*="rgba(255,255,255,.94)"] {
+    background: rgba(28, 28, 30, 0.92) !important;
+    color: #FFFFFF !important;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  #split-panel {
+    background: #1C1C1E !important;
+    color: #FFFFFF !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  #split-panel [style*="color:rgba(0,0,0,.6)"] {
+    color: rgba(235, 235, 245, 0.65) !important;
+  }
+  #split-panel button[style*="rgba(120,120,128"] {
+    background: rgba(120, 120, 128, 0.24) !important;
+    color: #FFFFFF !important;
+  }
 }
 </style>
 </head>
@@ -10124,15 +10185,20 @@ function badgeOffset(i, n) {
 }
 
 // Apple Maps teardrop marker pin with vector balloon shape and centered glyph/icon.
+// Wrapped in `.ear-pin-host` so MapLibre's inline `transform: translate(...)`
+// on the root marker element never collides with `.apple-pin-wrap`'s scale
+// animation or `:active` transform.
 function applePinHtml(bg, glyph, isNext = false, isWarn = false) {
   const strokeColor = isWarn ? '#FF9500' : '#FFFFFF';
   const strokeWidth = isWarn ? '2.5' : '2';
   return `
-    <div class="apple-pin-wrap${isNext ? ' next' : ''}">
-      <svg class="apple-pin-shape" viewBox="0 0 30 38" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M 15 36.5 C 14 35 2.5 22 2.5 14.5 A 12.5 12.5 0 1 1 27.5 14.5 C 27.5 22 16 35 15 36.5 Z" fill="${bg}" stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-linejoin="round"/>
-      </svg>
-      <div class="apple-pin-content">${glyph}</div>
+    <div class="ear-pin-host${isNext ? ' is-next' : ''}">
+      <div class="apple-pin-wrap${isNext ? ' next' : ''}">
+        <svg class="apple-pin-shape" viewBox="0 0 30 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M 15 36.5 C 14 35 2.5 22 2.5 14.5 A 12.5 12.5 0 1 1 27.5 14.5 C 27.5 22 16 35 15 36.5 Z" fill="${bg}" stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-linejoin="round"/>
+        </svg>
+        <div class="apple-pin-content">${glyph}</div>
+      </div>
     </div>
   `.trim();
 }
@@ -10237,7 +10303,8 @@ function ensureRouteLayers(map) {
   if (!map.getSource('route-line')) {
     map.addSource('route-line', { type: 'geojson', data: EMPTY_LINE });
   }
-  // A dark casing in dark mode, white in light mode under the route line.
+  // White casing halo under the route line so the blue line stands out
+  // cleanly on both the Liberty street map and the dark aerial orthophoto.
   if (!map.getLayer('route-line-casing')) {
     map.addLayer({
       id: 'route-line-casing',
@@ -10245,13 +10312,13 @@ function ensureRouteLayers(map) {
       source: 'route-line',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
-        'line-color': isDarkMode() ? '#000000' : '#ffffff',
+        'line-color': '#ffffff',
         'line-width': ['interpolate', ['linear'], ['zoom'], 9, 5, 14, 9, 18, 15],
         'line-opacity': 0.9,
       },
     });
   } else {
-    map.setPaintProperty('route-line-casing', 'line-color', isDarkMode() ? '#000000' : '#ffffff');
+    map.setPaintProperty('route-line-casing', 'line-color', '#ffffff');
   }
   // Under the route line, and only from close in -- see `.marker-door`.
   if (!map.getSource('entrance-links')) {
@@ -12632,9 +12699,6 @@ window.addEventListener('pageshow', refreshOnResume);
 if (window.matchMedia) {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (mapTabMap) {
-      if (mapTabMap.getLayer('route-line-casing')) {
-        mapTabMap.setPaintProperty('route-line-casing', 'line-color', isDarkMode() ? '#000000' : '#ffffff');
-      }
       if (mapTabMap.getLayer('route-line')) {
         mapTabMap.setPaintProperty('route-line', 'line-color', isDarkMode() ? '#0A84FF' : '#007AFF');
       }
