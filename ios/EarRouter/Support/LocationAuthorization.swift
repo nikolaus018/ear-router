@@ -64,7 +64,13 @@ final class LocationAuthorization: NSObject, CLLocationManagerDelegate {
             waiting[id] = continuation
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: timeout)
-                self?.waiting.removeValue(forKey: id)?.resume(returning: nil)
+                guard let self else { return }
+                if let timedOut = self.waiting.removeValue(forKey: id) {
+                    timedOut.resume(returning: nil)
+                    if self.waiting.isEmpty && self.hasFix {
+                        self.manager.stopUpdatingLocation()
+                    }
+                }
             }
         }
     }

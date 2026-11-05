@@ -187,7 +187,8 @@ struct Preflight {
 
         // 5. Doors that want reading before the bell, not after it — the bells
         // actually rung today.
-        let notes = loaded.count { !($0.notiz?.trimmed.isEmpty ?? true) }
+        let owed = customers.filter(\.isOwedAMeal)
+        let notes = owed.count { !($0.notiz?.trimmed.isEmpty ?? true) }
         if notes > 0 {
             findings.append(
                 Finding(
@@ -202,7 +203,7 @@ struct Preflight {
         // at the door. It is here because a stand-in driver on somebody else's
         // round wants to know it is twelve and not one. Only doors being
         // delivered to: nobody climbs an abbestellt customer's stairs today.
-        let unknownFloors = loaded.count { !floorsKnown.contains($0.id) }
+        let unknownFloors = owed.count { !floorsKnown.contains($0.id) }
         if unknownFloors > 0 {
             findings.append(
                 Finding(

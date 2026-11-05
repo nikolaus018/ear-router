@@ -222,7 +222,8 @@ actor Geocoder {
 
         // An empty answer is as good as none: the register returns nothing at
         // all for a house it does not know, and the entrance layer may still.
-        let features = await ogdFetch(simplified)?.features ?? []
+        let ogd = await ogdFetch(simplified)
+        let features = ogd?.features ?? []
         let streetKey = AddressText.matchKey(AddressText.streetNameOnly(simplified))
         // Only for the number that was asked for. For a number it does not
         // know, the register answers with the nearest one it does — "Gentzgasse
@@ -245,22 +246,29 @@ actor Geocoder {
         }
         // The register does not know every house the entrance layer does
         // (Stachegasse 22, Linke Wasserzeile 14). Then the entrance layer is
-        // asked directly, with the street as typed.
+        // asked directly, with the street as typed — or with the city's own
+        // spelling of the street when another house on it was in the answer.
+        let matched = Self.pickFeature(sameNumber, plz: plz, streetKey: streetKey, requireSub: nil)
+            ?? Self.pickFeature(features, plz: plz, streetKey: streetKey, requireSub: nil)
         let street: String
-        if let feature = Self.pickFeature(
-               sameNumber, plz: plz, streetKey: streetKey, requireSub: nil),
+        let canonicalStreet: Bool
+        if let feature = matched,
            (feature.properties.ranking ?? .greatestFiniteMagnitude) < 1.0,
            let name = feature.properties.streetName {
             street = name
+            canonicalStreet = true
         } else {
             street = AddressText.streetNameOnly(simplified)
+            canonicalStreet = ogd != nil
         }
 
         guard let candidates = await entranceFetch(street: street, number: asked, plz: plz)
         else { return nil }
         let point = lettered.flatMap { Self.pickEntrance(candidates, number: $0, plz: plz) }
             ?? Self.pickEntrance(candidates, number: asked, plz: plz)
-        entrances[key] = Known(point: point)
+        if point != nil || canonicalStreet {
+            entrances[key] = Known(point: point)
+        }
         return point
     }
 

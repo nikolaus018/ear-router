@@ -14,6 +14,7 @@ struct TourReportSheet: View {
     let route: Route
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
     // No odometer reading here, deliberately. `TourReport` takes an
     // `odometerKm` and prints a "Laut Tacho" line from it, and this screen used
@@ -163,12 +164,23 @@ struct TourReportSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if let telefon = entry.telefon {
-                        Text(telefon)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                        if let url = PhoneNumbers.dialURL(for: telefon) {
+                            Button {
+                                openURL(url)
+                            } label: {
+                                Label(telefon, systemImage: "phone")
+                                    .font(.subheadline)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Color.accentColor)
+                        } else {
+                            Text(telefon)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
-                .accessibilityElement(children: .combine)
+                .accessibilityElement(children: .contain)
             }
         } header: {
             Label(title, systemImage: symbol)

@@ -603,6 +603,7 @@ enum RouteStore {
         stop.lon = coordinate.lon
         stop.precision = nil
         stop.pinned = true
+        stop.setEntrance(nil)
         guard let route = stop.route else { return try context.save() }
         route.markRoutingStale()
         try context.save()

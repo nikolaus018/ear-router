@@ -293,7 +293,8 @@ def publish(hostname: str | None) -> None:
     if not app or not app.get("port"):
         sys.exit("✗ Die App gibt es noch nicht – zuerst deployen:  python3 scripts/ship.py")
     query = urllib.parse.urlencode({"hostname": hostname, "local_port": app["port"]})
-    print(f"• Prüfe {hostname} → Port {app['port']}: {v.call('GET', f'/api/apps/{app['id']}/tunnel/check?{query}')}")
+    check = v.call("GET", f"/api/apps/{app['id']}/tunnel/check?{query}")
+    print(f"• Prüfe {hostname} → Port {app['port']}: {check}")
     res = v.call("POST", f"/api/apps/{app['id']}/tunnel/publish", {"hostname": hostname, "local_port": app["port"]})
     v.call("PUT", f"/api/apps/{app['id']}", {"url_source_pref": "public"})
     print(f"✓ Veröffentlicht: {res.get('url') or 'https://' + hostname}")

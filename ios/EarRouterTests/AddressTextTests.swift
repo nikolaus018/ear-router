@@ -99,6 +99,8 @@ struct AddressTextTests {
 
     @Test func aRegisterAnswerWithNoSubAddressReadsAsNone() {
         #expect(AddressText.subAddressOf("Hauptstraße 12") == nil)
+        #expect(AddressText.subAddressOf("Straße des 1. Mai 5") == nil)
+        #expect(AddressText.subAddressOf("Straße des 1. Mai 5/2") == "2")
     }
 
     // MARK: - matchKey

@@ -66,6 +66,8 @@ struct TemperaturSheet: View {
     @State private var copiedIndex: Int?
     @State private var copiedAll = false
     @State private var rollCount = 0
+    @State private var copyTask: Task<Void, Never>?
+    @State private var copyAllTask: Task<Void, Never>?
 
     private var modus: TemperaturModus {
         TemperaturModus(rawValue: modusRaw) ?? .tk
@@ -113,7 +115,7 @@ struct TemperaturSheet: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
-                        .sensoryFeedback(.success, trigger: copiedAll)
+                        .sensoryFeedback(.success, trigger: copiedAll) { _, now in now }
                     }
 
                     Text("Generiert drei plausible Temperaturen für den Kühlnachweis: Am Start noch nicht so kalt, in der Mitte kälter und am Ende am kältesten (\(modus.rangeDescription)).")
@@ -135,7 +137,9 @@ struct TemperaturSheet: View {
             }
             .sensoryFeedback(.impact, trigger: rollCount)
             .onAppear {
-                if values == nil { roll() }
+                if values == nil {
+                    values = TemperaturGenerator.generate(modus: modus)
+                }
             }
         }
     }
@@ -143,6 +147,8 @@ struct TemperaturSheet: View {
     private func roll() {
         values = TemperaturGenerator.generate(modus: modus)
         rollCount += 1
+        copyTask?.cancel()
+        copyAllTask?.cancel()
         copiedIndex = nil
         copiedAll = false
     }
@@ -184,9 +190,11 @@ struct TemperaturSheet: View {
 
             Button {
                 UIPasteboard.general.string = text
+                copyTask?.cancel()
                 withAnimation(.snappy) { copiedIndex = index }
-                Task {
+                copyTask = Task {
                     try? await Task.sleep(for: .seconds(1.5))
+                    guard !Task.isCancelled else { return }
                     if copiedIndex == index {
                         withAnimation(.snappy) { copiedIndex = nil }
                     }
@@ -196,11 +204,11 @@ struct TemperaturSheet: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(isCopied ? Color.delivered : Color.accentColor)
                     .contentTransition(.symbolEffect(.replace))
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
                     .contentShape(.rect)
             }
             .buttonStyle(.borderless)
-            .sensoryFeedback(.success, trigger: isCopied)
+            .sensoryFeedback(.success, trigger: isCopied) { _, now in now }
             .accessibilityLabel(isCopied ? "\(title) kopiert" : "\(title) kopieren")
         }
         .padding(.vertical, 4)
@@ -210,9 +218,11 @@ struct TemperaturSheet: View {
         guard let values else { return }
         let text = "\(values.startText) / \(values.mitteText) / \(values.endeText)"
         UIPasteboard.general.string = text
+        copyAllTask?.cancel()
         withAnimation(.snappy) { copiedAll = true }
-        Task {
+        copyAllTask = Task {
             try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
             withAnimation(.snappy) { copiedAll = false }
         }
     }

@@ -70,6 +70,7 @@ import Testing
 
             let flat = route.geometryFlat
             let line = stride(from: 0, to: flat.count - 1, by: 2).map { (flat[$0], flat[$0 + 1]) }
+            try #require(!line.isEmpty)
             func metres(_ a: (Double, Double), _ b: (Double, Double)) -> Double {
                 let dLat = (a.0 - b.0) * 111_000
                 let dLon = (a.1 - b.1) * 111_000 * cos(a.0 * .pi / 180)

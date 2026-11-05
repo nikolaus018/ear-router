@@ -518,9 +518,7 @@ struct ImportEntryEditor: View {
                     TextField("Telefon", text: $entry.telefon)
                         .textContentType(.telephoneNumber)
                         .keyboardType(.phonePad)
-                        .submitLabel(.next)
                         .focused($focused, equals: .telefon)
-                        .onSubmit { focused = .strasse }
                         .limited(to: FieldLimits.telefon, text: $entry.telefon)
                 }
 
@@ -538,7 +536,7 @@ struct ImportEntryEditor: View {
                     // Viennese district that was not where the customer lives.
                     LabeledContent("PLZ") {
                         HStack(spacing: 10) {
-                            if let name = Districts.name(for: entry.plz) {
+                            if let name = Districts.name(for: result.plz) {
                                 Text(name)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
@@ -606,6 +604,7 @@ struct ImportEntryEditor: View {
                     Text("Autokorrektur ist hier aus — Türcodes und Stiegen bleiben, wie sie sind.")
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

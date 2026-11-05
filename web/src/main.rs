@@ -164,7 +164,7 @@ mod text {
     // register itself produced — used to read back which sub-address it
     // actually matched. See `sub_address_of`.
     static HOUSENUMBER_TAIL_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"^.+?\s+\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?(?P<tail>.*)$").unwrap()
+        Regex::new(r"^.+?\s+\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?(?P<tail>[/\s(].*)?$").unwrap()
     });
 
     pub fn normalize_strasse_text(strasse: &str) -> String {
@@ -353,7 +353,7 @@ mod text {
     /// or `None` when it answered with a bare housenumber.
     pub fn sub_address_tail(adresse: &str) -> Option<String> {
         let caps = HOUSENUMBER_TAIL_RE.captures(adresse)?;
-        let tail = caps["tail"].trim();
+        let tail = caps.name("tail")?.as_str().trim();
         (!tail.is_empty()).then(|| tail.to_string())
     }
 
@@ -1774,18 +1774,18 @@ struct OgdFeatureCollection {
     features: Vec<OgdFeature>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct OgdFeature {
     geometry: OgdGeometry,
     properties: OgdProperties,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct OgdGeometry {
     coordinates: [f64; 2], // [lon, lat]
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct OgdProperties {
     #[serde(rename = "StreetName")]
     street_name: Option<String>,
@@ -4715,6 +4715,7 @@ async fn wien_entrance(state: &AppState, strasse: &str, plz: &str) -> Option<(f6
     // An empty answer is as good as none: the register returns nothing at
     // all for a house it does not know, and the entrance layer may still.
     let register = wien_ogd_fetch(state, &simplified).await;
+    let register_ok = register.is_some();
     let mut from_pack = register.as_ref().is_some_and(|a| a.offline);
     let features = register.map(|a| a.features).unwrap_or_default();
     let street_key = text::address_match_key(&text::street_name_only(&simplified));
@@ -4722,14 +4723,18 @@ async fn wien_entrance(state: &AppState, strasse: &str, plz: &str) -> Option<(f6
     // answer overall: asked for "Serravagasse 2" the register ranks
     // "Serravagasse 2E" first -- the house next door.
     let same_number: Vec<OgdFeature> = features
-        .into_iter()
+        .iter()
         .filter(|f| f.properties.street_number.as_deref().and_then(entrance_number).as_deref() == Some(asked.as_str()))
+        .cloned()
         .collect();
-    // The register does not know every house the entrance layer does. Then
-    // the entrance layer is asked directly, with the street as typed.
+    // The register does not know every house the entrance layer does. When no
+    // house with that exact number matched, another house on the same street
+    // still gives the city's canonical street spelling before falling back to
+    // the street as typed.
     let street = pick_ogd_feature(&same_number, plz, &street_key, None, &[], &[])
         .filter(|f| ogd_ranking(f) < 1.0)
         .and_then(|f| f.properties.street_name.clone())
+        .or_else(|| pick_ogd_feature(&features, plz, &street_key, None, &[], &[])?.properties.street_name.clone())
         .unwrap_or_else(|| text::street_name_only(&simplified));
 
     let answer = entrance_fetch(state, &street, &asked, plz).await?;
@@ -4739,10 +4744,11 @@ async fn wien_entrance(state: &AppState, strasse: &str, plz: &str) -> Option<(f6
         .as_deref()
         .and_then(|n| pick_entrance(&candidates, n, plz))
         .or_else(|| pick_entrance(&candidates, &asked, plz));
-    // Not remembered when the pack answered either call: kept, it would stand
-    // in for the city long after an outage, and a house built since would
-    // stay without an entrance until the server restarts.
-    if from_pack {
+    // Not remembered when the pack answered either call, or when the register
+    // call failed and no entrance was found: kept, it would stand in for the
+    // city long after an outage, and a house built since would stay without an
+    // entrance until the server restarts.
+    if from_pack || (!register_ok && point.is_none()) {
         return point;
     }
     remember(point)
@@ -4934,7 +4940,7 @@ async fn auth_mw(State(state): State<Arc<AppState>>, mut req: Request, next: Nex
             return Err(AppError::Forbidden("Nur für den Administrator.".into()));
         }
         let mut parts = path.trim_start_matches("/api/").split('/');
-        let owner: Option<Option<i64>> = match (parts.next(), parts.next().and_then(|id| id.parse::<i64>().ok())) {
+        let owner: Option<Option<Option<i64>>> = match (parts.next(), parts.next().and_then(|id| id.parse::<i64>().ok())) {
             (Some("routes"), Some(id)) => Some(
                 conn.query_row("SELECT user_id FROM routes WHERE id = ?1", params![id], |r| r.get(0)).optional()?,
             ),
@@ -4949,7 +4955,8 @@ async fn auth_mw(State(state): State<Arc<AppState>>, mut req: Request, next: Nex
             _ => None,
         };
         match owner {
-            Some(Some(owner)) if owner != user.id => Err(AppError::NotFound("Nicht gefunden".into())),
+            Some(Some(Some(owner))) if owner != user.id => Err(AppError::NotFound("Nicht gefunden".into())),
+            Some(Some(None)) => Err(AppError::NotFound("Nicht gefunden".into())),
             _ => Ok(user),
         }
     })();
@@ -5385,6 +5392,7 @@ struct StopCreate {
     strasse: String,
     plz: String,
     paket: Option<String>,
+    paket_count: Option<i64>,
     notiz: Option<String>,
     telefon: Option<String>,
     lat: Option<f64>,
@@ -6141,7 +6149,9 @@ async fn portal_link_of(
             "SELECT portal_tour_id, portal_date, name, created_at FROM routes WHERE id = ?1",
             params![route_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )?
+        )
+        .optional()?
+        .ok_or_else(|| AppError::NotFound("Tour nicht gefunden".into()))?
     };
     if let (Some(id), Some(date)) = (tour_id, date.as_deref().and_then(|d| parse_portal_date(d).ok())) {
         return Ok(Some((id, date)));
@@ -6323,7 +6333,7 @@ async fn add_other(
     let name = one_line(p.name.as_deref().unwrap_or(""), MAX_KUNDE_LEN);
     let name = if name.is_empty() { "Nachlieferung".to_string() } else { name };
     let (lat, lon) = match (p.lat, p.lon) {
-        (Some(lat), Some(lon)) if lat.is_finite() && lon.is_finite() => (Some(lat), Some(lon)),
+        (Some(lat), Some(lon)) if is_plausible_latlon(lat, lon) => (Some(lat), Some(lon)),
         _ => {
             let (lat, lon, _, _) = geocode_address_any(&state, &address, &plz)
                 .await
@@ -6333,8 +6343,9 @@ async fn add_other(
     };
     let notiz = p.notiz.as_deref().map(|n| clip_chars(&strip_control(n), MAX_NOTIZ_LEN)).filter(|n| !n.is_empty());
     let telefon = p.telefon.as_deref().map(|t| one_line(t, MAX_TELEFON_LEN)).filter(|t| !t.is_empty());
-    let paket = p.paket.as_deref().map(|t| one_line(t, MAX_NOTIZ_LEN)).filter(|t| !t.is_empty());
+    let paket = p.paket.as_deref().map(|t| one_line(t, MAX_PAKET_LEN)).filter(|t| !t.is_empty());
     let conn = state.db()?;
+    require_route_exists(&conn, route_id)?;
     let id: i64 = conn.query_row(
         "SELECT COALESCE(MAX(id), ?2) + 1 FROM route_others WHERE route_id = ?1",
         params![route_id, MANUAL_OTHER_BASE - 1],
@@ -6360,6 +6371,7 @@ async fn remove_other(
     AxPath((route_id, other_id)): AxPath<(i64, i64)>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db()?;
+    require_route_exists(&conn, route_id)?;
     if other_id >= MANUAL_OTHER_BASE {
         conn.execute("DELETE FROM route_others WHERE route_id = ?1 AND id = ?2", params![route_id, other_id])?;
     } else {
@@ -6377,6 +6389,7 @@ async fn unhide_others(
     AxPath(route_id): AxPath<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db()?;
+    require_route_exists(&conn, route_id)?;
     conn.execute("DELETE FROM route_others_hidden WHERE route_id = ?1", params![route_id])?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -6423,12 +6436,13 @@ async fn get_backup(
     }
 
     let mut routes_stmt = conn.prepare(
-        "SELECT id, backup_id, name, status, created_at, completed_at, hand_ordered FROM routes WHERE user_id = ?1 ORDER BY created_at, id",
+        "SELECT id, backup_id, name, status, created_at, completed_at, hand_ordered, ladeliste_mode, departed_at FROM routes WHERE user_id = ?1 ORDER BY created_at, id",
     )?;
     let route_rows = routes_stmt
         .query_map(params![user.id], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?, r.get::<_, Option<String>>(5)?, r.get::<_, i64>(6)? != 0))
+                r.get::<_, String>(4)?, r.get::<_, Option<String>>(5)?, r.get::<_, i64>(6)? != 0,
+                r.get::<_, Option<String>>(7)?, r.get::<_, Option<String>>(8)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     let mut stops_stmt = conn.prepare(
@@ -6438,7 +6452,7 @@ async fn get_backup(
     )?;
     let mut routes = Vec::new();
     let mut total_stops = 0usize;
-    for (id, backup_id, name, status, created_at, completed_at, hand_ordered) in route_rows {
+    for (id, backup_id, name, status, created_at, completed_at, hand_ordered, ladeliste_mode, departed_at) in route_rows {
         let stops = stops_stmt
             .query_map(params![id], |r| {
                 let delivered = r.get::<_, i64>(12)? != 0;
@@ -6477,6 +6491,7 @@ async fn get_backup(
             "id": backup_id, "name": name, "status": status, "createdAt": backup_date(&created_at),
             "completedAt": completed_at.as_deref().map(backup_date), "needsOptimize": true,
             "stops": stops, "handOrdered": hand_ordered,
+            "ladelisteMode": ladeliste_mode, "departedAt": departed_at.as_deref().map(backup_date),
         }));
     }
     let mut marks_stmt = conn.prepare("SELECT key, bad, note FROM restroom_marks WHERE user_id = ?1 ORDER BY key")?;
@@ -6574,11 +6589,13 @@ async fn restore_backup(
         let status = if backup_str(route, "status").as_deref() == Some("completed") { "completed" } else { "active" };
         let created = norm(backup_str(route, "createdAt")).unwrap_or_else(now_iso);
         let completed = norm(backup_str(route, "completedAt"));
+        let ladeliste_mode = backup_str(route, "ladelisteMode").filter(|m| m == "vm" || m == "tk");
+        let departed = norm(backup_str(route, "departedAt"));
         // The line is not in the file, so it is not current until planned again.
         tx.execute(
-            "INSERT INTO routes (name, status, created_at, completed_at, needs_optimize, hand_ordered, user_id, backup_id) \
-             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)",
-            params![name, status, created, completed, route.get("handOrdered").and_then(Value::as_bool).unwrap_or(false) as i64, user.id, id],
+            "INSERT INTO routes (name, status, created_at, completed_at, needs_optimize, hand_ordered, user_id, backup_id, ladeliste_mode, departed_at) \
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8, ?9)",
+            params![name, status, created, completed, route.get("handOrdered").and_then(Value::as_bool).unwrap_or(false) as i64, user.id, id, ladeliste_mode, departed],
         )?;
         let route_id = tx.last_insert_rowid();
         for s in route.get("stops").and_then(Value::as_array).into_iter().flatten() {
@@ -6595,6 +6612,14 @@ async fn restore_backup(
             };
             let precision = backup_str(s, "precision").filter(|p| p == "street" || p == "district");
             let num = |k: &str| s.get(k).and_then(Value::as_f64);
+            let (lat, lon) = match (num("lat"), num("lon")) {
+                (Some(lat), Some(lon)) if is_plausible_latlon(lat, lon) => (lat, lon),
+                _ => (VIENNA_CENTER_LAT, VIENNA_CENTER_LON),
+            };
+            let (entrance_lat, entrance_lon) = match (num("entranceLat"), num("entranceLon")) {
+                (Some(elat), Some(elon)) if is_plausible_latlon(elat, elon) => (Some(elat), Some(elon)),
+                _ => (None, None),
+            };
             tx.execute(
                 "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, paket_count, notiz, telefon, lat, lon, order_index, \
                  delivered, outcome, settled_at, next_leg_km, next_leg_min, created_at, excluded, pinned, location_precision, entrance_lat, entrance_lon) \
@@ -6602,12 +6627,12 @@ async fn restore_backup(
                 params![
                     route_id, kind, backup_str(s, "kunde"), backup_str(s, "strasse"), backup_str(s, "plz"),
                     backup_str(s, "paket"), s.get("paketCount").and_then(Value::as_i64), backup_str(s, "notiz"), backup_str(s, "telefon"),
-                    num("lat").unwrap_or(0.0), num("lon").unwrap_or(0.0), s.get("orderIndex").and_then(Value::as_i64).unwrap_or(0),
+                    lat, lon, s.get("orderIndex").and_then(Value::as_i64).unwrap_or(0),
                     delivered as i64, outcome, norm(backup_str(s, "settledAt")), num("nextLegKm"), num("nextLegMin"),
                     norm(backup_str(s, "createdAt")).unwrap_or_else(now_iso),
                     s.get("excluded").and_then(Value::as_bool).unwrap_or(false) as i64,
                     s.get("pinned").and_then(Value::as_bool).unwrap_or(false) as i64,
-                    precision, num("entranceLat"), num("entranceLon"),
+                    precision, entrance_lat, entrance_lon,
                 ],
             )?;
         }
@@ -7096,7 +7121,9 @@ mod split_planner {
         fn cost(&self, work: &[f64]) -> f64 {
             // A person with nothing is a split into fewer people: priced above
             // anything else, while there are doors enough to go round.
-            let idle = if self.free.len() >= self.people {
+            let unfixed_people = (0..self.people).filter(|&p| !self.owner.contains(&Some(p))).count();
+            let can_cover_everyone = self.owner.len() >= self.people && self.free.len() >= unfixed_people;
+            let idle = if can_cover_everyone {
                 work.iter().filter(|&&w| w <= self.m[0][1] + 1e-6).count() as f64 * 1e15
             } else {
                 0.0
@@ -8087,6 +8114,8 @@ async fn recheck_addresses(
     // exactly the order and geometry already stored.
     let mut any_moved = false;
     if !updates.is_empty() {
+        let lock = state.route_lock(route_id).await;
+        let _route_guard = lock.lock().await;
         let mut conn = state.db()?;
         let tx = conn.transaction()?;
         for u in updates {
@@ -8108,11 +8137,19 @@ async fn recheck_addresses(
             // Matching the address in the WHERE clause makes the newer
             // action win, which is the right resolution: the driver was
             // looking at the stop more recently than the geocoder was.
-            let applied = tx.execute(
-                "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3 \
-                 WHERE id = ?4 AND pinned = 0 AND strasse = ?5 AND plz = ?6",
-                params![u.lat, u.lon, u.precision, u.id, u.from_strasse, u.from_plz],
-            )?;
+            let applied = if u.moved {
+                tx.execute(
+                    "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3, entrance_lat = NULL, entrance_lon = NULL \
+                     WHERE id = ?4 AND pinned = 0 AND strasse = ?5 AND plz = ?6",
+                    params![u.lat, u.lon, u.precision, u.id, u.from_strasse, u.from_plz],
+                )?
+            } else {
+                tx.execute(
+                    "UPDATE stops SET lat = ?1, lon = ?2, location_precision = ?3 \
+                     WHERE id = ?4 AND pinned = 0 AND strasse = ?5 AND plz = ?6",
+                    params![u.lat, u.lon, u.precision, u.id, u.from_strasse, u.from_plz],
+                )?
+            };
             // The report counts what actually landed, not what was intended
             // — telling a driver three pins moved when one of their own
             // edits quietly won the race would send them looking for a
@@ -8132,6 +8169,7 @@ async fn recheck_addresses(
         tx.commit()?;
     }
     if any_moved {
+        fill_entrances(&state, route_id).await;
         reoptimize_best_effort(&state, route_id).await;
     }
 
@@ -8194,6 +8232,7 @@ async fn add_stop(
     }
     validate_customer_fields(&kunde, &strasse, paket.as_deref(), notiz.as_deref())?;
     let telefon = clean_telefon(payload.telefon.as_deref())?;
+    let paket_count = payload.paket_count.filter(|n| (0..=9999).contains(n));
     check_plz(&plz)?;
 
     // OSRM's `/trip` endpoint (see `OSRM_MAX_TRIP_COORDS`) caps how many
@@ -8260,9 +8299,9 @@ async fn add_stop(
             |r| r.get(0),
         )?;
         tx.execute(
-            "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, notiz, lat, lon, order_index, location_precision, pinned, created_at, telefon) \
-             VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![route_id, kunde, strasse, plz, paket, notiz, lat, lon, max_order + 1, precision, manual_pin as i64, now_iso(), telefon],
+            "INSERT INTO stops (route_id, kind, kunde, strasse, plz, paket, paket_count, notiz, lat, lon, order_index, location_precision, pinned, created_at, telefon) \
+             VALUES (?1, 'customer', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![route_id, kunde, strasse, plz, paket, paket_count, notiz, lat, lon, max_order + 1, precision, manual_pin as i64, now_iso(), telefon],
         )?;
         keep_tail_last(&tx, route_id)?;
         // Set *before* attempting the reoptimize below, not just on
@@ -8962,7 +9001,7 @@ async fn import_entries(
         normalized.push((kunde, strasse, plz, paket, notiz));
     }
 
-    let mut to_update: Vec<(String, Option<String>, Option<String>, i64)> = Vec::new();
+    let mut to_update: Vec<(String, Option<(String, String)>, Option<String>, Option<String>, i64)> = Vec::new();
     let mut to_insert: Vec<NewStop> = Vec::new();
     let mut to_move: Vec<(SubmittedStop, i64, f64, f64, Option<&'static str>)> = Vec::new();
     let mut matched_ids: HashSet<i64> = HashSet::new();
@@ -9009,7 +9048,7 @@ async fn import_entries(
         match existing_id {
             Some(id) => {
                 matched_ids.insert(id);
-                to_update.push((entry.0, entry.3, entry.4, id));
+                to_update.push((entry.0, Some((entry.1, entry.2)), entry.3, entry.4, id));
             }
             None => unresolved.push((entry, None)),
         }
@@ -9151,7 +9190,7 @@ async fn import_entries(
                 // its other edited fields are applied below. The driver
                 // gets it back in `geocode_failures` to fix.
                 if let Some(id) = existing_id {
-                    to_update.push((kunde.clone(), paket, notiz, id));
+                    to_update.push((kunde.clone(), None, paket, notiz, id));
                 }
                 failures.push(GeocodeFailure { kunde, strasse, plz });
             }
@@ -9190,11 +9229,18 @@ async fn import_entries(
         // place.
         let tx = conn.transaction()?;
 
-        for (kunde, paket, notiz, stop_id) in &to_update {
-            tx.execute(
-                "UPDATE stops SET kunde = ?1, paket = ?2, notiz = ?3 WHERE id = ?4",
-                params![kunde, paket, notiz, stop_id],
-            )?;
+        for (kunde, addr, paket, notiz, stop_id) in &to_update {
+            if let Some((strasse, plz)) = addr {
+                tx.execute(
+                    "UPDATE stops SET kunde = ?1, strasse = ?2, plz = ?3, paket = ?4, notiz = ?5 WHERE id = ?6",
+                    params![kunde, strasse, plz, paket, notiz, stop_id],
+                )?;
+            } else {
+                tx.execute(
+                    "UPDATE stops SET kunde = ?1, paket = ?2, notiz = ?3 WHERE id = ?4",
+                    params![kunde, paket, notiz, stop_id],
+                )?;
+            }
         }
 
         let mut changed = false;
@@ -10192,19 +10238,6 @@ fn build_router(state: Arc<AppState>) -> Router {
         // Here for the body limit: a full tour's entries, each with a Paket
         // as long as the portal makes it, is more than the default allows.
         .route("/api/portal/import", post(portal_import))
-        // Ordering matters here, and it reads bottom-up: the rate limiter
-        // is outermost so a flood is rejected before a body is buffered,
-        // then the body limit. Error shaping and cache suppression are
-        // deliberately *not* here — see `build_router`'s outer stack for why.
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .layer(middleware::from_fn_with_state(state.clone(), rate_limit_mw));
-
-    Router::new()
-        .merge(api_router)
-        // Deliberately outside the rate limiter: a monitoring check that
-        // runs every few seconds must not consume the budget meant for the
-        // driver, and must not start failing as a *side effect* of the
-        // flood it exists to report.
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
         .route("/api/home", get(get_home).put(put_home))
@@ -10219,6 +10252,19 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/portal/tours", get(portal_tours))
         .route("/api/portal/deliveries", get(portal_deliveries))
         .route("/api/portal/entries", post(portal_entries))
+        // Ordering matters here, and it reads bottom-up: the rate limiter
+        // is outermost so a flood is rejected before a body is buffered,
+        // then the body limit. Error shaping and cache suppression are
+        // deliberately *not* here — see `build_router`'s outer stack for why.
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit_mw));
+
+    Router::new()
+        .merge(api_router)
+        // Deliberately outside the rate limiter: a monitoring check that
+        // runs every few seconds must not consume the budget meant for the
+        // driver, and must not start failing as a *side effect* of the
+        // flood it exists to report.
         .route("/api/health", get(health))
         .route("/", get(index))
         .route("/sw.js", get(sw_js))
@@ -10574,6 +10620,9 @@ mod tests {
         assert_eq!(street_name_only("Gentzgasse 129/1/2/23"), "Gentzgasse");
         assert_eq!(street_name_only("Am Hof 2"), "Am Hof");
         assert_eq!(street_name_only("Stephansplatz"), "Stephansplatz");
+        assert_eq!(street_name_only("Straße des 1. Mai 5/2"), "Straße des 1. Mai");
+        assert_eq!(text::sub_address_tail("Straße des 1. Mai 5"), None);
+        assert_eq!(text::sub_address_tail("Straße des 1. Mai 5/2").as_deref(), Some("/2"));
     }
 
     #[test]

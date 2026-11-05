@@ -81,16 +81,20 @@ def walk(lat, lon):
 def main(out):
     rows, skipped = [], []
     for f in fetch(WFS)["features"]:
-        p = f["properties"]
-        lon, lat = f["geometry"]["coordinates"]
-        if p["KATEGORIE"] == "Pissoir" or "mit Wartepersonal" in p["KATEGORIE"]:
+        p = f.get("properties") or {}
+        coords = (f.get("geometry") or {}).get("coordinates") or []
+        if len(coords) < 2:
             continue
-        parsed = hours(p["OEFFNUNGSZEIT"] or "")
+        lon, lat = coords[0], coords[1]
+        kategorie = p.get("KATEGORIE") or ""
+        if kategorie == "Pissoir" or "mit Wartepersonal" in kategorie:
+            continue
+        parsed = hours(p.get("OEFFNUNGSZEIT") or "")
         if parsed is None:
-            skipped.append(p["OEFFNUNGSZEIT"])
+            skipped.append(p.get("OEFFNUNGSZEIT"))
             continue
         table, winter = parsed
-        name = " ".join(" ".join(str(x) for x in [p["STRASSE"], p["ONR"]] if x).split())
+        name = " ".join(" ".join(str(x) for x in [p.get("STRASSE"), p.get("ONR")] if x).split())
         row = {"name": name, "lat": round(lat, 6), "lon": round(lon, 6),
                "walk": walk(lat, lon)}
         if table:
@@ -100,8 +104,12 @@ def main(out):
         rows.append(row)
     city = len(rows)
     for f in fetch(OEKLO)["features"]:
-        lon, lat = f["geometry"]["coordinates"]
-        name = re.sub(r",\s*Wien$", "", " ".join(f["properties"]["address"].split()))
+        coords = (f.get("geometry") or {}).get("coordinates") or []
+        if len(coords) < 2:
+            continue
+        lon, lat = coords[0], coords[1]
+        addr = (f.get("properties") or {}).get("address") or ""
+        name = re.sub(r",\s*Wien$", "", " ".join(addr.split()))
         rows.append({"name": name, "lat": round(lat, 6), "lon": round(lon, 6),
                      "walk": walk(lat, lon), "oeklo": True})
     print(f"{city} from the city, {len(rows) - city} from öKlo")
@@ -110,9 +118,9 @@ def main(out):
         json.dump(rows, fh, ensure_ascii=False, separators=(",", ":"))
         fh.write("\n")
     print(f"{len(rows)} written, {len(skipped)} left out:")
-    for s in sorted(set(skipped)):
+    for s in sorted(set(skipped), key=lambda x: x or ""):
         print("  ", repr(s))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1] if len(sys.argv) > 1 else "EarRouter/Resources/Restrooms.json")

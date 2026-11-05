@@ -755,11 +755,13 @@ struct BackupTests {
         let route = try RouteStore.createRoute(name: "Tour", in: source)
         let stop = Stop(
             kind: .customer, kunde: "Fam. Gruber", strasse: "Gentzgasse 129/1",
-            plz: "1180", paket: "2x Menü", notiz: "Bitte laut klingeln",
+            plz: "1180", paket: "2x Menü", paketCount: 3, notiz: "Bitte laut klingeln",
             telefon: "+4369910842229",
             lat: 48.2301, lon: 16.3201, orderIndex: 7,
             precision: .street, pinned: true, excluded: false)
-        stop.delivered = true
+        stop.record(.neighbour, at: Date(timeIntervalSince1970: 1_757_000_555))
+        stop.prioritaet = true
+        stop.setEntrance((lat: 48.2302, lon: 16.3202))
         stop.nextLegKm = 3.25
         stop.nextLegMin = 8.5
         stop.createdAt = Date(timeIntervalSince1970: 1_757_000_123)
@@ -780,12 +782,18 @@ struct BackupTests {
         #expect(back.strasse == "Gentzgasse 129/1")
         #expect(back.plz == "1180")
         #expect(back.paket == "2x Menü")
+        #expect(back.paketCount == 3)
         #expect(back.notiz == "Bitte laut klingeln")
         #expect(back.telefon == "+4369910842229")
         #expect(back.lat == 48.2301)
         #expect(back.lon == 16.3201)
         #expect(back.orderIndex == 7)
         #expect(back.delivered)
+        #expect(back.outcome == .neighbour)
+        #expect(back.settledAt == Date(timeIntervalSince1970: 1_757_000_555))
+        #expect(back.prioritaet)
+        #expect(back.entranceLat == 48.2302)
+        #expect(back.entranceLon == 16.3202)
         #expect(back.nextLegKm == 3.25)
         #expect(back.nextLegMin == 8.5)
         #expect(back.createdAt == Date(timeIntervalSince1970: 1_757_000_123))
@@ -821,9 +829,13 @@ struct BackupTests {
         route.status = .completed
         route.completedAt = Date(timeIntervalSince1970: 1_757_000_456)
         route.createdAt = Date(timeIntervalSince1970: 1_756_000_000)
+        route.handOrdered = true
+        LadelisteState.store(.tk, for: route.id)
+        defer { LadelisteState.forget(route.id) }
         try source.save()
 
         let archive = try roundTrip(BackupArchive.make(from: source))
+        LadelisteState.forget(route.id)
         let fresh = try makeContext()
         try BackupRestore.apply(archive, mode: .replace, in: fresh)
 
@@ -833,6 +845,8 @@ struct BackupTests {
         #expect(back.status == .completed)
         #expect(back.createdAt == Date(timeIntervalSince1970: 1_756_000_000))
         #expect(back.completedAt == Date(timeIntervalSince1970: 1_757_000_456))
+        #expect(back.handOrdered)
+        #expect(LadelisteState.mode(for: back.id) == .tk)
         // The two deliberate deviations, both documented in `make`: the driven
         // line is derived and is left out, and what comes back is therefore
         // flagged for reoptimising however it was flagged when it was written.
@@ -848,7 +862,9 @@ struct BackupTests {
             plz: "1180", lat: 48.2301, lon: 16.3201)
         stop.route = route
         source.insert(stop)
-        try StockwerkStore.save(stockwerk: "2/Tür 14", dontAsk: true, for: stop, in: source)
+        try StockwerkStore.save(
+            CustomerInfo(stockwerk: "2/Tür 14", notiz: "Türcode 0123", dontAsk: true),
+            for: stop, in: source)
         let written = try #require(try StockwerkStore.note(for: stop, in: source))
         written.updatedAt = Date(timeIntervalSince1970: 1_757_000_789)
         try source.save()
@@ -863,6 +879,7 @@ struct BackupTests {
         #expect(back.strasse == "Gentzgasse 129/1")
         #expect(back.plz == "1180")
         #expect(back.stockwerk == "2/Tür 14")
+        #expect(back.notiz == "Türcode 0123")
         #expect(back.dontAsk)
         #expect(back.updatedAt == Date(timeIntervalSince1970: 1_757_000_789))
     }
@@ -875,22 +892,23 @@ struct BackupTests {
     /// carried by the file or deliberately left out — and choosing between
     /// those two is the decision that was missed last time.
     @Test func everyStoredPropertyIsEitherCarriedOrDeliberatelyLeftOut() throws {
-        let live = Schema(versionedSchema: EarRouterSchemaV4.self)
+        let live = AppSchema.current
         func properties(_ entity: String) -> Set<String> {
             Set((live.entities.first { $0.name == entity }?.properties ?? []).map(\.name))
         }
 
         #expect(properties("Stop") == [
             // Carried, field for field — see `everyFieldOfAStopSurvivesTheFile`.
-            "id", "kindRaw", "kunde", "strasse", "plz", "paket", "notiz", "telefon",
-            "lat", "lon", "orderIndex", "delivered", "nextLegKm", "nextLegMin",
-            "createdAt", "excluded", "pinned", "precisionRaw",
+            "id", "kindRaw", "kunde", "strasse", "plz", "paket", "paketCount", "notiz", "telefon",
+            "lat", "lon", "orderIndex", "delivered", "outcomeRaw", "settledAt", "prioritaet",
+            "nextLegKm", "nextLegMin", "createdAt", "excluded", "pinned", "precisionRaw",
+            "entranceLat", "entranceLon",
             // Left out on purpose: the tour a stop belongs to is the nesting.
             "route",
         ])
 
         #expect(properties("Route") == [
-            "id", "name", "statusRaw", "createdAt", "completedAt",
+            "id", "name", "statusRaw", "createdAt", "completedAt", "handOrdered",
             // Left out on purpose: derived, several thousand doubles per route,
             // and one "Neu optimieren" rebuilds it. See `BackupArchive.make`.
             "geometryFlat",
@@ -901,7 +919,7 @@ struct BackupTests {
         ])
 
         #expect(properties("StockwerkNote") == [
-            "key", "kunde", "strasse", "plz", "stockwerk", "dontAsk", "updatedAt",
+            "key", "kunde", "strasse", "plz", "stockwerk", "notiz", "dontAsk", "updatedAt",
             // Left out on purpose: a floor is identified by its key across
             // phones, and a restore makes a fresh row for it.
             "id",

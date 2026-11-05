@@ -56,7 +56,7 @@ enum AddressText {
     /// register itself produced — used to read back which sub-address it
     /// actually matched.
     private static let housenumberTail = try! NSRegularExpression(
-        pattern: #"^.+?\s+\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?(.*)$"#)
+        pattern: #"^.+?\s+\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?([/\s(].*)?$"#)
 
     // MARK: - Normalization
 

@@ -275,6 +275,22 @@ struct PreflightTests {
         #expect(finding(preflight, "notizen") == nil)
     }
 
+    /// A meal taken to the Lager is loaded into the van, but the door itself
+    /// is never visited — its note and stairwell are not findings for today.
+    @Test func aToLagerDoorsNoteAndFloorAreNotCounted() throws {
+        let context = try store()
+        let route = try readyRoute(in: context, customers: 2)
+        for stop in route.customerStops { stop.paket = "1x Menü" }
+        let first = try #require(route.customerStops.first)
+        first.notiz = "Hund"
+        first.record(.toLager, at: thisMorning)
+
+        let preflight = check(route, floorsKnown: [route.customerStops[1].id])
+        #expect(finding(preflight, "ladung")?.title.hasPrefix("2 Positionen") == true)
+        #expect(finding(preflight, "notizen") == nil)
+        #expect(finding(preflight, "stockwerke") == nil)
+    }
+
     /// "Zuerst anfahren" is gone: a stop still carrying the old flag is not
     /// read back as coming first.
     @Test func theOldPriorityFlagIsIgnored() throws {

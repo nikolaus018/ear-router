@@ -71,6 +71,8 @@ struct BackupArchive: Codable, Sendable {
         /// Put in order by hand. Missing from files written before it existed,
         /// which is the same as false.
         var handOrdered: Bool? = nil
+        /// The VM/TK mode the driver picked for this tour, if any.
+        var ladelisteMode: String? = nil
     }
 
     struct StopBackup: Codable, Sendable {
@@ -237,7 +239,8 @@ extension BackupArchive {
                 needsOptimize: true,
                 geometryFlat: nil,
                 stops: route.stops.sorted(by: Stop.displayBefore).map(StopBackup.init),
-                handOrdered: route.handOrdered)
+                handOrdered: route.handOrdered,
+                ladelisteMode: LadelisteState.mode(for: route.id)?.rawValue)
         }
         archive.stockwerke = notes.map(StockwerkBackup.init)
         return archive
@@ -508,6 +511,9 @@ enum BackupRestore {
         route.geometryFlat = []
         // Restored tours are routed again; a hand-sorted one keeps its order.
         route.handOrdered = backup.handOrdered ?? false
+        if let raw = backup.ladelisteMode, let mode = LadelisteMode(rawValue: raw) {
+            LadelisteState.store(mode, for: route.id)
+        }
         context.insert(route)
 
         for s in backup.stops {

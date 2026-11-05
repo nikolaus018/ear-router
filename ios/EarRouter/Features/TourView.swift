@@ -185,6 +185,7 @@ struct TourView: View {
         ) {
             PreflightSheet(
                 route: route,
+                isBusy: isBusy,
                 onOptimize: { startLongJob { await optimize() } },
                 onRecheck: { startLongJob { await recheck() } },
                 onResetDelivered: {
@@ -233,7 +234,8 @@ struct TourView: View {
             }
             Button("Abbrechen", role: .cancel) { deletingStop = nil }
         } message: { stop in
-            Text("„\(stop.kunde ?? "Dieser Stopp")“ wird aus der Tour entfernt.")
+            let label = stop.kind == .customer ? (stop.kunde ?? "Dieser Stopp") : stop.fixedTitle
+            Text("„\(label)“ wird aus der Tour entfernt.")
         }
         .confirmationDialog(
             "Neu optimieren?", isPresented: $confirmingReoptimize,

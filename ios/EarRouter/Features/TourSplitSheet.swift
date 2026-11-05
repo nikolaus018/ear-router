@@ -217,6 +217,7 @@ struct SplitStop: Identifiable {
     var addressCorrected = false
 
     var isTyped: Bool { typed != nil }
+    fileprivate var unplacedRowID: String { "unplaced-\(id)" }
 
     /// The stop as an import entry, with only what the tour list carried.
     /// Used when the detail fetch is not available or did not answer.
@@ -1198,7 +1199,7 @@ private struct SplitPanel: View {
                 let unplaced = state.stops.filter { $0.coordinate == nil }
                 if !unplaced.isEmpty {
                     Section {
-                        ForEach(unplaced) { stop in
+                        ForEach(unplaced, id: \.unplacedRowID) { stop in
                             unplacedRow(stop)
                         }
                     } header: {
@@ -1690,6 +1691,14 @@ private struct SplitOverview: View {
         guard imported else {
             try? RouteStore.delete(ctx.route, in: context)
             return
+        }
+        for stop in state.stops where stop.isTyped && state.owner(of: stop) != ctx.person {
+            let entry = stop.plainEntry
+            ManualOtherStops.add(
+                name: entry.kunde, address: entry.strasse, plz: entry.plz,
+                latitude: stop.coordinate?.latitude, longitude: stop.coordinate?.longitude,
+                notiz: entry.notiz, telefon: entry.telefon, paket: entry.paket,
+                paketCount: entry.paketCount, to: ctx.route.id)
         }
         focus.open(ctx.route)
         onOpenedTour()

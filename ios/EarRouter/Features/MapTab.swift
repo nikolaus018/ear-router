@@ -1755,6 +1755,8 @@ private struct OtherStopPreviewSheet: View {
     let onRemove: () -> Void
     let onMeasure: (CGFloat) -> Void
 
+    @Environment(\.openURL) private var openURL
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -1788,9 +1790,20 @@ private struct OtherStopPreviewSheet: View {
                         .font(.callout)
                 }
                 if let telefon = stop.telefon {
-                    Label(telefon, systemImage: "phone")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    if let url = PhoneNumbers.dialURL(for: telefon) {
+                        Button {
+                            openURL(url)
+                        } label: {
+                            Label(telefon, systemImage: "phone")
+                                .font(.callout)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                    } else {
+                        Label(telefon, systemImage: "phone")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Button(action: onNavigate) {
                     WideButtonLabel("Navigation", systemImage: "arrow.trianglehead.turn.up.right")
@@ -2224,6 +2237,7 @@ struct StopPreviewSheet: View {
                         .font(.subheadline)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                StopFacts.customerNote(info).font(.subheadline)
                 if let notiz = stop.notiz?.trimmed, !notiz.isEmpty {
                     StopFacts.note(notiz).font(.subheadline)
                 }
@@ -2292,6 +2306,7 @@ struct StopPreviewSheet: View {
     /// no words, and eight points of gap under the address.
     private var hasDetails: Bool {
         !(stop.displayPaket?.trimmed ?? "").isEmpty || !(stop.notiz?.trimmed ?? "").isEmpty
+            || !(info?.notiz?.trimmed ?? "").isEmpty
             || stop.precision != nil || !(stockwerk?.trimmed ?? "").isEmpty
             || StopFacts.outcome(stop.outcome) != nil
     }

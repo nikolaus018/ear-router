@@ -72,4 +72,7 @@ ctx.endTransparencyLayer()
 let img = ctx.makeImage()!
 let rep = NSBitmapImageRep(cgImage: img)
 let png = rep.representation(using: .png, properties: [:])!
-try! png.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
+let outPath = CommandLine.arguments.count > 1
+    ? CommandLine.arguments[1]
+    : "EarRouter/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+try! png.write(to: URL(fileURLWithPath: outPath))

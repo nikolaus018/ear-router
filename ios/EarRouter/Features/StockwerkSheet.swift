@@ -201,6 +201,7 @@ struct StockwerkForm: View {
                     }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle(askingAfterDelivery ? "Stockwerk?" : "Globale Infos")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -291,7 +292,7 @@ struct StockwerkForm: View {
     private func quickPick(_ value: String) -> some View {
         let picked = isPicked(value)
         return Button {
-            text = value
+            text = picked ? "" : value
             focused = false
         } label: {
             Text(value)

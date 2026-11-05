@@ -283,7 +283,6 @@
   @media (prefers-reduced-motion: reduce) {
     .apple-pin-wrap.next { animation: none; transform: scale(1.05); }
   }
-  .marker-door { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: #fff; color: #8E8E93; border: 1.5px solid #8E8E93; box-shadow: 0 1px 4px rgba(0,0,0,.25); font-size: 11px; }
   /* Basemap switch (Karte ⇄ Luftbild). Text, not an icon: "which view am I
      about to get" is not something a pictogram says unambiguously, and this
      control is used mid-delivery with one hand. */
@@ -3336,6 +3335,7 @@ document.addEventListener('keydown', (e) => {
     const menu = document.getElementById('route-menu');
     if (menu && !menu.classList.contains('hidden')) { closeRouteMenu(); return; }
     if (onModalEscape) { onModalEscape(); return; }
+    if (split) { closeSplitScreen(); return; }
     // Escape empties the stop filter, the way it does in a browser's own find
     // bar — otherwise the only way out is selecting the text and deleting it,
     // which one-handed is a genuine nuisance.
@@ -4385,6 +4385,7 @@ async function setOutcome(stopId, outcome) {
 
   const prevOutcome = stop.outcome || null;
   const prevDelivered = stop.delivered;
+  const prevSettledAt = stop.settled_at ?? null;
   // A generation counter per stop, not just the presence of a
   // `pendingDelivered` entry: a rapid double-tap of the same checkbox
   // starts a second request while the first is still in flight, and
@@ -4484,7 +4485,7 @@ async function setOutcome(stopId, outcome) {
     const currentRoute = state.currentRoute;
     if (currentRoute?.id === route.id) {
       const currentStop = currentRoute.stops.find((s) => s.id === stopId);
-      if (currentStop) { currentStop.outcome = prevOutcome; currentStop.delivered = prevDelivered; }
+      if (currentStop) { currentStop.outcome = prevOutcome; currentStop.delivered = prevDelivered; currentStop.settled_at = prevSettledAt; }
       // Derived, never nudged: a count adjusted by ±1 through a sequence of
       // races ends up describing a route that doesn't exist.
       recountRoute(currentRoute);
@@ -5373,12 +5374,16 @@ function autoFillDistrictFromText(strasseInput, plzSelect) {
   // like "12 1200") could get read as the district instead, stripping it
   // out of the address text. `DISTRICT_BY_PLZ` still has the final say
   // either way: only one of the 23 real Vienna postal codes ever matches.
-  const afterComma = text.slice(text.indexOf(',') + 1);
-  const match = afterComma.match(/\b1\d{3}\b/) || text.match(/\b1\d{3}\b/);
+  const commaIdx = text.indexOf(',');
+  const afterCommaOffset = commaIdx >= 0 ? commaIdx + 1 : 0;
+  const afterComma = text.slice(afterCommaOffset);
+  const commaMatch = commaIdx >= 0 ? /\b1\d{3}\b/.exec(afterComma) : null;
+  const match = commaMatch || /\b1\d{3}\b/.exec(text);
   if (!match || !DISTRICT_BY_PLZ[match[0]]) return;
   plzSelect.value = match[0];
-  let cleaned = strasseInput.value.replace(match[0], '');
-  cleaned = cleaned.replace(/,?\s*(wien|austria|österreich)\.?/gi, '');
+  const matchIndex = commaMatch ? afterCommaOffset + commaMatch.index : match.index;
+  let cleaned = text.slice(0, matchIndex) + text.slice(matchIndex + match[0].length);
+  cleaned = cleaned.replace(/(?:,\s*|\s+)\b(wien|austria|österreich)(?![a-zA-ZäöüÄÖÜß])\.?/gi, '');
   cleaned = cleaned.replace(/,\s*,/g, ',').replace(/,\s*$/, '').replace(/\s{2,}/g, ' ').trim();
   strasseInput.value = cleaned;
 }
@@ -5436,7 +5441,7 @@ function openNewTourSheet() {
 /// Opens the Gourmet flow — for a new tour, or with `routeId` to add a
 /// tour's stops to the one that is open.
 async function openGourmetSheet(routeId = null, pdf = false) {
-  Object.assign(gourmet, { routeId, pdf, json: false, date: isoDay(new Date()), tours: null, tour: null, deliveries: null, picked: null, entries: null, loaded: 0 });
+  Object.assign(gourmet, { routeId, pdf, json: false, accountOnly: false, date: isoDay(new Date()), tours: null, tour: null, deliveries: null, picked: null, entries: null, loaded: 0 });
   renderSheetShell(`<div data-gourmet><h2 class="sheet-title">${gourmetTitle()}</h2>${sheetBusy('Einen Moment …')}</div>`, { label: gourmetTitle() });
   try {
     const status = await api('/portal/status');
@@ -5495,7 +5500,8 @@ function showGourmetLogin(message = '') {
     btn.textContent = 'Wird angemeldet …';
     try {
       await api('/portal/login', { method: 'POST', body: JSON.stringify({ username, password }) });
-      showGourmetTours();
+      if (gourmet.accountOnly) { gourmet.accountOnly = false; openGourmetAccount(); }
+      else showGourmetTours();
     } catch (err) {
       showGourmetLogin(err.message);
     }
@@ -5510,7 +5516,7 @@ async function openGourmetAccount() {
   try { status = await api('/portal/status'); }
   catch (err) { toast(err.message, 'error'); return; }
   finally { hideProgress(); }
-  if (!status.logged_in) { gourmet.routeId = null; gourmet.pdf = false; gourmet.date = isoDay(new Date()); showGourmetLogin(); return; }
+  if (!status.logged_in) { Object.assign(gourmet, { routeId: null, pdf: false, json: false, accountOnly: true, date: isoDay(new Date()) }); showGourmetLogin(); return; }
   renderSheetShell(`
     <h2 class="sheet-title">Gourmet-Anmeldung</h2>
     <div class="sheet-note" style="background:rgba(52,199,89,.14);color:#1B6B32"><span style="color:#248A3D">${ICONS.checkCircle}</span><span>Angemeldet als <b>${escapeHtml(status.username || '')}</b>. Touren können geladen werden.</span></div>
@@ -5539,12 +5545,12 @@ async function showGourmetTours(date = gourmet.date) {
     <div class="day-row">
       ${days.map((d) => `<button type="button" onclick="showGourmetTours('${d}')" class="press-98 day-chip ${d === date ? 'on' : ''}">${dayLabel(d)}</button>`).join('')}
       <label class="day-chip ${days.includes(date) ? '' : 'on'}">${days.includes(date) ? 'Anderer Tag' : dayLabel(date)}
-        <input type="date" value="${date}" onchange="if (this.value) showGourmetTours(this.value)" aria-label="Anderen Tag wählen" />
+        <input type="date" value="${escapeAttr(date)}" onchange="if (this.value) showGourmetTours(this.value)" aria-label="Anderen Tag wählen" />
       </label>
     </div>`;
   if (!gourmetBody(head + sheetBusy('Touren werden geladen …'))) return;
   try {
-    const { tours } = await api(`/portal/tours?date=${date}`);
+    const { tours } = await api(`/portal/tours?date=${encodeURIComponent(date)}`);
     if (gourmet.date !== date) return;
     gourmet.tours = tours;
     gourmetBody(head + (tours.length ? `
@@ -5560,7 +5566,7 @@ async function showGourmetTours(date = gourmet.date) {
       <p class="sheet-foot"><button type="button" onclick="closeSheet(); gourmetLogout()" class="underline">Von Gourmet abmelden</button></p>`);
   } catch (err) {
     if (/anmelden|Anmeldung/.test(err.message)) { showGourmetLogin(err.message); return; }
-    gourmetBody(head + sheetError(err.message, `showGourmetTours('${date}')`));
+    gourmetBody(head + sheetError(err.message, `showGourmetTours(${escapeAttr(JSON.stringify(date))})`));
   }
 }
 
@@ -6477,7 +6483,7 @@ function isModalOpen() {
 }
 
 function needsNavGuard() {
-  return isModalOpen() || isDetailShowing();
+  return isModalOpen() || Boolean(split) || isDetailShowing();
 }
 
 function updateHistoryGuard() {
@@ -6504,6 +6510,10 @@ window.addEventListener('popstate', () => {
     if (onModalEscape) onModalEscape();
     else closeSheet();
     updateHistoryGuard();
+    return;
+  }
+  if (split) {
+    closeSplitScreen();
     return;
   }
   if (isDetailShowing()) {
@@ -7629,12 +7639,14 @@ const PDF_WIDTHS = (() => {
 })();
 // The characters outside Latin-1 that the fonts' encoding (WinAnsi) still
 // has: code, then width in the regular and the bold cut.
-const PDF_EXTRA = { '€': [0x80, 556, 556], '„': [0x84, 333, 500], '…': [0x85, 1000, 1000], '‘': [0x91, 222, 278], '’': [0x92, 222, 278], '“': [0x93, 333, 500], '”': [0x94, 333, 500], '•': [0x95, 350, 350], '–': [0x96, 556, 556], '—': [0x97, 1000, 1000] };
+const PDF_EXTRA = { '€': [0x80, 556, 556], '„': [0x84, 333, 500], '…': [0x85, 1000, 1000], 'Š': [0x8A, 667, 667], 'Œ': [0x8C, 944, 1000], 'Ž': [0x8E, 611, 611], '‘': [0x91, 222, 278], '’': [0x92, 222, 278], '“': [0x93, 333, 500], '”': [0x94, 333, 500], '•': [0x95, 350, 350], '–': [0x96, 556, 556], '—': [0x97, 1000, 1000], 'š': [0x9A, 500, 556], 'œ': [0x9C, 944, 944], 'ž': [0x9E, 500, 500], 'Ÿ': [0x9F, 667, 667] };
+const PDF_STROKE_FALLBACK = { 'Đ': 'D', 'đ': 'd', 'Ł': 'L', 'ł': 'l' };
 
 /// One character as the PDF will hold it: its byte, and how wide it is drawn.
 function pdfGlyph(ch, bold) {
   const extra = PDF_EXTRA[ch];
   if (extra) return { code: extra[0], width: extra[bold ? 2 : 1] };
+  if (PDF_STROKE_FALLBACK[ch]) ch = PDF_STROKE_FALLBACK[ch];
   const table = bold ? PDF_WIDTHS.bold : PDF_WIDTHS.regular;
   let code = ch.charCodeAt(0);
   if (code === 0xA0) return { code, width: table[0] };
@@ -7969,7 +7981,7 @@ function preflightFindings(r) {
   if (unplaced.length) {
     // said above, one line each
   } else if (rough.length) {
-    out.push({ level: 'note', icon: ICONS.warning, title: `${rough.length} ungefähre ${rough.length === 1 ? 'Adresse' : 'Adressen'}`, detail: `${rough.slice(0, 3).map((s) => s.kunde).join(', ')}${rough.length > 3 ? ' …' : ''} — Stopp antippen, „Bearbeiten“, Pin auf das Haus setzen.` });
+    out.push({ level: 'note', icon: ICONS.warning, title: `${rough.length} ungefähre ${rough.length === 1 ? 'Adresse' : 'Adressen'}`, detail: `${rough.slice(0, 3).map((s) => s.kunde).join(', ')}${rough.length > 3 ? ` und ${rough.length - 3} weitere` : ''} — Stopp antippen, „Bearbeiten“, Pin auf das Haus setzen.` });
   } else {
     out.push({ level: 'ok', icon: ICONS.mapPin, title: 'Alle Adressen gefunden' });
   }
@@ -7987,7 +7999,7 @@ function preflightFindings(r) {
     const pieces = ladelisteItems(r, 'vm').reduce((a, x) => a + x.qty, 0);
     if (pieces) out.push({ level: 'note', icon: ICONS.box, title: `${pieces} ${pieces === 1 ? 'Position' : 'Positionen'} einladen`, detail: 'Die Ladeliste hat sie aufgeschlüsselt.', action: 'renderLadeliste()', actionLabel: 'Ladeliste' });
   }
-  const notes = loaded.filter((s) => (s.notiz || '').trim()).length;
+  const notes = owed.filter((s) => (s.notiz || '').trim()).length;
   if (notes) out.push({ level: 'note', icon: ICONS.note, title: `${notes} ${notes === 1 ? 'Notiz' : 'Notizen'} auf der Tour`, detail: 'Stehen bei den Stopps — vor dem Läuten lesen.' });
   return out;
 }
@@ -8166,6 +8178,11 @@ async function signedIn(user) {
 /// next person to sign in on this phone must not glimpse their tours.
 function signedOut() {
   if (!state.user) return;
+  if (split) {
+    try { split.map?.remove(); } catch (_) { /* already gone */ }
+    document.getElementById('split-screen')?.remove();
+    split = null;
+  }
   state.user = null;
   state.routes = [];
   state.currentRoute = null;
@@ -9939,6 +9956,14 @@ function newMap(container, opts) {
     // on it. This is the vector basemap's equivalent of the
     // `raster-fade-duration: 0` already set on the aerial layers.
     fadeDuration: 0,
+    // Roughly a phone screen's worth of tiles at three zoom levels. The
+    // default is derived from the viewport and is smaller than a driver's
+    // actual working set — zooming out to check the route and back in to
+    // the next house evicted the tiles for the house, so coming back
+    // re-fetched them. Holding them costs memory this app has (a few MB of
+    // decoded raster) and saves the one thing it doesn't have, which is
+    // bandwidth on a moving van.
+    maxTileCacheSize: 400,
     // A tap on a marker should not also be a tap on the map underneath it.
     // MapLibre's default 3px slop is tuned for a mouse; a thumb on a phone
     // moves further than that while pressing.
@@ -9946,6 +9971,19 @@ function newMap(container, opts) {
     ...opts.extra,
   });
   map._earBasemap = basemap;
+  // Double-tap, hold, drag: up zooms in and down zooms out, as in Apple Maps
+  // and on the iOS app. MapLibre does it the other way round.
+  try {
+    const tapDrag = map.handlers?._handlersById?.tapDragZoom;
+    if (tapDrag) {
+      const touchmove = tapDrag.touchmove.bind(tapDrag);
+      tapDrag.touchmove = (e, points, mapTouches) => {
+        const r = touchmove(e, points, mapTouches);
+        if (r && typeof r.zoomDelta === 'number') r.zoomDelta = -r.zoomDelta;
+        return r;
+      };
+    }
+  } catch (_) { /* the library's own direction stays */ }
   // OpenFreeMap vector styles reference patterns (e.g. 'wood-pattern') that
   // are not provided in their sprite assets. MapLibre fires 'styleimagemissing'
   // continuously on tile boundaries. Providing a 1x1 transparent RGBA texture
@@ -10846,9 +10884,18 @@ async function takeOverOther(id) {
       } catch (_) { missingPaket = true; }
     }
     const seq = nextSeq();
+    const stopBody = {
+      kunde: entry.kunde, strasse: entry.strasse, plz: entry.plz,
+      paket: entry.paket || null, paket_count: entry.paket_count ?? o.paket_count ?? null,
+      notiz: entry.notiz || null, telefon: entry.telefon || null,
+    };
+    if (o.handed_over && Number.isFinite(o.lat) && Number.isFinite(o.lon)) {
+      stopBody.lat = o.lat;
+      stopBody.lon = o.lon;
+    }
     const updated = await api(`/routes/${routeId}/stops`, {
       method: 'POST',
-      body: JSON.stringify({ kunde: entry.kunde, strasse: entry.strasse, plz: entry.plz, paket: entry.paket || null, notiz: entry.notiz || null, telefon: entry.telefon || null }),
+      body: JSON.stringify(stopBody),
     });
     if (o.manual) await api(`/routes/${routeId}/others/${id}`, { method: 'DELETE', retry: true }).catch(() => {});
     if (applyRouteUpdate(seq, routeId, updated)) render(true);
@@ -10884,11 +10931,11 @@ async function handOverStop(stopId) {
   closeMapCard();
   showProgress('Stopp wird übergeben …');
   try {
-    // Off this tour and onto theirs in one go: waiting in between left the
-    // stop on neither side for as long as the answer took.
+    // Off this tour and onto theirs in one go: add to theirs first so a
+    // failed request never deletes the stop without handing it over.
     const seq = nextSeq();
-    const updated = await api(`/stops/${stopId}`, { method: 'DELETE' });
     const given = await api(`/routes/${routeId}/others`, { method: 'POST', body: JSON.stringify(body) });
+    const updated = await api(`/stops/${stopId}`, { method: 'DELETE' });
     if (applyRouteUpdate(seq, routeId, updated)) render(true);
     if (othersState.routeId === routeId) {
       othersState.list.push(given);
@@ -11168,6 +11215,7 @@ function openSplitScreen() {
     if (hit) splitToggle(Number(hit.properties.id));
   });
   setupSplitLasso();
+  updateHistoryGuard();
   refreshSplitDays();
 }
 
@@ -11305,6 +11353,7 @@ async function closeSplitScreen() {
   try { split?.map?.remove(); } catch (_) { /* already gone */ }
   document.getElementById('split-screen')?.remove();
   split = null;
+  updateHistoryGuard();
 }
 
 /// The fair split of everything still free: the answer is one step "Rückgängig" takes back whole.
@@ -12192,7 +12241,8 @@ function stopFilterActive() {
 /// "Hauptstraße 5", "gentzgasse 129 1" finds "Gentzgasse 129/1", and no
 /// match is ever decided by a slash or a full stop.
 function stopMatches(s, tokens) {
-  const hay = `${normalizeMatchText(s.kunde)} ${normalizeMatchText(s.strasse)} ${String(s.plz || '').trim()} ${normalizeMatchText(s.paket)} ${normalizeMatchText(s.notiz)}`;
+  const info = getGlobaleInfo(s);
+  const hay = `${normalizeMatchText(s.kunde)} ${normalizeMatchText(s.strasse)} ${String(s.plz || '').trim()} ${normalizeMatchText(s.paket)} ${normalizeMatchText(s.notiz)} ${normalizeMatchText(info?.stockwerk)} ${normalizeMatchText(info?.notiz)}`;
   return tokens.every((t) => hay.includes(t));
 }
 

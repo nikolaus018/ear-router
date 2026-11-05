@@ -15,6 +15,7 @@ import SwiftData
 /// teaches a driver that opening it means work, and then it stops being opened.
 struct PreflightSheet: View {
     let route: Route
+    var isBusy: Bool = false
     let onOptimize: () -> Void
     let onRecheck: () -> Void
     let onResetDelivered: () -> Void
@@ -167,6 +168,7 @@ struct PreflightSheet: View {
                     dismiss()
                 }
                 .buttonStyle(.bordered)
+                .disabled(isBusy && action != .openLadeliste)
             }
         }
         .padding(.vertical, 2)

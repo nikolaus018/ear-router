@@ -248,7 +248,9 @@ enum SplitPlanner {
             // A person with nothing is a split into fewer people: cheaper,
             // and not what was asked. Priced above anything else, while
             // there are doors enough to go round.
-            let idle = free.count >= people
+            let unfixedPeople = (0..<people).count { p in !owner.contains(p) }
+            let canCoverEveryone = owner.count >= people && free.count >= unfixedPeople
+            let idle = canCoverEveryone
                 ? Double(work.filter { $0 <= m[0][1] + 1e-6 }.count) * 1e15 : 0
             switch objective {
             case .fair:

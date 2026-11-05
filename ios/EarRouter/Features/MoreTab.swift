@@ -112,7 +112,14 @@ struct MoreTab: View {
             // the same stop, the same maps app — just started by the car
             // instead of by a thumb.
             Section {
-                Toggle(isOn: $carPlayEnabled) {
+                Toggle(
+                    isOn: Binding(
+                        get: { carPlayEnabled },
+                        set: { on in
+                            carPlayEnabled = on
+                            if on { showingCarPlaySetup = true }
+                        })
+                ) {
                     SettingsRow(
                         icon: "car.fill", tint: .mint, title: "CarPlay-Navigation",
                         detail: "Beim Anstecken zum nächsten Stopp")
@@ -190,15 +197,7 @@ struct MoreTab: View {
             SafariView(url: gourmetURL).ignoresSafeArea()
         }
         .sheet(isPresented: $showingCarPlaySetup) { CarPlaySetupSheet() }
-        // The switch is the only control here, and switching it on is what
-        // brings the instructions up — there is no second row to tap, because
-        // there is nothing to set up that turning it on does not already mean.
-        // Without the automation the switch does nothing at all, and a driver
-        // who turns it on and drives off tomorrow would find that out in the
-        // van.
-        .onChange(of: carPlayEnabled) { _, on in
-            if on { showingCarPlaySetup = true }
-        }
+        .onAppear { home = HomeAddress.load() }
     }
 }
 

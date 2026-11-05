@@ -9,11 +9,19 @@ struct HomeAddressView: View {
 
     @State private var strasse = ""
     @State private var plz = ""
+    @State private var plzBeforeEditing = ""
     @State private var saving = false
     @State private var error: AppError?
     @State private var loaded = false
 
+    @FocusState private var focusedField: Field?
+    private enum Field: Hashable { case strasse, plz }
+
     @Environment(\.dismiss) private var dismiss
+
+    private var effectivePlz: String {
+        focusedField == .plz && plz.isEmpty ? plzBeforeEditing : plz
+    }
 
     var body: some View {
         Form {
@@ -21,10 +29,13 @@ struct HomeAddressView: View {
                 TextField("Straße und Hausnummer", text: $strasse)
                     .autocorrectionDisabled()
                     .textContentType(.fullStreetAddress)
+                    .submitLabel(.next)
+                    .focused($focusedField, equals: .strasse)
+                    .onSubmit { focusedField = .plz }
                     .limited(to: FieldLimits.strasse, text: $strasse)
                 LabeledContent("PLZ") {
                     HStack(spacing: 10) {
-                        if let name = Districts.name(for: plz) {
+                        if let name = Districts.name(for: effectivePlz) {
                             Text(name)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -33,8 +44,27 @@ struct HomeAddressView: View {
                         TextField("1210", text: $plz)
                             .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
+                            .focused($focusedField, equals: .plz)
                             .limited(to: 4, text: $plz)
                             .frame(width: 58)
+                            .onChange(of: focusedField) { was, now in
+                                if now == .plz {
+                                    plzBeforeEditing = plz
+                                    plz = ""
+                                } else if was == .plz, plz.isEmpty {
+                                    plz = plzBeforeEditing
+                                }
+                            }
+                        Menu {
+                            ForEach(Districts.all) { d in
+                                Button("\(d.plz) — \(d.label)") { plz = d.plz }
+                            }
+                        } label: {
+                            Image(systemName: "list.bullet")
+                                .frame(width: 30, height: 30)
+                                .contentShape(.rect)
+                        }
+                        .accessibilityLabel("Wiener Bezirk wählen")
                     }
                 }
             } header: {
@@ -66,6 +96,7 @@ struct HomeAddressView: View {
                 }
             }
         }
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Zuhause")
         .navigationBarTitleDisplayMode(.inline)
         .errorAlert($error) { correctedPlz in plz = correctedPlz }
@@ -78,16 +109,17 @@ struct HomeAddressView: View {
     }
 
     private var canSave: Bool {
-        !strasse.trimmed.isEmpty && Postcodes.isValid(plz)
-            && (home?.strasse != strasse.trimmed || home?.plz != plz)
+        !strasse.trimmed.isEmpty && Postcodes.isValid(effectivePlz)
+            && (home?.strasse != strasse.trimmed || home?.plz != effectivePlz)
     }
 
     private func save() async {
+        let targetPlz = effectivePlz
         saving = true
         defer { saving = false }
         do {
-            let hit = try await Geocoder.shared.geocode(strasse: strasse.trimmed, plz: plz)
-            let saved = HomeAddress(strasse: strasse.trimmed, plz: plz, lat: hit.lat, lon: hit.lon)
+            let hit = try await Geocoder.shared.geocode(strasse: strasse.trimmed, plz: targetPlz)
+            let saved = HomeAddress(strasse: strasse.trimmed, plz: targetPlz, lat: hit.lat, lon: hit.lon)
             saved.save()
             home = saved
             dismiss()

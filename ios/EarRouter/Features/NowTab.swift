@@ -332,7 +332,9 @@ struct NowTab: View {
         }
         offerUndo(
             DeliveredTick(
-                id: stop.id, name: stop.kunde ?? "Stopp", outcome: outcome,
+                id: stop.id,
+                name: stop.kind == .customer ? (stop.kunde ?? "Stopp") : stop.fixedTitle,
+                outcome: outcome,
                 checkpoint: stop.kind != .customer))
     }
 
@@ -376,6 +378,8 @@ struct NowTab: View {
     /// most tours end: the report the outcomes and times are kept for was
     /// skipped on the screen the driver was actually standing on.
     private func finish(_ route: Route) {
+        undoTask?.cancel()
+        undo = nil
         do {
             // Set `reportRoute` before `toggleStatus` changes the route's
             // status.  SwiftData's @Query drops the route from `active` on
@@ -479,7 +483,7 @@ private struct NowStopCard: View {
                         font: .subheadline.weight(.semibold).monospacedDigit())
                 }
                 HStack(spacing: 6) {
-                    Text(stop.kunde ?? "Stopp")
+                    Text(stop.kind == .customer ? (stop.kunde ?? "Stopp") : stop.fixedTitle)
                         .font(.title2.bold())
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityAddTraits(.isHeader)
@@ -734,6 +738,8 @@ private struct TourDoneView: View {
     let homeKm: Double
     let onFinish: () -> Void
 
+    @Environment(\.openURL) private var openURL
+
     private var allDelivered: Bool { followUps.isEmpty }
 
     var body: some View {
@@ -759,23 +765,42 @@ private struct TourDoneView: View {
             if !allDelivered {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(followUps, id: \.id) { stop in
-                        Label {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(stop.kunde ?? "Stopp")
-                                    .fixedSize(horizontal: false, vertical: true)
-                                if !stop.listAddress.isEmpty {
-                                    Text(Format.address(stop.listAddress))
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
+                        HStack(alignment: .center, spacing: 8) {
+                            Label {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(stop.kunde ?? "Stopp")
                                         .fixedSize(horizontal: false, vertical: true)
+                                    if !stop.listAddress.isEmpty {
+                                        Text(Format.address(stop.listAddress))
+                                            .font(.footnote)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
                                 }
+                            } icon: {
+                                Image(systemName: "bell.slash.fill")
                             }
-                        } icon: {
-                            Image(systemName: "bell.slash.fill")
+                            .font(.subheadline)
+                            .labelStyle(TintedIconLabelStyle(tint: .attention))
+                            .symbolRenderingMode(.monochrome)
+
+                            Spacer(minLength: 0)
+
+                            if let telefon = stop.telefon,
+                               let url = PhoneNumbers.dialURL(for: telefon) {
+                                Button {
+                                    openURL(url)
+                                } label: {
+                                    Image(systemName: "phone.fill")
+                                        .font(.subheadline.weight(.semibold))
+                                        .frame(width: 36, height: 36)
+                                        .contentShape(.rect)
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(Color.accentColor)
+                                .accessibilityLabel("\(stop.kunde ?? "Stopp") anrufen")
+                            }
                         }
-                        .font(.subheadline)
-                        .labelStyle(TintedIconLabelStyle(tint: .attention))
-                        .symbolRenderingMode(.monochrome)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

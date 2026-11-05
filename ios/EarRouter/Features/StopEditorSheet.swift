@@ -118,9 +118,7 @@ struct StopEditorSheet: View {
                         TextField("Telefon", text: $telefon)
                             .textContentType(.telephoneNumber)
                             .keyboardType(.phonePad)
-                            .submitLabel(.next)
                             .focused($focusedField, equals: .telefon)
-                            .onSubmit { focusedField = .strasse }
                             .limited(to: FieldLimits.telefon, text: $telefon)
                     }
                 }
@@ -235,6 +233,7 @@ struct StopEditorSheet: View {
                     }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             // Locks the fields — they must not change under a lookup already
             // using them — and sits here, under the toolbar in the chain,
             // rather than over it, so that it does not also reach Abbrechen.
@@ -296,14 +295,14 @@ struct StopEditorSheet: View {
                 PinDropSheet(
                     initial: droppedPin
                         ?? stop?.coordinate
-                        ?? Districts.byPlz[plz].map {
+                        ?? Districts.byPlz[draft.plz].map {
                             CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon)
                         }
                         ?? CLLocationCoordinate2D(
                             latitude: Coordinates.viennaCenter.lat,
                             longitude: Coordinates.viennaCenter.lon),
                     label: isCustomer ? (kunde.isEmpty ? strasse : kunde) : (stop?.fixedTitle ?? strasse),
-                    plz: plz
+                    plz: draft.plz
                 ) { coordinate in
                     droppedPin = coordinate
                     discardStoredPin = false
@@ -438,7 +437,7 @@ struct StopEditorSheet: View {
     }
 
     private var canSave: Bool {
-        !kunde.trimmed.isEmpty && !strasse.trimmed.isEmpty && Postcodes.isValid(plz)
+        !kunde.trimmed.isEmpty && !strasse.trimmed.isEmpty && Postcodes.isValid(draft.plz)
     }
 
     private func load() {
@@ -493,6 +492,7 @@ struct StopEditorSheet: View {
             saving = false
         }
 
+        let effectivePlz = draft.plz
         let coordinate = droppedPin.map { (lat: $0.latitude, lon: $0.longitude) }
         do {
             // The sheet closes on the write, and the tour is routed behind it.
@@ -503,14 +503,14 @@ struct StopEditorSheet: View {
             // the one thing Abbrechen promises will not happen.
             if let stop {
                 let moved = try await RouteStore.updateStop(
-                    stop, kunde: kunde, strasse: strasse, plz: plz,
+                    stop, kunde: kunde, strasse: strasse, plz: effectivePlz,
                     paket: paket, notiz: notiz, telefon: telefon, coordinate: coordinate,
                     forceGeocode: discardStoredPin, reroute: false, in: context)
                 dismiss()
                 if moved, let route = stop.route { reroute(route) }
             } else {
                 try await RouteStore.addStop(
-                    to: route, kunde: kunde, strasse: strasse, plz: plz,
+                    to: route, kunde: kunde, strasse: strasse, plz: effectivePlz,
                     paket: paket, notiz: notiz, telefon: telefon, coordinate: coordinate,
                     reroute: false, in: context)
                 dismiss()

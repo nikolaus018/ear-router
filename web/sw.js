@@ -201,11 +201,18 @@ self.addEventListener('fetch', (event) => {
     const SHELL_NETWORK_TIMEOUT_MS = 400;
     event.respondWith((async () => {
       const cache = await caches.open(CACHE_NAME);
+      let timerId;
       const network = fetch(request).then((res) => {
-        if (res.ok) cache.put(request, res.clone()).catch(() => {});
+        clearTimeout(timerId);
+        if (res.ok) event.waitUntil(cache.put(request, res.clone()).catch(() => {}));
         return res;
+      }, (err) => {
+        clearTimeout(timerId);
+        throw err;
       });
-      const timedOut = new Promise((resolve) => setTimeout(() => resolve(undefined), SHELL_NETWORK_TIMEOUT_MS));
+      const timedOut = new Promise((resolve) => {
+        timerId = setTimeout(() => resolve(undefined), SHELL_NETWORK_TIMEOUT_MS);
+      });
       // Raced against a version of `network` that can never *reject* — a
       // bare `Promise.race([network, timedOut])` looked equivalent but
       // isn't: `race` settles the instant ANY entry settles, rejection
@@ -216,15 +223,17 @@ self.addEventListener('fetch', (event) => {
       // handler. `network` itself (still able to reject) is what the later
       // fallbacks below correctly `.catch()` off of.
       const raced = await Promise.race([network.catch(() => undefined), timedOut]);
-      if (raced) return raced;
+      if (raced && raced.ok) return raced;
 
-      // The network didn't answer in time — serve whatever's cached right
-      // now, but let the network attempt keep running in the background so
-      // the cache (and this tab, via `controllerchange` if it was a real
-      // update) still catches up as soon as it does answer.
-      event.waitUntil(network.catch(() => {}));
+      // The network didn't answer in time (or answered with a server error) —
+      // serve whatever's cached right now, but let the network attempt keep
+      // running in the background so the cache (and this tab, via
+      // `controllerchange` if it was a real update) still catches up as soon
+      // as it does answer.
+      if (!raced) event.waitUntil(network.catch(() => {}));
       const cached = await cache.match(request);
       if (cached) return cached;
+      if (raced) return raced;
       // Nothing cached (first-ever load, or a cleared cache) and the
       // network already missed its window: wait it out for real rather
       // than serving nothing.

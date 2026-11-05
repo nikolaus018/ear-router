@@ -50,34 +50,39 @@ def clean(s):
 
 
 def point(feature):
-    lon, lat = feature["geometry"]["coordinates"]
+    coords = (feature.get("geometry") or {}).get("coordinates") or []
+    if len(coords) < 2:
+        return None
+    lon, lat = coords[0], coords[1]
     return f"{lat:.6f}", f"{lon:.6f}"
 
 
 def main(out):
     rows = []
     for f in fetch("ADRESSENOGD", ["NAME_STR", "NAME_ONR_BST_GEB", "PLZ", "SHAPE"]):
-        p = f["properties"]
-        street, number, plz = clean(p["NAME_STR"]), clean(p["NAME_ONR_BST_GEB"]), clean(p["PLZ"])
-        if street and number and plz:
-            rows.append(("A", street, number, plz, *point(f)))
+        p = f.get("properties") or {}
+        pt = point(f)
+        street, number, plz = clean(p.get("NAME_STR")), clean(p.get("NAME_ONR_BST_GEB")), clean(p.get("PLZ"))
+        if street and number and plz and pt:
+            rows.append(("A", street, number, plz, *pt))
     addresses = len(rows)
 
     for f in fetch("ZUGANGSADROGD"):
-        p = f["properties"]
-        name, number, plz = clean(p["NAME"]), clean(p["NAME_ONR"]), clean(p["PLZ"])
+        p = f.get("properties") or {}
+        pt = point(f)
+        name, number, plz = clean(p.get("NAME")), clean(p.get("NAME_ONR")), clean(p.get("PLZ"))
         # "Riedelgasse gegenüber 22" with the number "gegenüber 22": the
         # street is what comes before the number.
-        if not (name and number and plz and name.endswith(" " + number)):
+        if not (name and number and plz and pt and name.endswith(" " + number)):
             continue
-        rows.append(("E", name[: -len(number)].strip(), number, plz, *point(f)))
+        rows.append(("E", name[: -len(number)].strip(), number, plz, *pt))
     entrances = len(rows) - addresses
 
     # Half a register is a service having a bad day.
     if addresses < 250_000 or entrances < 130_000:
         sys.exit(f"implausibly short: {addresses} addresses, {entrances} entrances")
 
-    rows.sort(key=lambda r: (r[1], r[3], r[0], r[2]))
+    rows.sort(key=lambda r: (r[1], r[3], r[0], r[2], r[4], r[5]))
     text = f"#\tWienAdressen\t1\t{datetime.date.today().isoformat()}\n"
     text += "".join("\t".join(r) + "\n" for r in rows)
     packer = zlib.compressobj(9, zlib.DEFLATED, -15)
