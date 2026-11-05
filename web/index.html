@@ -9416,10 +9416,28 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1, numb
     : '';
   const info = getGlobaleInfo(s);
   const floorBadge = info?.stockwerk
-    ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] font-medium mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-black/75 bg-black/5'}"><span class="flex shrink-0 text-black/50">${ICONS.stairs}</span><span class="truncate">${escapeHtml(formatFloor(info.stockwerk))}</span></p>`
+    ? `<span class="inline-flex items-center gap-1 max-w-full text-[12px] font-medium px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-black/75 bg-black/5'}" style="min-height:24px"><span class="flex shrink-0 text-black/50">${ICONS.stairs}</span><span class="truncate">${escapeHtml(formatFloor(info.stockwerk))}</span></span>`
     : '';
   const customerNoteBadge = info?.notiz
-    ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic text-warn">${ICONS.customerNote}</span><span class="truncate">${escapeHtml(info.notiz)}</span></p>`
+    ? `<span class="inline-flex items-center gap-1 max-w-full text-[12px] italic px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}" style="min-height:24px"><span class="flex shrink-0 not-italic text-warn">${ICONS.customerNote}</span><span class="truncate">${escapeHtml(info.notiz)}</span></span>`
+    : '';
+  const paketBadge = displayPaket(s) ? (() => {
+    const qty = isTkTour(state.currentRoute) ? (parcelCount(s) || 1) : paketQty(s.paket);
+    // (TK: the parcels to carry up. VM: the pieces in the Paket.)
+    const multi = qty > 1 && !delivered;
+    return `<span class="inline-flex items-center gap-1 max-w-full text-[12px] ${multi ? 'font-bold' : 'font-medium'} px-1.5 py-0.5 rounded ${
+      delivered ? 'text-black/55 bg-black/5' : multi ? 'text-white bg-brand-600 shadow-sm' : 'text-brand-700 bg-brand-50'
+    }" style="min-height:24px">${
+      multi
+        ? `<span class="shrink-0 w-4 h-4 rounded-full bg-white/25 flex items-center justify-center text-[10px] font-bold leading-none">${qty}</span>`
+        : `<span class="flex shrink-0">${ICONS.box}</span>`
+    }<span class="truncate">${escapeHtml(displayPaket(s))}</span></span>`;
+  })() : '';
+  const noteBadge = s.notiz
+    ? `<span class="inline-flex items-center gap-1 max-w-full text-[12px] italic px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}" style="min-height:24px"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></span>`
+    : '';
+  const badgesHtml = (floorBadge || paketBadge || customerNoteBadge || noteBadge)
+    ? `<div class="flex flex-wrap items-center gap-1.5 mt-1.5">${floorBadge}${paketBadge}${customerNoteBadge}${noteBadge}</div>`
     : '';
   const { cls: animClass, style: animStyle } = rowAnimAttrs(animIndex);
 
@@ -9448,21 +9466,7 @@ function renderCustomerRow(s, isNext, animIndex = null, duplicateCount = 1, numb
         </div>
         <p class="font-medium ${delivered ? 'text-black/55' : ''}">${number != null ? `<span class="row-num ${delivered ? 'done' : isNext ? 'next' : ''}" aria-hidden="true">${number}</span>` : ''}<span class="${struck ? 'line-through' : ''}">${escapeHtml(s.kunde)}</span></p>
         <p class="text-[13px] ${delivered ? 'text-black/55' : 'text-black/60'}">${escapeHtml(s.strasse)}, ${escapeHtml(s.plz)}</p>
-        ${floorBadge}
-        ${customerNoteBadge}
-        ${displayPaket(s) ? (() => {
-          const qty = isTkTour(state.currentRoute) ? (parcelCount(s) || 1) : paketQty(s.paket);
-          // (TK: the parcels to carry up. VM: the pieces in the Paket.)
-          const multi = qty > 1 && !delivered;
-          return `<p class="inline-flex items-center gap-1 max-w-full text-[12px] ${multi ? 'font-bold' : 'font-medium'} mt-1.5 px-1.5 py-0.5 rounded ${
-            delivered ? 'text-black/55 bg-black/5' : multi ? 'text-white bg-brand-600 shadow-sm' : 'text-brand-700 bg-brand-50'
-          }">${
-            multi
-              ? `<span class="shrink-0 w-4 h-4 rounded-full bg-white/25 flex items-center justify-center text-[10px] font-bold">${qty}</span>`
-              : `<span class="flex shrink-0">${ICONS.box}</span>`
-          }<span class="truncate">${escapeHtml(displayPaket(s))}</span></p>`;
-        })() : ''}
-        ${s.notiz ? `<p class="inline-flex items-center gap-1 max-w-full text-[12px] italic mt-1 px-1.5 py-0.5 rounded ${delivered ? 'text-black/55 bg-black/5' : 'text-warnText bg-warn/10'}"><span class="flex shrink-0 not-italic">${ICONS.note}</span><span class="truncate">${escapeHtml(s.notiz)}</span></p>` : ''}
+        ${badgesHtml}
         ${skipsDoor(s) ? '' : legLabel(s, 'mt-1.5')}
         <p class="eta-line" data-eta="${s.id}"></p>
       </div>
