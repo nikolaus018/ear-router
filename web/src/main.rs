@@ -4732,9 +4732,9 @@ async fn wien_entrance(state: &AppState, strasse: &str, plz: &str) -> Option<(f6
     // still gives the city's canonical street spelling before falling back to
     // the street as typed.
     let street = pick_ogd_feature(&same_number, plz, &street_key, None, &[], &[])
+        .or_else(|| pick_ogd_feature(&features, plz, &street_key, None, &[], &[]))
         .filter(|f| ogd_ranking(f) < 1.0)
         .and_then(|f| f.properties.street_name.clone())
-        .or_else(|| pick_ogd_feature(&features, plz, &street_key, None, &[], &[])?.properties.street_name.clone())
         .unwrap_or_else(|| text::street_name_only(&simplified));
 
     let answer = entrance_fetch(state, &street, &asked, plz).await?;
@@ -7003,6 +7003,9 @@ mod split_planner {
         people: usize,
         objective: Objective,
         free: Vec<usize>,
+        /// Enough doors for everyone, and enough free ones for the people
+        /// who own none: fixed for the plan, so worked out once.
+        can_cover_everyone: bool,
         neighbours: Vec<Vec<usize>>,
     }
 
@@ -7035,6 +7038,8 @@ mod split_planner {
             let service: Vec<f64> = doors.iter().map(|d| d.seconds.max(0.0)).collect();
             let owner: Vec<Option<usize>> = doors.iter().map(|d| d.owner.filter(|&o| o < people)).collect();
             let free: Vec<usize> = (0..doors.len()).filter(|&i| owner[i].is_none()).collect();
+            let unfixed_people = (0..people).filter(|&p| !owner.contains(&Some(p))).count();
+            let can_cover_everyone = owner.len() >= people && free.len() >= unfixed_people;
             let neighbours: Vec<Vec<usize>> = (0..doors.len())
                 .map(|d| {
                     let mut others: Vec<usize> = (0..doors.len()).filter(|&o| o != d).collect();
@@ -7047,7 +7052,7 @@ mod split_planner {
                     others
                 })
                 .collect();
-            Engine { m, service, owner, people, objective, free, neighbours }
+            Engine { m, service, owner, people, objective, free, can_cover_everyone, neighbours }
         }
 
         fn drive(&self, r: &[usize]) -> f64 {
@@ -7121,9 +7126,7 @@ mod split_planner {
         fn cost(&self, work: &[f64]) -> f64 {
             // A person with nothing is a split into fewer people: priced above
             // anything else, while there are doors enough to go round.
-            let unfixed_people = (0..self.people).filter(|&p| !self.owner.contains(&Some(p))).count();
-            let can_cover_everyone = self.owner.len() >= self.people && self.free.len() >= unfixed_people;
-            let idle = if can_cover_everyone {
+            let idle = if self.can_cover_everyone {
                 work.iter().filter(|&&w| w <= self.m[0][1] + 1e-6).count() as f64 * 1e15
             } else {
                 0.0

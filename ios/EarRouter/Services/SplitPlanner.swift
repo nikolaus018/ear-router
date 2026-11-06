@@ -151,6 +151,10 @@ enum SplitPlanner {
         let people: Int
         let objective: Objective
         let free: [Int]
+        /// Whether every person can be given a door: enough doors in all, and
+        /// enough free ones for the people who own none. Fixed for the plan,
+        /// so worked out once rather than on every `cost`.
+        let canCoverEveryone: Bool
         /// Each door's nearest others, closest first: the only partners a
         /// swap is tried with. A door in Liesing is not swapped for one in
         /// Floridsdorf.
@@ -169,6 +173,8 @@ enum SplitPlanner {
             self.owner = owner
             self.people = people
             free = doors.indices.filter { owner[$0] == nil }
+            let unfixedPeople = (0..<people).count { p in !owner.contains(p) }
+            canCoverEveryone = owner.count >= people && free.count >= unfixedPeople
 
             let m = self.m
             neighbours = doors.indices.map { d in
@@ -248,8 +254,6 @@ enum SplitPlanner {
             // A person with nothing is a split into fewer people: cheaper,
             // and not what was asked. Priced above anything else, while
             // there are doors enough to go round.
-            let unfixedPeople = (0..<people).count { p in !owner.contains(p) }
-            let canCoverEveryone = owner.count >= people && free.count >= unfixedPeople
             let idle = canCoverEveryone
                 ? Double(work.filter { $0 <= m[0][1] + 1e-6 }.count) * 1e15 : 0
             switch objective {

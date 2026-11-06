@@ -168,6 +168,7 @@ struct PreflightSheet: View {
                     dismiss()
                 }
                 .buttonStyle(.bordered)
+                .controlSize(.small)
                 .disabled(isBusy && action != .openLadeliste)
             }
         }

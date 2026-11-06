@@ -2418,6 +2418,22 @@ video {
   opacity: 0.4;
 }
 
+/* Added by hand: used by the Globale Infos and install sheets, which came
+   after the last build of the block above. */
+.z-\[65\] { z-index: 65; }
+.max-h-\[60vh\] { max-height: 60vh; }
+.mb-0\.5 { margin-bottom: 0.125rem; }
+.pb-6 { padding-bottom: 1.5rem; }
+.py-8 { padding-top: 2rem; padding-bottom: 2rem; }
+.\!pt-1 { padding-top: 0.25rem !important; }
+.leading-none { line-height: 1; }
+.leading-tight { line-height: 1.25; }
+.shadow-md {
+  --tw-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --tw-shadow-colored: 0 4px 6px -1px var(--tw-shadow-color), 0 2px 4px -2px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+}
+
 /* ------------------------------------------------------------------
    Dark Mode — follows iOS system settings (Settings > Display & Brightness).
    Placed AFTER the compiled Tailwind utilities so dark-mode overrides
@@ -5479,7 +5495,7 @@ function autoFillDistrictFromText(strasseInput, plzSelect) {
   plzSelect.value = match[0];
   const matchIndex = commaMatch ? afterCommaOffset + commaMatch.index : match.index;
   let cleaned = text.slice(0, matchIndex) + text.slice(matchIndex + match[0].length);
-  cleaned = cleaned.replace(/(?:,\s*|\s+)\b(wien|austria|österreich)(?![a-zA-ZäöüÄÖÜß])\.?/gi, '');
+  cleaned = cleaned.replace(/(?:,\s*|\s+)(wien|austria|österreich)(?![a-zA-ZäöüÄÖÜß])\.?/gi, '');
   cleaned = cleaned.replace(/,\s*,/g, ',').replace(/,\s*$/, '').replace(/\s{2,}/g, ' ').trim();
   strasseInput.value = cleaned;
 }
