@@ -26,6 +26,7 @@ struct TourSplitSheet: View {
     @State private var loadTask: Task<Void, Never>?
     @State private var error: AppError?
     @State private var split: SplitState?
+    @State private var showingServer = false
     /// Read once, not in `body`: every redraw of this screen was a Keychain
     /// query, and signing in here has to be able to flip it.
     @State private var signedIn = GourmetCredentialsStore.load() != nil
@@ -55,6 +56,15 @@ struct TourSplitSheet: View {
                         Button("Schließen") { dismiss() }
                     }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Vom Server laden", systemImage: "icloud.and.arrow.down") {
+                        showingServer = true
+                    }
+                    .disabled(busy != nil)
+                }
+            }
+            .sheet(isPresented: $showingServer) {
+                SplitServerSheet { dismiss() }
             }
             .floatingBanner {
                 if let busy {
@@ -421,54 +431,67 @@ struct SplitState: Identifiable {
 
     // MARK: Sharing
 
-    /// One stop as it goes out: the customer and the address, nothing else.
-    private struct SharedStop: Encodable {
-        let name: String
-        let address: String
+    /// One person's share, or everyone's when `person` is nil, as plain text
+    /// for a chat or a mail: the tour, then each person's doors in the order
+    /// they are driven, then whatever nobody has yet.
+    func shareText(for person: Int? = nil) -> String {
+        let who = person.map { [$0] } ?? Array(0..<people)
+        let name = tourName.trimmed.isEmpty ? "Tour" : tourName.trimmed
+        var lines = ["\(name) – \(Self.shareDayFormatter.string(from: date))"]
+        func line(_ stop: SplitStop) -> String {
+            let address = [stop.address.trimmed, stop.plz.trimmed].filter { !$0.isEmpty }
+                .joined(separator: ", ")
+            return address.isEmpty ? stop.name : "\(stop.name) – \(address)"
+        }
+        for p in who {
+            let mine = drivingOrder(of: p)
+            lines.append("")
+            lines.append("Person \(p + 1) · \(mine.count == 1 ? "1 Stopp" : "\(mine.count) Stopps")")
+            if mine.isEmpty { lines.append("Keine Stopps") }
+            for (i, stop) in mine.enumerated() { lines.append("\(i + 1). \(line(stop))") }
+        }
+        let rest = person == nil ? stops(of: nil) : []
+        if !rest.isEmpty {
+            lines.append("")
+            lines.append("Nicht zugeteilt · \(rest.count)")
+            for stop in rest { lines.append("– \(line(stop))") }
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 
-    private struct SharedPerson: Encodable {
-        let person: Int
-        let stops: [SharedStop]
-    }
+    private static let shareDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "de_AT")
+        f.dateFormat = "dd.MM.yyyy"
+        return f
+    }()
 
-    private func sharedStops(_ stops: [SplitStop]) -> [SharedStop] {
-        stops.map { SharedStop(name: $0.name, address: $0.address) }
-    }
-
-    /// A JSON file of one person's share, or of everyone's when `person` is
-    /// nil — written when asked for, like the backup, and handed to the share
-    /// sheet.
+    /// One person's part as it goes to the split server: the tour, the day,
+    /// and the stops in the order they are driven — name, address and
+    /// postcode, plus the customer's Globale Infos (floor, standing note)
+    /// where this phone has any. `infos` is keyed by stop id.
     ///
     /// The top level is written by hand: `JSONEncoder` leaves key order to
     /// chance unless it sorts them, and sorted, "tour" would land below the
     /// persons instead of heading the file.
-    func writeShareFile(for person: Int? = nil) throws -> URL {
-        let who = person.map { [$0] } ?? Array(0..<people)
-        let rest = person == nil ? stops(of: nil) : []
-
+    func serverPart(for person: Int, infos: [Int: CustomerInfo] = [:]) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         func json(_ value: some Encodable) throws -> String {
             String(decoding: try encoder.encode(value), as: UTF8.self)
         }
-
-        var parts = ["\"tour\" : \(try json(tourName.trimmed))"]
-        let persons = who.map {
-            SharedPerson(person: $0 + 1, stops: sharedStops(drivingOrder(of: $0)))
+        let stops = drivingOrder(of: person).map { stop in
+            let info = infos[stop.id]
+            return SplitServer.Stop(
+                name: stop.name, address: stop.address, plz: stop.plz.trimmed.nilIfEmpty,
+                stockwerk: info?.stockwerk, notiz: info?.notiz)
         }
-        parts.append("\"persons\" : \(try json(persons))")
-        if !rest.isEmpty { parts.append("\"unassigned\" : \(try json(sharedStops(rest)))") }
-        let body = "{\n" + parts.joined(separator: ",\n") + "\n}\n"
-
-        let dir = URL.temporaryDirectory.appending(path: "TourTeilen-\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
-        let base = tourName.trimmed.replacingOccurrences(of: "/", with: "-")
-        let suffix = person.map { "-P\($0 + 1)" } ?? ""
-        let url = dir.appending(path: "\(base.isEmpty ? "Tour" : base)\(suffix).json")
-        try Data(body.utf8).write(to: url, options: .atomic)
-        return url
+        let parts = [
+            "\"tour\" : \(try json(tourName.trimmed))",
+            "\"date\" : \(try json(SplitServer.dayString(date)))",
+            "\"persons\" : \(try json([SplitServer.Person(person: person + 1, stops: stops)]))",
+        ]
+        return Data(("{\n" + parts.joined(separator: ",\n") + "\n}\n").utf8)
     }
 }
 
@@ -1553,7 +1576,11 @@ private struct SplitOverview: View {
     /// just created nor cleaned up after a review that saved nothing.
     @State private var pending: ReviewContext?
     @State private var imported = false
-    @State private var sharing: SharedFile?
+    @State private var sharing: SharedText?
+    /// The person whose part waits for the server key to be typed in.
+    @State private var keyFor: Int?
+    @State private var keyDraft = ""
+    @State private var sent: String?
 
     struct ReviewContext: Identifiable {
         let id = UUID()
@@ -1599,7 +1626,28 @@ private struct SplitOverview: View {
         }
         .animation(.snappy, value: busy)
         .errorAlert($error)
-        .sheet(item: $sharing) { ShareSheet(items: [$0.url]) }
+        .sheet(item: $sharing) { ShareSheet(items: [$0.text]) }
+        .alert(
+            "API-Schlüssel für den Split-Server",
+            isPresented: Binding(get: { keyFor != nil }, set: { if !$0 { keyFor = nil } })
+        ) {
+            SecureField("API-Schlüssel", text: $keyDraft)
+            Button("Senden") {
+                let person = keyFor
+                UserDefaults.standard.set(keyDraft.trimmed, forKey: SplitServer.keyDefaultsKey)
+                keyDraft = ""
+                keyFor = nil
+                if let person { task = Task { await send(person) } }
+            }
+            Button("Abbrechen", role: .cancel) { keyDraft = "" }
+        } message: {
+            Text("Legt der Admin auf ear-split-api.ringtwo.win an. Einmal auf diesem Telefon eingeben.")
+        }
+        .alert("Gesendet", isPresented: Binding(get: { sent != nil }, set: { if !$0 { sent = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(sent ?? "")
+        }
         .sheet(item: $review, onDismiss: reviewDismissed) { ctx in
             ImportReviewView(route: ctx.route, entries: ctx.entries) { imported = true }
         }
@@ -1619,6 +1667,16 @@ private struct SplitOverview: View {
                     task = Task { await createTour(for: person) }
                 } label: {
                     Label("Als Tour anlegen", systemImage: "plus.circle")
+                }
+                .disabled(busy != nil)
+                Button {
+                    if SplitServer.key == nil {
+                        keyFor = person
+                    } else {
+                        task = Task { await send(person) }
+                    }
+                } label: {
+                    Label("An Server senden", systemImage: "icloud.and.arrow.up")
                 }
                 .disabled(busy != nil)
             }
@@ -1644,10 +1702,30 @@ private struct SplitOverview: View {
     // MARK: Actions
 
     private func share(_ person: Int?) {
+        sharing = SharedText(text: state.shareText(for: person))
+    }
+
+    /// Sends one person's part to the split server, with the Globale Infos
+    /// this phone has for its customers.
+    private func send(_ person: Int) async {
+        busy = "Wird gesendet …"
+        defer { busy = nil }
+        var infos: [Int: CustomerInfo] = [:]
+        for stop in state.stops(of: person) {
+            guard let key = StockwerkKey.make(kunde: stop.name, strasse: stop.address, plz: stop.plz),
+                let note = try? StockwerkStore.note(forKey: key, in: context)
+            else { continue }
+            let info = CustomerInfo(note)
+            if info.stockwerk != nil || info.notiz != nil { infos[stop.id] = info }
+        }
         do {
-            sharing = SharedFile(url: try state.writeShareFile(for: person))
+            let stored = try await SplitServer.upload(try state.serverPart(for: person, infos: infos))
+            sent = "Person \(person + 1) liegt am Server: \(stored.stops == 1 ? "1 Stopp" : "\(stored.stops) Stopps")."
+        } catch is CancellationError {
+        } catch let e as AppError {
+            error = e
         } catch {
-            self.error = .message(error.localizedDescription)
+            self.error = AppError.message("Der Teil konnte nicht gesendet werden.")
         }
     }
 

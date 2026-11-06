@@ -89,43 +89,69 @@ struct SplitStateTests {
         #expect(name != "VM 4 DO Vormittag · P1")
     }
 
-    private func sharedJSON(_ split: SplitState, person: Int? = nil) throws -> [String: Any] {
-        let url = try split.writeShareFile(for: person)
-        let data = try Data(contentsOf: url)
-        #expect(url.pathExtension == "json")
-        #expect(String(decoding: data, as: UTF8.self).hasPrefix("{\n\"tour\""))
-        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-    }
-
-    @Test func theSharedFileHoldsOnlyNameAndAddressPerStop() throws {
+    @Test func theSharedTextListsEachPersonsDoorsAndTheRest() {
         var split = state(4, people: 2)
         split.claim([0, 1], for: 0)
         split.claim([2], for: 1)
-        let json = try sharedJSON(split)
-        #expect(json["tour"] as? String == "VM 4 DO Vormittag")
-        let persons = try #require(json["persons"] as? [[String: Any]])
-        #expect(persons.count == 2)
-        #expect(persons[0]["person"] as? Int == 1)
-        let stops = try #require(persons[0]["stops"] as? [[String: String]])
-        #expect(stops.count == 2)
-        #expect(Set(stops[0].keys) == ["name", "address"])
-        #expect((json["unassigned"] as? [Any])?.count == 1)
+        let text = split.shareText()
+        #expect(text.hasPrefix("VM 4 DO Vormittag – "))
+        #expect(text.contains("Person 1 · 2 Stopps\n1. Kunde 0 – Gentzgasse 1, 1180\n2. Kunde 1 – Gentzgasse 2, 1180"))
+        #expect(text.contains("Person 2 · 1 Stopp\n1. Kunde 2 – Gentzgasse 3, 1180"))
+        #expect(text.contains("Nicht zugeteilt · 1\n– Kunde 3 – Gentzgasse 4, 1180"))
+        #expect(!text.contains("{"))
     }
 
-    @Test func aSingleShareHoldsOnlyThatPerson() throws {
+    @Test func aSingleShareHoldsOnlyThatPerson() {
         var split = state(2, people: 2)
         split.claim([0, 1], for: 1)
-        let json = try sharedJSON(split, person: 1)
-        let persons = try #require(json["persons"] as? [[String: Any]])
-        #expect(persons.count == 1)
-        #expect(persons[0]["person"] as? Int == 2)
-        #expect(json["unassigned"] == nil)
+        let text = split.shareText(for: 1)
+        #expect(text.contains("Person 2 · 2 Stopps"))
+        #expect(!text.contains("Person 1"))
+        #expect(!text.contains("Nicht zugeteilt"))
     }
 
-    @Test func aFullyDealtSplitHasNoLeftoversInTheFile() throws {
-        var split = state(2, people: 2)
-        split.claim([0, 1], for: 0)
-        #expect(try sharedJSON(split)["unassigned"] == nil)
+    @Test func theServerPartCarriesTheDayAndTheGlobaleInfos() throws {
+        var split = SplitState(
+            tourName: "VM 4 DO Vormittag",
+            date: Date(timeIntervalSince1970: 1_757_980_800),  // 16.09.2025, 02:00 in Vienna
+            people: 2,
+            stops: (0..<3).map {
+                SplitStop(
+                    id: $0, name: "Kunde \($0)", address: "Gentzgasse \($0 + 1)", plz: "1180",
+                    coordinate: nil)
+            })
+        split.claim([0, 1], for: 1)
+        let data = try split.serverPart(
+            for: 1, infos: [1: CustomerInfo(stockwerk: "3", notiz: "Hund")])
+        #expect(String(decoding: data, as: UTF8.self).hasPrefix("{\n\"tour\""))
+        let part = try JSONDecoder().decode(SplitServer.Part.self, from: data)
+        #expect(part.tour == "VM 4 DO Vormittag")
+        #expect(part.date == "2025-09-16")
+        #expect(part.persons.count == 1)
+        #expect(part.persons[0].person == 2)
+        #expect(part.stops.map(\.name) == ["Kunde 0", "Kunde 1"])
+        #expect(part.stops[0].stockwerk == nil && part.stops[0].notiz == nil)
+        #expect(part.stops[1].stockwerk == "3")
+        #expect(part.stops[1].notiz == "Hund")
+        // Without its Globale Infos, a stop carries only name, address and PLZ.
+        let raw = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let persons = try #require(raw["persons"] as? [[String: Any]])
+        let stops = try #require(persons[0]["stops"] as? [[String: String]])
+        #expect(Set(stops[0].keys) == ["name", "address", "plz"])
+    }
+
+    @Test func aLoadedPartBecomesEntriesAndKeepsItsInfosApart() {
+        let part = SplitServer.Part(
+            tour: "VM 4", date: "2026-11-06",
+            persons: [SplitServer.Person(person: 2, stops: [
+                SplitServer.Stop(name: "Fam. Gruber", address: "Gentzgasse 129/1", plz: "1180", stockwerk: "2", notiz: "Hund"),
+                SplitServer.Stop(name: "Herr Maier", address: "Hauptstraße 5", plz: "1210"),
+            ])])
+        #expect(part.entries.map(\.kunde) == ["Fam. Gruber", "Herr Maier"])
+        #expect(part.entries.allSatisfy { $0.notiz == nil && $0.paket == nil })
+        let key = StockwerkKey.make(kunde: "Fam Gruber", strasse: "Gentzgasse 129 / 1", plz: "1180")
+        #expect(part.infos.count == 1)
+        #expect(part.infos[key ?? ""]?.stockwerk == "2")
     }
 
     /// The stop as it reaches the import when the portal's detail call is not

@@ -27,3 +27,6 @@ TP_AST_*.json
 
 # Local helper for pulling a day's tour from the Zusteller-Portal by hand
 scripts/fetch_tour.py
+
+# Split server data (customer data)
+split-server/data/
