@@ -1,11 +1,11 @@
 # EAR Split API
 
-Keeps the parts of a split tour ("Tour aufteilen" in the iOS app), so another driver's phone can load its part. Live at `https://ear-split-api.ringtwo.win`. It runs on Venvy as the app `ear-split-api` on port 3003.
+Keeps the parts of a split tour ("Tour aufteilen" in the iOS app): one phone sends a person's part ("An Server senden"), and another driver's phone loads it as its tour ("Vom Server laden"). Live at `https://ear-split-api.ringtwo.win`. It runs on Venvy as the app `ear-split-api` on port 3003.
 
 ## Access
 
 - **API** (`/api/...`): every call needs an API key, sent as the header `X-Api-Key: <key>`. `Authorization: Bearer <key>` also works. Without a key, or with a wrong one, the server answers `401`.
-- **Admin web UI** (`/`): sign in as `admin` with the password from `EAR_SPLIT_ADMIN_PASSWORD`. There you make and remove API keys, look at the parts that were sent and delete them. A new key is shown only once, right after it is made; the server keeps only its hash. A removed key stops working at once.
+- **Admin web UI** (`/`): sign in as `admin` with the password from `EAR_SPLIT_ADMIN_PASSWORD`. There you make and remove API keys, and look at or delete any part that was sent (from the list, or on the part's own page). A new key is shown only once, right after it is made; the server keeps only its hash. A removed key stops working at once.
 
 After 10 failed sign-ins from one address within 15 minutes, sign-in is locked for that address for a quarter of an hour. A session lasts 12 hours.
 

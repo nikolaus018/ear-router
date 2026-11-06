@@ -132,6 +132,13 @@ def list_parts(day: str | None = None, days: int = 30) -> list[sqlite3.Row]:
             (since,)).fetchall()
 
 
+def all_parts(limit: int = 2000) -> list[sqlite3.Row]:
+    """Every part, newest day first — the admin's list, which has no date window."""
+    with db() as conn:
+        return conn.execute(
+            "SELECT * FROM parts ORDER BY day DESC, created_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
+
+
 def get_part(part_id: int) -> sqlite3.Row | None:
     with db() as conn:
         return conn.execute("SELECT * FROM parts WHERE id = ?", (part_id,)).fetchone()
@@ -615,13 +622,15 @@ class Handler(BaseHTTPRequestHandler):
                 <button class="quiet" onclick="return confirm('Schlüssel entfernen?')">Entfernen</button></form>
             </div>""" for k in keys) or '<div class="empty">Noch kein Schlüssel — ohne Schlüssel kann die App nichts senden oder laden.</div>'
 
-        parts = list_parts(days=MAX_DAYS)
+        parts = all_parts()
         part_rows = "".join(f"""
             <tr><td>{fmt_day(p['day'])}</td>
               <td><a href="/parts/{p['id']}" style="color:var(--accent)">{esc(p['tour'])}</a></td>
               <td>{'P' + str(p['person']) if p['person'] else '–'}</td>
-              <td>{p['stops']}</td><td class="muted">{fmt_time(p['created_at'])}</td></tr>""" for p in parts)
-        parts_html = (f'<table><tr><th>Tag</th><th>Tour</th><th>Person</th><th>Stopps</th><th>Gesendet</th></tr>{part_rows}</table>'
+              <td>{p['stops']}</td><td class="muted">{fmt_time(p['created_at'])}</td>
+              <td style="text-align:right"><form class="inline" method="post" action="/parts/{p['id']}/delete">{hidden}
+                <button class="quiet" onclick="return confirm('Diesen Teil löschen?')">Löschen</button></form></td></tr>""" for p in parts)
+        parts_html = (f'<div style="overflow-x:auto"><table><tr><th>Tag</th><th>Tour</th><th>Person</th><th>Stopps</th><th>Gesendet</th><th></th></tr>{part_rows}</table></div>'
                       if parts else '<div class="empty">Noch nichts gesendet.</div>')
 
         body = f"""{notices}
