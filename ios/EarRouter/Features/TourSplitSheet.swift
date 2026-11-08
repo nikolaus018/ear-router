@@ -394,6 +394,16 @@ struct SplitState: Identifiable {
     func entries(
         for person: Int, onProgress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }
     ) async -> [CustomerJSON] {
+        await entriesAndGaps(for: person, onProgress: onProgress).entries
+    }
+
+    /// The same, plus the positions of portal stops whose detail did not
+    /// arrive — which then go on with name and address only, and are marked
+    /// on the review so the missing Paket is not found out at the van.
+    /// A typed-in stop is never a gap: it has everything it was given.
+    func entriesAndGaps(
+        for person: Int, onProgress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }
+    ) async -> (entries: [CustomerJSON], gaps: Set<Int>) {
         let mine = stops(of: person)
         let wanted = mine.compactMap { deliveries[$0.id] }
         var details: [Int: CustomerJSON] = [:]
@@ -402,14 +412,19 @@ struct SplitState: Identifiable {
                 for: wanted, token: token, credentials: GourmetCredentialsStore.load(),
                 onProgress: onProgress)) ?? [:]
         }
-        return mine.map { stop in
-            guard var detail = details[stop.id] else { return stop.plainEntry }
+        var gaps: Set<Int> = []
+        let entries = mine.enumerated().map { i, stop -> CustomerJSON in
+            guard var detail = details[stop.id] else {
+                if !stop.isTyped { gaps.insert(i) }
+                return stop.plainEntry
+            }
             if stop.addressCorrected {
                 detail.strasse = stop.address
                 detail.plz = stop.plz
             }
             return detail
         }
+        return (entries, gaps)
     }
 
     /// "VM 4 DO Vormittag · P2", with the date added only when a tour of that
@@ -1587,6 +1602,8 @@ private struct SplitOverview: View {
     @State private var pending: ReviewContext?
     @State private var imported = false
     @State private var sharing: SharedText?
+    /// "Als JSON senden": the part as a file, for an app that imports it.
+    @State private var sharingFile: SharedFile?
     /// The person whose part waits for the server key to be typed in.
     @State private var keyFor: Int?
     @State private var keyDraft = ""
@@ -1597,6 +1614,8 @@ private struct SplitOverview: View {
         let route: Route
         let entries: [CustomerJSON]
         let person: Int
+        /// Positions whose Paket and phone the portal did not send.
+        var gaps: Set<Int> = []
     }
 
     var body: some View {
@@ -1624,11 +1643,6 @@ private struct SplitOverview: View {
         .navigationTitle("Übersicht")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("Alle teilen", systemImage: "square.and.arrow.up") { share(nil) }
-            }
-        }
         .floatingBanner {
             if let busy {
                 BusyBanner(text: busy, onCancel: { task?.cancel() })
@@ -1637,6 +1651,7 @@ private struct SplitOverview: View {
         .animation(.snappy, value: busy)
         .errorAlert($error)
         .sheet(item: $sharing) { ShareSheet(items: [$0.text]) }
+        .sheet(item: $sharingFile) { ShareSheet(items: [$0.url]) }
         .alert(
             "API-Schlüssel für den Split-Server",
             isPresented: Binding(get: { keyFor != nil }, set: { if !$0 { keyFor = nil } })
@@ -1662,7 +1677,17 @@ private struct SplitOverview: View {
             Text(sent ?? "")
         }
         .sheet(item: $review, onDismiss: reviewDismissed) { ctx in
-            ImportReviewView(route: ctx.route, entries: ctx.entries) { imported = true }
+            ImportReviewView(
+                route: ctx.route, entries: ctx.entries,
+                notice: ctx.gaps.isEmpty ? nil
+                    : (ctx.gaps.count == 1
+                        ? "Für 1 Kunden hat das Zusteller-Portal nicht geantwortet"
+                        : "Für \(ctx.gaps.count) Kunden hat das Zusteller-Portal nicht geantwortet")
+                        + " — dort fehlen Paket und Telefon. Markiert.",
+                hints: ctx.entries.indices.map {
+                    ctx.gaps.contains($0) ? "Ohne Paket und Telefon — Portal hat nicht geantwortet" : nil
+                }
+            ) { imported = true }
         }
     }
 
@@ -1692,6 +1717,20 @@ private struct SplitOverview: View {
                     Label("An Server senden", systemImage: "icloud.and.arrow.up")
                 }
                 .disabled(busy != nil)
+                // The same JSON the server gets, as a file — for an app that
+                // imports it but does not talk to the server yet.
+                Button {
+                    task = Task { await shareJSON(person) }
+                } label: {
+                    Label("Als JSON senden", systemImage: "curlybraces")
+                }
+                .disabled(busy != nil)
+                Button {
+                    share(person)
+                } label: {
+                    Label("Als Klartext senden", systemImage: "text.alignleft")
+                }
+                .disabled(busy != nil)
             }
         } header: {
             HStack(spacing: 6) {
@@ -1700,13 +1739,6 @@ private struct SplitOverview: View {
                 if let day, day.stops > 0 {
                     Text("· ca. \(day.clock)").foregroundStyle(.secondary)
                 }
-                Spacer()
-                if !mine.isEmpty {
-                    Button { share(person) } label: {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .accessibilityLabel("Person \(person + 1) teilen")
-                }
             }
             .textCase(nil)
         }
@@ -1714,24 +1746,20 @@ private struct SplitOverview: View {
 
     // MARK: Actions
 
-    private func share(_ person: Int?) {
+    private func share(_ person: Int) {
         sharing = SharedText(text: state.shareText(for: person))
     }
 
-    /// Sends one person's part to the split server, with each stop's Paket,
-    /// phone and note — fetched here, as "Als Tour anlegen" does, or the
-    /// phone that loads it gets an empty Ladeliste — and the Globale Infos
-    /// this phone has for its customers. A part sent before for the same
-    /// person is replaced, so the other phone never has two to choose from.
-    private func send(_ person: Int) async {
-        busy = "Paket wird geladen …"
-        defer { busy = nil }
+    /// One person's part in the server's JSON, with each stop's Paket, phone
+    /// and note — fetched here, as "Als Tour anlegen" does, or the phone that
+    /// loads it gets an empty Ladeliste — and the Globale Infos this phone
+    /// has for its customers. `nil` when the fetch was stopped.
+    private func partData(for person: Int) async throws -> Data? {
         let mine = state.stops(of: person)
         let fetched = await state.entries(for: person) { done, total in
             Task { @MainActor in busy = "Paket \(done) von \(total) wird geladen …" }
         }
-        guard !Task.isCancelled else { return }
-        busy = "Wird gesendet …"
+        guard !Task.isCancelled else { return nil }
         let entries = Dictionary(
             zip(mine.map(\.id), fetched).map { ($0, $1) }, uniquingKeysWith: { a, _ in a })
         var infos: [Int: CustomerInfo] = [:]
@@ -1742,9 +1770,39 @@ private struct SplitOverview: View {
             let info = CustomerInfo(note)
             if info.stockwerk != nil || info.notiz != nil { infos[stop.id] = info }
         }
+        return try state.serverPart(for: person, entries: entries, infos: infos)
+    }
+
+    /// "Als JSON senden": the part the server would get, as a `.json` file
+    /// named after the share — "VM 4 DO Vormittag · P2.json".
+    private func shareJSON(_ person: Int) async {
+        busy = "Paket wird geladen …"
+        defer { busy = nil }
         do {
-            let stored = try await SplitServer.upload(
-                try state.serverPart(for: person, entries: entries, infos: infos))
+            guard let data = try await partData(for: person) else { return }
+            let name = state.routeName(for: person)
+                .replacingOccurrences(of: "/", with: "-")
+                .replacingOccurrences(of: ":", with: "-")
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(name.isEmpty ? "Tour" : name)
+                .appendingPathExtension("json")
+            try data.write(to: url, options: .atomic)
+            sharingFile = SharedFile(url: url)
+        } catch {
+            self.error = AppError.message("Die JSON-Datei konnte nicht erstellt werden.")
+        }
+    }
+
+    /// Sends one person's part to the split server. A part sent before for
+    /// the same person is replaced, so the other phone never has two to
+    /// choose from.
+    private func send(_ person: Int) async {
+        busy = "Paket wird geladen …"
+        defer { busy = nil }
+        do {
+            guard let data = try await partData(for: person) else { return }
+            busy = "Wird gesendet …"
+            let stored = try await SplitServer.upload(data)
             let replaced = state.sentParts[person]
             state.sentParts[person] = stored.id
             if let replaced, replaced != stored.id {
@@ -1767,7 +1825,7 @@ private struct SplitOverview: View {
         busy = "Paket wird geladen …"
         defer { busy = nil }
 
-        let entries = await state.entries(for: person) { done, total in
+        let (entries, gaps) = await state.entriesAndGaps(for: person) { done, total in
             Task { @MainActor in busy = "Paket \(done) von \(total) wird geladen …" }
         }
         guard !entries.isEmpty, !Task.isCancelled else { return }
@@ -1781,7 +1839,7 @@ private struct SplitOverview: View {
                 PortalTourLink(tourID: tourID, tourName: state.tourName, date: state.date)
                     .save(for: route.id)
             }
-            let ctx = ReviewContext(route: route, entries: entries, person: person)
+            let ctx = ReviewContext(route: route, entries: entries, person: person, gaps: gaps)
             pending = ctx
             review = ctx
         } catch {
