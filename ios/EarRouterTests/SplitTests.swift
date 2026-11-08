@@ -140,6 +140,38 @@ struct SplitStateTests {
         #expect(Set(stops[0].keys) == ["name", "address", "plz"])
     }
 
+    /// Paket, phone and the day's note go along, or the phone that loads the
+    /// part has an empty Ladeliste and nobody to call — and come back out as
+    /// the import entries.
+    @Test func theServerPartCarriesTodaysDeliveryBothWays() throws {
+        var split = SplitState(
+            tourName: "VM 4", people: 2,
+            stops: [
+                SplitStop(id: 1, name: "Fam. Gruber", address: "Gentzgasse 129/1", plz: "1180", coordinate: nil),
+                SplitStop(
+                    id: -1, name: "Herr Maier", address: "Hauptstraße 5", plz: "1210", coordinate: nil,
+                    typed: CustomerJSON(
+                        kunde: "Herr Maier", strasse: "Hauptstraße 5", plz: "1210",
+                        paket: "Nachlieferung", notiz: "Hintertür", telefon: "0660 1"))
+            ])
+        split.claim([1, -1], for: 0)
+        let data = try split.serverPart(
+            for: 0,
+            entries: [1: CustomerJSON(
+                kunde: "Fam. Gruber", strasse: "Gentzgasse 129/1", plz: "1180",
+                paket: "2x Menü A", notiz: "Bitte läuten", telefon: "+43 660 2", paketCount: 2)],
+            infos: [1: CustomerInfo(stockwerk: "2", notiz: "Hund")])
+        let part = try JSONDecoder().decode(SplitServer.Part.self, from: data)
+        let gruber = try #require(part.entries.first)
+        #expect(gruber.paket == "2x Menü A" && gruber.paketCount == 2)
+        #expect(gruber.telefon == "+43 660 2")
+        #expect(gruber.notiz == "Bitte läuten")  // the day's note, not the Globale one
+        #expect(part.stops[0].notiz == "Hund")
+        // A typed-in stop with no fetched entry sends what it was typed with.
+        let maier = part.entries[1]
+        #expect(maier.paket == "Nachlieferung" && maier.notiz == "Hintertür" && maier.telefon == "0660 1")
+    }
+
     @Test func aLoadedPartBecomesEntriesAndKeepsItsInfosApart() {
         let part = SplitServer.Part(
             tour: "VM 4", date: "2026-11-06",

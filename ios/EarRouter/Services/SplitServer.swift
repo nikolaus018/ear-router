@@ -21,12 +21,19 @@ enum SplitServer {
 
     // MARK: The part
 
+    /// `stockwerk` and `notiz` are the customer's Globale Infos; `paket`,
+    /// `pakete`, `telefon` and `lieferhinweis` are today's delivery — what the
+    /// Ladeliste and "Anrufen" need on the phone that loads the part.
     struct Stop: Codable, Sendable, Hashable {
         var name: String
         var address: String
         var plz: String?
         var stockwerk: String?
         var notiz: String?
+        var paket: String?
+        var pakete: Int?
+        var telefon: String?
+        var lieferhinweis: String?
     }
 
     struct Person: Codable, Sendable, Hashable {
@@ -41,13 +48,16 @@ enum SplitServer {
 
         var stops: [Stop] { persons.flatMap(\.stops) }
 
-        /// The stops as import entries. The Globale Infos are not in them —
-        /// they belong to the customer, not to today's stop; see `infos`.
+        /// The stops as import entries, with today's Paket, phone and note.
+        /// The Globale Infos are not in them — they belong to the customer,
+        /// not to today's stop; see `infos`.
         var entries: [CustomerJSON] {
             stops.map {
                 CustomerJSON(
                     kunde: $0.name.trimmed, strasse: $0.address.trimmed,
-                    plz: $0.plz?.trimmed ?? "", paket: nil, notiz: nil)
+                    plz: $0.plz?.trimmed ?? "", paket: $0.paket?.trimmed.nilIfEmpty,
+                    notiz: $0.lieferhinweis?.trimmed.nilIfEmpty,
+                    telefon: $0.telefon?.trimmed.nilIfEmpty, paketCount: $0.pakete)
             }
         }
 

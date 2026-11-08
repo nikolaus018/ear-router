@@ -24,6 +24,9 @@ struct SplitServerSheet: View {
     @State private var keyDraft = ""
     @State private var changingKey = false
     @State private var deleting: SplitServer.Summary?
+    /// The last load did not get the list — the empty screen then says so
+    /// and offers to try again, rather than "Nichts am Server".
+    @State private var loadFailed = false
 
     @State private var review: Pending?
     /// Kept across the dismissal — see `SplitOverview.pending`.
@@ -111,7 +114,13 @@ struct SplitServerSheet: View {
     @ViewBuilder
     private var list: some View {
         if let parts {
-            if parts.isEmpty {
+            if parts.isEmpty && loadFailed {
+                ContentUnavailableView {
+                    Label("Liste nicht geladen", systemImage: "icloud.slash")
+                } actions: {
+                    Button("Neu laden") { task = Task { await load() } }
+                }
+            } else if parts.isEmpty {
                 ContentUnavailableView(
                     "Nichts am Server", systemImage: "icloud",
                     description: Text("In den letzten 30 Tagen wurde kein Teil gesendet."))
@@ -183,16 +192,23 @@ struct SplitServerSheet: View {
         task = Task { await load() }
     }
 
+    /// Whatever happens, the spinner goes: a load that was cancelled or
+    /// failed before any list arrived leaves "Neu laden" behind instead.
     private func load() async {
         do {
             parts = try await SplitServer.list()
+            loadFailed = false
+            return
         } catch is CancellationError {
         } catch let e as AppError {
-            if parts == nil { parts = [] }
             hasKey = SplitServer.key != nil
             error = e
         } catch {
             self.error = AppError.message("Die Liste konnte nicht geladen werden.")
+        }
+        if parts == nil || parts?.isEmpty == true {
+            parts = []
+            loadFailed = true
         }
     }
 

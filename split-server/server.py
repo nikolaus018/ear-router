@@ -61,6 +61,10 @@ log = logging.getLogger("ear-split")
 _write_lock = threading.Lock()
 _login_fails: dict[str, list[float]] = {}
 _login_lock = threading.Lock()
+# A key just made, shown once on the page the POST redirects to — by session,
+# so a reload of that page (or of the POST) never makes a second key.
+_fresh_keys: dict[str, tuple[str, str]] = {}
+_fresh_lock = threading.Lock()
 
 
 # ================================================================ storage
@@ -537,14 +541,19 @@ class Handler(BaseHTTPRequestHandler):
             end_session(token)
             return self.redirect("/login", {"Set-Cookie": self.session_cookie("", 0)})
         if path == "/" and method == "GET":
-            return self.dashboard(csrf)
+            with _fresh_lock:
+                fresh = _fresh_keys.pop(sha256(token), None)
+            return self.dashboard(csrf, new_key=fresh)
         if path == "/docs" and method == "GET":
             return self.docs(csrf)
         if path == "/keys" and method == "POST":
             name = " ".join(form.get("name", "").split())[:80]
             if not name:
                 return self.dashboard(csrf, error="Bitte einen Namen für den Schlüssel angeben.")
-            return self.dashboard(csrf, new_key=(name, create_key(name)))
+            key = create_key(name)
+            with _fresh_lock:
+                _fresh_keys[sha256(token)] = (name, key)
+            return self.redirect("/")
         m = re.fullmatch(r"/keys/(\d+)/delete", path)
         if m and method == "POST":
             delete_key(int(m.group(1)))

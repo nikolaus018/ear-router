@@ -98,8 +98,12 @@ final class AddressPack: @unchecked Sendable {
                   return n > 0 ? packed.subdata(in: offset..<offset + n) : nil
               }),
               let head = try? filter.readData(ofLength: 128),
-              let text = String(data: head, encoding: .utf8),
-              let header = text.prefix(while: { $0 != "\n" }).split(separator: "\t")
+              // Only up to the first newline: the 128 bytes can end halfway
+              // through an umlaut in the street line after it, and a strict
+              // decode of that fails the whole header.
+              let line = head.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false).first,
+              let text = String(data: Data(line), encoding: .utf8),
+              let header = text.split(separator: "\t")
                 .dropFirst(3).first
         else { return nil }
         let ymd = header.split(separator: "-")

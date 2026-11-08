@@ -266,6 +266,9 @@ struct SplitState: Identifiable {
     /// Delivery id → person index. A stop with no entry is still free.
     private(set) var owner: [Int: Int] = [:]
     private var history: [[Int: Int]] = []
+    /// Person → the id of the part last sent to the split server for them,
+    /// so sending again replaces it instead of leaving two.
+    var sentParts: [Int: Int] = [:]
 
     init(
         tourName: String, tourID: Int? = nil, date: Date = Date(), people: Int,
@@ -468,13 +471,16 @@ struct SplitState: Identifiable {
 
     /// One person's part as it goes to the split server: the tour, the day,
     /// and the stops in the order they are driven — name, address and
-    /// postcode, plus the customer's Globale Infos (floor, standing note)
-    /// where this phone has any. `infos` is keyed by stop id.
+    /// postcode, today's Paket, phone and delivery note from `entries`, plus
+    /// the customer's Globale Infos (floor, standing note) where this phone
+    /// has any. `entries` and `infos` are keyed by stop id.
     ///
     /// The top level is written by hand: `JSONEncoder` leaves key order to
     /// chance unless it sorts them, and sorted, "tour" would land below the
     /// persons instead of heading the file.
-    func serverPart(for person: Int, infos: [Int: CustomerInfo] = [:]) throws -> Data {
+    func serverPart(
+        for person: Int, entries: [Int: CustomerJSON] = [:], infos: [Int: CustomerInfo] = [:]
+    ) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         func json(_ value: some Encodable) throws -> String {
@@ -482,9 +488,13 @@ struct SplitState: Identifiable {
         }
         let stops = drivingOrder(of: person).map { stop in
             let info = infos[stop.id]
+            let entry = entries[stop.id] ?? stop.plainEntry
             return SplitServer.Stop(
                 name: stop.name, address: stop.address, plz: stop.plz.trimmed.nilIfEmpty,
-                stockwerk: info?.stockwerk, notiz: info?.notiz)
+                stockwerk: info?.stockwerk, notiz: info?.notiz,
+                paket: entry.paket?.trimmed.nilIfEmpty, pakete: entry.paketCount,
+                telefon: entry.telefon?.trimmed.nilIfEmpty,
+                lieferhinweis: entry.notiz?.trimmed.nilIfEmpty)
         }
         let parts = [
             "\"tour\" : \(try json(tourName.trimmed))",
@@ -1634,11 +1644,14 @@ private struct SplitOverview: View {
             SecureField("API-Schlüssel", text: $keyDraft)
             Button("Senden") {
                 let person = keyFor
-                UserDefaults.standard.set(keyDraft.trimmed, forKey: SplitServer.keyDefaultsKey)
+                let key = keyDraft.trimmed
                 keyDraft = ""
                 keyFor = nil
+                guard !key.isEmpty else { return }
+                UserDefaults.standard.set(key, forKey: SplitServer.keyDefaultsKey)
                 if let person { task = Task { await send(person) } }
             }
+            .disabled(keyDraft.trimmed.isEmpty)
             Button("Abbrechen", role: .cancel) { keyDraft = "" }
         } message: {
             Text("Legt der Admin auf ear-split-api.ringtwo.win an. Einmal auf diesem Telefon eingeben.")
@@ -1705,13 +1718,24 @@ private struct SplitOverview: View {
         sharing = SharedText(text: state.shareText(for: person))
     }
 
-    /// Sends one person's part to the split server, with the Globale Infos
-    /// this phone has for its customers.
+    /// Sends one person's part to the split server, with each stop's Paket,
+    /// phone and note — fetched here, as "Als Tour anlegen" does, or the
+    /// phone that loads it gets an empty Ladeliste — and the Globale Infos
+    /// this phone has for its customers. A part sent before for the same
+    /// person is replaced, so the other phone never has two to choose from.
     private func send(_ person: Int) async {
-        busy = "Wird gesendet …"
+        busy = "Paket wird geladen …"
         defer { busy = nil }
+        let mine = state.stops(of: person)
+        let fetched = await state.entries(for: person) { done, total in
+            Task { @MainActor in busy = "Paket \(done) von \(total) wird geladen …" }
+        }
+        guard !Task.isCancelled else { return }
+        busy = "Wird gesendet …"
+        let entries = Dictionary(
+            zip(mine.map(\.id), fetched).map { ($0, $1) }, uniquingKeysWith: { a, _ in a })
         var infos: [Int: CustomerInfo] = [:]
-        for stop in state.stops(of: person) {
+        for stop in mine {
             guard let key = StockwerkKey.make(kunde: stop.name, strasse: stop.address, plz: stop.plz),
                 let note = try? StockwerkStore.note(forKey: key, in: context)
             else { continue }
@@ -1719,8 +1743,18 @@ private struct SplitOverview: View {
             if info.stockwerk != nil || info.notiz != nil { infos[stop.id] = info }
         }
         do {
-            let stored = try await SplitServer.upload(try state.serverPart(for: person, infos: infos))
-            sent = "Person \(person + 1) liegt am Server: \(stored.stops == 1 ? "1 Stopp" : "\(stored.stops) Stopps")."
+            let stored = try await SplitServer.upload(
+                try state.serverPart(for: person, entries: entries, infos: infos))
+            let replaced = state.sentParts[person]
+            state.sentParts[person] = stored.id
+            if let replaced, replaced != stored.id {
+                // Best effort: gone already is as good as deleted.
+                try? await SplitServer.delete(replaced)
+            }
+            let count = stored.stops == 1 ? "1 Stopp" : "\(stored.stops) Stopps"
+            sent = replaced == nil
+                ? "Person \(person + 1) liegt am Server: \(count)."
+                : "Person \(person + 1) am Server ersetzt: \(count)."
         } catch is CancellationError {
         } catch let e as AppError {
             error = e

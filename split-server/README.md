@@ -21,7 +21,8 @@ The JSON the app sends: one person's stops, in the order they are driven.
   {
     "person" : 2,
     "stops" : [
-      { "name" : "Fam. Gruber", "address" : "Gentzgasse 129/1", "plz" : "1180", "stockwerk" : "2", "notiz" : "Hund bellt" },
+      { "name" : "Fam. Gruber", "address" : "Gentzgasse 129/1", "plz" : "1180", "stockwerk" : "2", "notiz" : "Hund bellt",
+        "paket" : "1x Menü A", "pakete" : 1, "telefon" : "+43 660 1234567", "lieferhinweis" : "Bitte läuten" },
       { "name" : "Herr Maier", "address" : "Hauptstraße 5", "plz" : "1210" }
     ]
   }
@@ -34,6 +35,7 @@ The JSON the app sends: one person's stops, in the order they are driven.
 - `persons` (required): usually exactly one person. `person` counts from 1.
 - `stops` (required, at least one): each stop needs `name` and `address`. `plz` is the postcode.
 - `stockwerk` and `notiz` are the customer's **Globale Infos** (floor and standing note), included only when the sending phone has them. The receiving phone keeps them as its own Globale Infos for customers it knows nothing about yet.
+- `paket`, `pakete` (number of parcels), `telefon` and `lieferhinweis` (the day's delivery note) are today's delivery, each only when known. The receiving phone puts them on the tour, so its Ladeliste and "Anrufen" work.
 
 Limits: at most 400 stops, 1 MB per request, 2000 characters per text field.
 
