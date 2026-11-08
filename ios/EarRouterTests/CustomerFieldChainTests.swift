@@ -147,6 +147,9 @@ struct CustomerFieldChainTests {
             // The row's own identity, so five identical meals for one
             // institution stay five editable rows — see `Entry`.
             "id",
+            // Where the row's details came from, shown on the review only;
+            // never written to the stop.
+            "hint",
         ])
     }
 

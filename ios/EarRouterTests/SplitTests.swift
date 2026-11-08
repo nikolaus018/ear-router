@@ -191,6 +191,44 @@ struct SplitStateTests {
         #expect(SplitServer.match(stops, to: candidates) == [10, 11, 20, nil])
     }
 
+    /// What the review says about a loaded part, for each way the portal
+    /// can fail to help.
+    @Test func thePortalResultSaysWhatCameFromTheSender() {
+        let entries = [CustomerJSON(kunde: "A", strasse: "Gentzgasse 1", plz: "1180", paket: nil, notiz: nil)]
+        func result(_ outcome: SplitServer.PortalResult.Outcome) -> SplitServer.PortalResult {
+            SplitServer.PortalResult(entries: entries, outcome: outcome)
+        }
+        #expect(result(.noLogin).notice(tour: "VM 4", day: nil)?.contains("kein Zusteller-Portal-Login") == true)
+        #expect(result(.unreachable("Passwort falsch")).notice(tour: "VM 4", day: nil)?.contains("Passwort falsch") == true)
+        #expect(result(.tourNotFound).notice(tour: "VM 4", day: nil)?.contains("„VM 4“ gibt es") == true)
+        #expect(result(.noDeliveries).notice(tour: "VM 4", day: "2026-11-06")?.contains("am 06.11.2026") == true)
+        // Said once at the top, not on every row.
+        #expect(result(.noLogin).hint(at: 0) == nil)
+
+        var checked = result(.checked)
+        #expect(checked.notice(tour: "VM 4", day: nil) == nil)
+        checked.missing = [0]
+        #expect(checked.notice(tour: "VM 4", day: nil)?.hasPrefix("1 Kunde ist") == true)
+        #expect(checked.hint(at: 0)?.contains("Nicht im Zusteller-Portal") == true)
+        #expect(checked.hint(at: 1) == nil)
+    }
+
+    /// Without a portal login every portal stop is a gap; a typed-in one never.
+    @Test func entriesWithoutDetailsAreMarkedAsGaps() async {
+        var split = SplitState(
+            tourName: "VM 4", people: 1,
+            stops: [
+                SplitStop(id: 1, name: "A", address: "Gentzgasse 1", plz: "1180", coordinate: nil),
+                SplitStop(
+                    id: -1, name: "B", address: "Gentzgasse 2", plz: "1180", coordinate: nil,
+                    typed: CustomerJSON(kunde: "B", strasse: "Gentzgasse 2", plz: "1180", paket: "x", notiz: nil)),
+            ])
+        split.claim([1, -1], for: 0)
+        let (entries, gaps) = await split.entriesAndGaps(for: 0)
+        #expect(entries.count == 2)
+        #expect(gaps == [0])
+    }
+
     @Test func aLoadedPartBecomesEntriesAndKeepsItsInfosApart() {
         let part = SplitServer.Part(
             tour: "VM 4", date: "2026-11-06",

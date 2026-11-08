@@ -188,6 +188,73 @@ enum SplitServer {
 // MARK: - The portal's own word on a loaded part
 
 extension SplitServer {
+    /// What the portal said about a loaded part — enough for the review
+    /// screen to tell the driver which Paket, phone and note came from the
+    /// portal and which only from the sending phone.
+    struct PortalResult: Sendable {
+        enum Outcome: Sendable, Equatable {
+            /// The portal answered; see `missing` and `noDetail` for stops it
+            /// could not help with.
+            case checked
+            /// This phone has no Zusteller-Portal login.
+            case noLogin
+            /// Login or list failed — the portal's own message.
+            case unreachable(String)
+            /// No tour of the part's name on the portal.
+            case tourNotFound
+            /// The tour exists but has no open deliveries that day.
+            case noDeliveries
+        }
+
+        var entries: [CustomerJSON]
+        var outcome: Outcome
+        /// Positions of stops the portal's list for that day does not have.
+        var missing: Set<Int> = []
+        /// Positions of stops found, but whose detail call did not answer.
+        var noDetail: Set<Int> = []
+
+        /// One line for the top of the review, or `nil` when every stop came
+        /// from the portal.
+        func notice(tour: String, day: String?) -> String? {
+            let fromSender = "Paket, Telefon und Hinweis kommen vom sendenden Telefon — bitte prüfen."
+            let when = day.flatMap(SplitServer.date(of:))
+                .map { " am " + $0.formatted(.dateTime.day(.twoDigits).month(.twoDigits).year()) } ?? ""
+            switch outcome {
+            case .noLogin:
+                return "Auf diesem Telefon ist kein Zusteller-Portal-Login gespeichert. " + fromSender
+            case .unreachable(let why):
+                return "Zusteller-Portal nicht erreichbar (\(why)). " + fromSender
+            case .tourNotFound:
+                return "„\(tour)“ gibt es im Zusteller-Portal nicht. " + fromSender
+            case .noDeliveries:
+                return "„\(tour)“ hat im Zusteller-Portal\(when) keine offenen Lieferungen. " + fromSender
+            case .checked:
+                let off = missing.count + noDetail.count
+                guard off > 0 else { return nil }
+                var parts: [String] = []
+                if !missing.isEmpty {
+                    parts.append(missing.count == 1
+                        ? "1 Kunde ist im Zusteller-Portal nicht zu finden"
+                        : "\(missing.count) Kunden sind im Zusteller-Portal nicht zu finden")
+                }
+                if !noDetail.isEmpty {
+                    parts.append(noDetail.count == 1
+                        ? "für 1 Kunden hat das Portal nicht geantwortet"
+                        : "für \(noDetail.count) Kunden hat das Portal nicht geantwortet")
+                }
+                return parts.joined(separator: ", ") + ". Dort steht, was das sendende Telefon wusste — markiert."
+            }
+        }
+
+        /// The mark on one row, or `nil` for a stop the portal answered for.
+        func hint(at index: Int) -> String? {
+            if outcome != .checked { return nil }  // said once, at the top
+            if missing.contains(index) { return "Nicht im Zusteller-Portal — Angaben vom Absender" }
+            if noDetail.contains(index) { return "Portal hat nicht geantwortet — Angaben vom Absender" }
+            return nil
+        }
+    }
+
     /// A loaded part's stops as import entries, with Paket, parcel count,
     /// phone and note taken from this phone's own Zusteller-Portal login —
     /// the same detail call "Als Tour anlegen" makes — rather than trusting
@@ -195,53 +262,65 @@ extension SplitServer {
     /// part's: the sender may have corrected an address, and that is where
     /// the meal goes.
     ///
-    /// Never fails: no login on this phone, the tour not on the portal, a
-    /// stop it does not have (a typed-in Nachlieferung) or a detail call that
-    /// does not answer all leave that stop with what the part carried.
-    /// `matched` says how many stops the portal answered for.
+    /// Never throws: whatever the portal cannot answer for keeps what the
+    /// part carried, and `PortalResult` says which and why. Only
+    /// cancellation stops it, and then it returns the part as it came.
     static func portalEntries(
         for part: Part, onProgress: @escaping @Sendable (String) -> Void = { _ in }
-    ) async -> (entries: [CustomerJSON], matched: Int) {
+    ) async -> PortalResult {
         let fallback = part.entries
-        guard let credentials = GourmetCredentialsStore.load(),
-              let day = part.date.flatMap(date(of:))
-        else { return (fallback, 0) }
-        do {
-            onProgress("Anmelden …")
-            let token = try await GourmetPortal.login(credentials)
-            let wanted = AddressText.matchKey(part.tour)
-            guard let tour = try await GourmetPortal.tours(token: token)
-                .first(where: { AddressText.matchKey($0.name) == wanted })
-            else { return (fallback, 0) }
-            let (fresh, deliveries) = try await GourmetPortal.matchingDeliveries(
-                tour: tour, date: day, credentials: credentials, onProgress: onProgress)
-            let candidates = deliveries.map { d in
-                let (name, address) = GourmetPortal.summary(d)
-                return Candidate(id: d.id, name: name, address: address,
-                                 plz: d.deliveryAddress.zip?.trimmed ?? "")
-            }
-            let picks = match(part.stops, to: candidates)
-            let byID = Dictionary(deliveries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            let wantedDeliveries = picks.compactMap { $0 }.compactMap { byID[$0] }
-            guard !wantedDeliveries.isEmpty else { return (fallback, 0) }
-            let details = try await GourmetPortal.fetchEachDetail(
-                for: wantedDeliveries, token: fresh, credentials: credentials
-            ) { done, total in onProgress("Paket \(done) von \(total) wird geladen …") }
-            var matched = 0
-            let entries = zip(fallback, picks).map { entry, pick -> CustomerJSON in
-                guard let pick, let detail = details[pick] else { return entry }
-                matched += 1
-                var out = entry
-                out.paket = detail.paket ?? entry.paket
-                out.paketCount = detail.paketCount ?? entry.paketCount
-                out.telefon = detail.telefon ?? entry.telefon
-                out.notiz = detail.notiz ?? entry.notiz
-                return out
-            }
-            return (entries, matched)
-        } catch {
-            return (fallback, 0)
+        guard let credentials = GourmetCredentialsStore.load() else {
+            return PortalResult(entries: fallback, outcome: .noLogin)
         }
+        let day = part.date.flatMap(date(of:)) ?? Date()
+        let token: String
+        let deliveries: [GourmetPortal.Delivery]
+        do {
+            onProgress("Zusteller-Portal: anmelden …")
+            let login = try await GourmetPortal.login(credentials)
+            let wanted = AddressText.matchKey(part.tour)
+            guard let tour = try await GourmetPortal.tours(token: login)
+                .first(where: { AddressText.matchKey($0.name) == wanted })
+            else { return PortalResult(entries: fallback, outcome: .tourNotFound) }
+            (token, deliveries) = try await GourmetPortal.matchingDeliveries(
+                tour: tour, date: day, credentials: credentials
+            ) { _ in onProgress("Zusteller-Portal: Lieferungen werden geladen …") }
+        } catch is CancellationError {
+            return PortalResult(entries: fallback, outcome: .unreachable("abgebrochen"))
+        } catch {
+            let why = (error as? AppError)?.message ?? "keine Verbindung"
+            return PortalResult(entries: fallback, outcome: .unreachable(why))
+        }
+        guard !deliveries.isEmpty else {
+            return PortalResult(entries: fallback, outcome: .noDeliveries)
+        }
+
+        let candidates = deliveries.map { d in
+            let (name, address) = GourmetPortal.summary(d)
+            return Candidate(id: d.id, name: name, address: address,
+                             plz: d.deliveryAddress.zip?.trimmed ?? "")
+        }
+        let picks = match(part.stops, to: candidates)
+        let byID = Dictionary(deliveries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let wantedDeliveries = picks.compactMap { $0 }.compactMap { byID[$0] }
+        // A detail call that fails leaves that stop out; a whole fetch that
+        // throws (cancelled) leaves them all — either way they are marked.
+        let details = wantedDeliveries.isEmpty ? [:] : ((try? await GourmetPortal.fetchEachDetail(
+            for: wantedDeliveries, token: token, credentials: credentials
+        ) { done, total in onProgress("Paket \(done) von \(total) wird geladen …") }) ?? [:])
+
+        var result = PortalResult(entries: fallback, outcome: .checked)
+        for (i, pick) in picks.enumerated() {
+            guard let pick else { result.missing.insert(i); continue }
+            guard let detail = details[pick] else { result.noDetail.insert(i); continue }
+            var out = fallback[i]
+            out.paket = detail.paket ?? fallback[i].paket
+            out.paketCount = detail.paketCount ?? fallback[i].paketCount
+            out.telefon = detail.telefon ?? fallback[i].telefon
+            out.notiz = detail.notiz ?? fallback[i].notiz
+            result.entries[i] = out
+        }
+        return result
     }
 
     /// A portal delivery as the list shows it.

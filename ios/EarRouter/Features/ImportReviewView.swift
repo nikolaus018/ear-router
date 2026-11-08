@@ -35,6 +35,10 @@ struct ImportReviewView: View {
     /// Whether stops already on the tour that the list does not mention are
     /// removed. False adds the list to the tour instead.
     let replacing: Bool
+    /// One line above the list about where the entries came from — "kein
+    /// Portal-Login, Angaben vom Absender". Information, not a warning:
+    /// nothing is held back over it.
+    var notice: String? = nil
 
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -76,6 +80,10 @@ struct ImportReviewView: View {
         /// Carried through untouched — there is no row on this screen to edit
         /// it on, only the Paket text. See `Stop.paketCount`.
         var paketCount: Int?
+        /// Where this row's details came from, when that needs saying — "not
+        /// in the portal, the sender's". Shown, never blocks; gone once the
+        /// driver edits the row, which is then their word.
+        var hint: String? = nil
 
         init(_ json: CustomerJSON) {
             kunde = json.kunde.trimmed
@@ -117,11 +125,17 @@ struct ImportReviewView: View {
 
     init(
         route: Route, entries: [CustomerJSON], replacing: Bool = true,
+        notice: String? = nil, hints: [String?] = [],
         onImported: (() -> Void)? = nil
     ) {
         self.route = route
-        _entries = State(initialValue: entries.map(Entry.init))
+        _entries = State(initialValue: entries.enumerated().map { i, json in
+            var entry = Entry(json)
+            entry.hint = hints.indices.contains(i) ? hints[i] : nil
+            return entry
+        })
         self.replacing = replacing
+        self.notice = notice
         self.onImported = onImported
     }
 
@@ -163,6 +177,8 @@ struct ImportReviewView: View {
                 ImportEntryEditor(entry: entry) { updated in
                     if let index = entries.firstIndex(where: { $0.id == updated.id }),
                        entries[index] != updated {
+                        var updated = updated
+                        updated.hint = nil
                         entries[index] = updated
                         edited = true
                     }
@@ -200,6 +216,18 @@ struct ImportReviewView: View {
 
     private var list: some View {
         List {
+            if let notice {
+                Section {
+                    Label {
+                        Text(notice).fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "info.circle.fill")
+                    }
+                    .labelStyle(TintedIconLabelStyle(tint: .attention))
+                    .font(.subheadline)
+                    .symbolRenderingMode(.monochrome)
+                }
+            }
             Section {
                 ForEach($entries) { $entry in
                     row(entry)
@@ -255,6 +283,17 @@ struct ImportReviewView: View {
                     StopFacts.note(entry.notiz, lineLimit: 2)
                         .font(.subheadline)
                         .padding(.top, 2)
+                }
+
+                if let hint = entry.hint, entry.problem == nil {
+                    Label {
+                        Text(hint).fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "questionmark.circle")
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
                 }
 
                 if let problem = entry.problem {

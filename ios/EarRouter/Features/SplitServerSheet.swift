@@ -37,8 +37,9 @@ struct SplitServerSheet: View {
         let id = UUID()
         let route: Route
         let part: SplitServer.Part
-        /// The part's stops with the portal's Paket, phone and note.
-        let entries: [CustomerJSON]
+        /// The part's stops with the portal's Paket, phone and note, and what
+        /// the portal could not answer for.
+        let portal: SplitServer.PortalResult
     }
 
     var body: some View {
@@ -91,7 +92,11 @@ struct SplitServerSheet: View {
                 Text("„\(part.title)“ ist dann für niemanden mehr abrufbar.")
             }
             .sheet(item: $review, onDismiss: reviewDismissed) { ctx in
-                ImportReviewView(route: ctx.route, entries: ctx.entries) { imported = true }
+                ImportReviewView(
+                    route: ctx.route, entries: ctx.portal.entries,
+                    notice: ctx.portal.notice(tour: ctx.part.tour, day: ctx.part.date),
+                    hints: ctx.portal.entries.indices.map(ctx.portal.hint(at:))
+                ) { imported = true }
             }
         }
     }
@@ -237,7 +242,7 @@ struct SplitServerSheet: View {
                 return
             }
             // Paket, phone and note from this phone's own portal login.
-            let (entries, _) = await SplitServer.portalEntries(for: part) { text in
+            let portal = await SplitServer.portalEntries(for: part) { text in
                 Task { @MainActor in busy = text }
             }
             try Task.checkCancellation()
@@ -248,7 +253,7 @@ struct SplitServerSheet: View {
                 name += " – " + date.formatted(.dateTime.day(.twoDigits).month(.twoDigits))
             }
             let route = try RouteStore.createRoute(name: name, in: context)
-            let ctx = Pending(route: route, part: part, entries: entries)
+            let ctx = Pending(route: route, part: part, portal: portal)
             pending = ctx
             review = ctx
         } catch is CancellationError {
