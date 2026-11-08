@@ -184,3 +184,99 @@ enum SplitServer {
         return f
     }()
 }
+
+// MARK: - The portal's own word on a loaded part
+
+extension SplitServer {
+    /// A loaded part's stops as import entries, with Paket, parcel count,
+    /// phone and note taken from this phone's own Zusteller-Portal login —
+    /// the same detail call "Als Tour anlegen" makes — rather than trusting
+    /// whatever the sending phone knew. Name, address and PLZ stay the
+    /// part's: the sender may have corrected an address, and that is where
+    /// the meal goes.
+    ///
+    /// Never fails: no login on this phone, the tour not on the portal, a
+    /// stop it does not have (a typed-in Nachlieferung) or a detail call that
+    /// does not answer all leave that stop with what the part carried.
+    /// `matched` says how many stops the portal answered for.
+    static func portalEntries(
+        for part: Part, onProgress: @escaping @Sendable (String) -> Void = { _ in }
+    ) async -> (entries: [CustomerJSON], matched: Int) {
+        let fallback = part.entries
+        guard let credentials = GourmetCredentialsStore.load(),
+              let day = part.date.flatMap(date(of:))
+        else { return (fallback, 0) }
+        do {
+            onProgress("Anmelden …")
+            let token = try await GourmetPortal.login(credentials)
+            let wanted = AddressText.matchKey(part.tour)
+            guard let tour = try await GourmetPortal.tours(token: token)
+                .first(where: { AddressText.matchKey($0.name) == wanted })
+            else { return (fallback, 0) }
+            let (fresh, deliveries) = try await GourmetPortal.matchingDeliveries(
+                tour: tour, date: day, credentials: credentials, onProgress: onProgress)
+            let candidates = deliveries.map { d in
+                let (name, address) = GourmetPortal.summary(d)
+                return Candidate(id: d.id, name: name, address: address,
+                                 plz: d.deliveryAddress.zip?.trimmed ?? "")
+            }
+            let picks = match(part.stops, to: candidates)
+            let byID = Dictionary(deliveries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let wantedDeliveries = picks.compactMap { $0 }.compactMap { byID[$0] }
+            guard !wantedDeliveries.isEmpty else { return (fallback, 0) }
+            let details = try await GourmetPortal.fetchEachDetail(
+                for: wantedDeliveries, token: fresh, credentials: credentials
+            ) { done, total in onProgress("Paket \(done) von \(total) wird geladen …") }
+            var matched = 0
+            let entries = zip(fallback, picks).map { entry, pick -> CustomerJSON in
+                guard let pick, let detail = details[pick] else { return entry }
+                matched += 1
+                var out = entry
+                out.paket = detail.paket ?? entry.paket
+                out.paketCount = detail.paketCount ?? entry.paketCount
+                out.telefon = detail.telefon ?? entry.telefon
+                out.notiz = detail.notiz ?? entry.notiz
+                return out
+            }
+            return (entries, matched)
+        } catch {
+            return (fallback, 0)
+        }
+    }
+
+    /// A portal delivery as the list shows it.
+    struct Candidate: Sendable, Equatable {
+        let id: Int
+        let name: String
+        let address: String
+        let plz: String
+    }
+
+    /// Which delivery each stop is, by position — `nil` for one the portal
+    /// does not have. Name and address first, the way the sender's split
+    /// wrote them from the very same list; then the name alone within the
+    /// postcode, for a stop whose address the sender corrected. Each
+    /// delivery is taken once, so two households at one door stay two.
+    static func match(_ stops: [Stop], to candidates: [Candidate]) -> [Int?] {
+        func key(_ s: String) -> String { AddressText.matchKey(s) }
+        var free = candidates
+        var out = [Int?](repeating: nil, count: stops.count)
+        func take(_ i: Int, where test: (Candidate) -> Bool, unique: Bool) {
+            let hits = free.indices.filter { test(free[$0]) }
+            guard let first = hits.first, !unique || hits.count == 1 else { return }
+            out[i] = free[first].id
+            free.remove(at: first)
+        }
+        for (i, s) in stops.enumerated() {
+            let name = key(s.name), street = AddressText.matchKey(s.address)
+            take(i, where: { key($0.name) == name && AddressText.matchKey($0.address) == street },
+                 unique: false)
+        }
+        for (i, s) in stops.enumerated() where out[i] == nil {
+            let name = key(s.name), plz = s.plz?.trimmed ?? ""
+            guard !name.isEmpty else { continue }
+            take(i, where: { key($0.name) == name && (plz.isEmpty || $0.plz == plz) }, unique: true)
+        }
+        return out
+    }
+}

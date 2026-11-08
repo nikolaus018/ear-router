@@ -172,6 +172,25 @@ struct SplitStateTests {
         #expect(maier.paket == "Nachlieferung" && maier.notiz == "Hintertür" && maier.telefon == "0660 1")
     }
 
+    /// A loaded part finds its portal deliveries: by name and address, then
+    /// by name in the postcode for an address the sender corrected; each
+    /// delivery once, and a typed-in stop matches nothing.
+    @Test func aLoadedPartFindsItsPortalDeliveries() {
+        let stops = [
+            SplitServer.Stop(name: "Fam. Gruber", address: "Gentzgasse 129/1", plz: "1180"),
+            SplitServer.Stop(name: "Fam. Gruber", address: "Gentzgasse 129/1", plz: "1180"),
+            SplitServer.Stop(name: "Herr Maier", address: "Hauptstr. 7", plz: "1210"),
+            SplitServer.Stop(name: "Nachlieferung Huber", address: "Brünner Straße 3", plz: "1210"),
+        ]
+        let candidates = [
+            SplitServer.Candidate(id: 10, name: "Fam Gruber", address: "Gentzgasse 129 / 1", plz: "1180"),
+            SplitServer.Candidate(id: 11, name: "Fam. Gruber", address: "Gentzgasse 129/1", plz: "1180"),
+            SplitServer.Candidate(id: 20, name: "Herr Maier", address: "Hauptstraße 5", plz: "1210"),
+            SplitServer.Candidate(id: 30, name: "Frau Novak", address: "Brünner Straße 3", plz: "1210"),
+        ]
+        #expect(SplitServer.match(stops, to: candidates) == [10, 11, 20, nil])
+    }
+
     @Test func aLoadedPartBecomesEntriesAndKeepsItsInfosApart() {
         let part = SplitServer.Part(
             tour: "VM 4", date: "2026-11-06",

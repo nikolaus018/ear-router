@@ -37,6 +37,8 @@ struct SplitServerSheet: View {
         let id = UUID()
         let route: Route
         let part: SplitServer.Part
+        /// The part's stops with the portal's Paket, phone and note.
+        let entries: [CustomerJSON]
     }
 
     var body: some View {
@@ -89,7 +91,7 @@ struct SplitServerSheet: View {
                 Text("„\(part.title)“ ist dann für niemanden mehr abrufbar.")
             }
             .sheet(item: $review, onDismiss: reviewDismissed) { ctx in
-                ImportReviewView(route: ctx.route, entries: ctx.part.entries) { imported = true }
+                ImportReviewView(route: ctx.route, entries: ctx.entries) { imported = true }
             }
         }
     }
@@ -234,6 +236,11 @@ struct SplitServerSheet: View {
                 error = AppError.message("Dieser Teil hat keine Stopps.")
                 return
             }
+            // Paket, phone and note from this phone's own portal login.
+            let (entries, _) = await SplitServer.portalEntries(for: part) { text in
+                Task { @MainActor in busy = text }
+            }
+            try Task.checkCancellation()
             let open = FetchDescriptor<Route>(predicate: #Predicate { $0.statusRaw == "active" })
             let taken = Set(((try? context.fetch(open)) ?? []).map(\.name))
             var name = summary.title
@@ -241,7 +248,7 @@ struct SplitServerSheet: View {
                 name += " – " + date.formatted(.dateTime.day(.twoDigits).month(.twoDigits))
             }
             let route = try RouteStore.createRoute(name: name, in: context)
-            let ctx = Pending(route: route, part: part)
+            let ctx = Pending(route: route, part: part, entries: entries)
             pending = ctx
             review = ctx
         } catch is CancellationError {
