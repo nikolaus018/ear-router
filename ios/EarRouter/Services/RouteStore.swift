@@ -593,6 +593,34 @@ enum RouteStore {
         if reroute { await RouteOptimizer.optimizeBestEffort(route, in: context) }
     }
 
+    /// A new home address, carried to every pause still to come on an open
+    /// tour — planned on with the old one, it was driven to the old door
+    /// until the driver happened to switch the pause off and on. A pause
+    /// already ticked was at the old address and stays there. Each tour moved
+    /// is planned again behind itself.
+    static func movePauses(
+        to home: HomeAddress, reroute: Bool = true, in context: ModelContext
+    ) {
+        let pause = StopKind.pause.rawValue
+        let stops = (try? context.fetch(
+            FetchDescriptor<Stop>(predicate: #Predicate { $0.kindRaw == pause }))) ?? []
+        var moved: [Route] = []
+        for stop in stops where !stop.isSettled {
+            guard let route = stop.route, route.status == .active,
+                  stop.strasse != home.strasse || stop.plz != home.plz
+                    || stop.lat != home.lat || stop.lon != home.lon
+            else { continue }
+            stop.strasse = home.strasse
+            stop.plz = home.plz
+            stop.lat = home.lat
+            stop.lon = home.lon
+            route.markRoutingStale()
+            moved.append(route)
+        }
+        guard !moved.isEmpty, (try? context.save()) != nil else { return }
+        if reroute { for route in moved { rerouteBehind(route, in: context) } }
+    }
+
     /// Moves a pin by hand. Outranks the geocoder from here on.
     static func pinDrop(
         _ stop: Stop, to coordinate: (lat: Double, lon: Double),
@@ -938,8 +966,14 @@ enum RouteStore {
         // Looked up six at a time first, so the loop below finds each answer
         // waiting. One after another, a tour of new customers was a second of
         // waiting per address.
-        await warmGeocodes(
-            needsGeocode.map { (strasse: $0.0.strasse, plz: $0.0.plz) }, onProgress: onProgress)
+        //
+        // The progress is the warm-up's when there was one, counted over the
+        // addresses actually asked: the loop then takes its answers from the
+        // cache in a moment, and counting it as well ran the banner up to
+        // "31 von 30" and back down to 1, as if the import had started again.
+        let warmed = await warmGeocodes(
+            needsGeocode.map { (strasse: $0.0.strasse, plz: $0.0.plz) },
+            onProgress: onProgress.map { report in { done, total in report(done - 1, total) } })
 
         var moved = false
         for (index, (entry, existingStop)) in needsGeocode.enumerated() {
@@ -951,7 +985,7 @@ enum RouteStore {
                 result.cancelled = true
                 break
             }
-            onProgress?(index, needsGeocode.count)
+            if !warmed { onProgress?(index, needsGeocode.count) }
             let hit: GeocodeResult
             do {
                 hit = try await Geocoder.shared.geocode(
@@ -1484,15 +1518,19 @@ extension RouteStore {
     /// for whoever asks next. The same width `fillEntrances` uses against the
     /// same register; the Nominatim fallback keeps its own one-a-second
     /// queue inside the geocoder whatever is asked of it here.
+    /// `true` when it asked anything — fewer than two addresses are left to
+    /// the caller to look up one by one. `onProgress` gets `(done, total)`
+    /// after each answer, `done` counting from 1.
+    @discardableResult
     static func warmGeocodes(
         _ addresses: [(strasse: String, plz: String)], onProgress: ((Int, Int) -> Void)? = nil
-    ) async {
+    ) async -> Bool {
         struct Job: Sendable, Hashable { let strasse: String; let plz: String }
         // Two customers at one address are one question.
         var seen: Set<Job> = []
         let unique = addresses.map { Job(strasse: $0.strasse, plz: $0.plz) }
             .filter { seen.insert($0).inserted }
-        guard unique.count > 1 else { return }
+        guard unique.count > 1 else { return false }
         var jobs = unique.makeIterator()
         var done = 0
 
@@ -1515,5 +1553,6 @@ extension RouteStore {
                 if let job = jobs.next() { start(job) }
             }
         }
+        return true
     }
 }

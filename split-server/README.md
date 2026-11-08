@@ -11,19 +11,23 @@ After 10 failed sign-ins from one address within 15 minutes, sign-in is locked f
 
 ## The part
 
-The JSON the app sends: one person's stops, in the order they are driven.
+The JSON the app sends, and the same file "Als JSON senden" shares: the tour, and one person's stops in the order they are driven, each with the customer's name and address.
 
 ```
 {
-"tour" : "VM 4 DO Vormittag",
-"date" : "2026-11-06",
+"tour" : "VM 5 FR Vormittag",
 "persons" : [
   {
-    "person" : 2,
+    "person" : 1,
     "stops" : [
-      { "name" : "Fam. Gruber", "address" : "Gentzgasse 129/1", "plz" : "1180", "stockwerk" : "2", "notiz" : "Hund bellt",
-        "paket" : "1x Menü A", "pakete" : 1, "telefon" : "+43 660 1234567", "lieferhinweis" : "Bitte läuten" },
-      { "name" : "Herr Maier", "address" : "Hauptstraße 5", "plz" : "1210" }
+      {
+        "address" : "Pastorstraße 14/5/3",
+        "name" : "Franziska Metz"
+      },
+      {
+        "address" : "Aistgasse 62",
+        "name" : "Brigitte HOFFMANN"
+      }
     ]
   }
 ]
@@ -31,11 +35,10 @@ The JSON the app sends: one person's stops, in the order they are driven.
 ```
 
 - `tour` (required): the portal tour's name.
-- `date`: the day of the tour, `YYYY-MM-DD`. When missing, the server uses today in Vienna.
 - `persons` (required): usually exactly one person. `person` counts from 1.
-- `stops` (required, at least one): each stop needs `name` and `address`. `plz` is the postcode.
-- `stockwerk` and `notiz` are the customer's **Globale Infos** (floor and standing note), included only when the sending phone has them. The receiving phone keeps them as its own Globale Infos for customers it knows nothing about yet.
-- `paket`, `pakete` (number of parcels), `telefon` and `lieferhinweis` (the day's delivery note) are today's delivery, each only when known. The receiving phone puts them on the tour, so its Ladeliste and "Anrufen" work.
+- `stops` (required, at least one): each stop needs `name` and `address`. Nothing else is sent; the iOS app that loads a part takes Paket, phone, note and postcode from its own Zusteller-Portal login.
+
+The day the tour is driven is not in the part: it goes on the upload as `?date=YYYY-MM-DD` (see below). The server stores the part exactly as it was sent.
 
 Limits: at most 400 stops, 1 MB per request, 2000 characters per text field.
 
@@ -47,10 +50,10 @@ No key needed. Answers `{"ok": true}`.
 
 ### POST /api/parts
 
-Stores a part (body: the part above). Answers `201` with its summary:
+Stores a part (body: the part above). `?date=2026-11-06` is the day of the tour; without it the server uses today in Vienna (a `date` field in the body is still read, for older senders). Answers `201` with its summary:
 
 ```
-{ "id": 12, "tour": "VM 4 DO Vormittag", "date": "2026-11-06", "person": 2, "stops": 14, "created_at": "2026-11-06T06:41:03+00:00" }
+{ "id": 12, "tour": "VM 5 FR Vormittag", "date": "2026-11-06", "person": 1, "stops": 14, "created_at": "2026-11-06T06:41:03+00:00" }
 ```
 
 `person` is `null` when the part holds more than one person. `created_at` is UTC.
@@ -71,7 +74,7 @@ Lists summaries, newest first, at most 500.
 One part: its summary plus the part exactly as it was sent, under `part`.
 
 ```
-{ "id": 12, "tour": "…", "date": "…", "person": 2, "stops": 14, "created_at": "…", "part": { "tour": "…", "date": "…", "persons": [ … ] } }
+{ "id": 12, "tour": "…", "date": "…", "person": 2, "stops": 14, "created_at": "…", "part": { "tour": "…", "persons": [ … ] } }
 ```
 
 ### DELETE /api/parts/{id}

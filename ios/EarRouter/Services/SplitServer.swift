@@ -4,9 +4,16 @@ import Foundation
 /// repository): one phone sends a person's part of a split tour, another
 /// lists the day's parts and loads one as its tour.
 ///
-/// A part is the JSON `SplitState.serverPart` writes — the tour, the day and
-/// one person's stops, each with the customer's Globale Infos where the
-/// sending phone had any.
+/// A part is the JSON `SplitState.serverPart` writes, and the same file
+/// "Als JSON senden" shares — the tour, and each person's stops with the
+/// customer's name and address, nothing else:
+///
+///     {"tour": "VM 5 FR Vormittag",
+///      "persons": [{"person": 1, "stops": [{"address": "…", "name": "…"}]}]}
+///
+/// The day travels beside it, as `?date=` on the upload. Paket, phone and
+/// note are not in it: the phone that loads a part takes them from its own
+/// Zusteller-Portal login — see `portalEntries`.
 ///
 /// Every call carries an API key, made by the admin in the server's web UI
 /// and typed in once on this phone. The parts hold customers' names and
@@ -21,19 +28,12 @@ enum SplitServer {
 
     // MARK: The part
 
-    /// `stockwerk` and `notiz` are the customer's Globale Infos; `paket`,
-    /// `pakete`, `telefon` and `lieferhinweis` are today's delivery — what the
-    /// Ladeliste and "Anrufen" need on the phone that loads the part.
+    /// One stop: the customer and the address. `plz` is read if another
+    /// sender includes one, and never written — it is not in the format.
     struct Stop: Codable, Sendable, Hashable {
         var name: String
         var address: String
-        var plz: String?
-        var stockwerk: String?
-        var notiz: String?
-        var paket: String?
-        var pakete: Int?
-        var telefon: String?
-        var lieferhinweis: String?
+        var plz: String? = nil
     }
 
     struct Person: Codable, Sendable, Hashable {
@@ -43,35 +43,18 @@ enum SplitServer {
 
     struct Part: Codable, Sendable, Hashable {
         var tour: String
-        var date: String?
         var persons: [Person]
 
         var stops: [Stop] { persons.flatMap(\.stops) }
 
-        /// The stops as import entries, with today's Paket, phone and note.
-        /// The Globale Infos are not in them — they belong to the customer,
-        /// not to today's stop; see `infos`.
+        /// The stops as import entries: name and address, and a postcode only
+        /// where one came along. `portalEntries` fills in the rest.
         var entries: [CustomerJSON] {
             stops.map {
                 CustomerJSON(
                     kunde: $0.name.trimmed, strasse: $0.address.trimmed,
-                    plz: $0.plz?.trimmed ?? "", paket: $0.paket?.trimmed.nilIfEmpty,
-                    notiz: $0.lieferhinweis?.trimmed.nilIfEmpty,
-                    telefon: $0.telefon?.trimmed.nilIfEmpty, paketCount: $0.pakete)
+                    plz: $0.plz?.trimmed ?? "", paket: nil, notiz: nil)
             }
-        }
-
-        /// What the sender knew about each customer, by `StockwerkKey`.
-        var infos: [String: CustomerInfo] {
-            var out: [String: CustomerInfo] = [:]
-            for s in stops {
-                let info = CustomerInfo(stockwerk: s.stockwerk, notiz: s.notiz)
-                guard !info.isBlank,
-                    let key = StockwerkKey.make(kunde: s.name, strasse: s.address, plz: s.plz)
-                else { continue }
-                out[key] = info
-            }
-            return out
         }
     }
 
@@ -96,8 +79,9 @@ enum SplitServer {
 
     // MARK: Calls
 
-    static func upload(_ body: Data) async throws -> Summary {
-        try await call("POST", "/api/parts", body: body)
+    /// `day` is "2026-11-06", the day the tour is driven.
+    static func upload(_ body: Data, day: String) async throws -> Summary {
+        try await call("POST", "/api/parts?date=\(day)", body: body)
     }
 
     /// The parts of the last `days` days, newest first.
@@ -118,11 +102,36 @@ enum SplitServer {
         let _: Answer = try await call("DELETE", "/api/parts/\(id)")
     }
 
+    /// The parts already on the server for `stored`'s tour, day and person,
+    /// other than `stored` itself, deleted — so sending a person again
+    /// replaces what was there, whichever phone or which split sent it.
+    /// Best effort and quiet: returns how many went, and a failure here
+    /// never forgets the key or spoils the send that just worked.
+    @discardableResult
+    static func deleteOlder(than stored: Summary) async -> Int {
+        struct Answer: Decodable { let parts: [Summary] }
+        guard let answer: Answer = try? await call(
+            "GET", "/api/parts?date=\(stored.date)", forgetKeyOnRejection: false)
+        else { return 0 }
+        let tour = AddressText.matchKey(stored.tour)
+        var gone = 0
+        for old in answer.parts
+        where old.id != stored.id && old.person == stored.person
+            && AddressText.matchKey(old.tour) == tour
+        {
+            struct OK: Decodable { let ok: Bool }
+            let done: OK? = try? await call(
+                "DELETE", "/api/parts/\(old.id)", forgetKeyOnRejection: false)
+            if done != nil { gone += 1 }
+        }
+        return gone
+    }
+
     /// The server's error shape: `{"detail": "…"}`, in German.
     private struct Problem: Decodable { let detail: String }
 
     private static func call<T: Decodable>(
-        _ method: String, _ path: String, body: Data? = nil
+        _ method: String, _ path: String, body: Data? = nil, forgetKeyOnRejection: Bool = true
     ) async throws -> T {
         guard let key else {
             throw AppError.message("Für den Split-Server fehlt der API-Schlüssel.")
@@ -149,7 +158,7 @@ enum SplitServer {
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
-            if status == 401 {
+            if status == 401, forgetKeyOnRejection {
                 // Forgotten, so the next send or load asks for it again
                 // instead of failing the same way until it is found in a menu.
                 UserDefaults.standard.removeObject(forKey: keyDefaultsKey)
@@ -212,11 +221,14 @@ extension SplitServer {
         var missing: Set<Int> = []
         /// Positions of stops found, but whose detail call did not answer.
         var noDetail: Set<Int> = []
+        /// Positions of stops the portal has, but no longer open: "cancel"
+        /// (abbestellt) or "done" (schon geliefert) — by position, the state.
+        var closed: [Int: String] = [:]
 
         /// One line for the top of the review, or `nil` when every stop came
         /// from the portal.
         func notice(tour: String, day: String?) -> String? {
-            let fromSender = "Paket, Telefon und Hinweis kommen vom sendenden Telefon — bitte prüfen."
+            let fromSender = "Es kommen nur Name und Adresse — ohne Paket und Telefon, die PLZ bitte je Stopp eintragen."
             let when = day.flatMap(SplitServer.date(of:))
                 .map { " am " + $0.formatted(.dateTime.day(.twoDigits).month(.twoDigits).year()) } ?? ""
             switch outcome {
@@ -229,9 +241,21 @@ extension SplitServer {
             case .noDeliveries:
                 return "„\(tour)“ hat im Zusteller-Portal\(when) keine offenen Lieferungen. " + fromSender
             case .checked:
-                let off = missing.count + noDetail.count
+                let off = missing.count + noDetail.count + closed.count
                 guard off > 0 else { return nil }
                 var parts: [String] = []
+                let cancelled = closed.values.count { $0 == "cancel" }
+                let done = closed.count - cancelled
+                if cancelled > 0 {
+                    parts.append(cancelled == 1
+                        ? "1 Kunde ist im Zusteller-Portal abbestellt"
+                        : "\(cancelled) Kunden sind im Zusteller-Portal abbestellt")
+                }
+                if done > 0 {
+                    parts.append(done == 1
+                        ? "1 Kunde ist im Zusteller-Portal schon erledigt"
+                        : "\(done) Kunden sind im Zusteller-Portal schon erledigt")
+                }
                 if !missing.isEmpty {
                     parts.append(missing.count == 1
                         ? "1 Kunde ist im Zusteller-Portal nicht zu finden"
@@ -242,15 +266,23 @@ extension SplitServer {
                         ? "für 1 Kunden hat das Portal nicht geantwortet"
                         : "für \(noDetail.count) Kunden hat das Portal nicht geantwortet")
                 }
-                return parts.joined(separator: ", ") + ". Dort steht, was das sendende Telefon wusste — markiert."
+                let what = missing.isEmpty && noDetail.isEmpty
+                    ? " — markiert, nach links wischen zum Entfernen."
+                    : ". Markiert — dort nur Name und Adresse."
+                return parts.joined(separator: ", ") + what
             }
         }
 
         /// The mark on one row, or `nil` for a stop the portal answered for.
         func hint(at index: Int) -> String? {
             if outcome != .checked { return nil }  // said once, at the top
-            if missing.contains(index) { return "Nicht im Zusteller-Portal — Angaben vom Absender" }
-            if noDetail.contains(index) { return "Portal hat nicht geantwortet — Angaben vom Absender" }
+            if let state = closed[index] {
+                return state == "cancel"
+                    ? "Im Zusteller-Portal abbestellt — wohl nicht anfahren"
+                    : "Im Zusteller-Portal schon erledigt — wohl nicht anfahren"
+            }
+            if missing.contains(index) { return "Nicht im Zusteller-Portal — nur Name und Adresse" }
+            if noDetail.contains(index) { return "Portal hat nicht geantwortet — ohne Paket und Telefon" }
             return nil
         }
     }
@@ -258,49 +290,70 @@ extension SplitServer {
     /// A loaded part's stops as import entries, with Paket, parcel count,
     /// phone and note taken from this phone's own Zusteller-Portal login —
     /// the same detail call "Als Tour anlegen" makes — rather than trusting
-    /// whatever the sending phone knew. Name, address and PLZ stay the
-    /// part's: the sender may have corrected an address, and that is where
-    /// the meal goes.
+    /// a part that carries only names and addresses. Name and address stay
+    /// the part's — the sender may have corrected an address, and that is
+    /// where the meal goes — and the postcode is the portal's.
     ///
     /// Never throws: whatever the portal cannot answer for keeps what the
-    /// part carried, and `PortalResult` says which and why. Only
+    /// part carried (and is left for the driver to give a postcode on
+    /// Prüfen), and `PortalResult` says which and why. Only
     /// cancellation stops it, and then it returns the part as it came.
     static func portalEntries(
-        for part: Part, onProgress: @escaping @Sendable (String) -> Void = { _ in }
+        for part: Part, day dayString: String,
+        onProgress: @escaping @Sendable (String) -> Void = { _ in }
     ) async -> PortalResult {
         let fallback = part.entries
         guard let credentials = GourmetCredentialsStore.load() else {
             return PortalResult(entries: fallback, outcome: .noLogin)
         }
-        let day = part.date.flatMap(date(of:)) ?? Date()
+        let day = date(of: dayString) ?? Date()
         let token: String
+        let tour: GourmetPortal.Tour
         let deliveries: [GourmetPortal.Delivery]
         do {
             onProgress("Zusteller-Portal: anmelden …")
-            let login = try await GourmetPortal.login(credentials)
+            token = try await GourmetPortal.login(credentials)
             let wanted = AddressText.matchKey(part.tour)
-            guard let tour = try await GourmetPortal.tours(token: login)
+            guard let found = try await GourmetPortal.tours(token: token)
                 .first(where: { AddressText.matchKey($0.name) == wanted })
             else { return PortalResult(entries: fallback, outcome: .tourNotFound) }
-            (token, deliveries) = try await GourmetPortal.matchingDeliveries(
-                tour: tour, date: day, credentials: credentials
-            ) { _ in onProgress("Zusteller-Portal: Lieferungen werden geladen …") }
+            tour = found
+            onProgress("Zusteller-Portal: Lieferungen werden geladen …")
+            deliveries = try await GourmetPortal.deliveries(of: found, on: day, token: token)
         } catch is CancellationError {
             return PortalResult(entries: fallback, outcome: .unreachable("abgebrochen"))
         } catch {
             let why = (error as? AppError)?.message ?? "keine Verbindung"
             return PortalResult(entries: fallback, outcome: .unreachable(why))
         }
+        // Who is no longer open — cancelled or already delivered — asked only
+        // when something did not match: a customer the office cancelled after
+        // the part was sent must not read like a lookup that failed.
+        func closedDeliveries() async -> [GourmetPortal.Delivery] {
+            (try? await GourmetPortal.deliveries(
+                of: tour, on: day, token: token, states: GourmetPortal.closedStates)) ?? []
+        }
+        func candidates(_ list: [GourmetPortal.Delivery]) -> [Candidate] {
+            list.map { d in
+                let (name, address) = GourmetPortal.summary(d)
+                return Candidate(id: d.id, name: name, address: address,
+                                 plz: d.deliveryAddress.zip?.trimmed ?? "")
+            }
+        }
         guard !deliveries.isEmpty else {
-            return PortalResult(entries: fallback, outcome: .noDeliveries)
+            var result = PortalResult(entries: fallback, outcome: .noDeliveries)
+            let closed = await closedDeliveries()
+            if !closed.isEmpty {
+                result.outcome = .checked
+                let states = Dictionary(closed.map { ($0.id, $0.state) }, uniquingKeysWith: { a, _ in a })
+                for (i, pick) in match(part.stops, to: candidates(closed)).enumerated() {
+                    if let pick, let state = states[pick] { result.closed[i] = state } else { result.missing.insert(i) }
+                }
+            }
+            return result
         }
 
-        let candidates = deliveries.map { d in
-            let (name, address) = GourmetPortal.summary(d)
-            return Candidate(id: d.id, name: name, address: address,
-                             plz: d.deliveryAddress.zip?.trimmed ?? "")
-        }
-        let picks = match(part.stops, to: candidates)
+        let picks = match(part.stops, to: candidates(deliveries))
         let byID = Dictionary(deliveries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let wantedDeliveries = picks.compactMap { $0 }.compactMap { byID[$0] }
         // A detail call that fails leaves that stop out; a whole fetch that
@@ -310,10 +363,28 @@ extension SplitServer {
         ) { done, total in onProgress("Paket \(done) von \(total) wird geladen …") }) ?? [:])
 
         var result = PortalResult(entries: fallback, outcome: .checked)
+        let unmatched = picks.indices.filter { picks[$0] == nil }
+        if !unmatched.isEmpty {
+            let closed = await closedDeliveries()
+            let states = Dictionary(closed.map { ($0.id, $0.state) }, uniquingKeysWith: { a, _ in a })
+            let again = match(unmatched.map { part.stops[$0] }, to: candidates(closed))
+            for (k, i) in unmatched.enumerated() {
+                if let pick = again[k], let state = states[pick] { result.closed[i] = state }
+            }
+        }
         for (i, pick) in picks.enumerated() {
-            guard let pick else { result.missing.insert(i); continue }
+            guard let pick else {
+                if result.closed[i] == nil { result.missing.insert(i) }
+                continue
+            }
+            // The list already has the postcode, even when the detail fails.
+            if result.entries[i].plz.isEmpty, let zip = byID[pick]?.deliveryAddress.zip?.trimmed {
+                result.entries[i].plz = zip
+            }
             guard let detail = details[pick] else { result.noDetail.insert(i); continue }
-            var out = fallback[i]
+            var out = result.entries[i]
+            // The format carries no postcode; the portal's is the delivery's own.
+            if out.plz.isEmpty { out.plz = detail.plz }
             out.paket = detail.paket ?? fallback[i].paket
             out.paketCount = detail.paketCount ?? fallback[i].paketCount
             out.telefon = detail.telefon ?? fallback[i].telefon

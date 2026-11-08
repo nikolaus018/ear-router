@@ -110,66 +110,39 @@ struct SplitStateTests {
         #expect(!text.contains("Nicht zugeteilt"))
     }
 
-    @Test func theServerPartCarriesTheDayAndTheGlobaleInfos() throws {
+    /// The part is exactly the agreed file: "tour", then "persons", and each
+    /// stop only "address" and "name" — the format another app imports.
+    @Test func theServerPartIsTourPersonsNameAndAddress() throws {
         var split = SplitState(
-            tourName: "VM 4 DO Vormittag",
+            tourName: "VM 5 FR Vormittag",
             date: Date(timeIntervalSince1970: 1_757_980_800),  // 16.09.2025, 02:00 in Vienna
             people: 2,
-            stops: (0..<3).map {
-                SplitStop(
-                    id: $0, name: "Kunde \($0)", address: "Gentzgasse \($0 + 1)", plz: "1180",
-                    coordinate: nil)
-            })
-        split.claim([0, 1], for: 1)
-        let data = try split.serverPart(
-            for: 1, infos: [1: CustomerInfo(stockwerk: "3", notiz: "Hund")])
-        #expect(String(decoding: data, as: UTF8.self).hasPrefix("{\n\"tour\""))
-        let part = try JSONDecoder().decode(SplitServer.Part.self, from: data)
-        #expect(part.tour == "VM 4 DO Vormittag")
-        #expect(part.date == "2025-09-16")
-        #expect(part.persons.count == 1)
-        #expect(part.persons[0].person == 2)
-        #expect(part.stops.map(\.name) == ["Kunde 0", "Kunde 1"])
-        #expect(part.stops[0].stockwerk == nil && part.stops[0].notiz == nil)
-        #expect(part.stops[1].stockwerk == "3")
-        #expect(part.stops[1].notiz == "Hund")
-        // Without its Globale Infos, a stop carries only name, address and PLZ.
-        let raw = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let persons = try #require(raw["persons"] as? [[String: Any]])
-        let stops = try #require(persons[0]["stops"] as? [[String: String]])
-        #expect(Set(stops[0].keys) == ["name", "address", "plz"])
-    }
-
-    /// Paket, phone and the day's note go along, or the phone that loads the
-    /// part has an empty Ladeliste and nobody to call — and come back out as
-    /// the import entries.
-    @Test func theServerPartCarriesTodaysDeliveryBothWays() throws {
-        var split = SplitState(
-            tourName: "VM 4", people: 2,
             stops: [
-                SplitStop(id: 1, name: "Fam. Gruber", address: "Gentzgasse 129/1", plz: "1180", coordinate: nil),
+                SplitStop(id: 1, name: "Franziska Metz", address: "Pastorstraße 14/5/3", plz: "1210", coordinate: nil),
+                SplitStop(id: 2, name: "Brigitte HOFFMANN", address: "Aistgasse 62", plz: "1210", coordinate: nil),
                 SplitStop(
                     id: -1, name: "Herr Maier", address: "Hauptstraße 5", plz: "1210", coordinate: nil,
-                    typed: CustomerJSON(
-                        kunde: "Herr Maier", strasse: "Hauptstraße 5", plz: "1210",
-                        paket: "Nachlieferung", notiz: "Hintertür", telefon: "0660 1"))
+                    typed: CustomerJSON(kunde: "Herr Maier", strasse: "Hauptstraße 5", plz: "1210",
+                                        paket: "x", notiz: "y", telefon: "0660 1")),
             ])
-        split.claim([1, -1], for: 0)
-        let data = try split.serverPart(
-            for: 0,
-            entries: [1: CustomerJSON(
-                kunde: "Fam. Gruber", strasse: "Gentzgasse 129/1", plz: "1180",
-                paket: "2x Menü A", notiz: "Bitte läuten", telefon: "+43 660 2", paketCount: 2)],
-            infos: [1: CustomerInfo(stockwerk: "2", notiz: "Hund")])
-        let part = try JSONDecoder().decode(SplitServer.Part.self, from: data)
-        let gruber = try #require(part.entries.first)
-        #expect(gruber.paket == "2x Menü A" && gruber.paketCount == 2)
-        #expect(gruber.telefon == "+43 660 2")
-        #expect(gruber.notiz == "Bitte läuten")  // the day's note, not the Globale one
-        #expect(part.stops[0].notiz == "Hund")
-        // A typed-in stop with no fetched entry sends what it was typed with.
-        let maier = part.entries[1]
-        #expect(maier.paket == "Nachlieferung" && maier.notiz == "Hintertür" && maier.telefon == "0660 1")
+        split.claim([1, 2, -1], for: 0)
+        let data = try split.serverPart(for: 0)
+        let text = String(decoding: data, as: UTF8.self)
+        #expect(text.hasPrefix("{\n\"tour\" : \"VM 5 FR Vormittag\",\n\"persons\" : [\n  {\n    \"person\" : 1,"))
+        #expect(text.contains("""
+                  {
+                    "address" : "Pastorstraße 14/5/3",
+                    "name" : "Franziska Metz"
+                  }
+            """))
+        let raw = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(Set(raw.keys) == ["tour", "persons"])
+        let persons = try #require(raw["persons"] as? [[String: Any]])
+        #expect(Set(persons[0].keys) == ["person", "stops"])
+        let stops = try #require(persons[0]["stops"] as? [[String: String]])
+        #expect(stops.count == 3)
+        #expect(stops.allSatisfy { Set($0.keys) == ["address", "name"] })
+        #expect(split.serverDay == "2025-09-16")
     }
 
     /// A loaded part finds its portal deliveries: by name and address, then
@@ -211,6 +184,14 @@ struct SplitStateTests {
         #expect(checked.notice(tour: "VM 4", day: nil)?.hasPrefix("1 Kunde ist") == true)
         #expect(checked.hint(at: 0)?.contains("Nicht im Zusteller-Portal") == true)
         #expect(checked.hint(at: 1) == nil)
+
+        // Cancelled in the portal since the part was sent: said as such.
+        var closed = result(.checked)
+        closed.closed = [0: "cancel"]
+        #expect(closed.notice(tour: "VM 4", day: nil)?.hasPrefix("1 Kunde ist im Zusteller-Portal abbestellt") == true)
+        #expect(closed.hint(at: 0)?.contains("abbestellt") == true)
+        closed.closed = [0: "done"]
+        #expect(closed.hint(at: 0)?.contains("schon erledigt") == true)
     }
 
     /// Without a portal login every portal stop is a gap; a typed-in one never.
@@ -229,18 +210,18 @@ struct SplitStateTests {
         #expect(gaps == [0])
     }
 
-    @Test func aLoadedPartBecomesEntriesAndKeepsItsInfosApart() {
-        let part = SplitServer.Part(
-            tour: "VM 4", date: "2026-11-06",
-            persons: [SplitServer.Person(person: 2, stops: [
-                SplitServer.Stop(name: "Fam. Gruber", address: "Gentzgasse 129/1", plz: "1180", stockwerk: "2", notiz: "Hund"),
-                SplitServer.Stop(name: "Herr Maier", address: "Hauptstraße 5", plz: "1210"),
-            ])])
-        #expect(part.entries.map(\.kunde) == ["Fam. Gruber", "Herr Maier"])
+    /// A loaded part is names and addresses; a postcode is read if another
+    /// sender put one in.
+    @Test func aLoadedPartBecomesEntries() throws {
+        let json = """
+            {"tour":"VM 5","persons":[{"person":1,"stops":[
+              {"address":"Pastorstraße 14/5/3","name":"Franziska Metz"},
+              {"address":"Hauptstraße 5","name":"Herr Maier","plz":"1210"}]}]}
+            """
+        let part = try JSONDecoder().decode(SplitServer.Part.self, from: Data(json.utf8))
+        #expect(part.entries.map(\.kunde) == ["Franziska Metz", "Herr Maier"])
+        #expect(part.entries.map(\.plz) == ["", "1210"])
         #expect(part.entries.allSatisfy { $0.notiz == nil && $0.paket == nil })
-        let key = StockwerkKey.make(kunde: "Fam Gruber", strasse: "Gentzgasse 129 / 1", plz: "1180")
-        #expect(part.infos.count == 1)
-        #expect(part.infos[key ?? ""]?.stockwerk == "2")
     }
 
     /// The stop as it reaches the import when the portal's detail call is not

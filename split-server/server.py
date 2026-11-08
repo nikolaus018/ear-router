@@ -232,14 +232,17 @@ class BadRequest(Exception):
     pass
 
 
-def check_part(part) -> tuple[str, str, int | None, int]:
-    """The part's tour, day, person and stop count — or BadRequest."""
+def check_part(part, query_day: str | None = None) -> tuple[str, str, int | None, int]:
+    """The part's tour, day, person and stop count — or BadRequest.
+
+    The day is `?date=` on the upload; a `date` in the body is read too, for
+    older senders. Without either it is today in Vienna."""
     if not isinstance(part, dict):
         raise BadRequest("Ein JSON-Objekt erwartet.")
     tour = part.get("tour")
     if not isinstance(tour, str) or not tour.strip() or len(tour) > 200:
         raise BadRequest("„tour“ fehlt.")
-    day = part.get("date") or today()
+    day = query_day or part.get("date") or today()
     if not isinstance(day, str) or not DATE_RE.match(day):
         raise BadRequest("„date“ muss JJJJ-MM-TT sein.")
     try:
@@ -504,12 +507,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             part = json.loads(raw)
-            tour, day, person, count = check_part(part)
+            tour, day, person, count = check_part(part, self.query().get("date"))
         except (ValueError, UnicodeDecodeError):
             return self.json_error(400, "Kein gültiges JSON.")
         except BadRequest as e:
             return self.json_error(400, str(e))
-        part["date"] = day
+        # Stored exactly as sent: the day is its own column, not written into
+        # the part, so what is loaded is the very file that was sent.
         with _write_lock, db() as conn:
             cur = conn.execute(
                 "INSERT INTO parts (tour, day, person, stops, created_at, key_id, body) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -662,13 +666,12 @@ class Handler(BaseHTTPRequestHandler):
         stops = [s for p in part.get("persons", []) for s in p.get("stops", [])]
         lines = "".join(f"""
             <tr><td>{i}</td><td><b>{esc(s.get('name'))}</b></td>
-              <td>{esc(s.get('address'))}{', ' + esc(s.get('plz')) if s.get('plz') else ''}</td>
-              <td>{esc(s.get('stockwerk') or '')}</td><td>{esc(s.get('notiz') or '')}</td></tr>"""
+              <td>{esc(s.get('address'))}{', ' + esc(s.get('plz')) if s.get('plz') else ''}</td></tr>"""
                         for i, s in enumerate(stops, 1))
         title = f"{row['tour']}" + (f" · P{row['person']}" if row["person"] else "")
         body = f"""
         <p class="muted">{fmt_day(row['day'])} · {row['stops']} Stopps · gesendet {fmt_time(row['created_at'])} · ID {row['id']}</p>
-        <div class="card pad"><table><tr><th>#</th><th>Kunde</th><th>Adresse</th><th>Stock</th><th>Notiz</th></tr>{lines}</table></div>
+        <div class="card pad"><table><tr><th>#</th><th>Kunde</th><th>Adresse</th></tr>{lines}</table></div>
         <h2>JSON</h2>
         <pre>{esc(json.dumps(part, ensure_ascii=False, indent=2))}</pre>
         <form method="post" action="/parts/{row['id']}/delete" style="margin-top:16px">{hidden}

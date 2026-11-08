@@ -236,7 +236,7 @@ enum GourmetPortal {
     }
 
     private static func deliveries(
-        date: String, page: Int, pageSize: Int, tourID: Int, token: String
+        date: String, page: Int, pageSize: Int, tourID: Int, states: [String], token: String
     ) async throws -> DeliveryPage {
         var comps = URLComponents(
             url: base.appendingPathComponent("supplier/deliveries"), resolvingAgainstBaseURL: false)!
@@ -246,7 +246,7 @@ enum GourmetPortal {
             URLQueryItem(name: "page_size", value: String(pageSize)),
             URLQueryItem(name: "tour_id", value: String(tourID)),
         ]
-        items.append(contentsOf: openStates.map { URLQueryItem(name: "state", value: $0) })
+        items.append(contentsOf: states.map { URLQueryItem(name: "state", value: $0) })
         comps.queryItems = items
 
         var request = URLRequest(url: comps.url!)
@@ -358,21 +358,32 @@ enum GourmetPortal {
         let token = try await login(credentials)
 
         onProgress("Lieferungen werden geladen …")
+        return (token, try await deliveries(of: tour, on: date, token: token))
+    }
+
+    /// `tour`'s deliveries on `date` in `states` — the open ones unless asked
+    /// otherwise — every page of them, with a login already made.
+    static func deliveries(
+        of tour: Tour, on date: Date, token: String, states: [String] = openStates
+    ) async throws -> [Delivery] {
         let dateString = isoDate(date)
         var all: [Delivery] = []
         var page = 1
         while true {
             try Task.checkCancellation()
             let result = try await deliveries(
-                date: dateString, page: page, pageSize: 100, tourID: tour.id, token: token)
+                date: dateString, page: page, pageSize: 100, tourID: tour.id,
+                states: states, token: token)
             all.append(contentsOf: result.items)
             if page >= result.totalPages || result.items.isEmpty { break }
             page += 1
         }
-
-        let matching = all.filter { delivery in delivery.tours.contains { $0.id == tour.id } }
-        return (token, matching)
+        return all.filter { delivery in delivery.tours.contains { $0.id == tour.id } }
     }
+
+    /// The states a delivery is in once it is no longer to be driven: done,
+    /// or cancelled — Odoo's own names, the complement of `openStates`.
+    static let closedStates = ["done", "cancel"]
 
     /// The second half of the old `fetchTourEntries` — once the driver has
     /// said which of `matchingDeliveries`' results to keep, fetches each

@@ -5,10 +5,9 @@ import SwiftData
 /// over the last weeks, by day, today on top. Picking one makes it a tour on
 /// this phone, through the same review a portal import goes through.
 ///
-/// The customers' Globale Infos that came with the part are kept on this
-/// phone too — but only for customers it knows nothing about yet: what the
-/// driver here has written down about a door is not overwritten by somebody
-/// else's phone.
+/// A part carries only names and addresses; Paket, phone, note and postcode
+/// come from this phone's own Zusteller-Portal login on the way in — see
+/// `SplitServer.portalEntries`.
 struct SplitServerSheet: View {
     var onOpenedTour: () -> Void
 
@@ -37,6 +36,8 @@ struct SplitServerSheet: View {
         let id = UUID()
         let route: Route
         let part: SplitServer.Part
+        /// The day the server filed it under, "2026-11-06".
+        let day: String
         /// The part's stops with the portal's Paket, phone and note, and what
         /// the portal could not answer for.
         let portal: SplitServer.PortalResult
@@ -94,7 +95,7 @@ struct SplitServerSheet: View {
             .sheet(item: $review, onDismiss: reviewDismissed) { ctx in
                 ImportReviewView(
                     route: ctx.route, entries: ctx.portal.entries,
-                    notice: ctx.portal.notice(tour: ctx.part.tour, day: ctx.part.date),
+                    notice: ctx.portal.notice(tour: ctx.part.tour, day: ctx.day),
                     hints: ctx.portal.entries.indices.map(ctx.portal.hint(at:))
                 ) { imported = true }
             }
@@ -242,7 +243,7 @@ struct SplitServerSheet: View {
                 return
             }
             // Paket, phone and note from this phone's own portal login.
-            let portal = await SplitServer.portalEntries(for: part) { text in
+            let portal = await SplitServer.portalEntries(for: part, day: summary.date) { text in
                 Task { @MainActor in busy = text }
             }
             try Task.checkCancellation()
@@ -253,7 +254,7 @@ struct SplitServerSheet: View {
                 name += " – " + date.formatted(.dateTime.day(.twoDigits).month(.twoDigits))
             }
             let route = try RouteStore.createRoute(name: name, in: context)
-            let ctx = Pending(route: route, part: part, portal: portal)
+            let ctx = Pending(route: route, part: part, day: summary.date, portal: portal)
             pending = ctx
             review = ctx
         } catch is CancellationError {
@@ -274,15 +275,6 @@ struct SplitServerSheet: View {
         guard imported else {
             try? RouteStore.delete(ctx.route, in: context)
             return
-        }
-        let infos = ctx.part.infos
-        if !infos.isEmpty {
-            for stop in ctx.route.stops {
-                guard let key = StockwerkKey.make(for: stop), let info = infos[key],
-                    (try? StockwerkStore.note(forKey: key, in: context)) == nil
-                else { continue }
-                try? StockwerkStore.save(info, for: stop, in: context)
-            }
         }
         focus.open(ctx.route)
         // Only the screen underneath is dismissed, and it takes this one

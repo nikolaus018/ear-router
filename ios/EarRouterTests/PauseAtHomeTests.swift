@@ -23,7 +23,7 @@ struct PauseAtHomeTests {
 
     /// How many legs the three OSRM calls in `run` hand back for this plan.
     private func legCount(_ plan: RouteOptimizer.Plan) -> Int {
-        let fixed = plan.head.count + plan.driven.count + (plan.pauseDriven == nil ? 0 : 1)
+        let fixed = plan.fixedPath.count
         return max(0, fixed - 1)
             + (plan.needsTrip ? plan.tripNodes.count - 1 : 0)
             + max(0, plan.tail.count - 1)
@@ -109,6 +109,60 @@ struct PauseAtHomeTests {
         #expect(legCount(plan) == routed.count - 1)
     }
 
+    /// A door ticked after the pause was driven from home: it follows the
+    /// pause, and the van is there now — not back at home.
+    @Test func aDoorDrivenFromHomeComesAfterThePause() {
+        var n = nodes(customers: 3)
+        n.driven = [n.customers[0], n.customers[1]]
+        n.afterPause = [n.customers[1].id]
+        let home = coord(50)
+        n.pause = home
+        n.pauseDone = true
+        let plan = RouteOptimizer.plan(n)
+
+        #expect(plan.anchor == n.customers[1])
+        #expect(plan.fixedPath.suffix(3).map(\.id) == [n.customers[0].id, home.id, n.customers[1].id])
+        let routed = RouteOptimizer.drivingOrder(plan, solvedOrder: [0, 1, 2])
+        #expect(routed.map(\.id).filter { $0 == home.id }.count == 1)
+        #expect(legCount(plan) == routed.count - 1)
+    }
+
+    /// A hand-sorted tour with the pause ticked and doors still open: home
+    /// sits where it was driven, and the open doors are driven from there.
+    @Test func aHandSortedTourDrivesTheOpenDoorsFromHome() {
+        var n = nodes(customers: 3)
+        n.driven = [n.customers[1]]
+        let home = coord(50)
+        n.pause = home
+        n.pauseDone = true
+        // Listed by hand: 0, 1, 2 — only 1 was driven before the pause.
+        let listed = RouteOptimizer.listedDrivingOrder(n, customers: n.customers)
+        let ids = listed.map(\.id)
+        #expect(ids.firstIndex(of: home.id)! < ids.firstIndex(of: n.customers[0].id)!)
+        #expect(ids.firstIndex(of: n.customers[1].id)! < ids.firstIndex(of: home.id)!)
+        #expect(ids.last == n.end!.coord.id)
+        #expect(ids.filter { $0 == home.id }.count == 1)
+
+        let display = RouteOptimizer.displayOrder(n, routed: listed, listed: n.customers)
+        #expect(display.map(\.id) == [n.start!.coord.id, n.via!.coord.id, n.customers[1].id,
+                                      home.id, n.customers[0].id, n.customers[2].id, n.end!.coord.id])
+    }
+
+    /// The list shows a ticked pause where it was driven, not at the bottom.
+    @Test func aTickedPauseIsListedWhereItWasDriven() {
+        var n = nodes(customers: 3)
+        n.driven = [n.customers[0]]
+        let home = coord(50)
+        n.pause = home
+        n.pauseDone = true
+        let plan = RouteOptimizer.plan(n)
+        let routed = RouteOptimizer.drivingOrder(plan, solvedOrder: [0, 1, 2, 3])
+        let display = RouteOptimizer.displayOrder(n, routed: routed)
+        let ids = display.map(\.id)
+        #expect(ids.firstIndex(of: home.id) == 3)  // Start, Lager, A, then home
+        #expect(ids.last == n.end!.coord.id)
+    }
+
     /// In the list the pause sits directly above Ziel.
     @Test func thePauseIsListedAboveZiel() {
         var n = nodes()
@@ -149,6 +203,24 @@ struct PauseAtHomeTests {
         RouteStore.keepZielLast(in: route)
         try context.save()
         return route
+    }
+
+    /// A new home address moves a pause still to come, not one already ticked.
+    @Test func aNewHomeAddressMovesThePauseStillToCome() async throws {
+        let context = try makeContext()
+        let route = try tour(in: context)
+        try await RouteStore.setPause(true, on: route, home: home, reroute: false, in: context)
+        let moved = HomeAddress(strasse: "Neugasse 9", plz: "1220", lat: 48.23, lon: 16.45)
+
+        RouteStore.movePauses(to: moved, reroute: false, in: context)
+        let pause = try #require(route.stops.first { $0.kind == .pause })
+        #expect(pause.strasse == "Neugasse 9" && pause.plz == "1220" && pause.lat == 48.23)
+        #expect(route.needsOptimize)
+
+        pause.record(.delivered)
+        try context.save()
+        RouteStore.movePauses(to: home, reroute: false, in: context)
+        #expect(pause.strasse == "Neugasse 9")
     }
 
     @Test func switchingOnPutsHomeAboveZiel() async throws {

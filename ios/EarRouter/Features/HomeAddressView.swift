@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 /// Mehr → Zuhause: the address a "Pause zu Hause" drives to.
 ///
@@ -17,6 +18,7 @@ struct HomeAddressView: View {
     @FocusState private var focusedField: Field?
     private enum Field: Hashable { case strasse, plz }
 
+    @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
 
     private var effectivePlz: String {
@@ -122,6 +124,8 @@ struct HomeAddressView: View {
             let saved = HomeAddress(strasse: strasse.trimmed, plz: targetPlz, lat: hit.lat, lon: hit.lon)
             saved.save()
             home = saved
+            // A pause already planned on an open tour goes to the new address.
+            RouteStore.movePauses(to: saved, in: context)
             dismiss()
         } catch let known as AppError {
             error = known

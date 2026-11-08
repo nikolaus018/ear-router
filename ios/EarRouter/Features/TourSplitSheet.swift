@@ -266,9 +266,6 @@ struct SplitState: Identifiable {
     /// Delivery id → person index. A stop with no entry is still free.
     private(set) var owner: [Int: Int] = [:]
     private var history: [[Int: Int]] = []
-    /// Person → the id of the part last sent to the split server for them,
-    /// so sending again replaces it instead of leaving two.
-    var sentParts: [Int: Int] = [:]
 
     init(
         tourName: String, tourID: Int? = nil, date: Date = Date(), people: Int,
@@ -484,40 +481,36 @@ struct SplitState: Identifiable {
         return f
     }()
 
-    /// One person's part as it goes to the split server: the tour, the day,
-    /// and the stops in the order they are driven — name, address and
-    /// postcode, today's Paket, phone and delivery note from `entries`, plus
-    /// the customer's Globale Infos (floor, standing note) where this phone
-    /// has any. `entries` and `infos` are keyed by stop id.
+    /// One person's part as it goes to the split server and into "Als JSON
+    /// senden": the tour, and the person's stops in the order they are
+    /// driven — the customer's name and address, nothing else:
+    ///
+    ///     {
+    ///     "tour" : "VM 5 FR Vormittag",
+    ///     "persons" : [ { "person" : 1, "stops" : [ { "address" : "…", "name" : "…" } ] } ]
+    ///     }
     ///
     /// The top level is written by hand: `JSONEncoder` leaves key order to
     /// chance unless it sorts them, and sorted, "tour" would land below the
     /// persons instead of heading the file.
-    func serverPart(
-        for person: Int, entries: [Int: CustomerJSON] = [:], infos: [Int: CustomerInfo] = [:]
-    ) throws -> Data {
+    func serverPart(for person: Int) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         func json(_ value: some Encodable) throws -> String {
             String(decoding: try encoder.encode(value), as: UTF8.self)
         }
-        let stops = drivingOrder(of: person).map { stop in
-            let info = infos[stop.id]
-            let entry = entries[stop.id] ?? stop.plainEntry
-            return SplitServer.Stop(
-                name: stop.name, address: stop.address, plz: stop.plz.trimmed.nilIfEmpty,
-                stockwerk: info?.stockwerk, notiz: info?.notiz,
-                paket: entry.paket?.trimmed.nilIfEmpty, pakete: entry.paketCount,
-                telefon: entry.telefon?.trimmed.nilIfEmpty,
-                lieferhinweis: entry.notiz?.trimmed.nilIfEmpty)
+        let stops = drivingOrder(of: person).map {
+            SplitServer.Stop(name: $0.name, address: $0.address)
         }
         let parts = [
             "\"tour\" : \(try json(tourName.trimmed))",
-            "\"date\" : \(try json(SplitServer.dayString(date)))",
             "\"persons\" : \(try json([SplitServer.Person(person: person + 1, stops: stops)]))",
         ]
         return Data(("{\n" + parts.joined(separator: ",\n") + "\n}\n").utf8)
     }
+
+    /// The day the split is for, as the server files it: "2026-11-06".
+    var serverDay: String { SplitServer.dayString(date) }
 }
 
 /// What a finger drew round, in screen points.
@@ -1720,7 +1713,7 @@ private struct SplitOverview: View {
                 // The same JSON the server gets, as a file — for an app that
                 // imports it but does not talk to the server yet.
                 Button {
-                    task = Task { await shareJSON(person) }
+                    shareJSON(person)
                 } label: {
                     Label("Als JSON senden", systemImage: "curlybraces")
                 }
@@ -1750,67 +1743,37 @@ private struct SplitOverview: View {
         sharing = SharedText(text: state.shareText(for: person))
     }
 
-    /// One person's part in the server's JSON, with each stop's Paket, phone
-    /// and note — fetched here, as "Als Tour anlegen" does, or the phone that
-    /// loads it gets an empty Ladeliste — and the Globale Infos this phone
-    /// has for its customers. `nil` when the fetch was stopped.
-    private func partData(for person: Int) async throws -> Data? {
-        let mine = state.stops(of: person)
-        let fetched = await state.entries(for: person) { done, total in
-            Task { @MainActor in busy = "Paket \(done) von \(total) wird geladen …" }
-        }
-        guard !Task.isCancelled else { return nil }
-        let entries = Dictionary(
-            zip(mine.map(\.id), fetched).map { ($0, $1) }, uniquingKeysWith: { a, _ in a })
-        var infos: [Int: CustomerInfo] = [:]
-        for stop in mine {
-            guard let key = StockwerkKey.make(kunde: stop.name, strasse: stop.address, plz: stop.plz),
-                let note = try? StockwerkStore.note(forKey: key, in: context)
-            else { continue }
-            let info = CustomerInfo(note)
-            if info.stockwerk != nil || info.notiz != nil { infos[stop.id] = info }
-        }
-        return try state.serverPart(for: person, entries: entries, infos: infos)
-    }
-
-    /// "Als JSON senden": the part the server would get, as a `.json` file
-    /// named after the share — "VM 4 DO Vormittag · P2.json".
-    private func shareJSON(_ person: Int) async {
-        busy = "Paket wird geladen …"
-        defer { busy = nil }
+    /// "Als JSON senden": the part the server would get, as a `.json` file —
+    /// "VM 5 FR Vormittag-P1.json".
+    private func shareJSON(_ person: Int) {
         do {
-            guard let data = try await partData(for: person) else { return }
-            let name = state.routeName(for: person)
+            let dir = URL.temporaryDirectory.appending(
+                path: "TourTeilen-\(UUID().uuidString)", directoryHint: .isDirectory)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let base = state.tourName.trimmed
                 .replacingOccurrences(of: "/", with: "-")
                 .replacingOccurrences(of: ":", with: "-")
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent(name.isEmpty ? "Tour" : name)
-                .appendingPathExtension("json")
-            try data.write(to: url, options: .atomic)
+            let url = dir.appending(path: "\(base.isEmpty ? "Tour" : base)-P\(person + 1).json")
+            try state.serverPart(for: person).write(to: url, options: .atomic)
             sharingFile = SharedFile(url: url)
         } catch {
             self.error = AppError.message("Die JSON-Datei konnte nicht erstellt werden.")
         }
     }
 
-    /// Sends one person's part to the split server. A part sent before for
-    /// the same person is replaced, so the other phone never has two to
+    /// Sends one person's part to the split server. Whatever was there for
+    /// the same tour, day and person is replaced — from this split, an
+    /// earlier one, or another phone — so the other phone never has two to
     /// choose from.
     private func send(_ person: Int) async {
-        busy = "Paket wird geladen …"
+        busy = "Wird gesendet …"
         defer { busy = nil }
         do {
-            guard let data = try await partData(for: person) else { return }
-            busy = "Wird gesendet …"
-            let stored = try await SplitServer.upload(data)
-            let replaced = state.sentParts[person]
-            state.sentParts[person] = stored.id
-            if let replaced, replaced != stored.id {
-                // Best effort: gone already is as good as deleted.
-                try? await SplitServer.delete(replaced)
-            }
+            let stored = try await SplitServer.upload(
+                try state.serverPart(for: person), day: state.serverDay)
+            let replaced = await SplitServer.deleteOlder(than: stored)
             let count = stored.stops == 1 ? "1 Stopp" : "\(stored.stops) Stopps"
-            sent = replaced == nil
+            sent = replaced == 0
                 ? "Person \(person + 1) liegt am Server: \(count)."
                 : "Person \(person + 1) am Server ersetzt: \(count)."
         } catch is CancellationError {
